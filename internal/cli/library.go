@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -137,14 +139,14 @@ func newQuarantineCmd(gf *globalFlags) *cobra.Command {
 		Use:   "quarantine",
 		Short: "Move flagged candidates into the trash dir (dry-run unless --apply)",
 		Long: "quarantine soft-deletes candidates by MOVING them (and their sidecars)\n" +
-			"into the trash dir with an undo manifest. It never hard-deletes. Without\n" +
-			"--apply it is a dry-run that prints exactly what would move.",
+			"into the trash dir with an undo manifest. It never hard-deletes.\n\n" +
+			"Without --apply it is a DRY-RUN that prints exactly what would move; a\n" +
+			"bare `quarantine` (no selector) dry-runs over ALL current candidates.\n" +
+			"--apply actually moves files and REQUIRES an explicit selector (--id,\n" +
+			"--reason, or --all) so the destructive path always names its targets.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateReason(reason); err != nil {
 				return err
-			}
-			if len(ids) == 0 && reason == "" && !all {
-				return fmt.Errorf("specify --id, --reason, or --all")
 			}
 			a, err := gf.build()
 			if err != nil {
@@ -155,30 +157,44 @@ func newQuarantineCmd(gf *globalFlags) *cobra.Command {
 			ctx, cancel := signalContext()
 			defer cancel()
 
-			targetIDs, err := resolveTargetIDs(a.store, ids, reason, all)
-			if err != nil {
-				return err
-			}
-			if len(targetIDs) == 0 {
-				fmt.Println("No matching candidates.")
-				return nil
-			}
-
-			sc := a.newScanner(nil, false)
-			plan, err := sc.Quarantine(ctx, targetIDs, apply)
-			if err != nil {
-				return err
-			}
-			printQuarantinePlan(plan)
-			return nil
+			return quarantineRun(ctx, a, cmd.OutOrStdout(), ids, reason, all, apply)
 		},
 	}
 	f := cmd.Flags()
 	f.Int64SliceVar(&ids, "id", nil, "candidate id(s) to quarantine (repeatable)")
 	f.StringVar(&reason, "reason", "", "quarantine all candidates with this reason (superseded/duplicate/broken)")
 	f.BoolVar(&all, "all", false, "quarantine every current candidate")
-	f.BoolVar(&apply, "apply", false, "actually move files (default: dry-run)")
+	f.BoolVar(&apply, "apply", false, "actually move files (default: dry-run); requires a selector")
 	return cmd
+}
+
+// quarantineRun resolves the selector and runs the quarantine plan (dry-run or
+// apply). A bare invocation (no --id/--reason/--all) DRY-RUNS over every current
+// candidate — matching the help contract. The destructive --apply path, by
+// contrast, REFUSES a bare invocation: it requires an explicit selector so it
+// never nukes every candidate implicitly. Factored out of the cobra RunE so it
+// can be exercised with an in-memory app.
+func quarantineRun(ctx context.Context, a *app, out io.Writer, ids []int64, reason string, all, apply bool) error {
+	if apply && len(ids) == 0 && reason == "" && !all {
+		return fmt.Errorf("--apply requires an explicit selector: --id, --reason, or --all")
+	}
+
+	targetIDs, err := resolveTargetIDs(a.store, ids, reason, all)
+	if err != nil {
+		return err
+	}
+	if len(targetIDs) == 0 {
+		fmt.Fprintln(out, "No matching candidates.")
+		return nil
+	}
+
+	sc := a.newScanner(nil, false)
+	plan, err := sc.Quarantine(ctx, targetIDs, apply)
+	if err != nil {
+		return err
+	}
+	printQuarantinePlan(plan, out)
+	return nil
 }
 
 func newRestoreCmd(gf *globalFlags) *cobra.Command {
@@ -334,13 +350,13 @@ func printCandidates(cands []store.LocalFile) {
 	_ = tw.Flush()
 }
 
-func printQuarantinePlan(plan *library.QuarantinePlan) {
+func printQuarantinePlan(plan *library.QuarantinePlan, out io.Writer) {
 	verb := "Would move"
 	if plan.Applied {
 		verb = "Moved"
 	}
-	fmt.Printf("%s %d file(s) (%s).\n", verb, len(plan.Moves), humanBytes(plan.TotalBytes))
-	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintf(out, "%s %d file(s) (%s).\n", verb, len(plan.Moves), humanBytes(plan.TotalBytes))
+	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	for _, m := range plan.Moves {
 		tag := m.Reason
 		if m.IsSidecar {
@@ -350,12 +366,12 @@ func printQuarantinePlan(plan *library.QuarantinePlan) {
 	}
 	_ = tw.Flush()
 	for _, sk := range plan.Skipped {
-		fmt.Printf("  SKIPPED %s: %s\n", sk.Path, sk.Reason)
+		fmt.Fprintf(out, "  SKIPPED %s: %s\n", sk.Path, sk.Reason)
 	}
 	if plan.Applied {
-		fmt.Printf("Batch #%d written. Undo with: civitai-manager library restore %d\n", plan.BatchID, plan.BatchID)
+		fmt.Fprintf(out, "Batch #%d written. Undo with: civitai-manager library restore %d\n", plan.BatchID, plan.BatchID)
 	} else if len(plan.Moves) > 0 {
-		fmt.Println("Dry-run. Re-run with --apply to move these files.")
+		fmt.Fprintln(out, "Dry-run. Re-run with --apply to move these files.")
 	}
 }
 

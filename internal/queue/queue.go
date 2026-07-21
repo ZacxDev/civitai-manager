@@ -217,11 +217,13 @@ func (w *Worker) process(ctx context.Context, item *store.QueueItem) {
 	if item.SHA256Expected == "" {
 		w.event(store.LevelWarn, "download_unverified", item,
 			fmt.Sprintf("Downloaded %s (UNVERIFIED — no hash from API)", item.FileName))
-		w.log.Warn("download complete (unverified: no API hash)", "id", item.ID, "sha256", shortHash(sum), "bytes", written)
+		w.log.Warn(fmt.Sprintf("download complete: %s (unverified — no hash from API)", item.FileName),
+			"id", item.ID, "sha256", shortHash(sum), "bytes", written)
 	} else {
 		w.event(store.LevelInfo, "download_done", item,
 			fmt.Sprintf("Downloaded %s (%s verified)", item.FileName, shortHash(sum)))
-		w.log.Info("download complete", "id", item.ID, "sha256", shortHash(sum), "bytes", written)
+		w.log.Info(fmt.Sprintf("download complete: %s (sha256 %s verified)", item.FileName, shortHash(sum)),
+			"id", item.ID, "sha256", shortHash(sum), "bytes", written)
 	}
 
 	w.writeSidecars(ctx, item)

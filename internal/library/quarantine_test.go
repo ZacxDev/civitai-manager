@@ -342,9 +342,11 @@ func TestQuarantineTwoRootsSameRelpathNoCollision(t *testing.T) {
 	writeFile(t, keep2, "BBBB-root2-distinct-bytes")
 
 	mid, vid := 1, 1
+	// SizeBytes matches the 25-byte payloads above so the quarantine TOCTOU guard
+	// (which refuses a file whose size changed since scan) does not skip them.
 	mk := func(path, sha, reason string) int64 {
 		return upsertGetID(t, st, store.LocalFile{Path: path, SHA256: sha, ModelID: &mid, VersionID: &vid,
-			SizeBytes: 24, Status: store.LocalStatusMatched, CandidateReason: reason, Kind: store.LocalKindModel})
+			SizeBytes: 25, Status: store.LocalStatusMatched, CandidateReason: reason, Kind: store.LocalKindModel})
 	}
 	mk(keep1, "sha-a", "")
 	mk(keep2, "sha-b", "")
@@ -623,6 +625,75 @@ func TestQuarantineInTxSafetyCatchesConcurrentKeeperRemoval(t *testing.T) {
 	}
 	if batches, _ := st.ListQuarantineBatches(); len(batches) != 0 {
 		t.Fatalf("a refused batch must record no batch header, got %d", len(batches))
+	}
+}
+
+// TestQuarantineSkipsFileChangedSinceScan proves the TOCTOU guard: a candidate
+// whose on-disk file changed (size differs from the indexed row) AFTER the scan
+// is skipped and reported "changed since scan", never moved — while an unchanged
+// candidate in the SAME batch still moves.
+func TestQuarantineSkipsFileChangedSinceScan(t *testing.T) {
+	root := t.TempDir()
+	trash := filepath.Join(t.TempDir(), "trash")
+	st := newTestStore(t)
+
+	mid, vid := 1, 1
+	mk := func(path, content, sha string, size int64, reason string) int64 {
+		writeFile(t, path, content)
+		fi, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mt := fi.ModTime().UTC()
+		return upsertGetID(t, st, store.LocalFile{Path: path, SHA256: sha, ModelID: &mid, VersionID: &vid,
+			SizeBytes: size, Mtime: &mt, Status: store.LocalStatusMatched, CandidateReason: reason, Kind: store.LocalKindModel})
+	}
+
+	// Two independent duplicate sets so each flagged copy has a surviving keeper.
+	keeperA := filepath.Join(root, "keepA.safetensors")
+	changed := filepath.Join(root, "changed.safetensors")
+	keeperB := filepath.Join(root, "keepB.safetensors")
+	unchanged := filepath.Join(root, "unchanged.safetensors")
+	mk(keeperA, "aaaa", "sha-a", 4, "")
+	changedID := mk(changed, "aaaa", "sha-a", 4, store.CandidateDuplicate)
+	mk(keeperB, "bbbb", "sha-b", 4, "")
+	unchangedID := mk(unchanged, "bbbb", "sha-b", 4, store.CandidateDuplicate)
+
+	// Modify the "changed" file on disk AFTER it was indexed (size now differs).
+	writeFile(t, changed, "aaaa-MODIFIED-AFTER-SCAN")
+
+	sc := NewScanner(st, nil, Options{ModelRoot: root, TrashDir: trash}, nil)
+	plan, err := sc.Quarantine(context.Background(), []int64{changedID, unchangedID}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The changed file is skipped (reported), never moved.
+	if !exists(changed) {
+		t.Fatal("a file changed since scan must NOT be moved")
+	}
+	var skippedChanged bool
+	for _, sk := range plan.Skipped {
+		if sk.Path == changed && strings.Contains(sk.Reason, "changed since scan") {
+			skippedChanged = true
+		}
+	}
+	if !skippedChanged {
+		t.Fatalf("expected the changed file to be skipped as 'changed since scan', got %+v", plan.Skipped)
+	}
+
+	// The unchanged file in the same batch still moved.
+	if exists(unchanged) {
+		t.Error("the unchanged candidate in the same batch should have moved")
+	}
+	movedUnchanged := false
+	for _, m := range plan.Moves {
+		if m.OriginalPath == unchanged {
+			movedUnchanged = true
+		}
+	}
+	if !movedUnchanged {
+		t.Fatalf("unchanged candidate should be in the move plan, got %+v", plan.Moves)
 	}
 }
 

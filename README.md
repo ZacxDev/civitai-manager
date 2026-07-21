@@ -25,6 +25,11 @@ managing subscriptions, searching CivitAI, and watching the download queue.
   `.civitai.info` / `.preview.png` sidecars.
 - A local **web UI** for subscriptions, search, model/creator pages, the
   activity feed, and live queue progress.
+- **Search** CivitAI from the CLI or UI (first page / `--limit`).
+- **Library management** — `scan` an existing model directory (hash, match to
+  CivitAI, flag superseded/duplicate/broken deletion candidates, read-only), then
+  `library quarantine`/`restore`/`trash` to soft-delete candidates into a trash
+  dir with a reversible undo manifest (nothing is ever hard-deleted).
 
 First-poll behaviour is deliberately conservative: subscribing **seeds** the
 ledger with the current back-catalog *without downloading it*, so a new
@@ -190,7 +195,10 @@ internal/
   queue/                streaming download worker (verify → atomic rename → sidecars)
   web/                  gomponents pages + htmx handlers + embedded Tailwind/htmx
   hashutil/             SHA256 file digest + compare
-  cli/                  cobra commands: serve, subscribe, search, list, unsubscribe, check
+  library/              read-only scan/match/analyze pipeline + quarantine mover
+  cli/                  cobra commands: serve, subscribe, search, list,
+                        unsubscribe, check, scan, library (candidates/quarantine/
+                        restore/trash)
 ```
 
 SQLite uses the **pure-Go** `modernc.org/sqlite` driver (no cgo), so the binary
@@ -238,6 +246,15 @@ empty.
 - **Config** — flag > env > file precedence; token redaction; XDG; duration parse.
 - **Web** — every page/fragment renders without panic with expected elements;
   dashboard/asset/subscribe handlers return 200 with the right content.
+- **Library scan/quarantine** — incremental hash cache (unchanged files reuse the
+  stored hash/match); duplicate/superseded/broken flagging (duplicates work
+  offline; the keeper is the best-organized copy); the quarantine mover's safety
+  invariants (never leaves zero copies of a duplicate set, refuses unmatched /
+  newest-version / out-of-root / changed-since-scan files), durable cross-FS move,
+  reversible restore, and root-qualified trash paths — via in-memory store + fake
+  reader with injectable hash/move seams.
+- **CLI search** — the `search` command maps flags to query params and renders
+  the first page (bounded by `--limit`); `--json` emits the raw body.
 
 **Manually exercised (real HTTP, local fake API):** `serve` starts and renders
 the dashboard + embedded assets; `subscribe` seeds without downloading; `list`,
@@ -300,13 +317,13 @@ file larger than ~500 MB as a safety guard.
 
 ### Deferred / stubbed (post-MVP)
 
-- **Library management** — the `local_files` table exists and downloads register
-  into it, but the full `scan`/reconcile/supersede feature is not implemented.
 - **Byte-range resume** — the SDK `Downloader` takes only a URL (no `Range`
   header), so an interrupted download is **re-fetched whole** rather than
   resumed. Interrupted rows are requeued on restart.
-- **Search pagination** — search shows the first page; cursor/`Metadata` paging
-  through the UI is not wired yet.
+- **Search pagination beyond the first page** — the CLI/UI `search` returns the
+  first page (bounded by `--limit`); walking the cursor/`Metadata` to fetch
+  subsequent pages is not wired yet. First-page search itself is implemented and
+  tested.
 
 ## Notes on the SDK surface
 

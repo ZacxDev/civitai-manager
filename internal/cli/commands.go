@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -196,11 +197,26 @@ func subscribeRun(ctx context.Context, a *app, out io.Writer, creator string, ar
 	var subID int64
 	if creator != "" {
 		id, err := pol.SubscribeCreator(ctx, creator, opts)
-		if err != nil {
+		switch {
+		case errors.Is(err, poller.ErrAlreadySubscribed) && opts.BackfillLatest:
+			// Recovery path: an existing subscription whose backfill previously
+			// failed is otherwise un-retryable (the version is already seen). Re-run
+			// the backfill of its current latest instead of erroring.
+			existing, ferr := a.store.FindCreatorSubscription(creator)
+			if ferr != nil {
+				return ferr
+			}
+			subID = existing.ID
+			fmt.Fprintf(out, "Already subscribed to creator @%s (subscription #%d); re-attempting latest download.\n", creator, subID)
+			if _, berr := pol.BackfillLatest(ctx, subID); berr != nil {
+				return fmt.Errorf("backfill: %w", berr)
+			}
+		case err != nil:
 			return err
+		default:
+			subID = id
+			fmt.Fprintf(out, "Subscribed to creator @%s (subscription #%d)\n", creator, id)
 		}
-		subID = id
-		fmt.Fprintf(out, "Subscribed to creator @%s (subscription #%d)\n", creator, id)
 	} else {
 		if len(args) == 0 {
 			return fmt.Errorf("provide a model id/URL, or use --creator <username>")
@@ -210,11 +226,23 @@ func subscribeRun(ctx context.Context, a *app, out io.Writer, creator string, ar
 			return err
 		}
 		id, err := pol.SubscribeModel(ctx, modelID, opts)
-		if err != nil {
+		switch {
+		case errors.Is(err, poller.ErrAlreadySubscribed) && opts.BackfillLatest:
+			existing, ferr := a.store.FindModelSubscription(modelID)
+			if ferr != nil {
+				return ferr
+			}
+			subID = existing.ID
+			fmt.Fprintf(out, "Already subscribed to model %d (subscription #%d); re-attempting latest download.\n", modelID, subID)
+			if _, berr := pol.BackfillLatest(ctx, subID); berr != nil {
+				return fmt.Errorf("backfill: %w", berr)
+			}
+		case err != nil:
 			return err
+		default:
+			subID = id
+			fmt.Fprintf(out, "Subscribed to model %d (subscription #%d)\n", modelID, id)
 		}
-		subID = id
-		fmt.Fprintf(out, "Subscribed to model %d (subscription #%d)\n", modelID, id)
 	}
 
 	if !opts.BackfillLatest {

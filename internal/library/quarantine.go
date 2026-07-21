@@ -96,11 +96,17 @@ func (s *Scanner) Quarantine(ctx context.Context, ids []int64, apply bool) (*Qua
 			plan.Skipped = append(plan.Skipped, SkippedFile{ID: lf.ID, Path: lf.Path, Reason: skip})
 			continue
 		}
-		// TODO(audit #7): TOCTOU — the file is stat'd here but moved later in
-		// applyQuarantine; a concurrent replace between the two is not detected.
-		// Out of scope for this change (documented follow-up).
-		if _, err := os.Stat(lf.Path); err != nil {
+		// TOCTOU guard: the file was hashed/flagged at scan time; re-stat it now and
+		// refuse to move it if its identity (size, and mtime when tracked) changed
+		// since — the contents may no longer match the flag. This is per-file: one
+		// changed file is skipped, the rest of the batch still proceeds.
+		fi, err := os.Stat(lf.Path)
+		if err != nil {
 			plan.Skipped = append(plan.Skipped, SkippedFile{ID: lf.ID, Path: lf.Path, Reason: "missing on disk"})
+			continue
+		}
+		if reason := changedSinceScan(lf, fi); reason != "" {
+			plan.Skipped = append(plan.Skipped, SkippedFile{ID: lf.ID, Path: lf.Path, Reason: reason})
 			continue
 		}
 		// The model file itself.
@@ -283,6 +289,25 @@ func (s *Scanner) recheckDuplicateSafety(tx *store.Tx, plan *QuarantinePlan) err
 		}
 	}
 	return nil
+}
+
+// changedSinceScan reports (non-empty) if the on-disk file no longer matches the
+// size/mtime recorded for lf at scan time — i.e. it was modified after being
+// flagged, so acting on the (now stale) flag could move a file whose contents
+// changed. An empty string means unchanged (safe to move).
+//
+// Size is compared whenever a size was recorded (a 0 in the index means the size
+// was not captured, so it is not treated as a mismatch). Mtime is compared only
+// when it was tracked (non-nil). A real scan always records both; the guards keep
+// hand-built rows (and legacy rows) from producing false "changed" reports.
+func changedSinceScan(lf store.LocalFile, fi os.FileInfo) string {
+	if lf.SizeBytes != 0 && fi.Size() != lf.SizeBytes {
+		return "changed since scan (size differs) — rescan and retry"
+	}
+	if lf.Mtime != nil && !fi.ModTime().Equal(*lf.Mtime) {
+		return "changed since scan (mtime differs) — rescan and retry"
+	}
+	return ""
 }
 
 // refuse returns a non-empty safety reason if lf must not be quarantined.

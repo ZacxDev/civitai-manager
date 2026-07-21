@@ -177,13 +177,15 @@ func sleepCtx(ctx context.Context, d time.Duration) {
 // withinRoots reports whether abs is equal to or nested under any of roots. It
 // is the containment guard the quarantine mover uses so it can never touch a
 // file outside a configured scan root.
+//
+// Containment is checked on symlink-RESOLVED real paths (resolveReal), so a path
+// that lexically looks inside a root but reaches outside it through a symlinked
+// component cannot escape the guard. Normal (non-symlink) paths resolve to
+// themselves, preserving prior behavior.
 func withinRoots(abs string, roots []string) bool {
-	// TODO(audit): containment is lexical (filepath.Clean only); it does not
-	// EvalSymlinks, so a symlinked path could escape a root. Documented
-	// follow-up, out of scope for the current change.
-	abs = filepath.Clean(abs)
+	abs = resolveReal(abs)
 	for _, root := range roots {
-		root = filepath.Clean(root)
+		root = resolveReal(root)
 		if abs == root {
 			return true
 		}
@@ -196,4 +198,30 @@ func withinRoots(abs string, roots []string) bool {
 		}
 	}
 	return false
+}
+
+// resolveReal returns the symlink-resolved, cleaned form of p. If p itself does
+// not exist yet (a not-yet-created quarantine/trash destination), it resolves the
+// NEAREST EXISTING ancestor directory and rejoins the remaining leaf components,
+// so containment is judged against the real parent rather than a lexical guess.
+// On any resolution failure it falls back to the lexically-cleaned path, keeping
+// the guard defensive (never panicking, never erroring).
+func resolveReal(p string) string {
+	p = filepath.Clean(p)
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	dir := p
+	tail := ""
+	for {
+		parent := filepath.Dir(dir)
+		tail = filepath.Join(filepath.Base(dir), tail)
+		if parent == dir {
+			return p // no existing ancestor resolved: lexical fallback
+		}
+		if r, err := filepath.EvalSymlinks(parent); err == nil {
+			return filepath.Join(r, tail)
+		}
+		dir = parent
+	}
 }

@@ -390,3 +390,41 @@ func TestResolveOfficialCLITokenFallback(t *testing.T) {
 		}
 	})
 }
+
+// TestOfficialCLITokenSizeCap proves the bounded read: an oversized file at the
+// official-CLI seam path (a symlink to something huge, or a bogus binary blob) is
+// skipped and yields "" with no error/panic, while a normal small config still
+// yields its token.
+func TestOfficialCLITokenSizeCap(t *testing.T) {
+	dir := t.TempDir()
+	officialPath := filepath.Join(dir, "civitai", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(officialPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	old := officialCLIConfigPath
+	officialCLIConfigPath = func() (string, error) { return officialPath, nil }
+	defer func() { officialCLIConfigPath = old }()
+
+	t.Run("oversized file is skipped", func(t *testing.T) {
+		// A valid-looking token line, but the file is padded past the 1 MiB cap so
+		// the reader must refuse it.
+		blob := append([]byte("token: should-not-be-read\n"),
+			make([]byte, maxOfficialCLIConfigBytes+1)...)
+		if err := os.WriteFile(officialPath, blob, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := officialCLIToken(); got != "" {
+			t.Errorf("oversized official config must yield \"\", got %q", got)
+		}
+	})
+
+	t.Run("normal small config yields the token", func(t *testing.T) {
+		if err := os.WriteFile(officialPath, []byte("token: small-token\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := officialCLIToken(); got != "small-token" {
+			t.Errorf("small config token = %q, want small-token", got)
+		}
+	})
+}

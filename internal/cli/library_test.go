@@ -1,6 +1,11 @@
 package cli
 
 import (
+	"bytes"
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ZacxDev/civitai-manager/internal/store"
@@ -59,6 +64,78 @@ func TestResolveTargetIDs(t *testing.T) {
 		t.Fatalf("--all ids = %v, want 2", all)
 	}
 	_ = dupID
+}
+
+// seedDuplicateOnDisk writes a keeper + a flagged duplicate (byte-identical,
+// matched) under the app's model root and returns the duplicate's on-disk path.
+// SizeBytes is left 0 so the quarantine TOCTOU guard treats size as unknown.
+func seedDuplicateOnDisk(t *testing.T, a *app) string {
+	t.Helper()
+	root := a.cfg.ModelRoot
+	keeper := filepath.Join(root, "keep.safetensors")
+	dupe := filepath.Join(root, "dupe.safetensors")
+	for _, p := range []string{keeper, dupe} {
+		if err := os.WriteFile(p, []byte("same-bytes"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mid, vid := 1, 1
+	if err := a.store.UpsertLocalFile(store.LocalFile{Path: keeper, SHA256: "same", ModelID: &mid, VersionID: &vid,
+		Status: store.LocalStatusMatched, Kind: store.LocalKindModel}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.UpsertLocalFile(store.LocalFile{Path: dupe, SHA256: "same", ModelID: &mid, VersionID: &vid,
+		Status: store.LocalStatusMatched, CandidateReason: store.CandidateDuplicate, Kind: store.LocalKindModel}); err != nil {
+		t.Fatal(err)
+	}
+	return dupe
+}
+
+// TestQuarantineBareDryRunsAllCandidates proves finding #3: a bare
+// `library quarantine` (no --id/--reason/--all, no --apply) DRY-RUNS over every
+// current candidate — it exits 0, prints a plan, and moves nothing — matching the
+// --help contract (rather than erroring "specify --id, --reason, or --all").
+func TestQuarantineBareDryRunsAllCandidates(t *testing.T) {
+	a := newTestApp(t, &cliFakeClient{})
+	dupe := seedDuplicateOnDisk(t, a)
+
+	var out bytes.Buffer
+	if err := quarantineRun(context.Background(), a, &out, nil, "", false, false); err != nil {
+		t.Fatalf("bare quarantine should not error, got %v", err)
+	}
+	if !strings.Contains(out.String(), "Would move") {
+		t.Errorf("bare quarantine should print a dry-run plan, got %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Dry-run") {
+		t.Errorf("bare quarantine should label itself a dry-run, got %q", out.String())
+	}
+	// Nothing moved.
+	if _, err := os.Stat(dupe); err != nil {
+		t.Fatalf("a dry-run must not move the candidate: %v", err)
+	}
+	if batches, _ := a.store.ListQuarantineBatches(); len(batches) != 0 {
+		t.Fatalf("a dry-run must record no batches, got %d", len(batches))
+	}
+}
+
+// TestQuarantineApplyWithoutSelectorRefused proves the destructive path keeps its
+// guard: `library quarantine --apply` with NO selector is refused so it can never
+// implicitly move every candidate.
+func TestQuarantineApplyWithoutSelectorRefused(t *testing.T) {
+	a := newTestApp(t, &cliFakeClient{})
+	dupe := seedDuplicateOnDisk(t, a)
+
+	var out bytes.Buffer
+	err := quarantineRun(context.Background(), a, &out, nil, "", false, true) // apply, no selector
+	if err == nil {
+		t.Fatal("--apply with no selector must be refused")
+	}
+	if !strings.Contains(err.Error(), "selector") {
+		t.Errorf("error should explain a selector is required, got %v", err)
+	}
+	if _, serr := os.Stat(dupe); serr != nil {
+		t.Fatalf("nothing must be moved when --apply is refused: %v", serr)
+	}
 }
 
 func TestHumanBytes(t *testing.T) {

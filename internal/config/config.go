@@ -165,13 +165,23 @@ var officialCLIConfigPath = func() (string, error) {
 	return filepath.Join(home, ".config", "civitai", "config.yaml"), nil
 }
 
+// maxOfficialCLIConfigBytes caps the official-CLI config file read. A real config
+// is a few hundred bytes; a larger file (or a symlink pointing at something huge)
+// is almost certainly not a config, so we refuse to slurp it into memory.
+const maxOfficialCLIConfigBytes = 1 << 20 // 1 MiB
+
 // officialCLIToken best-effort reads the `token:` field from the official
-// `civitai` CLI's config file. Any problem (missing file, unreadable, malformed
-// YAML, absent field) yields "" with no error, so this can never break token
-// resolution — it is only ever a last-resort fallback.
+// `civitai` CLI's config file. Any problem (missing file, unreadable, oversized,
+// malformed YAML, absent field) yields "" with no error, so this can never break
+// token resolution — it is only ever a last-resort fallback.
 func officialCLIToken() string {
 	path, err := officialCLIConfigPath()
 	if err != nil {
+		return ""
+	}
+	// Bound the read: stat first and skip anything implausibly large for a config
+	// (guards against a symlink to a huge/binary file at the seam path).
+	if fi, err := os.Stat(path); err != nil || fi.IsDir() || fi.Size() > maxOfficialCLIConfigBytes {
 		return ""
 	}
 	data, err := os.ReadFile(path)

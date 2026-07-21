@@ -25,7 +25,7 @@ func (s *Scanner) analyze(wr *walkResult, report *ScanReport) error {
 	}
 
 	reason := map[int64]string{}
-	flagDuplicates(models, reason)
+	flagDuplicates(models, reason, s.Roots(), s.opts.Extensions)
 	flagSuperseded(models, reason)
 
 	for id, r := range reason {
@@ -41,13 +41,17 @@ func (s *Scanner) analyze(wr *walkResult, report *ScanReport) error {
 // SHA256) files. This is a pure local-hash signal, so it works OFFLINE and does
 // NOT require a CivitAI match — two identical copies are provably redundant. A
 // file still resolving (unmatched-pending) is excluded so a transient rate limit
-// never produces a false flag. The keeper is deterministic: the shortest path,
-// ties broken lexicographically — so re-runs pick the same survivor.
+// never produces a false flag.
+//
+// The keeper is the BEST-ORGANIZED copy, so quarantine removes the ad-hoc copy
+// and retains the canonical one (see pickKeeper for the ranking). It stays
+// deterministic — the final tiebreak is shortest path, then lexical — so re-runs
+// pick the same survivor.
 //
 // Note: an UNMATCHED duplicate is reported here but the quarantine mover still
 // refuses to move an unmatched file (see quarantine.go) — so offline duplicate
 // analysis surfaces the redundancy, while acting on it requires an online match.
-func flagDuplicates(models []store.LocalFile, reason map[int64]string) {
+func flagDuplicates(models []store.LocalFile, reason map[int64]string, roots []string, exts map[string]bool) {
 	bySHA := map[string][]store.LocalFile{}
 	for _, f := range models {
 		if f.SHA256 == "" || f.Status == store.LocalStatusUnmatchedPending {
@@ -59,7 +63,7 @@ func flagDuplicates(models []store.LocalFile, reason map[int64]string) {
 		if len(group) < 2 {
 			continue
 		}
-		keeper := pickKeeper(group)
+		keeper := pickKeeper(group, roots, exts)
 		for _, f := range group {
 			if f.ID != keeper.ID {
 				reason[f.ID] = store.CandidateDuplicate
@@ -102,16 +106,73 @@ func flagSuperseded(models []store.LocalFile, reason map[int64]string) {
 	}
 }
 
-// pickKeeper returns the survivor of a duplicate set: shortest path, ties
-// lexicographic.
-func pickKeeper(group []store.LocalFile) store.LocalFile {
+// pickKeeper returns the survivor of a duplicate set: the best-organized copy,
+// so acting on the flags removes the loose ad-hoc copy and keeps the canonical
+// one. Copies are ranked, in order, by:
+//
+//	(a) residing in the canonical <type>/<creator>/<model>/<file> layout under a
+//	    scan root (matching the tool's DestPath structure);
+//	(b) having the most sidecars present (.civitai.info, .preview.png);
+//	(c) a deterministic final tiebreak — shortest path, then lexical — so
+//	    equally-organized copies always pick the same survivor across re-runs.
+func pickKeeper(group []store.LocalFile, roots []string, exts map[string]bool) store.LocalFile {
 	best := group[0]
+	bestRank := keeperRankOf(best, roots, exts)
 	for _, f := range group[1:] {
-		if len(f.Path) < len(best.Path) || (len(f.Path) == len(best.Path) && f.Path < best.Path) {
-			best = f
+		r := keeperRankOf(f, roots, exts)
+		if r.better(bestRank) {
+			best, bestRank = f, r
 		}
 	}
 	return best
+}
+
+// keeperRank scores a duplicate copy for keeper selection (higher canonical/
+// sidecars is better; shorter/lexically-smaller path is the deterministic
+// tiebreak).
+type keeperRank struct {
+	canonical bool
+	sidecars  int
+	path      string
+}
+
+// better reports whether a is a strictly better keeper than b.
+func (a keeperRank) better(b keeperRank) bool {
+	if a.canonical != b.canonical {
+		return a.canonical
+	}
+	if a.sidecars != b.sidecars {
+		return a.sidecars > b.sidecars
+	}
+	if len(a.path) != len(b.path) {
+		return len(a.path) < len(b.path)
+	}
+	return a.path < b.path
+}
+
+func keeperRankOf(f store.LocalFile, roots []string, exts map[string]bool) keeperRank {
+	return keeperRank{
+		canonical: inCanonicalLayout(f.Path, roots),
+		sidecars:  len(modelSidecars(f.Path, exts)),
+		path:      f.Path,
+	}
+}
+
+// inCanonicalLayout reports whether path sits at the tool's download layout
+// depth — <root>/<type>/<creator>/<model>/<file> — under any scan root (i.e. its
+// path relative to a root has exactly four components). A loose copy dropped
+// directly under a root, or nested at any other depth, is not canonical.
+func inCanonicalLayout(path string, roots []string) bool {
+	for _, root := range roots {
+		rel, err := filepath.Rel(root, path)
+		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		if len(strings.Split(rel, string(filepath.Separator))) == 4 {
+			return true
+		}
+	}
+	return false
 }
 
 // analyzeBroken (re)computes the tracked broken non-model files: abandoned

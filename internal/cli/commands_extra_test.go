@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -305,6 +306,59 @@ func TestSubscribeBackfillScopedToNewSubscription(t *testing.T) {
 	// The reported count is ONLY the backfill (1), not the unrelated row too.
 	if !strings.Contains(out.String(), "Downloaded 1 file(s).") {
 		t.Errorf("expected \"Downloaded 1 file(s).\", got %q", out.String())
+	}
+}
+
+// TestSubscribeBackfillRecoversAfterFailure proves the backfill retry story: a
+// `--backfill-latest` whose FIRST download fails (leaving the version marked seen
+// and the queue row terminally failed) is recoverable by simply re-running
+// `subscribe --backfill-latest` — the existing-subscription recovery path
+// re-attempts the current latest even though a normal poll never would.
+func TestSubscribeBackfillRecoversAfterFailure(t *testing.T) {
+	good := []byte("the real latest version bytes")
+	var serveGood atomic.Bool // false first: serve corrupt bytes, then good bytes
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if serveGood.Load() {
+			_, _ = w.Write(good)
+		} else {
+			_, _ = w.Write([]byte("corrupt bytes that will not match the hash"))
+		}
+	}))
+	defer srv.Close()
+
+	// Expected hash is for the GOOD bytes, so phase 1 (corrupt) mismatches and
+	// fails terminally (no retry backoff), and phase 2 (good) verifies.
+	client := fixtureClient(srv.URL+"/file", sha256Hex(good), loopbackDownloader)
+	a := newTestApp(t, client)
+	opts := poller.SubscribeOptions{AutoDownload: true, BackfillLatest: true, PollInterval: time.Hour}
+
+	// Phase 1: first backfill fails.
+	var out1 bytes.Buffer
+	if err := subscribeRun(context.Background(), a, &out1, "", []string{"1"}, opts); err == nil {
+		t.Fatalf("phase 1 backfill should fail on a checksum mismatch; out=%q", out1.String())
+	}
+	if p := findFileExt(t, a.cfg.ModelRoot, ".safetensors"); p != "" {
+		t.Fatalf("no file should be on disk after a failed backfill, found %q", p)
+	}
+
+	// Phase 2: re-run backfill; the server now serves the good bytes. The recovery
+	// path must re-attempt despite the version already being seen and the prior
+	// row being terminally failed.
+	serveGood.Store(true)
+	var out2 bytes.Buffer
+	if err := subscribeRun(context.Background(), a, &out2, "", []string{"1"}, opts); err != nil {
+		t.Fatalf("phase 2 recovery backfill should succeed, got %v (out=%q)", err, out2.String())
+	}
+	if !strings.Contains(out2.String(), "re-attempting latest download") {
+		t.Errorf("recovery run should announce it is re-attempting, got %q", out2.String())
+	}
+	path := findFileExt(t, a.cfg.ModelRoot, ".safetensors")
+	if path == "" {
+		t.Fatalf("recovery backfill did not put the file on disk; out=%q", out2.String())
+	}
+	got, rerr := os.ReadFile(path)
+	if rerr != nil || string(got) != string(good) {
+		t.Fatalf("recovered file content wrong: err=%v", rerr)
 	}
 }
 
