@@ -70,6 +70,10 @@ type manifest struct {
 //   - a superseded file that is the newest local version of its model is refused.
 func (s *Scanner) Quarantine(ctx context.Context, ids []int64, apply bool) (*QuarantinePlan, error) {
 	roots := s.Roots()
+	// refuse's containment guard needs symlink-resolved roots; resolve them ONCE
+	// here rather than per file. trashPathFor keeps the UNRESOLVED roots (it takes
+	// a lexical Rel against the original, unresolved path to build the trash relpath).
+	resolvedRoots := resolveRoots(roots)
 	plan := &QuarantinePlan{}
 
 	// Resolve requested rows and the full move set (for the duplicate-safety
@@ -92,7 +96,7 @@ func (s *Scanner) Quarantine(ctx context.Context, ids []int64, apply bool) (*Qua
 	}
 
 	for _, lf := range requested {
-		if skip := s.refuse(lf, roots, moving, allModels); skip != "" {
+		if skip := s.refuse(lf, resolvedRoots, moving, allModels); skip != "" {
 			plan.Skipped = append(plan.Skipped, SkippedFile{ID: lf.ID, Path: lf.Path, Reason: skip})
 			continue
 		}
@@ -311,14 +315,14 @@ func changedSinceScan(lf store.LocalFile, fi os.FileInfo) string {
 }
 
 // refuse returns a non-empty safety reason if lf must not be quarantined.
-func (s *Scanner) refuse(lf store.LocalFile, roots []string, moving map[int64]bool, models []store.LocalFile) string {
+func (s *Scanner) refuse(lf store.LocalFile, resolvedRoots []string, moving map[int64]bool, models []store.LocalFile) string {
 	if lf.Status == store.LocalStatusUnmatched || lf.Status == store.LocalStatusUnmatchedPending {
 		return "refusing to quarantine an unmatched file"
 	}
 	if !lf.IsCandidate() {
 		return "not a deletion candidate"
 	}
-	if !withinRoots(lf.Path, roots) {
+	if !withinRoots(lf.Path, resolvedRoots) {
 		return "path is outside every configured scan root"
 	}
 	switch lf.CandidateReason {

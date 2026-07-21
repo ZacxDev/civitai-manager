@@ -203,7 +203,7 @@ func TestAnalyzerActivePartNotBroken(t *testing.T) {
 
 	st := newTestStore(t)
 	// An in-flight download row targeting dest keeps the .part from being broken.
-	if _, err := st.Enqueue(store.QueueItem{
+	if _, _, err := st.Enqueue(store.QueueItem{
 		ModelID: 1, VersionID: 1, FileID: 1, FileName: "downloading.safetensors",
 		DownloadURL: "http://x", DestPath: dest, Status: store.StatusDownloading,
 	}); err != nil {

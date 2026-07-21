@@ -91,7 +91,7 @@ func TestDownloadHappyPathVerifiesAndFinalizes(t *testing.T) {
 
 	// Uppercase expected hash to prove case-insensitive verification.
 	expected := strings.ToUpper(sha256Hex(payload))
-	id, _ := st.Enqueue(store.QueueItem{
+	id, _, _ := st.Enqueue(store.QueueItem{
 		ModelID: 1, VersionID: 5, FileID: 50, FileName: "v1.safetensors",
 		DownloadURL: srv.URL + "/file", DestPath: dest, SHA256Expected: expected,
 		SizeKB: float64(len(payload)) / 1024,
@@ -150,7 +150,7 @@ func TestDownloadHashMismatchFailsRow(t *testing.T) {
 
 	st := newTestStore(t)
 	dest := filepath.Join(t.TempDir(), "out.safetensors")
-	id, _ := st.Enqueue(store.QueueItem{
+	id, _, _ := st.Enqueue(store.QueueItem{
 		ModelID: 1, VersionID: 5, FileID: 50, FileName: "out.safetensors",
 		DownloadURL: srv.URL, DestPath: dest,
 		SHA256Expected: "deadbeefdeadbeef", // wrong
@@ -187,7 +187,7 @@ func TestDownloadNoExpectedHashStillCompletes(t *testing.T) {
 
 	st := newTestStore(t)
 	dest := filepath.Join(t.TempDir(), "nohash.bin")
-	id, _ := st.Enqueue(store.QueueItem{
+	id, _, _ := st.Enqueue(store.QueueItem{
 		ModelID: 1, VersionID: 5, FileID: 50, FileName: "nohash.bin",
 		DownloadURL: srv.URL, DestPath: dest, // no SHA256Expected
 		SizeKB: 1,
@@ -249,7 +249,7 @@ func TestGracefulShutdownRequeuesInterruptedDownload(t *testing.T) {
 	st := newTestStore(t)
 	dest := filepath.Join(t.TempDir(), "interrupted.safetensors")
 	expected := sha256Hex(payload)
-	id, _ := st.Enqueue(store.QueueItem{
+	id, _, _ := st.Enqueue(store.QueueItem{
 		ModelID: 1, VersionID: 5, FileID: 50, FileName: "interrupted.safetensors",
 		DownloadURL: srv.URL, DestPath: dest, SHA256Expected: expected,
 		SizeKB: float64(len(payload)) / 1024,
@@ -305,7 +305,7 @@ func TestDownloadEmptyHashRecordedUnverified(t *testing.T) {
 
 	st := newTestStore(t)
 	dest := filepath.Join(t.TempDir(), "nohash.bin")
-	id, _ := st.Enqueue(store.QueueItem{
+	id, _, _ := st.Enqueue(store.QueueItem{
 		ModelID: 1, VersionID: 5, FileID: 50, FileName: "nohash.bin",
 		DownloadURL: srv.URL, DestPath: dest, // no SHA256Expected
 		SizeKB: 1,
@@ -349,7 +349,7 @@ func TestVerifiedDownloadEmitsVerifiedEvent(t *testing.T) {
 
 	st := newTestStore(t)
 	dest := filepath.Join(t.TempDir(), "hashed.bin")
-	_, _ = st.Enqueue(store.QueueItem{
+	_, _, _ = st.Enqueue(store.QueueItem{
 		ModelID: 1, VersionID: 5, FileID: 50, FileName: "hashed.bin",
 		DownloadURL: srv.URL, DestPath: dest, SHA256Expected: sha256Hex(payload), SizeKB: 1,
 	})
@@ -385,7 +385,7 @@ func TestDownloadCLIOutputSaysVerified(t *testing.T) {
 
 		st := newTestStore(t)
 		dest := filepath.Join(t.TempDir(), "out.bin")
-		_, _ = st.Enqueue(store.QueueItem{
+		_, _, _ = st.Enqueue(store.QueueItem{
 			ModelID: 1, VersionID: 5, FileID: 50, FileName: "out.bin",
 			DownloadURL: srv.URL, DestPath: dest, SHA256Expected: sha, SizeKB: 1,
 		})
@@ -427,7 +427,7 @@ func TestDownloadHTTPErrorRetriesThenFails(t *testing.T) {
 
 	st := newTestStore(t)
 	dest := filepath.Join(t.TempDir(), "err.bin")
-	id, _ := st.Enqueue(store.QueueItem{
+	id, _, _ := st.Enqueue(store.QueueItem{
 		ModelID: 1, VersionID: 5, FileID: 50, FileName: "err.bin",
 		DownloadURL: srv.URL, DestPath: dest, SizeKB: 1,
 	})

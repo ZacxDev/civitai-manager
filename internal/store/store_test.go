@@ -1,6 +1,13 @@
 package store
 
 import (
+	"database/sql"
+	"io/fs"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -21,8 +28,8 @@ func TestMigrationApplies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 3 {
-		t.Fatalf("schema version = %d, want 3", v)
+	if v != 4 {
+		t.Fatalf("schema version = %d, want 4", v)
 	}
 	// Re-running migrate (via a second Open on a file) is idempotent; here we
 	// just confirm the core tables exist by exercising them below.
@@ -130,7 +137,7 @@ func TestSeenVersions(t *testing.T) {
 
 func TestQueueLifecycle(t *testing.T) {
 	st := newTestStore(t)
-	id, err := st.Enqueue(QueueItem{
+	id, _, err := st.Enqueue(QueueItem{
 		ModelID: 1, VersionID: 10, FileID: 100, FileName: "m.safetensors",
 		DownloadURL: "https://x/f", DestPath: "/tmp/m.safetensors",
 		SHA256Expected: "ABC", SizeKB: 2048,
@@ -176,7 +183,7 @@ func TestQueueLifecycle(t *testing.T) {
 
 func TestQueueFailAndRequeue(t *testing.T) {
 	st := newTestStore(t)
-	id, _ := st.Enqueue(QueueItem{ModelID: 1, VersionID: 2, FileID: 3, FileName: "f", DownloadURL: "u", DestPath: "/p"})
+	id, _, _ := st.Enqueue(QueueItem{ModelID: 1, VersionID: 2, FileID: 3, FileName: "f", DownloadURL: "u", DestPath: "/p"})
 
 	if err := st.FailDownload(id, "boom", "deadbeef"); err != nil {
 		t.Fatal(err)
@@ -208,7 +215,7 @@ func TestQueueFailAndRequeue(t *testing.T) {
 // claim's attempt increment.
 func TestRequeueCanceledUndoesAttempt(t *testing.T) {
 	st := newTestStore(t)
-	id, _ := st.Enqueue(QueueItem{ModelID: 1, VersionID: 2, FileID: 3, FileName: "f", DownloadURL: "u", DestPath: "/p"})
+	id, _, _ := st.Enqueue(QueueItem{ModelID: 1, VersionID: 2, FileID: 3, FileName: "f", DownloadURL: "u", DestPath: "/p"})
 
 	claimed, err := st.ClaimNextQueued()
 	if err != nil {
@@ -240,9 +247,9 @@ func TestClaimNextQueuedNotBeforeGate(t *testing.T) {
 
 	// Inserted future-first (lowest id) to prove the gate skips it rather than
 	// blocking the whole queue.
-	futID, _ := st.Enqueue(QueueItem{ModelID: 1, VersionID: 1, FileID: 1, FileName: "fut", DownloadURL: "u", DestPath: "/fut", NotBefore: &future})
-	pastID, _ := st.Enqueue(QueueItem{ModelID: 1, VersionID: 2, FileID: 2, FileName: "past", DownloadURL: "u", DestPath: "/past", NotBefore: &past})
-	nilID, _ := st.Enqueue(QueueItem{ModelID: 1, VersionID: 3, FileID: 3, FileName: "nil", DownloadURL: "u", DestPath: "/nil"})
+	futID, _, _ := st.Enqueue(QueueItem{ModelID: 1, VersionID: 1, FileID: 1, FileName: "fut", DownloadURL: "u", DestPath: "/fut", NotBefore: &future})
+	pastID, _, _ := st.Enqueue(QueueItem{ModelID: 1, VersionID: 2, FileID: 2, FileName: "past", DownloadURL: "u", DestPath: "/past", NotBefore: &past})
+	nilID, _, _ := st.Enqueue(QueueItem{ModelID: 1, VersionID: 3, FileID: 3, FileName: "nil", DownloadURL: "u", DestPath: "/nil"})
 
 	// First claim skips the not-yet-due future row and takes the oldest eligible.
 	it, err := st.ClaimNextQueued()
@@ -277,5 +284,242 @@ func TestEvents(t *testing.T) {
 	}
 	if len(evs) != 1 || evs[0].Message != "hi" || evs[0].ModelID == nil || *evs[0].ModelID != 5 {
 		t.Fatalf("event roundtrip wrong: %+v", evs)
+	}
+}
+
+// TestEnqueueDedupsActiveDuplicate proves the item-#2 fix: enqueuing the same
+// (version_id, file_id) twice while the first is still ACTIVE inserts only ONE
+// row, and the second call reports it was NOT inserted (the atomic ON CONFLICT
+// replacement for the old non-atomic check-then-insert).
+func TestEnqueueDedupsActiveDuplicate(t *testing.T) {
+	st := newTestStore(t)
+	item := QueueItem{ModelID: 1, VersionID: 7, FileID: 70, FileName: "f", DownloadURL: "u", DestPath: "/p"}
+
+	id, inserted, err := st.Enqueue(item)
+	if err != nil || !inserted || id == 0 {
+		t.Fatalf("first enqueue: id=%d inserted=%v err=%v", id, inserted, err)
+	}
+
+	id2, inserted2, err := st.Enqueue(item)
+	if err != nil {
+		t.Fatalf("second enqueue errored: %v", err)
+	}
+	if inserted2 {
+		t.Errorf("duplicate active enqueue must be a no-op, but inserted=true id=%d", id2)
+	}
+	if id2 != 0 {
+		t.Errorf("skipped enqueue must return id 0, got %d", id2)
+	}
+
+	q, _ := st.ListQueue()
+	if len(q) != 1 {
+		t.Fatalf("exactly one row must remain after a duplicate enqueue, got %d", len(q))
+	}
+}
+
+// TestEnqueueConcurrentSameFileYieldsOneRow proves the concurrent-enqueue race
+// from item #2 is closed: many goroutines racing to enqueue the SAME
+// (version_id, file_id) end with exactly ONE row and exactly ONE reported
+// insertion — the partial-unique index makes the insert atomic, unlike the old
+// check-then-insert.
+func TestEnqueueConcurrentSameFileYieldsOneRow(t *testing.T) {
+	st := newTestStore(t)
+	item := QueueItem{ModelID: 1, VersionID: 99, FileID: 990, FileName: "f", DownloadURL: "u", DestPath: "/p"}
+
+	const n = 16
+	var wg sync.WaitGroup
+	var inserts atomic.Int64
+	errs := make(chan error, n)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			_, inserted, err := st.Enqueue(item)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if inserted {
+				inserts.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent enqueue errored: %v", err)
+	}
+
+	if got := inserts.Load(); got != 1 {
+		t.Errorf("exactly one concurrent enqueue should report inserted, got %d", got)
+	}
+	q, _ := st.ListQueue()
+	if len(q) != 1 {
+		t.Fatalf("exactly one row must exist after concurrent enqueues, got %d", len(q))
+	}
+}
+
+// TestEnqueueDoneBlocksReEnqueue proves a 'done' row (an active status) blocks a
+// re-enqueue — the invariant backfill idempotency relies on.
+func TestEnqueueDoneBlocksReEnqueue(t *testing.T) {
+	st := newTestStore(t)
+	item := QueueItem{ModelID: 1, VersionID: 11, FileID: 110, FileName: "f", DownloadURL: "u", DestPath: "/p"}
+	id, inserted, err := st.Enqueue(item)
+	if err != nil || !inserted {
+		t.Fatalf("enqueue: inserted=%v err=%v", inserted, err)
+	}
+	if err := st.CompleteDownload(id, "abc", 1); err != nil {
+		t.Fatal(err)
+	}
+	_, inserted2, err := st.Enqueue(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inserted2 {
+		t.Error("enqueue over a done row must be skipped")
+	}
+}
+
+// TestEnqueueAllowsRetryAfterFailed proves a FAILED row (a non-active, terminal
+// status) does NOT block a fresh enqueue: the partial index only spans the
+// active statuses, so a retry after a terminal failure inserts a new row.
+func TestEnqueueAllowsRetryAfterFailed(t *testing.T) {
+	st := newTestStore(t)
+	item := QueueItem{ModelID: 1, VersionID: 8, FileID: 80, FileName: "f", DownloadURL: "u", DestPath: "/p"}
+
+	id, inserted, err := st.Enqueue(item)
+	if err != nil || !inserted {
+		t.Fatalf("first enqueue: inserted=%v err=%v", inserted, err)
+	}
+	if err := st.FailDownload(id, "boom", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	id2, inserted2, err := st.Enqueue(item)
+	if err != nil {
+		t.Fatalf("retry enqueue errored: %v", err)
+	}
+	if !inserted2 {
+		t.Fatal("retry after a failed row must insert a new row")
+	}
+	if id2 == id {
+		t.Errorf("retry must be a new row, got the same id %d", id2)
+	}
+}
+
+// applyMigrationsUpTo opens a fresh temp-file DB and applies the embedded
+// migrations 0001..maxVersion (inclusive) WITHOUT the store's automatic
+// run-to-latest, so a test can seed rows at an intermediate schema version and
+// then apply a later migration against a populated DB.
+func applyMigrationsUpTo(t *testing.T, maxVersion int) *sql.DB {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sql") {
+			files = append(files, e.Name())
+		}
+	}
+	sort.Strings(files)
+	for _, name := range files {
+		v, err := migrationVersion(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v > maxVersion {
+			continue
+		}
+		b, err := migrationsFS.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(string(b)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+	}
+	return db
+}
+
+// TestMigration0004DedupesPreexistingActiveDuplicates proves the migration is
+// SAFE on a populated DB that already contains active-status duplicates: it
+// dedupes them (keeping the most-progressed active row, leaving terminal rows
+// untouched) BEFORE creating the unique index, so the CREATE cannot fail.
+func TestMigration0004DedupesPreexistingActiveDuplicates(t *testing.T) {
+	db := applyMigrationsUpTo(t, 3)
+
+	ins := func(vid, fid int, status string) {
+		if _, err := db.Exec(`INSERT INTO download_queue
+			(model_id, version_id, file_id, file_name, download_url, dest_path, status, created_at, updated_at)
+			VALUES (1, ?, ?, 'f', 'u', '/p', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+			vid, fid, status); err != nil {
+			t.Fatalf("seed (%d,%d,%s): %v", vid, fid, status, err)
+		}
+	}
+	// (10,100): three active duplicates in different statuses + one terminal failed.
+	ins(10, 100, "queued")
+	ins(10, 100, "downloading")
+	ins(10, 100, "done")
+	ins(10, 100, "failed")
+	// (20,200): two identical queued duplicates.
+	ins(20, 200, "queued")
+	ins(20, 200, "queued")
+
+	b, err := migrationsFS.ReadFile("migrations/0004_queue_active_unique.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(string(b)); err != nil {
+		t.Fatalf("migration 0004 must apply cleanly on a populated DB with active duplicates: %v", err)
+	}
+
+	countActive := func(vid, fid int) int {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM download_queue
+			WHERE version_id=? AND file_id=? AND status IN ('queued','downloading','done')`, vid, fid).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	if n := countActive(10, 100); n != 1 {
+		t.Fatalf("(10,100) active rows after dedupe = %d, want 1", n)
+	}
+	var kept string
+	if err := db.QueryRow(`SELECT status FROM download_queue
+		WHERE version_id=10 AND file_id=100 AND status IN ('queued','downloading','done')`).Scan(&kept); err != nil {
+		t.Fatal(err)
+	}
+	if kept != "done" {
+		t.Errorf("dedupe should keep the most-progressed active row 'done', kept %q", kept)
+	}
+	// The terminal 'failed' row must be untouched.
+	var failed int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM download_queue
+		WHERE version_id=10 AND file_id=100 AND status='failed'`).Scan(&failed); err != nil {
+		t.Fatal(err)
+	}
+	if failed != 1 {
+		t.Errorf("terminal failed row must survive dedupe, got %d", failed)
+	}
+	if n := countActive(20, 200); n != 1 {
+		t.Fatalf("(20,200) active rows after dedupe = %d, want 1", n)
+	}
+
+	// The unique index now blocks a raw duplicate active insert.
+	if _, err := db.Exec(`INSERT INTO download_queue
+		(model_id, version_id, file_id, file_name, download_url, dest_path, status, created_at, updated_at)
+		VALUES (1, 20, 200, 'f', 'u', '/p', 'queued', 't', 't')`); err == nil {
+		t.Fatal("expected a UNIQUE violation inserting a duplicate active row after 0004")
 	}
 }

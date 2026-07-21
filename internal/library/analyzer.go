@@ -180,7 +180,7 @@ func inCanonicalLayout(path string, roots []string) bool {
 // clears prior broken rows under the scanned roots first, then records the
 // current set — so a fixed condition disappears on the next scan.
 func (s *Scanner) analyzeBroken(wr *walkResult) error {
-	roots := s.Roots()
+	roots := resolveRoots(s.Roots())
 	existing, err := s.store.ListLocalFiles()
 	if err != nil {
 		return err

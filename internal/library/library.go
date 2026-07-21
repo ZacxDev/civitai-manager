@@ -174,18 +174,31 @@ func sleepCtx(ctx context.Context, d time.Duration) {
 	}
 }
 
-// withinRoots reports whether abs is equal to or nested under any of roots. It
-// is the containment guard the quarantine mover uses so it can never touch a
-// file outside a configured scan root.
+// resolveRoots symlink-resolves each scan root ONCE (via resolveReal) so the
+// result can be reused across many withinRoots checks. The roots never change
+// during a scan/quarantine pass, so resolving them per row (as an earlier
+// version did) recomputed the same EvalSymlinks O(rows) times; callers now
+// resolve here at setup and pass the result to withinRoots.
+func resolveRoots(roots []string) []string {
+	resolved := make([]string, len(roots))
+	for i, root := range roots {
+		resolved[i] = resolveReal(root)
+	}
+	return resolved
+}
+
+// withinRoots reports whether abs is equal to or nested under any of
+// resolvedRoots. It is the containment guard the quarantine mover uses so it can
+// never touch a file outside a configured scan root.
 //
-// Containment is checked on symlink-RESOLVED real paths (resolveReal), so a path
-// that lexically looks inside a root but reaches outside it through a symlinked
-// component cannot escape the guard. Normal (non-symlink) paths resolve to
-// themselves, preserving prior behavior.
-func withinRoots(abs string, roots []string) bool {
+// resolvedRoots MUST already be symlink-resolved (see resolveRoots); withinRoots
+// resolves only the candidate path each call. Containment is thus checked on
+// symlink-RESOLVED real paths, so a path that lexically looks inside a root but
+// reaches outside it through a symlinked component cannot escape the guard.
+// Normal (non-symlink) paths resolve to themselves, preserving prior behavior.
+func withinRoots(abs string, resolvedRoots []string) bool {
 	abs = resolveReal(abs)
-	for _, root := range roots {
-		root = resolveReal(root)
+	for _, root := range resolvedRoots {
 		if abs == root {
 			return true
 		}

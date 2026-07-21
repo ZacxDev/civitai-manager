@@ -293,7 +293,7 @@ func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c
 	}
 
 	subID := sub.ID
-	_, err = p.store.Enqueue(store.QueueItem{
+	_, inserted, err := p.store.Enqueue(store.QueueItem{
 		SubscriptionID: &subID,
 		ModelID:        c.ModelID,
 		VersionID:      c.VersionID,
@@ -310,6 +310,14 @@ func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c
 		// Transient: a DB error enqueuing. Do NOT mark seen — retried next poll.
 		p.log.Warn("enqueue failed", "err", err)
 		return outcomeTransientError
+	}
+	if !inserted {
+		// The partial-unique index rejected the insert: an active row for this
+		// (version_id, file_id) already exists (e.g. a concurrent enqueue won the
+		// race, or the ActiveQueueItemExists pre-check missed it). Settled decision
+		// — mark seen, but count it as a skip, not a fresh enqueue.
+		res.Skipped++
+		return outcomePermanentSkip
 	}
 	_ = p.store.AddEvent(store.Event{
 		Level: store.LevelInfo, Kind: "enqueued", SubscriptionID: &sub.ID,

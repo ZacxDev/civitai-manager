@@ -22,8 +22,12 @@ func TestWithinRootsRejectsSymlinkEscape(t *testing.T) {
 
 	// A leaf under the symlink: lexically root/link/evil.safetensors is "inside"
 	// root, but it resolves to outside/evil.safetensors.
+	// withinRoots now takes ALREADY-resolved roots (resolved once at the call
+	// site); resolveRoots does that resolution.
+	roots := resolveRoots([]string{root})
+
 	escaping := filepath.Join(link, "evil.safetensors")
-	if withinRoots(escaping, []string{root}) {
+	if withinRoots(escaping, roots) {
 		t.Fatalf("symlinked path escaping the root must be rejected: %s", escaping)
 	}
 
@@ -33,13 +37,47 @@ func TestWithinRootsRejectsSymlinkEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, inside, "weights")
-	if !withinRoots(inside, []string{root}) {
+	if !withinRoots(inside, roots) {
 		t.Fatalf("a normal inside-root path must pass: %s", inside)
 	}
 
 	// The root itself is contained.
-	if !withinRoots(root, []string{root}) {
+	if !withinRoots(root, roots) {
 		t.Fatal("the root itself must be contained")
+	}
+}
+
+// TestResolveRootsResolvesSymlinkedRootOnce proves resolveRoots symlink-resolves
+// each root up front (#item1): a symlinked root becomes its real target, so
+// withinRoots can accept an inside-root path WITHOUT re-resolving the root on
+// every call. It also confirms a path under the (symlinked) root is contained
+// once the root is pre-resolved.
+func TestResolveRootsResolvesSymlinkedRootOnce(t *testing.T) {
+	real := t.TempDir()
+	parent := t.TempDir()
+
+	// parent/rootlink -> real; the configured scan root is the SYMLINK.
+	rootLink := filepath.Join(parent, "rootlink")
+	if err := os.Symlink(real, rootLink); err != nil {
+		t.Skipf("symlinks unsupported on this platform: %v", err)
+	}
+
+	resolved := resolveRoots([]string{rootLink})
+	if len(resolved) != 1 {
+		t.Fatalf("resolveRoots returned %d entries, want 1", len(resolved))
+	}
+	if want := resolveReal(real); resolved[0] != want {
+		t.Fatalf("resolveRoots(symlinked root) = %q, want the real target %q", resolved[0], want)
+	}
+
+	// A file under the symlinked root is contained when checked against the
+	// pre-resolved root.
+	inside := filepath.Join(rootLink, "m.safetensors")
+	if err := os.WriteFile(inside, []byte("w"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !withinRoots(inside, resolved) {
+		t.Fatalf("path under the symlinked root must be contained: %s", inside)
 	}
 }
 

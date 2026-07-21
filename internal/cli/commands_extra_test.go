@@ -263,7 +263,7 @@ func TestSubscribeBackfillScopedToNewSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create other subscription: %v", err)
 	}
-	otherRowID, err := a.store.Enqueue(store.QueueItem{
+	otherRowID, _, err := a.store.Enqueue(store.QueueItem{
 		SubscriptionID: &otherSubID,
 		ModelID:        42, VersionID: 200, FileID: 600,
 		FileName:    "other.safetensors",
@@ -359,6 +359,70 @@ func TestSubscribeBackfillRecoversAfterFailure(t *testing.T) {
 	got, rerr := os.ReadFile(path)
 	if rerr != nil || string(got) != string(good) {
 		t.Fatalf("recovered file content wrong: err=%v", rerr)
+	}
+}
+
+// TestSubscribeBackfillIdempotentOnHealthySub proves the item-#3 invariant:
+// re-running `subscribe --backfill-latest` on a HEALTHY subscription (its latest
+// version already downloaded to `done`) is a no-op — it must NOT re-fetch the
+// file and must NOT create a second queue row. The first backfill leaves exactly
+// one `done` row; the second sees that active `done` row (via the dedup guard /
+// partial-unique index) and enqueues nothing, so the fake downloader's call
+// count does not increase.
+func TestSubscribeBackfillIdempotentOnHealthySub(t *testing.T) {
+	payload := []byte("healthy-sub backfill bytes")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	// Count how many times the download path is actually invoked.
+	var downloadCalls atomic.Int64
+	counting := func(ctx context.Context, u string) (*http.Response, error) {
+		downloadCalls.Add(1)
+		return loopbackDownloader(ctx, u)
+	}
+	client := fixtureClient(srv.URL+"/file", sha256Hex(payload), counting)
+	a := newTestApp(t, client)
+
+	opts := poller.SubscribeOptions{AutoDownload: true, BackfillLatest: true, PollInterval: time.Hour}
+
+	// First backfill: downloads the latest to done.
+	var out1 bytes.Buffer
+	if err := subscribeRun(context.Background(), a, &out1, "", []string{"1"}, opts); err != nil {
+		t.Fatalf("first backfill: %v (out=%q)", err, out1.String())
+	}
+	if got := downloadCalls.Load(); got != 1 {
+		t.Fatalf("first backfill should download exactly once, got %d calls", got)
+	}
+	doneRows, _ := a.store.ListQueue(store.StatusDone)
+	if len(doneRows) != 1 {
+		t.Fatalf("after first backfill want exactly 1 done row, got %d", len(doneRows))
+	}
+	firstRowID := doneRows[0].ID
+
+	// Second backfill on the SAME (now healthy) subscription: must be a no-op.
+	var out2 bytes.Buffer
+	if err := subscribeRun(context.Background(), a, &out2, "", []string{"1"}, opts); err != nil {
+		t.Fatalf("second backfill: %v (out=%q)", err, out2.String())
+	}
+
+	// The downloader was NOT called a second time.
+	if got := downloadCalls.Load(); got != 1 {
+		t.Errorf("re-running backfill on a healthy sub must NOT re-download, download calls = %d, want 1", got)
+	}
+	// No new queue row was created — still exactly the one done row, same id.
+	allRows, _ := a.store.ListQueue()
+	if len(allRows) != 1 {
+		t.Fatalf("re-running backfill must not create a new queue row, total rows = %d, want 1", len(allRows))
+	}
+	if allRows[0].ID != firstRowID || allRows[0].Status != store.StatusDone {
+		t.Errorf("the single row must remain the original done row (id=%d status=%s), got id=%d status=%s",
+			firstRowID, store.StatusDone, allRows[0].ID, allRows[0].Status)
+	}
+	// Nothing is left queued.
+	if q, _ := a.store.ListQueue(store.StatusQueued); len(q) != 0 {
+		t.Errorf("no rows should be queued after an idempotent re-backfill, got %d", len(q))
 	}
 }
 

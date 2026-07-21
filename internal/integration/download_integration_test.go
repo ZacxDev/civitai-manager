@@ -76,7 +76,7 @@ func TestIntegration_FullDownload(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	if _, err := st.Enqueue(store.QueueItem{
+	if _, _, err := st.Enqueue(store.QueueItem{
 		ModelID:        vd.ModelID,
 		VersionID:      vd.ID,
 		FileID:         file.ID,
