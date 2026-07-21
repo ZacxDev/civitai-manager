@@ -1,0 +1,97 @@
+name: Integration (live CivitAI)
+
+# Runs the LIVE integration suite against api.civitai.com. It never runs on
+# ordinary pushes/PRs (and so never fails on forks or secret-less runs): it is
+# manual (workflow_dispatch) or scheduled, and every job self-skips when the
+# CIVITAI_TOKEN secret is absent.
+#
+# Setup:
+#   1. Add a repo secret named CIVITAI_TOKEN (Settings → Secrets and variables →
+#      Actions → New repository secret) holding a valid CivitAI API token.
+#   2. Optionally override the default live targets by adding repo VARIABLES
+#      (Settings → Secrets and variables → Actions → Variables):
+#        - CIVITAI_TEST_MODEL_ID              (default 4384, DreamShaper)
+#        - CIVITAI_TEST_DOWNLOAD_VERSION_ID   (default 9208, small embedding)
+#      Set these if the defaults ever get removed/restructured upstream.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 06:17 UTC daily (odd minute to avoid the top-of-hour stampede).
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  # Read/metadata + poller live tests (auth required, no file bytes).
+  integration:
+    name: live read/metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      # Belt-and-suspenders: even if the job runs, skip the live test cleanly
+      # (with a notice, not a failure) when no token is present.
+      - name: guard — require CIVITAI_TOKEN
+        id: guard
+        env:
+          CIVITAI_TOKEN: ${{ secrets.CIVITAI_TOKEN }}
+        run: |
+          if [ -z "$CIVITAI_TOKEN" ]; then
+            echo "::notice::CIVITAI_TOKEN secret not set; skipping live integration tests."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: go test -tags integration (read/metadata + poller)
+        if: steps.guard.outputs.run == 'true'
+        env:
+          CIVITAI_INTEGRATION: "1"
+          CIVITAI_TOKEN: ${{ secrets.CIVITAI_TOKEN }}
+          CIVITAI_TEST_MODEL_ID: ${{ vars.CIVITAI_TEST_MODEL_ID }}
+          CIVITAI_TEST_DOWNLOAD_VERSION_ID: ${{ vars.CIVITAI_TEST_DOWNLOAD_VERSION_ID }}
+        run: go test -tags integration ./internal/integration/ -run Integration -v
+
+  # Heavyweight real-bytes download + library-scan tests. Separate job so the
+  # cheap read tests can pass even if a download target drifts.
+  integration-download:
+    name: live real-bytes download
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: guard — require CIVITAI_TOKEN
+        id: guard
+        env:
+          CIVITAI_TOKEN: ${{ secrets.CIVITAI_TOKEN }}
+        run: |
+          if [ -z "$CIVITAI_TOKEN" ]; then
+            echo "::notice::CIVITAI_TOKEN secret not set; skipping live download tests."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: go test -tags integration (real-bytes download)
+        if: steps.guard.outputs.run == 'true'
+        env:
+          CIVITAI_INTEGRATION: "1"
+          CIVITAI_INTEGRATION_DOWNLOAD: "1"
+          CIVITAI_TOKEN: ${{ secrets.CIVITAI_TOKEN }}
+          CIVITAI_TEST_MODEL_ID: ${{ vars.CIVITAI_TEST_MODEL_ID }}
+          CIVITAI_TEST_DOWNLOAD_VERSION_ID: ${{ vars.CIVITAI_TEST_DOWNLOAD_VERSION_ID }}
+        run: go test -tags integration ./internal/integration/ -run Integration -v
