@@ -22,6 +22,7 @@ type globalFlags struct {
 	dbPath         string
 	maxFileSize    string
 	downloadJitter string
+	trashDir       string
 	verbose        bool
 }
 
@@ -50,6 +51,7 @@ func newRootCmd() *cobra.Command {
 	pf.StringVar(&gf.dbPath, "db", "", "SQLite database path")
 	pf.StringVar(&gf.maxFileSize, "max-file-size", "", "skip auto-downloads whose primary file exceeds this size (e.g. 500MB, 2GB; 0/empty = unlimited)")
 	pf.StringVar(&gf.downloadJitter, "download-jitter", "", "anti-stampede window: schedule each auto-download at a random point in [0, dur) (e.g. 15m; 0 = start immediately)")
+	pf.StringVar(&gf.trashDir, "trash-dir", "", "quarantine trash directory (default <model-root>/.trash)")
 	pf.BoolVarP(&gf.verbose, "verbose", "v", false, "verbose logging")
 
 	root.AddCommand(
@@ -58,6 +60,8 @@ func newRootCmd() *cobra.Command {
 		newListCmd(gf),
 		newUnsubscribeCmd(gf),
 		newCheckCmd(gf),
+		newScanCmd(gf),
+		newLibraryCmd(gf),
 	)
 	return root
 }
@@ -87,6 +91,7 @@ func (gf *globalFlags) build() (*app, error) {
 		DBPath:         gf.dbPath,
 		MaxFileSize:    gf.maxFileSize,
 		DownloadJitter: gf.downloadJitter,
+		TrashDir:       gf.trashDir,
 	})
 	if err != nil {
 		return nil, err

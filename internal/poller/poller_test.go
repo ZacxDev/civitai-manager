@@ -54,6 +54,10 @@ func (f *fakeReader) GetModelVersion(_ context.Context, id string) (*civitai.Mod
 	return v, raw, nil
 }
 
+func (f *fakeReader) GetModelVersionByHash(_ context.Context, _ string) (*civitai.ModelVersionDetail, []byte, error) {
+	return nil, nil, civitai.ErrNotFound
+}
+
 func (f *fakeReader) SearchModels(_ context.Context, _ url.Values) (*civitai.ModelSearchResult, error) {
 	if f.searchErr != nil {
 		return nil, f.searchErr

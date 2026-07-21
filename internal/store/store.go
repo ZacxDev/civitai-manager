@@ -179,6 +179,32 @@ func parseTime(s string) time.Time {
 	return t
 }
 
+// formatTimeNano renders a time as an RFC3339Nano UTC string, preserving
+// sub-second precision so the scanner's mtime cache compares exactly against a
+// file's os.FileInfo modification time.
+func formatTimeNano(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+
+// parseTimeNano parses an RFC3339Nano string; a blank/invalid string yields the
+// zero time.
+func parseTimeNano(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// nullTimeNanoStr converts a nil/zero time to NULL, else an RFC3339Nano string.
+func nullTimeNanoStr(t *time.Time) sql.NullString {
+	if t == nil || t.IsZero() {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: formatTimeNano(*t), Valid: true}
+}
+
 // nullStr converts an empty string to a NULL-storing sql.NullString.
 func nullStr(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}

@@ -39,6 +39,8 @@ func navbar() g.Node {
 			h.A(h.Href("/"), h.Class("font-semibold text-indigo-400"), g.Text("civitai-manager")),
 			navLink("/", "Dashboard"),
 			navLink("/search", "Search"),
+			navLink("/library", "Library"),
+			navLink("/trash", "Trash"),
 		),
 	)
 }

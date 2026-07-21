@@ -66,6 +66,16 @@ type Config struct {
 	// DownloadJitter is the anti-stampede window for auto-detected downloads
 	// (see DefaultDownloadJitter). "0" disables it (downloads start at once).
 	DownloadJitter Duration `yaml:"download_jitter"`
+	// LibraryPaths are extra directories the library `scan` walks (in addition to
+	// ModelRoot). Point these at an existing A1111/ComfyUI models folder to
+	// inventory it without moving anything.
+	LibraryPaths []string `yaml:"library_paths"`
+	// TrashDir is where library quarantine moves flagged files. Empty means the
+	// default, <ModelRoot>/.trash.
+	TrashDir string `yaml:"trash_dir"`
+	// LibraryExtensions overrides the model-weight extension set the scanner
+	// recognises. Empty means the built-in default.
+	LibraryExtensions []string `yaml:"library_extensions"`
 
 	// MaxFileSizeBytes is the resolved byte value of MaxFileSize (0 = unlimited).
 	MaxFileSizeBytes int64 `yaml:"-"`
@@ -81,6 +91,11 @@ type Flags struct {
 	DBPath         string
 	MaxFileSize    string
 	DownloadJitter string
+	// LibraryPaths are extra scan directories set on the command line (repeatable
+	// --path). They are appended to any configured library_paths.
+	LibraryPaths []string
+	// TrashDir overrides the quarantine trash directory.
+	TrashDir string
 	// ConfigPath overrides the config-file location (default: the XDG path).
 	ConfigPath string
 }
@@ -223,6 +238,12 @@ func Resolve(flags Flags) (*Config, error) {
 		}
 		cfg.DownloadJitter = Duration(d)
 	}
+	if len(flags.LibraryPaths) > 0 {
+		cfg.LibraryPaths = append(cfg.LibraryPaths, flags.LibraryPaths...)
+	}
+	if flags.TrashDir != "" {
+		cfg.TrashDir = flags.TrashDir
+	}
 
 	if err := cfg.normalize(); err != nil {
 		return nil, err
@@ -238,6 +259,16 @@ func (c *Config) normalize() error {
 	}
 	if c.DBPath, err = expandHome(c.DBPath); err != nil {
 		return err
+	}
+	if c.TrashDir != "" {
+		if c.TrashDir, err = expandHome(c.TrashDir); err != nil {
+			return err
+		}
+	}
+	for i, p := range c.LibraryPaths {
+		if c.LibraryPaths[i], err = expandHome(p); err != nil {
+			return err
+		}
 	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 	if c.BaseURL == "" {

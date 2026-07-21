@@ -25,6 +25,9 @@ func (fakeClient) GetModel(context.Context, string) (*civitai.ModelDetail, []byt
 func (fakeClient) GetModelVersion(context.Context, string) (*civitai.ModelVersionDetail, []byte, error) {
 	return &civitai.ModelVersionDetail{}, nil, nil
 }
+func (fakeClient) GetModelVersionByHash(context.Context, string) (*civitai.ModelVersionDetail, []byte, error) {
+	return nil, nil, civitai.ErrNotFound
+}
 func (fakeClient) SearchModels(context.Context, url.Values) (*civitai.ModelSearchResult, error) {
 	return &civitai.ModelSearchResult{}, nil
 }
