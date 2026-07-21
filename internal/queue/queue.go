@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -128,9 +129,15 @@ func (w *Worker) process(ctx context.Context, item *store.QueueItem) {
 		return
 	}
 
-	// If the final file already exists with the expected hash, mark done.
+	// If the final file already exists with the expected hash, mark done. Record
+	// the file's actual on-disk size (not the possibly-stale bytes_done from a
+	// prior partial attempt).
 	if item.SHA256Expected != "" && hashutil.FileMatches(item.DestPath, item.SHA256Expected) {
-		_ = w.store.CompleteDownload(item.ID, item.SHA256Expected, item.BytesDone)
+		size := item.BytesDone
+		if fi, err := os.Stat(item.DestPath); err == nil {
+			size = fi.Size()
+		}
+		_ = w.store.CompleteDownload(item.ID, item.SHA256Expected, size)
 		w.event(store.LevelInfo, "download_done", item, fmt.Sprintf("Already downloaded: %s", item.FileName))
 		return
 	}
@@ -162,8 +169,18 @@ func (w *Worker) process(ctx context.Context, item *store.QueueItem) {
 		Path: item.DestPath, SHA256: sum, ModelID: &item.ModelID,
 		VersionID: &item.VersionID, SizeBytes: written,
 	})
-	w.event(store.LevelInfo, "download_done", item, fmt.Sprintf("Downloaded %s (%s verified)", item.FileName, shortHash(sum)))
-	w.log.Info("download complete", "id", item.ID, "sha256", shortHash(sum), "bytes", written)
+	// Distinguish a hash-verified download from one the API gave no hash for:
+	// the latter is finalized (some legit files lack a hash) but must NEVER be
+	// reported as "verified".
+	if item.SHA256Expected == "" {
+		w.event(store.LevelWarn, "download_unverified", item,
+			fmt.Sprintf("Downloaded %s (UNVERIFIED — no hash from API)", item.FileName))
+		w.log.Warn("download complete (unverified: no API hash)", "id", item.ID, "sha256", shortHash(sum), "bytes", written)
+	} else {
+		w.event(store.LevelInfo, "download_done", item,
+			fmt.Sprintf("Downloaded %s (%s verified)", item.FileName, shortHash(sum)))
+		w.log.Info("download complete", "id", item.ID, "sha256", shortHash(sum), "bytes", written)
+	}
 
 	w.writeSidecars(ctx, item)
 }
@@ -266,6 +283,23 @@ func (w *Worker) fetchPreview(ctx context.Context, url, path string) error {
 // retryOrFail requeues a transient failure up to maxAttempts, else fails it.
 func (w *Worker) retryOrFail(ctx context.Context, item *store.QueueItem, cause error) {
 	_ = os.Remove(tempPath(item))
+
+	// A cancellation (graceful shutdown via SIGINT/SIGTERM) is NOT a download
+	// failure: marking the row failed would strand it (RequeueInterrupted only
+	// revives 'downloading' rows, and the version is already in seen_versions,
+	// so it would never be re-downloaded). Instead return the row to 'queued'
+	// WITHOUT counting the attempt, so it is picked up and completed on restart.
+	// (The .part temp was already removed above; there is no byte-range resume,
+	// so the next attempt re-fetches whole.)
+	if errors.Is(cause, context.Canceled) || ctx.Err() != nil {
+		if err := w.store.RequeueCanceled(item.ID); err != nil {
+			w.log.Error("requeue canceled download", "id", item.ID, "err", err)
+		} else {
+			w.log.Info("download interrupted by shutdown; requeued for restart", "id", item.ID, "file", item.FileName)
+		}
+		return
+	}
+
 	if item.Attempts < w.maxAttempts && ctx.Err() == nil {
 		backoff := time.Duration(item.Attempts) * 3 * time.Second
 		w.log.Warn("download failed; will retry", "id", item.ID, "attempt", item.Attempts, "err", cause, "backoff", backoff)

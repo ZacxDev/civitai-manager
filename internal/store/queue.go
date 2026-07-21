@@ -10,7 +10,7 @@ import (
 
 const queueCols = `id, subscription_id, model_id, version_id, file_id, file_name,
 	download_url, dest_path, status, bytes_done, size_kb, sha256_expected,
-	sha256_actual, attempts, last_error, created_at, updated_at`
+	sha256_actual, attempts, last_error, not_before, created_at, updated_at`
 
 func scanQueueItem(sc scanner) (QueueItem, error) {
 	var (
@@ -19,13 +19,14 @@ func scanQueueItem(sc scanner) (QueueItem, error) {
 		shaExp    sql.NullString
 		shaAct    sql.NullString
 		lastErr   sql.NullString
+		notBefore sql.NullString
 		status    string
 		createdAt string
 		updatedAt string
 	)
 	if err := sc.Scan(&it.ID, &subID, &it.ModelID, &it.VersionID, &it.FileID,
 		&it.FileName, &it.DownloadURL, &it.DestPath, &status, &it.BytesDone,
-		&it.SizeKB, &shaExp, &shaAct, &it.Attempts, &lastErr,
+		&it.SizeKB, &shaExp, &shaAct, &it.Attempts, &lastErr, &notBefore,
 		&createdAt, &updatedAt); err != nil {
 		return QueueItem{}, err
 	}
@@ -36,6 +37,12 @@ func scanQueueItem(sc scanner) (QueueItem, error) {
 	it.SHA256Expected = shaExp.String
 	it.SHA256Actual = shaAct.String
 	it.LastError = lastErr.String
+	if notBefore.Valid {
+		t := parseTime(notBefore.String)
+		if !t.IsZero() {
+			it.NotBefore = &t
+		}
+	}
 	it.CreatedAt = parseTime(createdAt)
 	it.UpdatedAt = parseTime(updatedAt)
 	return it, nil
@@ -50,11 +57,11 @@ func (s *Store) Enqueue(it QueueItem) (int64, error) {
 	res, err := s.db.Exec(`
 		INSERT INTO download_queue
 			(subscription_id, model_id, version_id, file_id, file_name, download_url,
-			 dest_path, status, bytes_done, size_kb, sha256_expected, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 dest_path, status, bytes_done, size_kb, sha256_expected, not_before, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		nullInt64(it.SubscriptionID), it.ModelID, it.VersionID, it.FileID,
 		it.FileName, it.DownloadURL, it.DestPath, string(it.Status),
-		it.BytesDone, it.SizeKB, nullStr(it.SHA256Expected), now, now)
+		it.BytesDone, it.SizeKB, nullStr(it.SHA256Expected), nullTimeStr(it.NotBefore), now, now)
 	if err != nil {
 		return 0, fmt.Errorf("enqueue download: %w", err)
 	}
@@ -129,9 +136,17 @@ func (s *Store) ClaimNextQueued() (*QueueItem, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// "now" is taken once, up front, and used for both the not_before gate and
+	// the claim's updated_at so a single wall-clock read governs the claim.
+	now := formatTime(time.Now().UTC())
+
+	// Skip rows whose not_before gate is still in the future: they are not yet
+	// due (fleet anti-stampede jitter), so the worker moves on to the next
+	// eligible row. NULL not_before means immediately claimable.
 	var id int64
-	err = tx.QueryRow(`SELECT id FROM download_queue WHERE status = ?
-		ORDER BY id ASC LIMIT 1`, string(StatusQueued)).Scan(&id)
+	err = tx.QueryRow(`SELECT id FROM download_queue
+		WHERE status = ? AND (not_before IS NULL OR not_before <= ?)
+		ORDER BY id ASC LIMIT 1`, string(StatusQueued), now).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -140,7 +155,7 @@ func (s *Store) ClaimNextQueued() (*QueueItem, error) {
 	}
 	if _, err := tx.Exec(`UPDATE download_queue
 		SET status = ?, attempts = attempts + 1, updated_at = ? WHERE id = ?`,
-		string(StatusDownloading), formatTime(time.Now().UTC()), id); err != nil {
+		string(StatusDownloading), now, id); err != nil {
 		return nil, err
 	}
 	row := tx.QueryRow(`SELECT `+queueCols+` FROM download_queue WHERE id = ?`, id)
@@ -208,6 +223,19 @@ func (s *Store) RequeueWithError(id int64, message string) error {
 	_, err := s.db.Exec(`UPDATE download_queue
 		SET status = ?, last_error = ?, updated_at = ? WHERE id = ?`,
 		string(StatusQueued), nullStr(message), formatTime(time.Now().UTC()), id)
+	return err
+}
+
+// RequeueCanceled returns a row interrupted by a graceful shutdown to the
+// queued state WITHOUT counting the attempt: it undoes the increment
+// ClaimNextQueued applied when the row was claimed, so a download aborted by
+// SIGINT/SIGTERM is retried cleanly on restart rather than being marked failed
+// (with its version already in the seen ledger, never to be re-downloaded).
+func (s *Store) RequeueCanceled(id int64) error {
+	_, err := s.db.Exec(`UPDATE download_queue
+		SET status = ?, attempts = MAX(attempts - 1, 0), last_error = NULL, updated_at = ?
+		WHERE id = ?`,
+		string(StatusQueued), formatTime(time.Now().UTC()), id)
 	return err
 }
 

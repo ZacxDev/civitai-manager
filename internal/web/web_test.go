@@ -33,7 +33,7 @@ func TestPagesRenderWithoutPanic(t *testing.T) {
 	}
 
 	t.Run("dashboard", func(t *testing.T) {
-		out := renderString(t, dashboardPage(subs))
+		out := renderString(t, dashboardPage(subs, "test-csrf"))
 		for _, want := range []string{"Subscriptions", "Add a subscription", "Download queue", "Activity", "/assets/output.css", "/assets/htmx.min.js", "alice"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("dashboard missing %q", want)
@@ -64,7 +64,7 @@ func TestPagesRenderWithoutPanic(t *testing.T) {
 		m := &civitai.ModelDetail{ID: 7, Name: "Great Model", Type: "Checkpoint",
 			Creator:       &civitai.Creator{Username: "carol"},
 			ModelVersions: []civitai.ModelVersionSummary{{ID: 1, Name: "v1", BaseModel: "SDXL"}}}
-		out := renderString(t, modelDetailPage(m))
+		out := renderString(t, modelDetailPage(m, "test-csrf"))
 		for _, want := range []string{"Great Model", "Versions", "v1", "SDXL", "Subscribe"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("model detail missing %q", want)
@@ -74,7 +74,7 @@ func TestPagesRenderWithoutPanic(t *testing.T) {
 
 	t.Run("creator", func(t *testing.T) {
 		res := &civitai.ModelSearchResult{Items: []civitai.ModelListItem{{ID: 9, Name: "M", Type: "LORA"}}}
-		out := renderString(t, creatorPage("dave", res))
+		out := renderString(t, creatorPage("dave", res, "test-csrf"))
 		if !strings.Contains(out, "@dave") || !strings.Contains(out, "Subscribe to creator") {
 			t.Error("creator page missing key elements")
 		}
@@ -166,7 +166,8 @@ func TestAssetsServed(t *testing.T) {
 func TestSubscribeHandlerRendersTable(t *testing.T) {
 	srv := newTestServer(t)
 	rec := httptest.NewRecorder()
-	form := strings.NewReader("model=12345&auto_download=true")
+	// A valid CSRF token is now required on state-changing POSTs.
+	form := strings.NewReader("model=12345&auto_download=true&csrf_token=" + srv.csrf)
 	req := httptest.NewRequest(http.MethodPost, "/subscribe", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	srv.Handler().ServeHTTP(rec, req)
@@ -175,5 +176,53 @@ func TestSubscribeHandlerRendersTable(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "subscriptions-table") {
 		t.Error("subscribe response should return the subscriptions table fragment")
+	}
+}
+
+// TestCSRFProtection asserts state-changing POSTs are rejected without a valid
+// token and accepted with one (header or form field).
+func TestCSRFProtection(t *testing.T) {
+	postForms := []struct {
+		name string
+		path string
+		body string
+	}{
+		{"subscribe", "/subscribe", "model=12345&auto_download=true"},
+		{"flags", "/subscriptions/1/flags", "auto_download=true&notify_only=false"},
+		{"delete", "/subscriptions/1/delete", ""},
+	}
+	for _, tc := range postForms {
+		t.Run(tc.name+" without token → 403", func(t *testing.T) {
+			srv := newTestServer(t)
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			srv.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("expected 403 without CSRF token, got %d", rec.Code)
+			}
+		})
+		t.Run(tc.name+" with wrong token → 403", func(t *testing.T) {
+			srv := newTestServer(t)
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("X-CSRF-Token", "not-the-token")
+			srv.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("expected 403 with wrong CSRF token, got %d", rec.Code)
+			}
+		})
+		t.Run(tc.name+" with header token → accepted", func(t *testing.T) {
+			srv := newTestServer(t)
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("X-CSRF-Token", srv.csrf)
+			srv.Handler().ServeHTTP(rec, req)
+			if rec.Code == http.StatusForbidden {
+				t.Fatalf("valid CSRF token should not be rejected (got 403)")
+			}
+		})
 	}
 }

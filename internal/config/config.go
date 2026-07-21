@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,8 +20,14 @@ import (
 const (
 	// DefaultBaseURL is the public CivitAI API host.
 	DefaultBaseURL = "https://civitai.com"
-	// DefaultAddr is the web UI listen address.
-	DefaultAddr = ":8787"
+	// DefaultAddr is the web UI listen address. It binds to loopback by default
+	// so the UI is not network-exposed out of the box; override with --addr (or
+	// the addr config key) to listen on a LAN interface.
+	DefaultAddr = "127.0.0.1:8787"
+	// DefaultDownloadJitter is the default anti-stampede window for auto-detected
+	// downloads: each install schedules a new-version download at a random point
+	// in [0, window) so a fleet does not begin the same download in unison.
+	DefaultDownloadJitter = 15 * time.Minute
 	// DefaultPollInterval is the per-subscription default polling cadence. It is
 	// deliberately on the order of an hour: the API fronts its read routes with
 	// a ~5-minute edge cache, so polling faster wastes requests without seeing
@@ -52,16 +59,28 @@ type Config struct {
 	Addr string `yaml:"addr"`
 	// DBPath is the SQLite database file path.
 	DBPath string `yaml:"db_path"`
+	// MaxFileSize caps the primary-file size the poller will auto-download,
+	// as a human string ("500MB", "2GB") or a plain byte count. Empty / "0"
+	// means unlimited. It is parsed into MaxFileSizeBytes.
+	MaxFileSize string `yaml:"max_file_size"`
+	// DownloadJitter is the anti-stampede window for auto-detected downloads
+	// (see DefaultDownloadJitter). "0" disables it (downloads start at once).
+	DownloadJitter Duration `yaml:"download_jitter"`
+
+	// MaxFileSizeBytes is the resolved byte value of MaxFileSize (0 = unlimited).
+	MaxFileSizeBytes int64 `yaml:"-"`
 }
 
 // Flags carries the command-line overrides. Empty-string / nil fields mean "not
 // set on the command line" and fall through to the env/file/default layers.
 type Flags struct {
-	Token     string
-	ModelRoot string
-	BaseURL   string
-	Addr      string
-	DBPath    string
+	Token          string
+	ModelRoot      string
+	BaseURL        string
+	Addr           string
+	DBPath         string
+	MaxFileSize    string
+	DownloadJitter string
 	// ConfigPath overrides the config-file location (default: the XDG path).
 	ConfigPath string
 }
@@ -131,6 +150,7 @@ func defaults() (*Config, error) {
 		Addr:                DefaultAddr,
 		ModelRoot:           filepath.Join(home, "civitai-models"),
 		DefaultPollInterval: Duration(DefaultPollInterval),
+		DownloadJitter:      Duration(DefaultDownloadJitter),
 		DBPath:              filepath.Join(dir, "civitai-manager.db"),
 	}, nil
 }
@@ -193,6 +213,16 @@ func Resolve(flags Flags) (*Config, error) {
 	if flags.DBPath != "" {
 		cfg.DBPath = flags.DBPath
 	}
+	if flags.MaxFileSize != "" {
+		cfg.MaxFileSize = flags.MaxFileSize
+	}
+	if flags.DownloadJitter != "" {
+		d, err := time.ParseDuration(flags.DownloadJitter)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --download-jitter %q: %w", flags.DownloadJitter, err)
+		}
+		cfg.DownloadJitter = Duration(d)
+	}
 
 	if err := cfg.normalize(); err != nil {
 		return nil, err
@@ -216,7 +246,59 @@ func (c *Config) normalize() error {
 	if c.DefaultPollInterval.D() <= 0 {
 		c.DefaultPollInterval = Duration(DefaultPollInterval)
 	}
+	// A negative download-jitter is meaningless; clamp to 0 (disabled). Zero is
+	// a valid, explicit "start immediately" and is preserved.
+	if c.DownloadJitter.D() < 0 {
+		c.DownloadJitter = 0
+	}
+	bytes, err := ParseSize(c.MaxFileSize)
+	if err != nil {
+		return fmt.Errorf("invalid max_file_size %q: %w", c.MaxFileSize, err)
+	}
+	c.MaxFileSizeBytes = bytes
 	return nil
+}
+
+// ParseSize parses a human file-size string into a byte count. It accepts a
+// plain integer ("1048576"), or a number with a binary-unit suffix (case
+// -insensitive, base 1024): B, K/KB, M/MB, G/GB, T/TB. An empty string or "0"
+// yields 0 (meaning "unlimited" to callers). Negative values are rejected.
+func ParseSize(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+	upper := strings.ToUpper(s)
+	mult := int64(1)
+	switch {
+	case strings.HasSuffix(upper, "TB"):
+		mult, upper = 1<<40, strings.TrimSuffix(upper, "TB")
+	case strings.HasSuffix(upper, "GB"):
+		mult, upper = 1<<30, strings.TrimSuffix(upper, "GB")
+	case strings.HasSuffix(upper, "MB"):
+		mult, upper = 1<<20, strings.TrimSuffix(upper, "MB")
+	case strings.HasSuffix(upper, "KB"):
+		mult, upper = 1<<10, strings.TrimSuffix(upper, "KB")
+	case strings.HasSuffix(upper, "T"):
+		mult, upper = 1<<40, strings.TrimSuffix(upper, "T")
+	case strings.HasSuffix(upper, "G"):
+		mult, upper = 1<<30, strings.TrimSuffix(upper, "G")
+	case strings.HasSuffix(upper, "M"):
+		mult, upper = 1<<20, strings.TrimSuffix(upper, "M")
+	case strings.HasSuffix(upper, "K"):
+		mult, upper = 1<<10, strings.TrimSuffix(upper, "K")
+	case strings.HasSuffix(upper, "B"):
+		mult, upper = 1, strings.TrimSuffix(upper, "B")
+	}
+	upper = strings.TrimSpace(upper)
+	n, err := strconv.ParseFloat(upper, 64)
+	if err != nil {
+		return 0, fmt.Errorf("not a valid size (expected e.g. 500MB, 2GB, or a byte count)")
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("size must not be negative")
+	}
+	return int64(n * float64(mult)), nil
 }
 
 func expandHome(p string) (string, error) {
@@ -257,6 +339,6 @@ func (c *Config) Redacted() Config {
 // String renders the config with the token redacted.
 func (c *Config) String() string {
 	r := c.Redacted()
-	return fmt.Sprintf("Config{BaseURL:%s Addr:%s ModelRoot:%s DBPath:%s PollInterval:%s Token:%s}",
-		r.BaseURL, r.Addr, r.ModelRoot, r.DBPath, c.DefaultPollInterval.D(), r.Token)
+	return fmt.Sprintf("Config{BaseURL:%s Addr:%s ModelRoot:%s DBPath:%s PollInterval:%s DownloadJitter:%s MaxFileSize:%d Token:%s}",
+		r.BaseURL, r.Addr, r.ModelRoot, r.DBPath, c.DefaultPollInterval.D(), c.DownloadJitter.D(), c.MaxFileSizeBytes, r.Token)
 }

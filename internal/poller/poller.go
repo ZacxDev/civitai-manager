@@ -17,8 +17,27 @@ import (
 	"time"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
+	"github.com/ZacxDev/civitai-manager/internal/config"
 	"github.com/ZacxDev/civitai-manager/internal/hashutil"
 	"github.com/ZacxDev/civitai-manager/internal/store"
+)
+
+// enqueueOutcome is the definitiveness classification of an enqueue attempt. It
+// drives whether the poller marks a version seen: only a DEFINITIVE outcome
+// (enqueued, or a permanent skip) records it; a transient error leaves it
+// unseen so the next poll retries.
+type enqueueOutcome int
+
+const (
+	// outcomeEnqueued: a download row was created (definitive).
+	outcomeEnqueued enqueueOutcome = iota
+	// outcomePermanentSkip: a settled decision not to download this version
+	// (filter mismatch, no downloadable file, over the size cap, already
+	// present/queued). Definitive — mark seen, do not re-evaluate every poll.
+	outcomePermanentSkip
+	// outcomeTransientError: a recoverable failure (API hiccup resolving the
+	// version, a DB error enqueuing). NOT definitive — do NOT mark seen.
+	outcomeTransientError
 )
 
 // Poller runs subscription polls against a civitai.Reader and records results
@@ -35,6 +54,20 @@ type Poller struct {
 	creatorSearchLimit int
 	// minInterval is the hard floor on any subscription's effective interval.
 	minInterval time.Duration
+	// maxFileSizeBytes, when > 0, caps the primary-file size the poller will
+	// enqueue; a larger file is skipped with a size_skip event. 0 = unlimited.
+	maxFileSizeBytes int64
+	// downloadJitter is the window for the per-instance random "not before"
+	// offset applied to AUTO-detected downloads (fleet anti-stampede). 0 =
+	// downloads start immediately. Manual/backfill downloads never jitter.
+	downloadJitter time.Duration
+	// randJitter returns a random duration in [0, d); injectable for tests.
+	randJitter func(time.Duration) time.Duration
+	// checkDelay is the base inter-subscription spacing PollAll (the `check`
+	// path) waits between subscriptions so a cron run does not burst the API.
+	checkDelay time.Duration
+	// waitFn sleeps for d respecting ctx cancellation; injectable for tests.
+	waitFn func(ctx context.Context, d time.Duration)
 }
 
 // New builds a Poller. A nil logger discards output.
@@ -48,9 +81,19 @@ func New(st *store.Store, reader civitai.Reader, modelRoot string, log *slog.Log
 		root:               modelRoot,
 		log:                log,
 		creatorSearchLimit: 20,
-		minInterval:        15 * time.Minute,
+		minInterval:        config.MinPollInterval,
+		randJitter:         jitter,
+		checkDelay:         2 * time.Second,
+		waitFn:             sleepCtx,
 	}
 }
+
+// SetMaxFileSize configures the primary-file size cap in bytes (0 = unlimited).
+func (p *Poller) SetMaxFileSize(bytes int64) { p.maxFileSizeBytes = bytes }
+
+// SetDownloadJitter configures the anti-stampede jitter window for auto-detected
+// downloads (0 = start immediately).
+func (p *Poller) SetDownloadJitter(d time.Duration) { p.downloadJitter = d }
 
 // PollResult summarizes one poll.
 type PollResult struct {
@@ -127,16 +170,32 @@ func (p *Poller) PollOnce(ctx context.Context, sub store.Subscription, backfillL
 			Message: fmt.Sprintf("Subscribed to %s: seeded %d existing version(s) without downloading", sub.Label(), len(candidates)),
 		})
 		if backfillLatest && len(candidates) > 0 {
-			if p.enqueueCandidate(ctx, sub, candidates[0], &res) {
+			// Backfill is a user-initiated download of the current latest: it
+			// starts immediately (no anti-stampede jitter).
+			if p.enqueueCandidate(ctx, sub, candidates[0], &res, false) == outcomeEnqueued {
 				res.Enqueued++
 			}
 		}
 		return res, nil
 	}
 
-	// Normal poll: newest-first. Record + notify every new version; enqueue when
-	// the subscription auto-downloads and is not notify-only.
+	// Normal poll: newest-first. Enqueue when the subscription auto-downloads
+	// and is not notify-only. A version is marked seen (and notified on) ONLY
+	// after a definitive outcome — a transient enqueue error leaves it unseen so
+	// the next poll retries rather than silently dropping the new version.
 	for _, c := range newOnes {
+		notifyOnly := sub.NotifyOnly || !sub.AutoDownload
+
+		outcome := outcomePermanentSkip
+		if !notifyOnly {
+			// Auto-detected downloads get the anti-stampede start jitter.
+			outcome = p.enqueueCandidate(ctx, sub, c, &res, true)
+		}
+		if outcome == outcomeTransientError {
+			// Do not mark seen or notify; the next poll retries this version.
+			continue
+		}
+
 		if err := p.store.MarkSeen(sub.ID, c.VersionID, time.Time{}); err != nil {
 			return res, err
 		}
@@ -145,10 +204,7 @@ func (p *Poller) PollOnce(ctx context.Context, sub store.Subscription, backfillL
 			ModelID: intPtr(c.ModelID), VersionID: intPtr(c.VersionID),
 			Message: fmt.Sprintf("New version %d for %q (%s)", c.VersionID, c.ModelName, c.BaseModel),
 		})
-		if sub.NotifyOnly || !sub.AutoDownload {
-			continue
-		}
-		if p.enqueueCandidate(ctx, sub, c, &res) {
+		if outcome == outcomeEnqueued {
 			res.Enqueued++
 		}
 	}
@@ -156,31 +212,50 @@ func (p *Poller) PollOnce(ctx context.Context, sub store.Subscription, backfillL
 }
 
 // enqueueCandidate resolves a candidate's file and enqueues a download, applying
-// the base-model filter and dedup guards. It returns true when a row was
-// enqueued. Non-fatal problems are logged as events and return false.
-func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c Candidate, res *PollResult) bool {
+// the base-model filter, size cap, and dedup guards. jitterStart requests the
+// anti-stampede random start offset (auto-detected downloads only). It returns
+// an enqueueOutcome the caller uses to decide whether to mark the version seen.
+func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c Candidate, res *PollResult, jitterStart bool) enqueueOutcome {
 	if sub.BaseModelFilter != "" && !strings.EqualFold(c.BaseModel, sub.BaseModelFilter) {
 		res.Skipped++
-		return false
+		return outcomePermanentSkip
 	}
 
 	vd, _, err := p.reader.GetModelVersion(ctx, strconv.Itoa(c.VersionID))
 	if err != nil {
+		// Transient: an API hiccup resolving the version. Do NOT mark seen —
+		// retried next poll.
 		_ = p.store.AddEvent(store.Event{
 			Level: store.LevelWarn, Kind: "enqueue_error", SubscriptionID: &sub.ID,
 			ModelID: intPtr(c.ModelID), VersionID: intPtr(c.VersionID),
 			Message: fmt.Sprintf("Could not resolve version %d for download: %v", c.VersionID, err),
 		})
-		return false
+		return outcomeTransientError
 	}
 	file := civitai.SelectFile(vd.Files, sub.FileTypePref)
 	if file == nil {
+		// Permanent: this version has no file we can download.
 		_ = p.store.AddEvent(store.Event{
 			Level: store.LevelWarn, Kind: "enqueue_error", SubscriptionID: &sub.ID,
 			ModelID: intPtr(c.ModelID), VersionID: intPtr(c.VersionID),
 			Message: fmt.Sprintf("Version %d has no downloadable file", c.VersionID),
 		})
-		return false
+		return outcomePermanentSkip
+	}
+
+	// Size cap: skip a version whose primary file exceeds the configured
+	// maximum (permanent — a bigger file will not shrink on the next poll).
+	if p.maxFileSizeBytes > 0 {
+		if fileBytes := int64(file.SizeKB * 1024); fileBytes > p.maxFileSizeBytes {
+			_ = p.store.AddEvent(store.Event{
+				Level: store.LevelInfo, Kind: "size_skip", SubscriptionID: &sub.ID,
+				ModelID: intPtr(c.ModelID), VersionID: intPtr(c.VersionID),
+				Message: fmt.Sprintf("Skipping %s: %s exceeds max file size %s",
+					file.Name, humanSize(fileBytes), humanSize(p.maxFileSizeBytes)),
+			})
+			res.Skipped++
+			return outcomePermanentSkip
+		}
 	}
 
 	exists, err := p.store.ActiveQueueItemExists(c.VersionID, file.ID)
@@ -189,7 +264,7 @@ func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c
 	}
 	if exists {
 		res.Skipped++
-		return false
+		return outcomePermanentSkip
 	}
 
 	downloadURL := file.DownloadURL
@@ -206,7 +281,15 @@ func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c
 			Message: fmt.Sprintf("Skipping %s: already present with matching hash", file.Name),
 		})
 		res.Skipped++
-		return false
+		return outcomePermanentSkip
+	}
+
+	// Anti-stampede: give auto-detected downloads a per-instance random start
+	// offset so a fleet of installs does not begin the same download in unison.
+	var notBefore *time.Time
+	if jitterStart && p.downloadJitter > 0 {
+		nb := time.Now().UTC().Add(p.randJitter(p.downloadJitter))
+		notBefore = &nb
 	}
 
 	subID := sub.ID
@@ -221,17 +304,19 @@ func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c
 		Status:         store.StatusQueued,
 		SizeKB:         file.SizeKB,
 		SHA256Expected: file.Hashes.SHA256,
+		NotBefore:      notBefore,
 	})
 	if err != nil {
+		// Transient: a DB error enqueuing. Do NOT mark seen — retried next poll.
 		p.log.Warn("enqueue failed", "err", err)
-		return false
+		return outcomeTransientError
 	}
 	_ = p.store.AddEvent(store.Event{
 		Level: store.LevelInfo, Kind: "enqueued", SubscriptionID: &sub.ID,
 		ModelID: intPtr(c.ModelID), VersionID: intPtr(c.VersionID),
 		Message: fmt.Sprintf("Queued download: %s", file.Name),
 	})
-	return true
+	return outcomeEnqueued
 }
 
 // EffectiveInterval returns a subscription's poll interval, floored at the
@@ -293,12 +378,7 @@ func (p *Poller) tick(ctx context.Context, next map[int64]time.Time, backoff map
 		interval := p.EffectiveInterval(sub)
 		if err != nil {
 			if errors.Is(err, civitai.ErrRateLimited) {
-				bo := backoff[sub.ID]
-				if bo == 0 {
-					bo = 2 * time.Minute
-				} else if bo < 30*time.Minute {
-					bo *= 2
-				}
+				bo := nextBackoff(backoff[sub.ID])
 				backoff[sub.ID] = bo
 				next[sub.ID] = now.Add(bo)
 				p.log.Warn("rate limited; backing off", "sub", sub.ID, "backoff", bo)
@@ -327,6 +407,33 @@ func jitter(d time.Duration) time.Duration {
 		return 0
 	}
 	return time.Duration(rand.Int63n(int64(d)))
+}
+
+// sleepCtx sleeps for d, returning early if ctx is cancelled.
+func sleepCtx(ctx context.Context, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+	case <-t.C:
+	}
+}
+
+// humanSize renders a byte count as a compact human string (e.g. "1.5 GB").
+func humanSize(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 func intPtr(i int) *int { return &i }

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
@@ -200,6 +201,168 @@ func TestDownloadNoExpectedHashStillCompletes(t *testing.T) {
 	}
 	if item.SHA256Actual == "" {
 		t.Errorf("computed hash should still be recorded")
+	}
+}
+
+// eventKinds returns the kind of every recorded event (newest first).
+func eventKinds(t *testing.T, st *store.Store) []store.Event {
+	t.Helper()
+	evs, err := st.RecentEvents(50)
+	if err != nil {
+		t.Fatalf("recent events: %v", err)
+	}
+	return evs
+}
+
+// TestGracefulShutdownRequeuesInterruptedDownload proves finding #1: a download
+// interrupted by a graceful shutdown (ctx cancel) must NOT be marked failed —
+// it must return to the queue and complete on restart, never stranded in
+// 'failed' with its version already seen.
+func TestGracefulShutdownRequeuesInterruptedDownload(t *testing.T) {
+	payload := []byte("the complete model file payload for the restart path")
+	var reqs int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&reqs, 1) == 1 {
+			// First attempt: stream a partial chunk, then block so the client is
+			// mid-transfer when the context is cancelled.
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("partial-"))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			close(started)
+			<-release
+			return
+		}
+		// Restart attempt: serve the whole file.
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	dest := filepath.Join(t.TempDir(), "interrupted.safetensors")
+	expected := sha256Hex(payload)
+	id, _ := st.Enqueue(store.QueueItem{
+		ModelID: 1, VersionID: 5, FileID: 50, FileName: "interrupted.safetensors",
+		DownloadURL: srv.URL, DestPath: dest, SHA256Expected: expected,
+		SizeKB: float64(len(payload)) / 1024,
+	})
+
+	w := New(st, fakeDownloader{}, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-started
+		cancel() // simulate SIGINT mid-download
+	}()
+	_, _ = w.ProcessOne(ctx)
+
+	item, _ := st.GetQueueItem(id)
+	if item.Status == store.StatusFailed {
+		t.Fatalf("interrupted download must NOT be marked failed (would strand it); err=%q", item.LastError)
+	}
+	if item.Status != store.StatusQueued {
+		t.Fatalf("interrupted download should be requeued, got status=%s", item.Status)
+	}
+	if item.Attempts != 0 {
+		t.Errorf("a cancelled attempt must not count; attempts=%d want 0", item.Attempts)
+	}
+	if _, err := os.Stat(dest + ".part"); !os.IsNotExist(err) {
+		t.Errorf(".part temp should be removed on shutdown, not leaked")
+	}
+
+	// Restart: unblock the first (now-abandoned) handler, then re-process.
+	close(release)
+	ok, err := w.ProcessOne(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("restart ProcessOne: ok=%v err=%v", ok, err)
+	}
+	item, _ = st.GetQueueItem(id)
+	if item.Status != store.StatusDone {
+		t.Fatalf("after restart the download should complete, got %s (err=%q)", item.Status, item.LastError)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil || string(got) != string(payload) {
+		t.Fatalf("final file wrong after restart: err=%v", err)
+	}
+}
+
+// TestDownloadEmptyHashRecordedUnverified proves finding #3: a file the API gave
+// no hash for is finalized but reported as UNVERIFIED, never "verified".
+func TestDownloadEmptyHashRecordedUnverified(t *testing.T) {
+	payload := []byte("legit file, but the API supplied no hash")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	dest := filepath.Join(t.TempDir(), "nohash.bin")
+	id, _ := st.Enqueue(store.QueueItem{
+		ModelID: 1, VersionID: 5, FileID: 50, FileName: "nohash.bin",
+		DownloadURL: srv.URL, DestPath: dest, // no SHA256Expected
+		SizeKB: 1,
+	})
+
+	w := New(st, fakeDownloader{}, nil, nil)
+	if _, err := w.ProcessOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	item, _ := st.GetQueueItem(id)
+	if item.Status != store.StatusDone {
+		t.Fatalf("status = %s, want done", item.Status)
+	}
+
+	var sawUnverified bool
+	for _, e := range eventKinds(t, st) {
+		if e.Kind == "download_unverified" {
+			sawUnverified = true
+			if !strings.Contains(e.Message, "UNVERIFIED") {
+				t.Errorf("unverified event message should say UNVERIFIED, got %q", e.Message)
+			}
+		}
+		if e.Kind == "download_done" && strings.Contains(e.Message, "verified") {
+			t.Errorf("empty-hash download must not emit a 'verified' event: %q", e.Message)
+		}
+	}
+	if !sawUnverified {
+		t.Error("expected a download_unverified event for a no-hash download")
+	}
+}
+
+// TestVerifiedDownloadEmitsVerifiedEvent guards the happy-path event text so the
+// unverified change in #3 does not accidentally relabel real verifications.
+func TestVerifiedDownloadEmitsVerifiedEvent(t *testing.T) {
+	payload := []byte("hashed content")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	dest := filepath.Join(t.TempDir(), "hashed.bin")
+	_, _ = st.Enqueue(store.QueueItem{
+		ModelID: 1, VersionID: 5, FileID: 50, FileName: "hashed.bin",
+		DownloadURL: srv.URL, DestPath: dest, SHA256Expected: sha256Hex(payload), SizeKB: 1,
+	})
+	w := New(st, fakeDownloader{}, nil, nil)
+	if _, err := w.ProcessOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var sawVerified bool
+	for _, e := range eventKinds(t, st) {
+		if e.Kind == "download_done" && strings.Contains(e.Message, "verified") {
+			sawVerified = true
+		}
+		if e.Kind == "download_unverified" {
+			t.Errorf("a hash-verified download must not be reported unverified: %q", e.Message)
+		}
+	}
+	if !sawVerified {
+		t.Error("expected a 'verified' download_done event on the happy path")
 	}
 }
 

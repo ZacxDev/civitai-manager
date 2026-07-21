@@ -3,15 +3,19 @@ package cli
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
+	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
+	"github.com/ZacxDev/civitai-manager/internal/config"
 	"github.com/ZacxDev/civitai-manager/internal/poller"
 	"github.com/ZacxDev/civitai-manager/internal/queue"
 	"github.com/ZacxDev/civitai-manager/internal/store"
@@ -22,6 +26,88 @@ import (
 // signalContext returns a context cancelled on SIGINT/SIGTERM.
 func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
+// configuredPoller builds a poller with the runtime size cap and anti-stampede
+// download jitter applied from config.
+func configuredPoller(st *store.Store, client civitai.Client, cfg *config.Config, log *slog.Logger) *poller.Poller {
+	p := poller.New(st, client, cfg.ModelRoot, log)
+	p.SetMaxFileSize(cfg.MaxFileSizeBytes)
+	p.SetDownloadJitter(cfg.DownloadJitter.D())
+	return p
+}
+
+// displayAddr renders a listen address as a browsable URL host. A bare ":8787"
+// or a 0.0.0.0-bound address is shown as localhost (the process still binds the
+// configured interface); any other host is shown as-is so the printed link is
+// truthful rather than always claiming "localhost".
+func displayAddr(addr string) string {
+	if strings.HasPrefix(addr, ":") {
+		return "localhost" + addr
+	}
+	if host, port, ok := strings.Cut(addr, ":"); ok {
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			return "localhost:" + port
+		}
+	}
+	return addr
+}
+
+// serveRun starts the web UI, poller, and download worker, and blocks until ctx
+// is cancelled (SIGINT/SIGTERM) or the HTTP server fails. On shutdown it stops
+// accepting connections, cancels the background goroutines, and WAITS for the
+// poller and worker to return before returning — so their final status writes
+// land before the caller closes the store. It does not close the store.
+func serveRun(ctx context.Context, st *store.Store, client civitai.Client, cfg *config.Config, log *slog.Logger) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	pol := configuredPoller(st, client, cfg, log)
+	wrk := queue.New(st, client, client, log)
+	srv := web.NewServer(st, client, pol, web.Config{
+		BaseURL:             cfg.BaseURL,
+		DefaultPollInterval: cfg.DefaultPollInterval.D(),
+	}, log)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); pol.Run(ctx) }()
+	go func() { defer wg.Done(); wrk.Run(ctx) }()
+
+	httpSrv := &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	log.Info("starting", "addr", cfg.Addr, "config", cfg.String())
+	fmt.Printf("civitai-manager serving on http://%s\n", displayAddr(cfg.Addr))
+
+	errCh := make(chan error, 1)
+	go func() {
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+		}
+	}()
+
+	var runErr error
+	select {
+	case <-ctx.Done():
+		log.Info("shutting down")
+	case err := <-errCh:
+		runErr = err
+	}
+
+	// Stop accepting HTTP, then stop the background goroutines and WAIT for them
+	// so the final download/status write lands before the store is closed.
+	cancel()
+	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutCancel()
+	if err := httpSrv.Shutdown(shutCtx); err != nil && runErr == nil {
+		runErr = err
+	}
+	wg.Wait()
+	return runErr
 }
 
 func newServeCmd(gf *globalFlags) *cobra.Command {
@@ -42,44 +128,10 @@ func newServeCmd(gf *globalFlags) *cobra.Command {
 			ctx, cancel := signalContext()
 			defer cancel()
 
-			pol := poller.New(a.store, a.client, a.cfg.ModelRoot, a.log)
-			wrk := queue.New(a.store, a.client, a.client, a.log)
-			srv := web.NewServer(a.store, a.client, pol, web.Config{
-				BaseURL:             a.cfg.BaseURL,
-				DefaultPollInterval: a.cfg.DefaultPollInterval.D(),
-			}, a.log)
-
-			go pol.Run(ctx)
-			go wrk.Run(ctx)
-
-			httpSrv := &http.Server{
-				Addr:              a.cfg.Addr,
-				Handler:           srv.Handler(),
-				ReadHeaderTimeout: 10 * time.Second,
-			}
-
-			a.log.Info("starting", "addr", a.cfg.Addr, "config", a.cfg.String())
-			fmt.Printf("civitai-manager serving on http://localhost%s\n", a.cfg.Addr)
-
-			errCh := make(chan error, 1)
-			go func() {
-				if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-					errCh <- err
-				}
-			}()
-
-			select {
-			case <-ctx.Done():
-				a.log.Info("shutting down")
-			case err := <-errCh:
-				return err
-			}
-			shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer shutCancel()
-			return httpSrv.Shutdown(shutCtx)
+			return serveRun(ctx, a.store, a.client, a.cfg, a.log)
 		},
 	}
-	cmd.Flags().StringVar(&addr, "addr", "", "listen address (default from config, :8787)")
+	cmd.Flags().StringVar(&addr, "addr", "", "listen address (default from config, 127.0.0.1:8787); use a non-loopback host to expose the UI on your LAN")
 	return cmd
 }
 
@@ -106,7 +158,7 @@ func newSubscribeCmd(gf *globalFlags) *cobra.Command {
 			ctx, cancel := signalContext()
 			defer cancel()
 
-			pol := poller.New(a.store, a.client, a.cfg.ModelRoot, a.log)
+			pol := configuredPoller(a.store, a.client, a.cfg, a.log)
 			opts := poller.SubscribeOptions{
 				AutoDownload:    !noAuto,
 				NotifyOnly:      notifyOnly,
@@ -227,7 +279,7 @@ func newCheckCmd(gf *globalFlags) *cobra.Command {
 			ctx, cancel := signalContext()
 			defer cancel()
 
-			pol := poller.New(a.store, a.client, a.cfg.ModelRoot, a.log)
+			pol := configuredPoller(a.store, a.client, a.cfg, a.log)
 			if err := pol.PollAll(ctx); err != nil {
 				a.log.Warn("some polls failed", "err", err)
 			}

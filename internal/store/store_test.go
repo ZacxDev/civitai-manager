@@ -21,8 +21,8 @@ func TestMigrationApplies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 1 {
-		t.Fatalf("schema version = %d, want 1", v)
+	if v != 2 {
+		t.Fatalf("schema version = %d, want 2", v)
 	}
 	// Re-running migrate (via a second Open on a file) is idempotent; here we
 	// just confirm the core tables exist by exercising them below.
@@ -200,6 +200,67 @@ func TestQueueFailAndRequeue(t *testing.T) {
 	got, _ = st.GetQueueItem(id)
 	if got.Status != StatusQueued {
 		t.Fatalf("after requeue status = %s", got.Status)
+	}
+}
+
+// TestRequeueCanceledUndoesAttempt proves the finding-#1 store primitive: a
+// cancelled (graceful-shutdown) download returns to queued WITHOUT counting the
+// claim's attempt increment.
+func TestRequeueCanceledUndoesAttempt(t *testing.T) {
+	st := newTestStore(t)
+	id, _ := st.Enqueue(QueueItem{ModelID: 1, VersionID: 2, FileID: 3, FileName: "f", DownloadURL: "u", DestPath: "/p"})
+
+	claimed, err := st.ClaimNextQueued()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.Attempts != 1 {
+		t.Fatalf("claim should increment attempts to 1, got %d", claimed.Attempts)
+	}
+
+	if err := st.RequeueCanceled(id); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.GetQueueItem(id)
+	if got.Status != StatusQueued {
+		t.Fatalf("after cancel-requeue status = %s, want queued", got.Status)
+	}
+	if got.Attempts != 0 {
+		t.Fatalf("cancelled attempt must be undone, attempts = %d want 0", got.Attempts)
+	}
+}
+
+// TestClaimNextQueuedNotBeforeGate proves the anti-stampede claim gate: a row
+// whose not_before is in the future is skipped (the worker moves to the next
+// eligible row), while NULL and past not_before rows are claimable.
+func TestClaimNextQueuedNotBeforeGate(t *testing.T) {
+	st := newTestStore(t)
+	future := time.Now().UTC().Add(time.Hour)
+	past := time.Now().UTC().Add(-time.Minute)
+
+	// Inserted future-first (lowest id) to prove the gate skips it rather than
+	// blocking the whole queue.
+	futID, _ := st.Enqueue(QueueItem{ModelID: 1, VersionID: 1, FileID: 1, FileName: "fut", DownloadURL: "u", DestPath: "/fut", NotBefore: &future})
+	pastID, _ := st.Enqueue(QueueItem{ModelID: 1, VersionID: 2, FileID: 2, FileName: "past", DownloadURL: "u", DestPath: "/past", NotBefore: &past})
+	nilID, _ := st.Enqueue(QueueItem{ModelID: 1, VersionID: 3, FileID: 3, FileName: "nil", DownloadURL: "u", DestPath: "/nil"})
+
+	// First claim skips the not-yet-due future row and takes the oldest eligible.
+	it, err := st.ClaimNextQueued()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it == nil || it.ID != pastID {
+		t.Fatalf("expected past-gated row %d claimed first, got %+v", pastID, it)
+	}
+	// Then the ungated (NULL) row.
+	it, _ = st.ClaimNextQueued()
+	if it == nil || it.ID != nilID {
+		t.Fatalf("expected NULL not_before row %d claimed next, got %+v", nilID, it)
+	}
+	// Only the future-gated row remains: not claimable yet.
+	it, _ = st.ClaimNextQueued()
+	if it != nil {
+		t.Fatalf("future-gated row %d must not be claimed before its time, got %+v", futID, it)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
@@ -107,29 +108,69 @@ func (p *Poller) seedNew(ctx context.Context, id int64, backfillLatest bool) err
 
 // PollAll polls every subscription once (the `check` command's core). It does
 // not stop on the first error: each subscription's failure is recorded and
-// polling continues. Returns the first error encountered, if any.
+// polling continues. A small jittered delay is inserted between subscriptions,
+// and an ErrRateLimited response triggers the same escalating backoff the
+// scheduler (Run) uses, so a cron `check` over many subs does not burst the
+// API. Returns the first error encountered, if any.
 func (p *Poller) PollAll(ctx context.Context) error {
 	subs, err := p.store.ListSubscriptions()
 	if err != nil {
 		return err
 	}
-	var firstErr error
-	for _, sub := range subs {
+	var (
+		firstErr error
+		backoff  time.Duration
+	)
+	for i, sub := range subs {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if _, err := p.PollOnce(ctx, sub, false); err != nil {
+		// Space out requests so a cron check over many subs does not burst
+		// api.civitai.com.
+		if i > 0 {
+			p.waitFn(ctx, p.checkDelay+p.randJitter(p.checkDelay/2))
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+		}
+
+		_, err := p.PollOnce(ctx, sub, false)
+		if err != nil {
 			if firstErr == nil {
 				firstErr = err
+			}
+			if errors.Is(err, civitai.ErrRateLimited) {
+				backoff = nextBackoff(backoff)
+				p.log.Warn("rate limited during check; backing off", "sub", sub.ID, "backoff", backoff)
+				_ = p.store.AddEvent(store.Event{
+					Level: store.LevelWarn, Kind: "poll_error", SubscriptionID: &sub.ID,
+					Message: fmt.Sprintf("Rate limited; backing off %s", backoff),
+				})
+				p.waitFn(ctx, backoff)
+				continue
 			}
 			_ = p.store.AddEvent(store.Event{
 				Level: store.LevelError, Kind: "poll_error", SubscriptionID: &sub.ID,
 				Message: fmt.Sprintf("Poll failed: %v", err),
 			})
+		} else {
+			backoff = 0
 		}
 		_ = p.store.TouchPolled(sub.ID, time.Now().UTC())
 	}
 	return firstErr
+}
+
+// nextBackoff escalates a rate-limit backoff: 0 -> 2m, then doubling up to a
+// 30m ceiling. It matches the scheduler's (Run) backoff policy.
+func nextBackoff(cur time.Duration) time.Duration {
+	if cur == 0 {
+		return 2 * time.Minute
+	}
+	if cur < 30*time.Minute {
+		return cur * 2
+	}
+	return cur
 }
 
 func orDefault(s string) string {

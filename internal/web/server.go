@@ -5,6 +5,9 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"os"
@@ -37,6 +40,11 @@ type Server struct {
 	sub    Subscriber
 	cfg    Config
 	log    *slog.Logger
+	// csrf is a per-process random token embedded in every state-changing form
+	// and verified on each POST. It defends the local, single-user UI against
+	// cross-site request forgery (a malicious page in the user's browser cannot
+	// read it, so it cannot forge a valid POST) without any login system.
+	csrf string
 }
 
 // NewServer builds a Server.
@@ -44,7 +52,33 @@ func NewServer(st *store.Store, reader civitai.Reader, sub Subscriber, cfg Confi
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	}
-	return &Server{store: st, reader: reader, sub: sub, cfg: cfg, log: log}
+	return &Server{store: st, reader: reader, sub: sub, cfg: cfg, log: log, csrf: newCSRFToken()}
+}
+
+// newCSRFToken returns a fresh random hex token.
+func newCSRFToken() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand failing is fatal for a security token; fall back to a
+		// process-unique-ish value rather than an empty (guessable) token.
+		return hex.EncodeToString([]byte(os.Args[0] + time.Now().String()))
+	}
+	return hex.EncodeToString(b)
+}
+
+// verifyCSRF checks the request's CSRF token (from the X-CSRF-Token header or a
+// csrf_token form field) against the server token in constant time. On failure
+// it writes 403 and returns false; the handler must stop.
+func (s *Server) verifyCSRF(w http.ResponseWriter, r *http.Request) bool {
+	tok := r.Header.Get("X-CSRF-Token")
+	if tok == "" {
+		tok = r.FormValue("csrf_token")
+	}
+	if subtle.ConstantTimeCompare([]byte(tok), []byte(s.csrf)) != 1 {
+		http.Error(w, "invalid or missing CSRF token", http.StatusForbidden)
+		return false
+	}
+	return true
 }
 
 // Handler builds the routed http.Handler.

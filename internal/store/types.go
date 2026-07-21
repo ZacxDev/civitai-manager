@@ -72,8 +72,14 @@ type QueueItem struct {
 	SHA256Actual   string
 	Attempts       int
 	LastError      string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// NotBefore, when set, gates when the worker may claim this row: it stays
+	// unclaimable until the wall clock reaches NotBefore. Nil (the default, and
+	// all manual/backfill downloads) means immediately claimable. The poller
+	// sets a small random offset on auto-detected downloads so a fleet of
+	// installs de-synchronizes its download starts (anti-stampede).
+	NotBefore *time.Time
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Event is a row of the events table (the UI activity feed).

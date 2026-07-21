@@ -12,15 +12,15 @@ import (
 )
 
 // dashboardPage is the full dashboard: subscriptions, activity feed, and queue.
-func dashboardPage(subs []store.Subscription) g.Node {
+func dashboardPage(subs []store.Subscription, csrf string) g.Node {
 	return page("Dashboard",
 		card(
 			sectionTitle("Add a subscription"),
-			subscribeForm(),
+			subscribeForm(csrf),
 		),
 		card(
 			sectionTitle("Subscriptions"),
-			subscriptionsTable(subs, ""),
+			subscriptionsTable(subs, "", csrf),
 		),
 		h.Div(
 			h.Class("grid gap-6 md:grid-cols-2"),
@@ -48,12 +48,13 @@ func dashboardPage(subs []store.Subscription) g.Node {
 	)
 }
 
-func subscribeForm() g.Node {
+func subscribeForm(csrf string) g.Node {
 	return h.Form(
 		hx("post", "/subscribe"),
 		hx("target", "#subscriptions-table"),
 		hx("swap", "outerHTML"),
 		h.Class("flex flex-wrap items-end gap-3"),
+		csrfInput(csrf),
 		labeledInput("model", "Model id or civitai.com/models/… URL", "e.g. 12345", true),
 		h.Div(
 			h.Class("flex items-center gap-3"),
@@ -99,7 +100,12 @@ func checkbox(name, label string, checked bool) g.Node {
 	)
 }
 
-func subscriptionsTable(subs []store.Subscription, errMsg string) g.Node {
+// csrfInput renders the hidden CSRF field embedded in every state-changing form.
+func csrfInput(csrf string) g.Node {
+	return h.Input(h.Type("hidden"), h.Name("csrf_token"), h.Value(csrf))
+}
+
+func subscriptionsTable(subs []store.Subscription, errMsg, csrf string) g.Node {
 	var rows []g.Node
 	if len(subs) == 0 {
 		rows = append(rows, h.Tr(
@@ -108,7 +114,7 @@ func subscriptionsTable(subs []store.Subscription, errMsg string) g.Node {
 		))
 	} else {
 		for _, s := range subs {
-			rows = append(rows, subscriptionRow(s))
+			rows = append(rows, subscriptionRow(s, csrf))
 		}
 	}
 	return h.Div(
@@ -135,7 +141,7 @@ func th(text string) g.Node {
 	return h.Th(h.Class("px-3 py-2 font-medium"), g.Text(text))
 }
 
-func subscriptionRow(s store.Subscription) g.Node {
+func subscriptionRow(s store.Subscription, csrf string) g.Node {
 	target := s.Label()
 	var targetNode g.Node = g.Text(target)
 	if s.Kind == store.KindModel && s.ModelID != nil {
@@ -157,14 +163,15 @@ func subscriptionRow(s store.Subscription) g.Node {
 		h.Td(h.Class("px-3 py-2"), targetNode),
 		h.Td(h.Class("px-3 py-2"), g.Text(string(s.Kind))),
 		h.Td(h.Class("px-3 py-2 space-x-1"),
-			flagToggle(s, "auto_download", "auto", s.AutoDownload),
-			flagToggle(s, "notify_only", "notify", s.NotifyOnly),
+			flagToggle(s, "auto_download", "auto", s.AutoDownload, csrf),
+			flagToggle(s, "notify_only", "notify", s.NotifyOnly, csrf),
 		),
 		h.Td(h.Class("px-3 py-2 text-slate-400"), g.Text(humanDuration(s.PollInterval()))),
 		h.Td(h.Class("px-3 py-2 text-slate-400"), g.Text(last)),
 		h.Td(h.Class("px-3 py-2 text-right"),
 			h.Button(
 				hx("post", "/subscriptions/"+strconv.FormatInt(s.ID, 10)+"/delete"),
+				hx("vals", fmt.Sprintf(`{"csrf_token":"%s"}`, csrf)),
 				hx("target", "#sub-"+strconv.FormatInt(s.ID, 10)),
 				hx("swap", "outerHTML"),
 				hx("confirm", "Unsubscribe from "+target+"?"),
@@ -176,7 +183,7 @@ func subscriptionRow(s store.Subscription) g.Node {
 }
 
 // flagToggle renders a pill that POSTs the flipped flag set and swaps the row.
-func flagToggle(s store.Subscription, field, label string, on bool) g.Node {
+func flagToggle(s store.Subscription, field, label string, on bool, csrf string) g.Node {
 	newAuto := s.AutoDownload
 	newNotify := s.NotifyOnly
 	switch field {
@@ -192,7 +199,7 @@ func flagToggle(s store.Subscription, field, label string, on bool) g.Node {
 		cls = "cursor-pointer rounded-full px-2 py-0.5 text-xs font-medium bg-emerald-800 text-emerald-200 hover:bg-emerald-700"
 	}
 	_ = variant
-	vals := fmt.Sprintf(`{"auto_download":"%t","notify_only":"%t"}`, newAuto, newNotify)
+	vals := fmt.Sprintf(`{"auto_download":"%t","notify_only":"%t","csrf_token":"%s"}`, newAuto, newNotify, csrf)
 	return h.Button(
 		hx("post", "/subscriptions/"+strconv.FormatInt(s.ID, 10)+"/flags"),
 		hx("vals", vals),
@@ -242,20 +249,37 @@ func queueFragment(items []store.QueueItem) g.Node {
 	return h.Ul(
 		h.Class("space-y-2 text-sm"),
 		g.Map(items, func(it store.QueueItem) g.Node {
+			scheduled := isScheduled(it)
+			// g.If evaluates its node argument eagerly, so build the NotBefore-
+			// dependent note only when NotBefore is non-nil.
+			statusNode := queueStatusBadge(it.Status)
+			var waitNote g.Node = g.Text("")
+			if scheduled {
+				statusNode = badge("scheduled", "amber")
+				waitNote = h.Div(h.Class("mt-1 text-xs text-slate-500"),
+					g.Text("Waiting until "+it.NotBefore.Local().Format("15:04")+" (anti-stampede)"))
+			}
 			return h.Li(
 				h.Class("rounded-md border border-slate-800 p-2"),
 				h.Div(
 					h.Class("flex items-center justify-between gap-2"),
 					h.Span(h.Class("truncate text-slate-200"), g.Text(it.FileName)),
-					queueStatusBadge(it.Status),
+					statusNode,
 				),
 				progressBar(it),
+				waitNote,
 				g.If(it.LastError != "" && it.Status == store.StatusFailed,
 					h.Div(h.Class("mt-1 text-xs text-rose-400"), g.Text(it.LastError)),
 				),
 			)
 		}),
 	)
+}
+
+// isScheduled reports whether a queued row is waiting on its anti-stampede
+// not_before gate (so the UI shows "scheduled" rather than a stuck "queued").
+func isScheduled(it store.QueueItem) bool {
+	return it.Status == store.StatusQueued && it.NotBefore != nil && it.NotBefore.After(time.Now())
 }
 
 func queueStatusBadge(st store.QueueStatus) g.Node {
@@ -367,7 +391,7 @@ func modelCard(it civitai.ModelListItem) g.Node {
 }
 
 // modelDetailPage renders a model's versions with a subscribe button.
-func modelDetailPage(m *civitai.ModelDetail) g.Node {
+func modelDetailPage(m *civitai.ModelDetail, csrf string) g.Node {
 	creator := ""
 	if m.Creator != nil {
 		creator = m.Creator.Username
@@ -385,7 +409,7 @@ func modelDetailPage(m *civitai.ModelDetail) g.Node {
 						g.If(creator != "", h.A(h.Href("/creators/"+creator), h.Class("hover:underline"), g.Text("@"+creator))),
 					),
 				),
-				subscribeInline("model", strconv.Itoa(m.ID), "Subscribe"),
+				subscribeInline("model", strconv.Itoa(m.ID), "Subscribe", csrf),
 			),
 		),
 		card(
@@ -405,13 +429,13 @@ func modelDetailPage(m *civitai.ModelDetail) g.Node {
 }
 
 // creatorPage renders a creator's models with a subscribe-to-creator button.
-func creatorPage(username string, res *civitai.ModelSearchResult) g.Node {
+func creatorPage(username string, res *civitai.ModelSearchResult, csrf string) g.Node {
 	return page("@"+username,
 		card(
 			h.Div(
 				h.Class("flex items-center justify-between"),
 				h.H1(h.Class("text-xl font-semibold"), g.Text("@"+username)),
-				subscribeInline("creator", username, "Subscribe to creator"),
+				subscribeInline("creator", username, "Subscribe to creator", csrf),
 			),
 		),
 		card(
@@ -422,7 +446,7 @@ func creatorPage(username string, res *civitai.ModelSearchResult) g.Node {
 }
 
 // subscribeInline is a small POST-to-/subscribe form button used on detail pages.
-func subscribeInline(kind, value, label string) g.Node {
+func subscribeInline(kind, value, label, csrf string) g.Node {
 	field := "model"
 	if kind == "creator" {
 		field = "creator"
@@ -430,6 +454,7 @@ func subscribeInline(kind, value, label string) g.Node {
 	return h.Form(
 		hx("post", "/subscribe"),
 		hx("swap", "none"),
+		csrfInput(csrf),
 		h.Input(h.Type("hidden"), h.Name(field), h.Value(value)),
 		h.Input(h.Type("hidden"), h.Name("auto_download"), h.Value("true")),
 		btnPrimary(g.Text(label)),

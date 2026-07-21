@@ -15,12 +15,14 @@ import (
 
 // globalFlags collects the flags shared by every command.
 type globalFlags struct {
-	configPath string
-	token      string
-	baseURL    string
-	modelRoot  string
-	dbPath     string
-	verbose    bool
+	configPath     string
+	token          string
+	baseURL        string
+	modelRoot      string
+	dbPath         string
+	maxFileSize    string
+	downloadJitter string
+	verbose        bool
 }
 
 // Execute builds and runs the root command.
@@ -46,6 +48,8 @@ func newRootCmd() *cobra.Command {
 	pf.StringVar(&gf.baseURL, "base-url", "", "CivitAI API base URL (default https://civitai.com)")
 	pf.StringVar(&gf.modelRoot, "model-root", "", "root directory for downloaded models")
 	pf.StringVar(&gf.dbPath, "db", "", "SQLite database path")
+	pf.StringVar(&gf.maxFileSize, "max-file-size", "", "skip auto-downloads whose primary file exceeds this size (e.g. 500MB, 2GB; 0/empty = unlimited)")
+	pf.StringVar(&gf.downloadJitter, "download-jitter", "", "anti-stampede window: schedule each auto-download at a random point in [0, dur) (e.g. 15m; 0 = start immediately)")
 	pf.BoolVarP(&gf.verbose, "verbose", "v", false, "verbose logging")
 
 	root.AddCommand(
@@ -76,11 +80,13 @@ func (a *app) close() {
 // build resolves configuration, opens the store, and constructs the API client.
 func (gf *globalFlags) build() (*app, error) {
 	cfg, err := config.Resolve(config.Flags{
-		ConfigPath: gf.configPath,
-		Token:      gf.token,
-		BaseURL:    gf.baseURL,
-		ModelRoot:  gf.modelRoot,
-		DBPath:     gf.dbPath,
+		ConfigPath:     gf.configPath,
+		Token:          gf.token,
+		BaseURL:        gf.baseURL,
+		ModelRoot:      gf.modelRoot,
+		DBPath:         gf.dbPath,
+		MaxFileSize:    gf.maxFileSize,
+		DownloadJitter: gf.downloadJitter,
 	})
 	if err != nil {
 		return nil, err

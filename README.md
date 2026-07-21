@@ -35,10 +35,19 @@ Requires **Go 1.25+**.
 ```sh
 go build -o civitai-manager .
 
-# Run the web UI + poller + download worker:
-./civitai-manager serve --addr :8787
+# Run the web UI + poller + download worker (binds loopback by default):
+./civitai-manager serve
 # → open http://localhost:8787
+
+# To expose the UI on your LAN, bind a non-loopback interface explicitly:
+./civitai-manager serve --addr 0.0.0.0:8787
 ```
+
+> **Security note:** the UI binds `127.0.0.1:8787` by default, so it is not
+> reachable from other machines. The UI has **no login**; its only protection is
+> a per-process CSRF token on the state-changing forms. Binding `--addr` to a
+> non-loopback interface exposes an **unauthenticated** UI (CSRF-token-only) to
+> anyone who can reach that interface — only do so on a trusted network.
 
 ### CLI
 
@@ -56,6 +65,15 @@ civitai-manager subscribe --creator someartist
 #   --backfill-latest    download the current latest version now
 #   --base-model SDXL    only download versions matching this base model
 #   --file-type Model    prefer this file type when a version has several
+
+# Global flags (apply to serve/check/subscribe):
+#   --max-file-size 2GB     skip auto-downloads whose primary file exceeds this
+#                           size (e.g. 500MB, 2GB; 0/empty = unlimited)
+#   --download-jitter 15m   anti-stampede: schedule each AUTO-detected download
+#                           at a random point in [0, dur) so a fleet of installs
+#                           doesn't hit CivitAI's download endpoint in unison
+#                           when a popular model publishes (0 = start at once).
+#                           Manual/--backfill-latest downloads always start now.
 
 civitai-manager list
 civitai-manager unsubscribe <id>
@@ -87,7 +105,9 @@ token: "your-civitai-api-key"      # or set CIVITAI_TOKEN
 base_url: "https://civitai.com"
 model_root: "~/civitai-models"
 default_poll_interval: "1h"        # floored at 15m (API edge-caches ~5m)
-addr: ":8787"
+download_jitter: "15m"             # anti-stampede window; "0" = start at once
+max_file_size: ""                  # e.g. "2GB"; empty/"0" = unlimited
+addr: "127.0.0.1:8787"             # loopback by default; set a LAN host to expose
 # db_path: "~/.config/civitai-manager/civitai-manager.db"
 ```
 
@@ -146,7 +166,18 @@ empty.
   Driven by an in-memory fake `civitai.Reader` (no network).
 - **Download worker** — SHA256 happy-path (case-insensitive), mismatch **fails
   the row and discards** the file, atomic rename, sidecar writes, `local_files`
-  indexing, and HTTP-error retry/fail — via `httptest` + a fake downloader.
+  indexing, and HTTP-error retry/fail — via `httptest` + a fake downloader. A
+  file the API gives **no hash** for is finalized but recorded as
+  **UNVERIFIED** (never reported as "verified"). A download interrupted by a
+  **graceful shutdown** is requeued (not failed) and completes on restart.
+- **Anti-stampede** — auto-detected downloads get a per-instance random
+  `not_before` start offset (within the `download_jitter` window) and are not
+  claimed before their time; manual/`--backfill-latest` downloads start
+  immediately.
+- **Size cap** — a version whose primary file exceeds `--max-file-size` is
+  skipped (a `size_skip` event), not enqueued.
+- **CSRF** — state-changing POSTs are rejected (403) without the per-process
+  token and accepted with it; `PollAll` (`check`) backs off on `ErrRateLimited`.
 - **Store** — migration applies to version 1; subscription CRUD + unique-target
   constraints; seen-versions ledger; queue state transitions + dedup guard.
 - **Config** — flag > env > file precedence; token redaction; XDG; duration parse.

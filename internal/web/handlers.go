@@ -24,7 +24,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load subscriptions", err)
 		return
 	}
-	s.render(w, http.StatusOK, dashboardPage(subs))
+	s.render(w, http.StatusOK, dashboardPage(subs, s.csrf))
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -74,7 +74,7 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 		s.render(w, status, page("Not found", errorNote("Could not load model "+id+": "+err.Error())))
 		return
 	}
-	s.render(w, http.StatusOK, modelDetailPage(m))
+	s.render(w, http.StatusOK, modelDetailPage(m, s.csrf))
 }
 
 func (s *Server) handleCreator(w http.ResponseWriter, r *http.Request) {
@@ -90,12 +90,15 @@ func (s *Server) handleCreator(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusBadGateway, page("@"+username, errorNote("Could not load creator: "+err.Error())))
 		return
 	}
-	s.render(w, http.StatusOK, creatorPage(username, res))
+	s.render(w, http.StatusOK, creatorPage(username, res, s.csrf))
 }
 
 func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		s.renderSubsWithError(w, "invalid form: "+err.Error())
+		return
+	}
+	if !s.verifyCSRF(w, r) {
 		return
 	}
 	opts := poller.SubscribeOptions{
@@ -148,6 +151,9 @@ func (s *Server) handleFlags(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
 	auto := r.FormValue("auto_download") == "true"
 	notify := r.FormValue("notify_only") == "true"
 	if err := s.store.SetSubscriptionFlags(id, auto, notify); err != nil {
@@ -159,13 +165,16 @@ func (s *Server) handleFlags(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "reload subscription", err)
 		return
 	}
-	s.render(w, http.StatusOK, subscriptionRow(*sub))
+	s.render(w, http.StatusOK, subscriptionRow(*sub, s.csrf))
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	if !s.verifyCSRF(w, r) {
 		return
 	}
 	if err := s.store.DeleteSubscription(id); err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -205,7 +214,7 @@ func (s *Server) renderSubsWithError(w http.ResponseWriter, errMsg string) {
 		s.renderError(w, "load subscriptions", err)
 		return
 	}
-	s.render(w, http.StatusOK, subscriptionsTable(subs, errMsg))
+	s.render(w, http.StatusOK, subscriptionsTable(subs, errMsg, s.csrf))
 }
 
 func (s *Server) renderError(w http.ResponseWriter, what string, err error) {

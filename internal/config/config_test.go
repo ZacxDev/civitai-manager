@@ -139,6 +139,96 @@ func TestDurationYAML(t *testing.T) {
 	}
 }
 
+func TestDefaultAddrIsLoopback(t *testing.T) {
+	// The UI must not be network-exposed out of the box (finding #4).
+	if !contains(DefaultAddr, "127.0.0.1") {
+		t.Errorf("DefaultAddr should bind loopback by default, got %q", DefaultAddr)
+	}
+}
+
+func TestParseSize(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    int64
+		wantErr bool
+	}{
+		{"", 0, false},
+		{"0", 0, false},
+		{"1024", 1024, false},
+		{"1kb", 1 << 10, false},
+		{"500MB", 500 << 20, false},
+		{"2G", 2 << 30, false},
+		{"1.5MB", int64(1.5 * float64(1<<20)), false},
+		{"nonsense", 0, true},
+		{"-5", 0, true},
+	}
+	for _, c := range cases {
+		got, err := ParseSize(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("ParseSize(%q): expected error, got %d", c.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseSize(%q): unexpected error %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("ParseSize(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestMaxFileSizeResolves(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnvToken, "")
+	cfg, err := Resolve(Flags{ConfigPath: filepath.Join(dir, "missing.yaml"), MaxFileSize: "500MB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxFileSizeBytes != 500<<20 {
+		t.Errorf("MaxFileSizeBytes = %d, want %d", cfg.MaxFileSizeBytes, int64(500<<20))
+	}
+}
+
+func TestDownloadJitterConfig(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.yaml")
+	t.Setenv(EnvToken, "")
+
+	// Default.
+	cfg, err := Resolve(Flags{ConfigPath: missing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DownloadJitter.D() != DefaultDownloadJitter {
+		t.Errorf("download jitter default = %v, want %v", cfg.DownloadJitter.D(), DefaultDownloadJitter)
+	}
+
+	// Flag override, including an explicit 0 (disabled).
+	for _, c := range []struct {
+		flag string
+		want time.Duration
+	}{
+		{"0", 0},
+		{"5m", 5 * time.Minute},
+	} {
+		cfg, err := Resolve(Flags{ConfigPath: missing, DownloadJitter: c.flag})
+		if err != nil {
+			t.Fatalf("resolve --download-jitter=%q: %v", c.flag, err)
+		}
+		if cfg.DownloadJitter.D() != c.want {
+			t.Errorf("--download-jitter=%q → %v, want %v", c.flag, cfg.DownloadJitter.D(), c.want)
+		}
+	}
+
+	// Invalid duration is a hard error.
+	if _, err := Resolve(Flags{ConfigPath: missing, DownloadJitter: "notaduration"}); err == nil {
+		t.Error("invalid --download-jitter should error")
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (indexOf(s, sub) >= 0)
 }
