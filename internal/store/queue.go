@@ -289,6 +289,37 @@ func (s *Store) RequeueCanceled(id int64) error {
 	return err
 }
 
+// RequeueDone transitions a completed ('done') row back to 'queued' so the
+// download worker re-fetches it, resetting the per-attempt download state
+// (bytes_done, sha256_actual, last_error, attempts, not_before). It is the
+// re-enqueue primitive behind `verify --repair`: a file the tool downloaded but
+// the user has since deleted/moved (or that no longer matches its hash) is
+// otherwise un-recoverable because its version is already in seen_versions.
+//
+// done→queued keeps the row inside the ACTIVE status set, so the ux_dlq_active
+// partial-unique index sees no new (version_id, file_id) — a row never conflicts
+// with itself on UPDATE, and the index guarantees at most one active row exists.
+// The guard `AND status = 'done'` makes it a no-op (ErrNotFound) on any other
+// status, so it can never disturb an in-flight download.
+func (s *Store) RequeueDone(id int64) error {
+	res, err := s.db.Exec(`UPDATE download_queue
+		SET status = ?, bytes_done = 0, sha256_actual = NULL, last_error = NULL,
+			attempts = 0, not_before = NULL, updated_at = ?
+		WHERE id = ? AND status = ?`,
+		string(StatusQueued), formatTime(time.Now().UTC()), id, string(StatusDone))
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // RequeueInterrupted resets any rows left in the downloading state (e.g. a
 // crash mid-transfer) back to queued so the worker re-processes them. Returns
 // the number of rows reset.

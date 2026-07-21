@@ -92,9 +92,20 @@ type Config struct {
 	// WebScanMaxFiles caps the model-file count a web-triggered scan walks before
 	// aborting. <=0 means the built-in default (DefaultWebScanMaxFiles).
 	WebScanMaxFiles int `yaml:"web_scan_max_files"`
+	// NoPreview, when true, skips writing the <base>.preview.png sidecar entirely.
+	// Default false preserves the historical behavior (write the full-resolution
+	// preview). Opt-in for users who do not want large image sidecars on disk.
+	NoPreview bool `yaml:"no_preview"`
+	// MaxPreviewSize caps the size of the preview image sidecar, as a human string
+	// ("2MB") or a plain byte count. A fetched preview larger than this is skipped
+	// (the model file is still downloaded). Empty / "0" means no cap (write any
+	// size). Parsed into MaxPreviewSizeBytes.
+	MaxPreviewSize string `yaml:"max_preview_size"`
 
 	// MaxFileSizeBytes is the resolved byte value of MaxFileSize (0 = unlimited).
 	MaxFileSizeBytes int64 `yaml:"-"`
+	// MaxPreviewSizeBytes is the resolved byte value of MaxPreviewSize (0 = no cap).
+	MaxPreviewSizeBytes int64 `yaml:"-"`
 }
 
 // Flags carries the command-line overrides. Empty-string / nil fields mean "not
@@ -114,6 +125,13 @@ type Flags struct {
 	TrashDir string
 	// WebScanTimeout overrides the web "Scan now" deadline (a Go duration string).
 	WebScanTimeout string
+	// NoPreview, when true, turns OFF preview-sidecar writing. It is opt-in: the
+	// flag can only enable the skip, never override a config `no_preview: true`
+	// back to false (there is no need to force-write via a flag).
+	NoPreview bool
+	// MaxPreviewSize overrides the preview-size cap (a human size string or byte
+	// count). Empty means "not set on the command line".
+	MaxPreviewSize string
 	// ConfigPath overrides the config-file location (default: the XDG path).
 	ConfigPath string
 }
@@ -326,6 +344,14 @@ func Resolve(flags Flags) (*Config, error) {
 		}
 		cfg.WebScanTimeout = Duration(d)
 	}
+	// NoPreview is opt-in: a set flag only turns the skip ON (it never overrides a
+	// config `no_preview: true` back to false).
+	if flags.NoPreview {
+		cfg.NoPreview = true
+	}
+	if flags.MaxPreviewSize != "" {
+		cfg.MaxPreviewSize = flags.MaxPreviewSize
+	}
 
 	if err := cfg.normalize(); err != nil {
 		return nil, err
@@ -377,6 +403,11 @@ func (c *Config) normalize() error {
 		return fmt.Errorf("invalid max_file_size %q: %w", c.MaxFileSize, err)
 	}
 	c.MaxFileSizeBytes = bytes
+	previewBytes, err := ParseSize(c.MaxPreviewSize)
+	if err != nil {
+		return fmt.Errorf("invalid max_preview_size %q: %w", c.MaxPreviewSize, err)
+	}
+	c.MaxPreviewSizeBytes = previewBytes
 	return nil
 }
 

@@ -24,6 +24,8 @@ type globalFlags struct {
 	downloadJitter string
 	trashDir       string
 	webScanTimeout string
+	noPreview      bool
+	maxPreviewSize string
 	verbose        bool
 }
 
@@ -64,6 +66,8 @@ func newRootCmd(bi BuildInfo) *cobra.Command {
 	pf.StringVar(&gf.maxFileSize, "max-file-size", "", "skip auto-downloads whose primary file exceeds this size (e.g. 500MB, 2GB; 0/empty = unlimited)")
 	pf.StringVar(&gf.downloadJitter, "download-jitter", "", "anti-stampede window: schedule each auto-download at a random point in [0, dur) (e.g. 15m; 0 = start immediately)")
 	pf.StringVar(&gf.trashDir, "trash-dir", "", "quarantine trash directory (default <model-root>/.trash)")
+	pf.BoolVar(&gf.noPreview, "no-preview", false, "do not write the .preview.png image sidecar (opt-in; default writes it)")
+	pf.StringVar(&gf.maxPreviewSize, "max-preview-size", "", "skip the .preview.png sidecar when the fetched image exceeds this size (e.g. 2MB; 0/empty = no cap)")
 	pf.BoolVarP(&gf.verbose, "verbose", "v", false, "verbose logging")
 
 	root.AddCommand(
@@ -73,6 +77,7 @@ func newRootCmd(bi BuildInfo) *cobra.Command {
 		newUnsubscribeCmd(gf),
 		newSearchCmd(gf),
 		newCheckCmd(gf),
+		newVerifyCmd(gf),
 		newScanCmd(gf),
 		newLibraryCmd(gf),
 	)
@@ -133,6 +138,8 @@ func (gf *globalFlags) build() (*app, error) {
 		DownloadJitter: gf.downloadJitter,
 		TrashDir:       gf.trashDir,
 		WebScanTimeout: gf.webScanTimeout,
+		NoPreview:      gf.noPreview,
+		MaxPreviewSize: gf.maxPreviewSize,
 	})
 	if err != nil {
 		return nil, err

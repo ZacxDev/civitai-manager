@@ -135,7 +135,7 @@ civitai-manager search "realistic vision"
 civitai-manager search --username someartist --type Checkpoint --limit 20
 civitai-manager search anime --tag style --nsfw --json
 
-# Global flags (apply to serve/check/subscribe):
+# Global flags (apply to serve/check/subscribe/verify):
 #   --max-file-size 2GB     skip auto-downloads whose primary file exceeds this
 #                           size (e.g. 500MB, 2GB; 0/empty = unlimited)
 #   --download-jitter 15m   anti-stampede: schedule each AUTO-detected download
@@ -143,6 +143,11 @@ civitai-manager search anime --tag style --nsfw --json
 #                           doesn't hit CivitAI's download endpoint in unison
 #                           when a popular model publishes (0 = start at once).
 #                           Manual/--backfill-latest downloads always start now.
+#   --no-preview            do NOT write the .preview.png image sidecar at all
+#                           (opt-in; the default still writes it)
+#   --max-preview-size 2MB  skip the .preview.png when the fetched image exceeds
+#                           this size (e.g. 2MB; 0/empty = no cap). The model
+#                           file and .civitai.info are still written.
 
 civitai-manager list
 civitai-manager unsubscribe <id>
@@ -151,6 +156,18 @@ civitai-manager unsubscribe <id>
 # fetch queued files immediately instead of leaving them for `serve`:
 civitai-manager check
 civitai-manager check --download
+
+# Reconcile downloaded files against the ledger and recover deleted/moved ones.
+# The source of truth is the tool's own completed downloads; `verify` stat()s each
+# recorded destination:
+civitai-manager verify                    # report: counts of OK / MISSING / CORRUPT
+civitai-manager verify --check-hash       # also re-hash present files (slower) → CORRUPT
+civitai-manager verify --repair           # re-download files reported MISSING
+civitai-manager verify --repair --check-hash   # also re-download CORRUPT (mismatched) files
+# Plain `verify` only reports and exits 0; `--repair` re-enqueues each offending
+# file (its done row → queued) and re-downloads it through the normal verify
+# pipeline. This is the path that recovers a model you deleted or moved on disk —
+# a normal re-subscribe/`check` cannot, because the version is already "seen".
 
 # Library: scan model directories (read-only: hash, match, flag deletion
 # candidates), then quarantine acts on the flags. --path adds extra directories
@@ -185,10 +202,12 @@ By default the one-shot download commands (`subscribe --backfill-latest`,
 `check --download`) print clean friendly progress/summary lines; add `-v` to see
 the detailed structured worker/poller logs. Each completed download prints a
 per-file verification line so you can see, at a glance, that the bytes were
-hash-checked against the API's expected SHA256:
+hash-checked against the API's expected SHA256. The name shown is the **on-disk**
+file name (files are written version-name-cased), not the API's file name — so
+the printed name is exactly what you will find (and can `grep`) on disk:
 
 ```
-✓ easynegative.safetensors (sha256 c74b4e810b03 verified)
+✓ EasyNegative.safetensors (sha256 c74b4e810b03 verified)
 ⚠ some-model.safetensors (unverified — no hash from API)
 ```
 
@@ -234,6 +253,10 @@ model_root: "~/civitai-models"
 default_poll_interval: "1h"        # floored at 15m (API edge-caches ~5m)
 download_jitter: "15m"             # anti-stampede window; "0" = start at once
 max_file_size: ""                  # e.g. "2GB"; empty/"0" = unlimited
+no_preview: false                  # true = never write the .preview.png sidecar
+max_preview_size: ""               # e.g. "2MB"; skip a preview larger than this
+                                   # (empty/"0" = no cap). Model + .civitai.info
+                                   # are always written regardless.
 addr: "127.0.0.1:8787"             # loopback by default; set a LAN host to expose
 web_scan_timeout: "2m"             # deadline for a web "Scan now" walk/hash
 web_scan_max_files: 50000          # model-file cap for a web scan; over → aborts
@@ -248,6 +271,9 @@ promptly, not just after it finishes).
 Downloaded files are laid out as
 `<model_root>/<type>/<creator>/<model>/<versionName>.<ext>` with sanitized path
 components, plus `.civitai.info` (raw version JSON) and `.preview.png` sidecars.
+The preview image can be suppressed entirely with `--no-preview` / `no_preview`,
+or size-capped with `--max-preview-size` / `max_preview_size` (previews are
+full-resolution by default, which can be large relative to a small model).
 
 ## SDK dependency
 

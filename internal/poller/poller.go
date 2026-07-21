@@ -95,6 +95,46 @@ func (p *Poller) SetMaxFileSize(bytes int64) { p.maxFileSizeBytes = bytes }
 // downloads (0 = start immediately).
 func (p *Poller) SetDownloadJitter(d time.Duration) { p.downloadJitter = d }
 
+// BackfillReason classifies why a `--backfill-latest` (or first-poll backfill)
+// did or did not enqueue the current latest version, so the CLI can print a
+// precise, non-overloaded message instead of a single generic line.
+type BackfillReason int
+
+const (
+	// BackfillReasonUnknown is the zero value (no backfill decision recorded).
+	BackfillReasonUnknown BackfillReason = iota
+	// BackfillEnqueued: a download row was created (the file will be fetched).
+	BackfillEnqueued
+	// BackfillAlreadyPresent: the latest version is already downloaded/queued —
+	// a done/active queue row exists, or the file is on disk with the expected
+	// hash — so there is nothing to fetch.
+	BackfillAlreadyPresent
+	// BackfillFilteredBaseModel: the latest version's base model does not match
+	// the subscription's base-model filter.
+	BackfillFilteredBaseModel
+	// BackfillFilteredSize: the latest version's primary file exceeds the
+	// configured max file size.
+	BackfillFilteredSize
+	// BackfillNoDownloadableFile: the latest version has no file we can download.
+	BackfillNoDownloadableFile
+	// BackfillNoCandidates: the subscription currently has no versions at all.
+	BackfillNoCandidates
+	// BackfillTransientError: a recoverable failure (API/DB) prevented enqueuing;
+	// the next poll retries.
+	BackfillTransientError
+)
+
+// BackfillOutcome is the definitive result of a BackfillLatest call: whether the
+// latest version was enqueued and, when it was not, a precise reason plus a
+// human-readable detail (e.g. the filter value or size limit) for the CLI.
+type BackfillOutcome struct {
+	Enqueued    bool
+	Reason      BackfillReason
+	VersionID   int
+	VersionName string
+	Detail      string
+}
+
 // PollResult summarizes one poll.
 type PollResult struct {
 	Seeded    bool
@@ -102,6 +142,14 @@ type PollResult struct {
 	Enqueued  int
 	Skipped   int
 	Candidate int
+
+	// The following capture the LAST enqueueCandidate decision made during the
+	// poll so a single-candidate backfill can report a precise reason. A normal
+	// multi-candidate poll overwrites them and ignores them; BackfillLatest calls
+	// enqueueCandidate exactly once, so they reflect that one call.
+	backfillReason  BackfillReason
+	backfillDetail  string
+	backfillVersion int
 }
 
 // fetchCandidates returns the current version candidates for a subscription in
@@ -216,8 +264,14 @@ func (p *Poller) PollOnce(ctx context.Context, sub store.Subscription, backfillL
 // anti-stampede random start offset (auto-detected downloads only). It returns
 // an enqueueOutcome the caller uses to decide whether to mark the version seen.
 func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c Candidate, res *PollResult, jitterStart bool) enqueueOutcome {
+	res.backfillVersion = c.VersionID
+	res.backfillReason = BackfillReasonUnknown
+	res.backfillDetail = ""
+
 	if sub.BaseModelFilter != "" && !strings.EqualFold(c.BaseModel, sub.BaseModelFilter) {
 		res.Skipped++
+		res.backfillReason = BackfillFilteredBaseModel
+		res.backfillDetail = sub.BaseModelFilter
 		return outcomePermanentSkip
 	}
 
@@ -230,6 +284,7 @@ func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c
 			ModelID: intPtr(c.ModelID), VersionID: intPtr(c.VersionID),
 			Message: fmt.Sprintf("Could not resolve version %d for download: %v", c.VersionID, err),
 		})
+		res.backfillReason = BackfillTransientError
 		return outcomeTransientError
 	}
 	file := civitai.SelectFile(vd.Files, sub.FileTypePref)
@@ -240,6 +295,7 @@ func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c
 			ModelID: intPtr(c.ModelID), VersionID: intPtr(c.VersionID),
 			Message: fmt.Sprintf("Version %d has no downloadable file", c.VersionID),
 		})
+		res.backfillReason = BackfillNoDownloadableFile
 		return outcomePermanentSkip
 	}
 
@@ -254,6 +310,9 @@ func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c
 					file.Name, humanSize(fileBytes), humanSize(p.maxFileSizeBytes)),
 			})
 			res.Skipped++
+			res.backfillReason = BackfillFilteredSize
+			res.backfillDetail = fmt.Sprintf("%s exceeds max file size %s",
+				humanSize(fileBytes), humanSize(p.maxFileSizeBytes))
 			return outcomePermanentSkip
 		}
 	}
@@ -264,6 +323,7 @@ func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c
 	}
 	if exists {
 		res.Skipped++
+		res.backfillReason = BackfillAlreadyPresent
 		return outcomePermanentSkip
 	}
 
@@ -281,6 +341,7 @@ func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c
 			Message: fmt.Sprintf("Skipping %s: already present with matching hash", file.Name),
 		})
 		res.Skipped++
+		res.backfillReason = BackfillAlreadyPresent
 		return outcomePermanentSkip
 	}
 
@@ -309,6 +370,7 @@ func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c
 	if err != nil {
 		// Transient: a DB error enqueuing. Do NOT mark seen — retried next poll.
 		p.log.Warn("enqueue failed", "err", err)
+		res.backfillReason = BackfillTransientError
 		return outcomeTransientError
 	}
 	if !inserted {
@@ -317,6 +379,7 @@ func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c
 		// race, or the ActiveQueueItemExists pre-check missed it). Settled decision
 		// — mark seen, but count it as a skip, not a fresh enqueue.
 		res.Skipped++
+		res.backfillReason = BackfillAlreadyPresent
 		return outcomePermanentSkip
 	}
 	_ = p.store.AddEvent(store.Event{
@@ -324,6 +387,7 @@ func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c
 		ModelID: intPtr(c.ModelID), VersionID: intPtr(c.VersionID),
 		Message: fmt.Sprintf("Queued download: %s", file.Name),
 	})
+	res.backfillReason = BackfillEnqueued
 	return outcomeEnqueued
 }
 
