@@ -1,10 +1,12 @@
 package queue
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -89,7 +91,7 @@ func TestDownloadHappyPathVerifiesAndFinalizes(t *testing.T) {
 
 	// Uppercase expected hash to prove case-insensitive verification.
 	expected := strings.ToUpper(sha256Hex(payload))
-	id, _ := st.Enqueue(store.QueueItem{
+	id, _, _ := st.Enqueue(store.QueueItem{
 		ModelID: 1, VersionID: 5, FileID: 50, FileName: "v1.safetensors",
 		DownloadURL: srv.URL + "/file", DestPath: dest, SHA256Expected: expected,
 		SizeKB: float64(len(payload)) / 1024,
@@ -148,7 +150,7 @@ func TestDownloadHashMismatchFailsRow(t *testing.T) {
 
 	st := newTestStore(t)
 	dest := filepath.Join(t.TempDir(), "out.safetensors")
-	id, _ := st.Enqueue(store.QueueItem{
+	id, _, _ := st.Enqueue(store.QueueItem{
 		ModelID: 1, VersionID: 5, FileID: 50, FileName: "out.safetensors",
 		DownloadURL: srv.URL, DestPath: dest,
 		SHA256Expected: "deadbeefdeadbeef", // wrong
@@ -185,7 +187,7 @@ func TestDownloadNoExpectedHashStillCompletes(t *testing.T) {
 
 	st := newTestStore(t)
 	dest := filepath.Join(t.TempDir(), "nohash.bin")
-	id, _ := st.Enqueue(store.QueueItem{
+	id, _, _ := st.Enqueue(store.QueueItem{
 		ModelID: 1, VersionID: 5, FileID: 50, FileName: "nohash.bin",
 		DownloadURL: srv.URL, DestPath: dest, // no SHA256Expected
 		SizeKB: 1,
@@ -247,7 +249,7 @@ func TestGracefulShutdownRequeuesInterruptedDownload(t *testing.T) {
 	st := newTestStore(t)
 	dest := filepath.Join(t.TempDir(), "interrupted.safetensors")
 	expected := sha256Hex(payload)
-	id, _ := st.Enqueue(store.QueueItem{
+	id, _, _ := st.Enqueue(store.QueueItem{
 		ModelID: 1, VersionID: 5, FileID: 50, FileName: "interrupted.safetensors",
 		DownloadURL: srv.URL, DestPath: dest, SHA256Expected: expected,
 		SizeKB: float64(len(payload)) / 1024,
@@ -303,7 +305,7 @@ func TestDownloadEmptyHashRecordedUnverified(t *testing.T) {
 
 	st := newTestStore(t)
 	dest := filepath.Join(t.TempDir(), "nohash.bin")
-	id, _ := st.Enqueue(store.QueueItem{
+	id, _, _ := st.Enqueue(store.QueueItem{
 		ModelID: 1, VersionID: 5, FileID: 50, FileName: "nohash.bin",
 		DownloadURL: srv.URL, DestPath: dest, // no SHA256Expected
 		SizeKB: 1,
@@ -347,7 +349,7 @@ func TestVerifiedDownloadEmitsVerifiedEvent(t *testing.T) {
 
 	st := newTestStore(t)
 	dest := filepath.Join(t.TempDir(), "hashed.bin")
-	_, _ = st.Enqueue(store.QueueItem{
+	_, _, _ = st.Enqueue(store.QueueItem{
 		ModelID: 1, VersionID: 5, FileID: 50, FileName: "hashed.bin",
 		DownloadURL: srv.URL, DestPath: dest, SHA256Expected: sha256Hex(payload), SizeKB: 1,
 	})
@@ -369,6 +371,54 @@ func TestVerifiedDownloadEmitsVerifiedEvent(t *testing.T) {
 	}
 }
 
+// TestDownloadCLIOutputSaysVerified proves finding #4: the user-facing worker log
+// (what a CLI user running `check --download` / `subscribe --backfill-latest`
+// sees on their terminal) says "verified" on a hash-matched download and
+// "unverified" when the API supplied no hash — never "verified" for an
+// unverified file.
+func TestDownloadCLIOutputSaysVerified(t *testing.T) {
+	run := func(t *testing.T, sha string, payload []byte) string {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write(payload)
+		}))
+		defer srv.Close()
+
+		st := newTestStore(t)
+		dest := filepath.Join(t.TempDir(), "out.bin")
+		_, _, _ = st.Enqueue(store.QueueItem{
+			ModelID: 1, VersionID: 5, FileID: 50, FileName: "out.bin",
+			DownloadURL: srv.URL, DestPath: dest, SHA256Expected: sha, SizeKB: 1,
+		})
+
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		w := New(st, fakeDownloader{}, nil, log)
+		if _, err := w.ProcessOne(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}
+
+	t.Run("hash-matched says verified", func(t *testing.T) {
+		payload := []byte("verified content")
+		out := run(t, sha256Hex(payload), payload)
+		if !strings.Contains(out, "verified") {
+			t.Errorf("hash-matched CLI output must say 'verified', got %q", out)
+		}
+		if strings.Contains(out, "unverified") {
+			t.Errorf("a hash-matched download must not read as 'unverified', got %q", out)
+		}
+	})
+
+	t.Run("no-hash says unverified", func(t *testing.T) {
+		payload := []byte("no hash supplied by the API")
+		out := run(t, "", payload) // no expected hash
+		if !strings.Contains(out, "unverified") {
+			t.Errorf("a no-hash download's CLI output must say 'unverified', got %q", out)
+		}
+	})
+}
+
 func TestDownloadHTTPErrorRetriesThenFails(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusInternalServerError)
@@ -377,7 +427,7 @@ func TestDownloadHTTPErrorRetriesThenFails(t *testing.T) {
 
 	st := newTestStore(t)
 	dest := filepath.Join(t.TempDir(), "err.bin")
-	id, _ := st.Enqueue(store.QueueItem{
+	id, _, _ := st.Enqueue(store.QueueItem{
 		ModelID: 1, VersionID: 5, FileID: 50, FileName: "err.bin",
 		DownloadURL: srv.URL, DestPath: dest, SizeKB: 1,
 	})

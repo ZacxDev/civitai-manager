@@ -94,6 +94,37 @@ func (p *Poller) SubscribeCreator(ctx context.Context, username string, opts Sub
 	return id, p.seedNew(ctx, id, opts.BackfillLatest)
 }
 
+// BackfillLatest re-enqueues the current latest version of an EXISTING
+// subscription for download, regardless of the seen-versions ledger. It exists
+// so a `subscribe --backfill-latest` re-run can RECOVER a backfill whose first
+// download failed: after the seeding poll the latest version is already marked
+// seen, so a normal poll would never re-enqueue it, and the failed queue row is
+// terminal — leaving the file otherwise un-retryable.
+//
+// It is idempotent: enqueueCandidate's dedup guards skip a version that is
+// already actively queued or already present on disk with the expected hash, so
+// re-running after a SUCCESSFUL backfill enqueues nothing. It never touches the
+// seen ledger. Returns the number of versions enqueued (0 or 1).
+func (p *Poller) BackfillLatest(ctx context.Context, subID int64) (int, error) {
+	sub, err := p.store.GetSubscription(subID)
+	if err != nil {
+		return 0, err
+	}
+	candidates, err := p.fetchCandidates(ctx, *sub)
+	if err != nil {
+		return 0, err
+	}
+	if len(candidates) == 0 {
+		return 0, nil
+	}
+	var res PollResult
+	// jitterStart=false: a user-initiated backfill starts immediately.
+	if p.enqueueCandidate(ctx, *sub, candidates[0], &res, false) == outcomeEnqueued {
+		return 1, nil
+	}
+	return 0, nil
+}
+
 // seedNew runs the first poll of a freshly-created subscription (seeding the
 // ledger, optionally enqueuing the latest version).
 func (p *Poller) seedNew(ctx context.Context, id int64, backfillLatest bool) error {

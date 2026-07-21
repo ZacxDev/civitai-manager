@@ -48,8 +48,18 @@ func scanQueueItem(sc scanner) (QueueItem, error) {
 	return it, nil
 }
 
-// Enqueue inserts a queued download row and returns its id.
-func (s *Store) Enqueue(it QueueItem) (int64, error) {
+// Enqueue inserts a queued download row. The insert is guarded by the partial
+// unique index ux_dlq_active (see migration 0004): a (version_id, file_id) that
+// already has a row in an ACTIVE status ('queued'/'downloading'/'done') hits
+// ON CONFLICT DO NOTHING and is skipped, so two racing enqueues can no longer
+// create duplicate rows. This is the atomic replacement for the previous
+// non-atomic ActiveQueueItemExists check-then-insert.
+//
+// It returns (id, inserted, err): inserted is true only when a NEW row was
+// created (id is its rowid); inserted is false when the row was skipped as a
+// duplicate (id is 0). A terminal 'failed'/'skipped' row does not block a fresh
+// enqueue, so a retry after failure still inserts.
+func (s *Store) Enqueue(it QueueItem) (int64, bool, error) {
 	now := formatTime(time.Now().UTC())
 	if it.Status == "" {
 		it.Status = StatusQueued
@@ -58,14 +68,30 @@ func (s *Store) Enqueue(it QueueItem) (int64, error) {
 		INSERT INTO download_queue
 			(subscription_id, model_id, version_id, file_id, file_name, download_url,
 			 dest_path, status, bytes_done, size_kb, sha256_expected, not_before, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (version_id, file_id)
+			WHERE status IN ('queued', 'downloading', 'done')
+			DO NOTHING`,
 		nullInt64(it.SubscriptionID), it.ModelID, it.VersionID, it.FileID,
 		it.FileName, it.DownloadURL, it.DestPath, string(it.Status),
 		it.BytesDone, it.SizeKB, nullStr(it.SHA256Expected), nullTimeStr(it.NotBefore), now, now)
 	if err != nil {
-		return 0, fmt.Errorf("enqueue download: %w", err)
+		return 0, false, fmt.Errorf("enqueue download: %w", err)
 	}
-	return res.LastInsertId()
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, false, fmt.Errorf("enqueue download: %w", err)
+	}
+	if affected == 0 {
+		// ON CONFLICT DO NOTHING: an active row for this (version_id, file_id)
+		// already exists. Not inserted.
+		return 0, false, nil
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, false, fmt.Errorf("enqueue download: %w", err)
+	}
+	return id, true, nil
 }
 
 // ActiveQueueItemExists reports whether a (version_id, file_id) already has a

@@ -99,7 +99,7 @@ func TestActiveDownloadForDest(t *testing.T) {
 	if ok, _ := st.ActiveDownloadForDest(dest); ok {
 		t.Fatal("no queue row yet; should be inactive")
 	}
-	id, err := st.Enqueue(QueueItem{ModelID: 1, VersionID: 1, FileID: 1, FileName: "dl",
+	id, _, err := st.Enqueue(QueueItem{ModelID: 1, VersionID: 1, FileID: 1, FileName: "dl",
 		DownloadURL: "http://x", DestPath: dest, Status: StatusQueued})
 	if err != nil {
 		t.Fatal(err)

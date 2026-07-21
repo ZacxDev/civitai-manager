@@ -261,7 +261,7 @@ func (s *Scanner) pruneMissingModels(seen map[string]bool) error {
 	if err != nil {
 		return err
 	}
-	roots := s.Roots()
+	roots := resolveRoots(s.Roots())
 	for _, f := range files {
 		if f.Kind != store.LocalKindModel {
 			continue

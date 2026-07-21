@@ -64,7 +64,7 @@ func TestIntegration_LibraryScanMatchesLive(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	if _, err := st.Enqueue(store.QueueItem{
+	if _, _, err := st.Enqueue(store.QueueItem{
 		ModelID: vd.ModelID, VersionID: vd.ID, FileID: file.ID, FileName: file.Name,
 		DownloadURL: downloadURL, DestPath: dest, Status: store.StatusQueued,
 		SizeKB: file.SizeKB, SHA256Expected: file.Hashes.SHA256,

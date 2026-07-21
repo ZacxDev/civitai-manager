@@ -105,6 +105,62 @@ func TestAnalyzerDuplicateOfflineUnmatched(t *testing.T) {
 	}
 }
 
+// TestAnalyzerDuplicateKeepsBestOrganizedCopy proves keeper selection is
+// layout-aware: given two byte-identical copies — one in the canonical
+// <type>/<creator>/<model>/ layout WITH both sidecars, one loose with none — the
+// LOOSE copy is flagged duplicate and the canonical, sidecar-carrying copy is the
+// keeper (not flagged). (Before the fix the shortest-path loose copy was kept.)
+func TestAnalyzerDuplicateKeepsBestOrganizedCopy(t *testing.T) {
+	root := t.TempDir()
+	// Canonical layout: <root>/<type>/<creator>/<model>/<version>.safetensors,
+	// carrying both sidecars.
+	canonical := filepath.Join(root, "LORA", "alice", "CoolModel", "v1.safetensors")
+	loose := filepath.Join(root, "loose.safetensors") // shorter path, no sidecars
+	writeFile(t, canonical, "same")
+	writeFile(t, loose, "same")
+	writeFile(t, filepath.Join(root, "LORA", "alice", "CoolModel", "v1.civitai.info"), `{"id":1}`)
+	writeFile(t, filepath.Join(root, "LORA", "alice", "CoolModel", "v1.preview.png"), "img")
+
+	hashes := map[string]string{canonical: "same", loose: "same"}
+	fr := &fakeReader{byHash: versionMap("same", version(40, 400, "same"))}
+
+	report := analyzerScan(t, root, hashes, fr)
+	if len(report.Candidates) != 1 {
+		t.Fatalf("expected exactly one duplicate flagged, got %d: %+v", len(report.Candidates), report.Candidates)
+	}
+	got := reasonByPath(report.Candidates)
+	if got["loose.safetensors"] != store.CandidateDuplicate {
+		t.Fatalf("the loose copy should be flagged duplicate, got %v", got)
+	}
+	if _, flagged := got["v1.safetensors"]; flagged {
+		t.Fatal("the canonical, sidecar-carrying copy must be the keeper (not flagged)")
+	}
+}
+
+// TestAnalyzerDuplicateKeeperTiebreakDeterministic proves that when two copies
+// are equally organized (neither canonical, equal sidecar counts, equal-length
+// paths), the keeper falls back to the deterministic lexical tiebreak — so the
+// same survivor is chosen on every re-run.
+func TestAnalyzerDuplicateKeeperTiebreakDeterministic(t *testing.T) {
+	root := t.TempDir()
+	aaa := filepath.Join(root, "aaa.safetensors")
+	bbb := filepath.Join(root, "bbb.safetensors") // same length as aaa
+	writeFile(t, aaa, "same")
+	writeFile(t, bbb, "same")
+
+	hashes := map[string]string{aaa: "same", bbb: "same"}
+	fr := &fakeReader{byHash: versionMap("same", version(41, 401, "same"))}
+
+	report := analyzerScan(t, root, hashes, fr)
+	if len(report.Candidates) != 1 {
+		t.Fatalf("expected exactly one duplicate flagged, got %d", len(report.Candidates))
+	}
+	// Lexically smallest path ("aaa") is the keeper; "bbb" is flagged.
+	if got := reasonByPath(report.Candidates); got["bbb.safetensors"] != store.CandidateDuplicate {
+		t.Fatalf("deterministic tiebreak should keep aaa and flag bbb, got %v", got)
+	}
+}
+
 func TestAnalyzerBroken(t *testing.T) {
 	root := t.TempDir()
 
@@ -147,7 +203,7 @@ func TestAnalyzerActivePartNotBroken(t *testing.T) {
 
 	st := newTestStore(t)
 	// An in-flight download row targeting dest keeps the .part from being broken.
-	if _, err := st.Enqueue(store.QueueItem{
+	if _, _, err := st.Enqueue(store.QueueItem{
 		ModelID: 1, VersionID: 1, FileID: 1, FileName: "downloading.safetensors",
 		DownloadURL: "http://x", DestPath: dest, Status: store.StatusDownloading,
 	}); err != nil {
