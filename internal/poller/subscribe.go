@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/civitai/civitai-manager/internal/store"
+	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
 // ErrAlreadySubscribed is returned when a subscription for the same target

@@ -3,7 +3,7 @@ package poller
 import (
 	"encoding/json"
 
-	"github.com/civitai/civitai-manager/internal/civitai"
+	"github.com/ZacxDev/civitai-manager/internal/civitai"
 )
 
 // Candidate is one model-version discovered during a poll, flattened to the

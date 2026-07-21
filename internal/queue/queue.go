@@ -17,9 +17,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/civitai/civitai-manager/internal/civitai"
-	"github.com/civitai/civitai-manager/internal/hashutil"
-	"github.com/civitai/civitai-manager/internal/store"
+	"github.com/ZacxDev/civitai-manager/internal/civitai"
+	"github.com/ZacxDev/civitai-manager/internal/hashutil"
+	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
 // Worker drains the download queue.

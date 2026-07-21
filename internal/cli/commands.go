@@ -11,11 +11,11 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/civitai/civitai-manager/internal/civitai"
-	"github.com/civitai/civitai-manager/internal/poller"
-	"github.com/civitai/civitai-manager/internal/queue"
-	"github.com/civitai/civitai-manager/internal/store"
-	"github.com/civitai/civitai-manager/internal/web"
+	"github.com/ZacxDev/civitai-manager/internal/civitai"
+	"github.com/ZacxDev/civitai-manager/internal/poller"
+	"github.com/ZacxDev/civitai-manager/internal/queue"
+	"github.com/ZacxDev/civitai-manager/internal/store"
+	"github.com/ZacxDev/civitai-manager/internal/web"
 	"github.com/spf13/cobra"
 )
 

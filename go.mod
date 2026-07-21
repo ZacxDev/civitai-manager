@@ -1,9 +1,9 @@
-module github.com/civitai/civitai-manager
+module github.com/ZacxDev/civitai-manager
 
 go 1.25.0
 
 require (
-	github.com/civitai/cli v0.1.79
+	github.com/civitai/cli v0.1.80-0.20260721045135-4405553fed27
 	github.com/spf13/cobra v1.8.1
 	gopkg.in/yaml.v3 v3.0.1
 	maragu.dev/gomponents v1.3.0
@@ -27,10 +27,3 @@ require (
 	modernc.org/strutil v1.2.0 // indirect
 	modernc.org/token v1.1.0 // indirect
 )
-
-// TEMPORARY: point at the local SDK worktree until civitai/cli PR #172 (which
-// promotes pkg/civitai to a public, importable SDK) merges and a tagged release
-// is cut. Once that lands, delete this replace directive and pin the tagged
-// version in the require block above -- no code change is required, only the
-// version selector.
-replace github.com/civitai/cli => /home/zach/workspace/civit/cli-pkg-sdk

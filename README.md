@@ -95,22 +95,12 @@ Downloaded files are laid out as
 `<model_root>/<type>/<creator>/<model>/<versionName>.<ext>` with sanitized path
 components, plus `.civitai.info` (raw version JSON) and `.preview.png` sidecars.
 
-## The temporary `replace` directive
+## SDK dependency
 
-This app imports the official client SDK
-`github.com/civitai/cli/pkg/civitai`, which is being promoted to a public,
-importable package in **civitai/cli PR #172** (not yet merged). Until that lands
-and a version is tagged, `go.mod` points at a local worktree:
-
-```
-replace github.com/civitai/cli => /home/zach/workspace/civit/cli-pkg-sdk
-```
-
-**Once PR #172 merges and a release is tagged, delete the `replace` directive
-and pin the tagged version in the `require` block** — no code change is required.
-
-> The module path `github.com/civitai/civitai-manager` is a **placeholder**; if
-> this is hosted elsewhere, change the path in `go.mod` and the internal imports.
+This app imports the official client SDK `github.com/civitai/cli/pkg/civitai`
+(promoted to a public, importable package in civitai/cli #172). `go.mod` pins the
+merged commit as a pseudo-version; once civitai/cli cuts a tagged release
+containing `pkg/civitai`, bump the `require` to that tag.
 
 ## Architecture
 

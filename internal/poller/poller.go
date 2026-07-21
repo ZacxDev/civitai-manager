@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/civitai/civitai-manager/internal/civitai"
-	"github.com/civitai/civitai-manager/internal/hashutil"
-	"github.com/civitai/civitai-manager/internal/store"
+	"github.com/ZacxDev/civitai-manager/internal/civitai"
+	"github.com/ZacxDev/civitai-manager/internal/hashutil"
+	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
 // Poller runs subscription polls against a civitai.Reader and records results

@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/civitai/civitai-manager/internal/civitai"
-	"github.com/civitai/civitai-manager/internal/store"
+	"github.com/ZacxDev/civitai-manager/internal/civitai"
+	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
 // fakeDownloader fetches via a plain client (the httptest server is loopback

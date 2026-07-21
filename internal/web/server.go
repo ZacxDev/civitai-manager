@@ -10,9 +10,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/civitai/civitai-manager/internal/civitai"
-	"github.com/civitai/civitai-manager/internal/poller"
-	"github.com/civitai/civitai-manager/internal/store"
+	"github.com/ZacxDev/civitai-manager/internal/civitai"
+	"github.com/ZacxDev/civitai-manager/internal/poller"
+	"github.com/ZacxDev/civitai-manager/internal/store"
 	g "maragu.dev/gomponents"
 )
 

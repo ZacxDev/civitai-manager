@@ -73,7 +73,7 @@ var _ Client = (*sdk.Client)(nil)
 // New builds a live SDK client for the given base URL and personal API token
 // (pass "" for anonymous read-only access).
 func New(baseURL, token string) *sdk.Client {
-	return sdk.New(baseURL, token, "")
+	return sdk.New(baseURL, token)
 }
 
 // SelectFile chooses which file of a version to download. When fileTypePref is

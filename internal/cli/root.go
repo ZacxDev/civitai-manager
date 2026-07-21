@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/civitai/civitai-manager/internal/civitai"
-	"github.com/civitai/civitai-manager/internal/config"
-	"github.com/civitai/civitai-manager/internal/store"
+	"github.com/ZacxDev/civitai-manager/internal/civitai"
+	"github.com/ZacxDev/civitai-manager/internal/config"
+	"github.com/ZacxDev/civitai-manager/internal/store"
 	sdk "github.com/civitai/cli/pkg/civitai"
 	"github.com/spf13/cobra"
 )
