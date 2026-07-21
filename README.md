@@ -158,14 +158,59 @@ the dashboard + embedded assets; `subscribe` seeds without downloading; `list`,
 `check`, and `unsubscribe` work; a bad model id surfaces the SDK's classified
 `404` error.
 
-**NOT yet verified — needs live validation against api.civitai.com:**
+**Live validation against api.civitai.com** is now available as an opt-in
+integration-test harness — see [Live integration tests](#live-integration-tests).
+Run it with your own `CIVITAI_TOKEN` to exercise these real code paths:
 
 - Real API response shapes (field presence/casing) beyond the SDK's typed structs.
-- An actual authenticated **file download** end-to-end (the local fake exercises
-  the worker, but not CivitAI's signed-redirect + auth flow or real hashes).
-- Real preview-image URLs and `.civitai.info` contents against live data.
+- An actual authenticated **file download** end-to-end — CivitAI's signed-redirect
+  + auth flow, with the downloaded bytes' SHA256 checked against the API hash.
+- by-hash version resolution (`GetModelVersionByHash`) round-trip.
+- `ErrNotFound` classification on a bad id.
+- The real poller seed/diff cycle against live model data.
+- `.civitai.info` / `.preview.png` sidecars written from live data.
+
+**Still NOT covered (even by the live harness):**
+
 - Rate-limit backoff behaviour against the live throttle.
 - Creator polling against a real creator's `/api/v1/models?username=` payload.
+
+### Live integration tests
+
+These tests hit the **real** `api.civitai.com`. They are gated so ordinary
+`go test ./...` and CI stay green offline: they compile only under the
+`integration` build tag AND skip unless `CIVITAI_INTEGRATION=1` is set (auth
+tests also need `CIVITAI_TOKEN`).
+
+```sh
+# Read/metadata + by-hash + error-classification + poller seed (no file bytes):
+CIVITAI_INTEGRATION=1 CIVITAI_TOKEN=xxx \
+  go test -tags integration ./internal/integration/ -run Integration -v
+
+# ...plus the real authenticated file-download test (transfers real bytes):
+CIVITAI_INTEGRATION=1 CIVITAI_INTEGRATION_DOWNLOAD=1 CIVITAI_TOKEN=xxx \
+  go test -tags integration ./internal/integration/ -run Integration -v
+```
+
+Or via `make`:
+
+```sh
+make integration-test CIVITAI_TOKEN=xxx
+make integration-test-download CIVITAI_TOKEN=xxx
+```
+
+The live targets default to long-lived public resources and are overridable:
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `CIVITAI_TEST_MODEL_ID` | `4384` (DreamShaper) | Model used for metadata + poller tests |
+| `CIVITAI_TEST_DOWNLOAD_VERSION_ID` | `9208` (EasyNegative embedding, ~25 KB) | **Small** file version for the real-download test |
+| `CIVITAI_BASE_URL` | `https://civitai.com` | API base URL |
+
+The download default is intentionally a **tiny** textual-inversion embedding, not
+a multi-GB checkpoint, so the test transfers only tens of KB. If a default id has
+since been removed upstream, override it. The download test refuses any primary
+file larger than ~500 MB as a safety guard.
 
 ### Deferred / stubbed (post-MVP)
 
