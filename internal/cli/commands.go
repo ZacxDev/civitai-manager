@@ -69,10 +69,13 @@ func serveRun(ctx context.Context, st *store.Store, client civitai.Client, cfg *
 	srv := web.NewServer(st, client, pol, web.Config{
 		BaseURL:             cfg.BaseURL,
 		DefaultPollInterval: cfg.DefaultPollInterval.D(),
+		Addr:                cfg.Addr,
 		ModelRoot:           cfg.ModelRoot,
 		TrashDir:            cfg.TrashDir,
 		LibraryPaths:        cfg.LibraryPaths,
 		Extensions:          cfg.LibraryExtensions,
+		WebScanTimeout:      cfg.WebScanTimeout.D(),
+		WebScanMaxFiles:     cfg.WebScanMaxFiles,
 	}, log)
 
 	var wg sync.WaitGroup
@@ -117,11 +120,15 @@ func serveRun(ctx context.Context, st *store.Store, client civitai.Client, cfg *
 }
 
 func newServeCmd(gf *globalFlags) *cobra.Command {
-	var addr string
+	var (
+		addr           string
+		webScanTimeout string
+	)
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the web UI, subscription poller, and download worker",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			gf.webScanTimeout = webScanTimeout
 			a, err := gf.build()
 			if err != nil {
 				return err
@@ -138,6 +145,7 @@ func newServeCmd(gf *globalFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&addr, "addr", "", "listen address (default from config, 127.0.0.1:8787); use a non-loopback host to expose the UI on your LAN")
+	cmd.Flags().StringVar(&webScanTimeout, "web-scan-timeout", "", "deadline for a web \"Scan now\" (e.g. 2m; default from config). Bounds the web-triggered directory walk/hash")
 	return cmd
 }
 

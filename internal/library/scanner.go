@@ -2,6 +2,8 @@ package library
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -9,6 +11,12 @@ import (
 
 	"github.com/ZacxDev/civitai-manager/internal/store"
 )
+
+// ErrScanTooLarge is returned when a scan walks more model-extension files than
+// the configured Options.MaxFiles budget. It aborts the walk BEFORE any hashing
+// or store mutation, so a too-broad (or adversarial) path cannot tie up the
+// process; the caller surfaces a "narrow the path" message.
+var ErrScanTooLarge = errors.New("scan too large; narrow the path")
 
 // ScanReport summarizes a completed scan.
 type ScanReport struct {
@@ -43,15 +51,28 @@ type walkResult struct {
 // walk inventories the scan roots, collecting model-weight files (by extension)
 // plus the sidecars/partials the broken-file analysis needs. It skips hidden
 // directories and the trash dir, and never mutates anything.
-func (s *Scanner) walk() (walkResult, error) {
+//
+// The walk is context-cancellable: ctx.Err() is checked INSIDE the WalkDir
+// callback, so a client disconnect, a deadline, or Ctrl-C aborts the (possibly
+// long) walk phase promptly rather than only after it finishes. When
+// Options.MaxFiles > 0 the walk aborts with ErrScanTooLarge once that many
+// model-extension files have been seen, bounding the arbitrary-path primitive
+// the web endpoint exposes.
+func (s *Scanner) walk(ctx context.Context) (walkResult, error) {
 	var wr walkResult
 	wr.modelRoots = map[string]string{}
 	seen := map[string]bool{}
 	trash := filepath.Clean(s.opts.TrashDir)
+	modelCount := 0
 
 	for _, root := range s.Roots() {
 		root := root
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if cerr := ctx.Err(); cerr != nil {
+				// Abort the walk on cancel/deadline; returning the ctx error stops
+				// WalkDir immediately and propagates cleanly to the caller.
+				return cerr
+			}
 			if err != nil {
 				// A permission error on one subtree must not abort the whole scan.
 				s.log.Warn("scan: skipping unreadable path", "path", path, "err", err)
@@ -77,6 +98,12 @@ func (s *Scanner) walk() (walkResult, error) {
 				return nil
 			}
 			seen[abs] = true
+			if s.opts.Extensions[strings.ToLower(filepath.Ext(abs))] {
+				modelCount++
+				if s.opts.MaxFiles > 0 && modelCount > s.opts.MaxFiles {
+					return fmt.Errorf("%w (limit %d model files)", ErrScanTooLarge, s.opts.MaxFiles)
+				}
+			}
 			classify(&wr, abs, s.opts.Extensions, root)
 			return nil
 		})
@@ -111,17 +138,19 @@ func classify(wr *walkResult, abs string, exts map[string]bool, root string) {
 // analyze for deletion candidates. It records everything to the store and
 // returns a report. It never moves or renames a user file.
 func (s *Scanner) Scan(ctx context.Context) (*ScanReport, error) {
-	wr, err := s.walk()
+	wr, err := s.walk(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	report := &ScanReport{Roots: s.Roots()}
 
-	// Reset stale candidate flags so a fixed/removed condition never lingers.
-	if err := s.store.ClearCandidates(); err != nil {
-		return nil, err
-	}
+	// NOTE: candidate flags are deliberately NOT cleared here. Clearing up front
+	// meant an aborted/failed scan (a cancelled walk, a per-file error, a store
+	// hiccup) wiped the prior candidate flags AND left local_files half-rewritten.
+	// Instead the walk+process+prune below rebuild the index first, and the stale
+	// flags are cleared only immediately before analyze() re-derives them (see
+	// below) — so a failed scan leaves the previous candidate state intact.
 
 	seenPaths := make(map[string]bool, len(wr.modelFiles))
 	for _, path := range wr.modelFiles {
@@ -140,6 +169,14 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanReport, error) {
 	// not skewed by phantom entries.
 	if err := s.pruneMissingModels(seenPaths); err != nil {
 		s.log.Warn("scan: prune failed", "err", err)
+	}
+
+	// The walk+process+prune completed: only now is it safe to reset stale
+	// candidate flags, immediately before analyze() re-derives them from the
+	// refreshed index. Clearing here (rather than up front) keeps the prior
+	// candidate state intact on any earlier abort/failure.
+	if err := s.store.ClearCandidates(); err != nil {
+		return report, err
 	}
 
 	// Analyze the (now-current) index for deletion candidates.

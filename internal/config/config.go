@@ -8,6 +8,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -36,6 +37,15 @@ const (
 	// MinPollInterval is the hard floor enforced on any subscription's poll
 	// interval to stay a good API citizen (well above the 5-minute edge cache).
 	MinPollInterval = 15 * time.Minute
+	// DefaultWebScanTimeout bounds a web-triggered library scan: the "Scan now"
+	// button walks/hashes host directories, so a deadline keeps a large (or
+	// adversarial) path from tying up the server indefinitely. The CLI scan is
+	// unbounded (the operator typed the path knowingly).
+	DefaultWebScanTimeout = 2 * time.Minute
+	// DefaultWebScanMaxFiles caps how many model-extension files a web-triggered
+	// scan will walk before aborting with "scan too large; narrow the path". It
+	// bounds the arbitrary-path walk primitive the web endpoint exposes.
+	DefaultWebScanMaxFiles = 50000
 	// EnvToken is the environment variable holding the API token.
 	EnvToken = "CIVITAI_TOKEN"
 
@@ -76,6 +86,12 @@ type Config struct {
 	// LibraryExtensions overrides the model-weight extension set the scanner
 	// recognises. Empty means the built-in default.
 	LibraryExtensions []string `yaml:"library_extensions"`
+	// WebScanTimeout bounds a web-triggered "Scan now". Empty/<=0 means the
+	// built-in default (DefaultWebScanTimeout).
+	WebScanTimeout Duration `yaml:"web_scan_timeout"`
+	// WebScanMaxFiles caps the model-file count a web-triggered scan walks before
+	// aborting. <=0 means the built-in default (DefaultWebScanMaxFiles).
+	WebScanMaxFiles int `yaml:"web_scan_max_files"`
 
 	// MaxFileSizeBytes is the resolved byte value of MaxFileSize (0 = unlimited).
 	MaxFileSizeBytes int64 `yaml:"-"`
@@ -96,6 +112,8 @@ type Flags struct {
 	LibraryPaths []string
 	// TrashDir overrides the quarantine trash directory.
 	TrashDir string
+	// WebScanTimeout overrides the web "Scan now" deadline (a Go duration string).
+	WebScanTimeout string
 	// ConfigPath overrides the config-file location (default: the XDG path).
 	ConfigPath string
 }
@@ -214,6 +232,8 @@ func defaults() (*Config, error) {
 		DefaultPollInterval: Duration(DefaultPollInterval),
 		DownloadJitter:      Duration(DefaultDownloadJitter),
 		DBPath:              filepath.Join(dir, "civitai-manager.db"),
+		WebScanTimeout:      Duration(DefaultWebScanTimeout),
+		WebScanMaxFiles:     DefaultWebScanMaxFiles,
 	}, nil
 }
 
@@ -299,6 +319,13 @@ func Resolve(flags Flags) (*Config, error) {
 	if flags.TrashDir != "" {
 		cfg.TrashDir = flags.TrashDir
 	}
+	if flags.WebScanTimeout != "" {
+		d, err := time.ParseDuration(flags.WebScanTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --web-scan-timeout %q: %w", flags.WebScanTimeout, err)
+		}
+		cfg.WebScanTimeout = Duration(d)
+	}
 
 	if err := cfg.normalize(); err != nil {
 		return nil, err
@@ -337,12 +364,50 @@ func (c *Config) normalize() error {
 	if c.DownloadJitter.D() < 0 {
 		c.DownloadJitter = 0
 	}
+	// A non-positive web-scan budget is meaningless; fall back to the safe
+	// built-in bounds so the arbitrary-path walk primitive is always capped.
+	if c.WebScanTimeout.D() <= 0 {
+		c.WebScanTimeout = Duration(DefaultWebScanTimeout)
+	}
+	if c.WebScanMaxFiles <= 0 {
+		c.WebScanMaxFiles = DefaultWebScanMaxFiles
+	}
 	bytes, err := ParseSize(c.MaxFileSize)
 	if err != nil {
 		return fmt.Errorf("invalid max_file_size %q: %w", c.MaxFileSize, err)
 	}
 	c.MaxFileSizeBytes = bytes
 	return nil
+}
+
+// IsLoopbackAddr reports whether a listen address (host:port, a bare host, or a
+// bare :port) binds ONLY the loopback interface. It is the gate the web server
+// uses to decide whether the arbitrary extra-scan-path capability is safe to
+// expose: only a loopback bind is single-user-local.
+//
+// The default is deliberately SAFE — anything it cannot positively prove is
+// loopback (an empty host, a bare :port that binds every interface, 0.0.0.0/::,
+// or an unresolved hostname) is treated as non-loopback.
+func IsLoopbackAddr(addr string) bool {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return false
+	}
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false // a bare ":port" binds all interfaces
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false // an unresolved hostname is not provably loopback
 }
 
 // ParseSize parses a human file-size string into a byte count. It accepts a

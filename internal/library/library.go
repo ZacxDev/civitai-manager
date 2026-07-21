@@ -80,6 +80,11 @@ type Options struct {
 	// local .civitai.info sidecars; everything else is recorded unmatched. Local
 	// analysis (duplicates, broken) still runs.
 	NoRemote bool
+	// MaxFiles bounds how many model-extension files the walk will collect before
+	// aborting with ErrScanTooLarge. 0 means unlimited (the CLI default — the
+	// operator typed the path knowingly). The web endpoint sets a finite cap so
+	// its arbitrary-path walk cannot be unbounded.
+	MaxFiles int
 }
 
 // Scanner runs the read-only scan/match/analyze pipeline and the quarantine

@@ -28,6 +28,14 @@ managing subscriptions, searching CivitAI, and watching the download queue.
   form accepts extra scan paths (one absolute directory per line or
   comma-separated) so cross-directory duplicates outside `model_root` — the same
   reach as the CLI `scan --path` — surface as quarantinable candidates in the UI.
+  The web scan is **confined**: it refuses `/`, system directories (`/etc`,
+  `/proc`, `/usr`, …), and your `$HOME` root itself; it is bounded by a deadline
+  (`--web-scan-timeout`, default 2m) and a model-file cap (default 50k) so an
+  over-broad path aborts with a "narrow the path" message; and the extra-path
+  input is **only available when the server is bound to loopback** (see the
+  security note below). By default a web scan runs **offline** (local
+  duplicate/broken analysis only) and does not send file hashes to CivitAI —
+  tick "Match against CivitAI" to opt into by-hash matching for that scan.
 - **Search** CivitAI from the CLI or UI (first page / `--limit`).
 - **Library management** — `scan` an existing model directory (hash, match to
   CivitAI, flag superseded/duplicate/broken deletion candidates, read-only), then
@@ -94,6 +102,14 @@ go build -o civitai-manager .
 > a per-process CSRF token on the state-changing forms. Binding `--addr` to a
 > non-loopback interface exposes an **unauthenticated** UI (CSRF-token-only) to
 > anyone who can reach that interface — only do so on a trusted network.
+>
+> Because the Library "Scan now" form can walk and hash arbitrary host
+> directories, that **extra-scan-path capability is disabled on a non-loopback
+> bind**: a LAN-exposed server may only scan `model_root` and configured
+> `library_paths`, the extra-path input is not rendered, and any submitted
+> `scan_paths` is rejected. On loopback the web scan is still confined (no `/`,
+> no system dirs, not `$HOME` itself) and bounded by `--web-scan-timeout` and a
+> model-file cap.
 
 ### CLI
 
@@ -147,6 +163,14 @@ civitai-manager scan --path ~/ComfyUI/models --path ~/A1111/models/Lora
 # WITHOUT re-specifying <dir>. A file may only be quarantined if it lies inside
 # model_root, a root that was actually scanned (recorded at scan time), or an
 # explicit --path — never an arbitrary path.
+#
+# Note on persistence: the extra scan *paths* (CLI --path / the web form's extra
+# paths) are NOT saved as config — you re-supply them each run. But each scanned
+# file's `scan_root` IS persisted on its index row, so a file that MATCHED a
+# CivitAI version while found under an extra path stays quarantine-eligible
+# afterwards without re-passing that path. Safety bound: only files that MATCH a
+# CivitAI version can ever be quarantined — an unmatched host file scanned via an
+# extra path is recorded/inventoried but can NEVER be moved.
 civitai-manager library candidates
 civitai-manager library quarantine --all              # dry-run over all candidates
 civitai-manager library quarantine --reason duplicate --apply
@@ -211,8 +235,15 @@ default_poll_interval: "1h"        # floored at 15m (API edge-caches ~5m)
 download_jitter: "15m"             # anti-stampede window; "0" = start at once
 max_file_size: ""                  # e.g. "2GB"; empty/"0" = unlimited
 addr: "127.0.0.1:8787"             # loopback by default; set a LAN host to expose
+web_scan_timeout: "2m"             # deadline for a web "Scan now" walk/hash
+web_scan_max_files: 50000          # model-file cap for a web scan; over → aborts
 # db_path: "~/.config/civitai-manager/civitai-manager.db"
 ```
+
+The web-scan bounds only apply to the browser "Scan now" button (the
+network-reachable surface). The CLI `scan` is unbounded — you typed the path
+knowingly — though it is equally context-cancellable (Ctrl-C aborts the walk
+promptly, not just after it finishes).
 
 Downloaded files are laid out as
 `<model_root>/<type>/<creator>/<model>/<versionName>.<ext>` with sanitized path

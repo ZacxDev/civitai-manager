@@ -428,3 +428,32 @@ func TestOfficialCLITokenSizeCap(t *testing.T) {
 		}
 	})
 }
+
+// TestIsLoopbackAddr covers the gate the web server uses to decide whether the
+// arbitrary extra-scan-path capability is safe to expose. Anything not provably
+// loopback must be treated as non-loopback (the safe default).
+func TestIsLoopbackAddr(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:8787", true},
+		{"127.0.0.1", true},
+		{"127.5.6.7:8787", true},
+		{"localhost:8787", true},
+		{"LocalHost:8787", true},
+		{"[::1]:8787", true},
+		{"::1", true},
+		{"", false},
+		{":8787", false},        // bare port binds all interfaces
+		{"0.0.0.0:8787", false}, // all interfaces
+		{"192.168.1.10:8787", false},
+		{"[::]:8787", false},
+		{"example.com:8787", false}, // unresolved hostname: not provably loopback
+	}
+	for _, c := range cases {
+		if got := IsLoopbackAddr(c.addr); got != c.want {
+			t.Errorf("IsLoopbackAddr(%q) = %v, want %v", c.addr, got, c.want)
+		}
+	}
+}

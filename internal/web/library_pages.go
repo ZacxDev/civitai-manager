@@ -34,47 +34,68 @@ func buildLibraryView(files []store.LocalFile) libraryView {
 	return v
 }
 
-// libraryPage is the full Library page.
-func libraryPage(v libraryView, csrf string) g.Node {
+// libraryPage is the full Library page. allowExtra gates the arbitrary
+// extra-scan-path input: it is rendered only on a loopback bind (see
+// Server.extraPathsAllowed), so a network-exposed server never even offers the
+// remote arbitrary-path walk control.
+func libraryPage(v libraryView, csrf string, allowExtra bool) g.Node {
 	return page("Library",
 		card(
 			sectionTitle("Library"),
-			scanForm(csrf),
+			scanForm(csrf, allowExtra),
 			h.Div(h.ID("scan-spinner"), h.Class("htmx-indicator text-xs text-slate-400 mt-1"), g.Text("Scanning…")),
 		),
 		h.Div(h.ID("library-content"), libraryContent(v, csrf)),
 	)
 }
 
-// scanForm renders the "Scan now" control plus the optional extra-scan-paths
-// input. The extra paths (newline- or comma-separated absolute directories) are
-// unioned with model_root so cross-directory duplicates outside model_root
-// become visible in the UI — the same reach as the CLI `scan --path`. The form
+// scanForm renders the "Scan now" control. When allowExtra is true (loopback
+// bind only) it also renders the optional extra-scan-paths input and the remote
+// -match opt-in. The extra paths (newline- or comma-separated absolute
+// directories) are unioned with model_root so cross-directory duplicates outside
+// model_root become visible — the same reach as the CLI `scan --path`. The form
 // carries the CSRF token as a hidden field.
-func scanForm(csrf string) g.Node {
-	return h.Form(
+//
+// The remote-match checkbox is OPT-IN: by default a web scan runs offline (local
+// duplicate/broken analysis only) and does NOT send file SHA256 hashes to
+// CivitAI's by-hash lookup. Ticking it enables CivitAI matching for this scan.
+func scanForm(csrf string, allowExtra bool) g.Node {
+	children := []g.Node{
 		hx("post", "/library/scan"),
 		hx("target", "#library-content"),
 		hx("swap", "innerHTML"),
 		hx("indicator", "#scan-spinner"),
 		h.Class("mt-3 space-y-2"),
 		csrfInput(csrf),
-		h.Label(
-			h.Class("block text-xs text-slate-400"),
-			g.Text("Extra scan paths (optional — one absolute directory per line or comma-separated)"),
-		),
-		h.Textarea(
-			h.Name("scan_paths"),
-			h.Rows("2"),
-			h.Placeholder("/mnt/models/loras\n/mnt/external/checkpoints"),
-			h.Class("w-full rounded-md border border-slate-700 bg-slate-900 p-2 text-sm text-slate-200 placeholder:text-slate-600"),
-		),
+	}
+	if allowExtra {
+		children = append(children,
+			h.Label(
+				h.Class("block text-xs text-slate-400"),
+				g.Text("Extra scan paths (optional — one absolute directory per line or comma-separated)"),
+			),
+			h.Textarea(
+				h.Name("scan_paths"),
+				h.Rows("2"),
+				h.Placeholder("/mnt/models/loras\n/mnt/external/checkpoints"),
+				h.Class("w-full rounded-md border border-slate-700 bg-slate-900 p-2 text-sm text-slate-200 placeholder:text-slate-600"),
+			),
+			h.Label(
+				h.Class("flex items-center gap-2 text-xs text-slate-400"),
+				h.Input(h.Type("checkbox"), h.Name("match_remote"), h.Value("true"),
+					h.Class("rounded border-slate-600 bg-slate-800 text-indigo-500")),
+				g.Text("Match against CivitAI (sends file hashes to civitai.com)"),
+			),
+		)
+	}
+	children = append(children,
 		h.Button(
 			h.Type("submit"),
 			h.Class("rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"),
 			g.Text("Scan now"),
 		),
 	)
+	return h.Form(children...)
 }
 
 // libraryContent is the fragment swapped after a scan: totals, per-model
