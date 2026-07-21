@@ -1,0 +1,15 @@
+# Build output
+/civitai-manager
+/dist/
+
+# Local runtime data
+*.db
+*.db-wal
+*.db-shm
+
+# Editor / OS cruft
+.DS_Store
+*.swp
+
+# Scratch
+/scratch/
