@@ -441,6 +441,10 @@ type RestoreResult struct {
 	BatchID   int64
 	Restored  []string
 	Conflicts []string // original paths still occupied; left in trash
+	// Reindexed is the subset of Restored model files re-registered in the
+	// local_files index (so `library candidates` / the web Library page see them
+	// again without waiting for the next scan). It excludes sidecars.
+	Reindexed []string
 }
 
 // Restore moves a batch's files back to their original paths from the manifest.
@@ -474,6 +478,31 @@ func (s *Scanner) Restore(ctx context.Context, batchID int64) (*RestoreResult, e
 			return res, err
 		}
 		res.Restored = append(res.Restored, f.OriginalPath)
+
+		// Re-index the restored model file so it reappears in local_files
+		// immediately (quarantine deleted its index row when it moved the file to
+		// trash). We can only reconstruct what the ledger stored — path, sha256,
+		// size, and the nearest known scan root — so the row is recorded as
+		// unmatched (no model/version id was retained); a subsequent `scan`
+		// re-matches it and re-evaluates candidacy. Sidecars are never indexed.
+		if f.IsSidecar {
+			continue
+		}
+		var size int64 = f.SizeBytes
+		if fi, err := os.Stat(f.OriginalPath); err == nil {
+			size = fi.Size()
+		}
+		if err := s.store.UpsertLocalFile(store.LocalFile{
+			Path:      f.OriginalPath,
+			SHA256:    f.SHA256,
+			SizeBytes: size,
+			Status:    store.LocalStatusUnmatched,
+			Kind:      store.LocalKindModel,
+			ScanRoot:  nearestRoot(f.OriginalPath, s.Roots()),
+		}); err != nil {
+			return res, fmt.Errorf("reindex restored %s: %w", f.OriginalPath, err)
+		}
+		res.Reindexed = append(res.Reindexed, f.OriginalPath)
 	}
 	if len(res.Conflicts) == 0 && !batch.Restored() {
 		if err := s.store.MarkBatchRestored(batchID); err != nil {
@@ -481,6 +510,25 @@ func (s *Scanner) Restore(ctx context.Context, batchID int64) (*RestoreResult, e
 		}
 	}
 	return res, nil
+}
+
+// nearestRoot returns the configured scan root that contains path, preferring
+// the LONGEST (most specific) match when several roots nest. It returns "" when
+// no root contains the path (the re-indexed row then carries no scan_root, and a
+// later scan sets it). Used to restore a plausible scan_root on re-index so the
+// file stays quarantinable without re-passing --path.
+func nearestRoot(path string, roots []string) string {
+	best := ""
+	for _, root := range roots {
+		rel, err := filepath.Rel(root, path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if len(root) > len(best) {
+			best = root
+		}
+	}
+	return best
 }
 
 // --- path helpers ---

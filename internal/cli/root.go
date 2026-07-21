@@ -23,6 +23,7 @@ type globalFlags struct {
 	maxFileSize    string
 	downloadJitter string
 	trashDir       string
+	webScanTimeout string
 	verbose        bool
 }
 
@@ -131,6 +132,7 @@ func (gf *globalFlags) build() (*app, error) {
 		MaxFileSize:    gf.maxFileSize,
 		DownloadJitter: gf.downloadJitter,
 		TrashDir:       gf.trashDir,
+		WebScanTimeout: gf.webScanTimeout,
 	})
 	if err != nil {
 		return nil, err

@@ -86,6 +86,144 @@ func TestSubscriptionCRUD(t *testing.T) {
 	}
 }
 
+// TestDeleteSubscriptionClearsScopedState proves finding #3: deleting a
+// subscription wipes ITS seen_versions and ITS download_queue rows (including
+// terminal `done` rows, whose FK is ON DELETE SET NULL rather than CASCADE), so
+// a fresh re-subscribe is a clean slate — while another subscription's rows are
+// left completely untouched.
+func TestDeleteSubscriptionClearsScopedState(t *testing.T) {
+	st := newTestStore(t)
+	midA, midB := 1, 2
+	subA, err := st.CreateSubscription(Subscription{Kind: KindModel, ModelID: &midA, PollIntervalSecs: 3600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subB, err := st.CreateSubscription(Subscription{Kind: KindModel, ModelID: &midB, PollIntervalSecs: 3600})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed seen_versions + a terminal `done` queue row for each subscription.
+	for _, s := range []struct {
+		sub            int64
+		mid, ver, file int
+		name           string
+	}{
+		{subA, midA, 10, 100, "a.safetensors"},
+		{subB, midB, 20, 200, "b.safetensors"},
+	} {
+		if err := st.MarkSeen(s.sub, s.ver, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		id, _, err := st.Enqueue(QueueItem{
+			SubscriptionID: &s.sub, ModelID: s.mid, VersionID: s.ver, FileID: s.file,
+			FileName: s.name, DownloadURL: "http://x/" + s.name, DestPath: "/tmp/" + s.name,
+			Status: StatusQueued,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CompleteDownload(id, "deadbeef", 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Delete subscription A.
+	if err := st.DeleteSubscription(subA); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	// A's state is gone.
+	if n, _ := st.CountSeen(subA); n != 0 {
+		t.Errorf("subA seen_versions not cleared: %d", n)
+	}
+	// B's state is untouched.
+	if n, _ := st.CountSeen(subB); n != 1 {
+		t.Errorf("subB seen_versions must be untouched, got %d", n)
+	}
+	rows, _ := st.ListQueue()
+	for _, r := range rows {
+		if r.SubscriptionID != nil && *r.SubscriptionID == subA {
+			t.Errorf("subA queue row survived delete: %+v", r)
+		}
+	}
+	if len(rows) != 1 || rows[0].VersionID != 20 {
+		t.Errorf("expected exactly subB's queue row to remain, got %+v", rows)
+	}
+}
+
+// TestDeleteSubscriptionPreservesDownloadingRow proves finding #4: an in-flight
+// 'downloading' row for the subscription SURVIVES DeleteSubscription (a
+// concurrent worker is mid-download; deleting it would orphan the .part file),
+// while queued/done rows for the same subscription are removed. Re-subscribe to
+// the same target still works afterwards.
+func TestDeleteSubscriptionPreservesDownloadingRow(t *testing.T) {
+	st := newTestStore(t)
+	mid := 7
+	sub, err := st.CreateSubscription(Subscription{Kind: KindModel, ModelID: &mid, PollIntervalSecs: 3600})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	enqueue := func(ver, file int, name string) int64 {
+		id, _, err := st.Enqueue(QueueItem{
+			SubscriptionID: &sub, ModelID: mid, VersionID: ver, FileID: file,
+			FileName: name, DownloadURL: "http://x/" + name, DestPath: "/tmp/" + name,
+			Status: StatusQueued,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+
+	// One row left queued, one taken to 'done', one claimed to 'downloading'.
+	queuedID := enqueue(10, 100, "queued.safetensors")
+	doneID := enqueue(20, 200, "done.safetensors")
+	if err := st.CompleteDownload(doneID, "deadbeef", 1); err != nil {
+		t.Fatal(err)
+	}
+	dlID := enqueue(30, 300, "active.safetensors")
+	if err := st.SetQueueStatus(dlID, StatusDownloading); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.DeleteSubscription(sub); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	rows, err := st.ListQueue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[int64]QueueItem{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	if _, ok := byID[queuedID]; ok {
+		t.Error("queued row must be deleted with the subscription")
+	}
+	if _, ok := byID[doneID]; ok {
+		t.Error("done row must be deleted with the subscription")
+	}
+	dl, ok := byID[dlID]
+	if !ok {
+		t.Fatal("downloading row must SURVIVE the subscription delete")
+	}
+	if dl.Status != StatusDownloading {
+		t.Errorf("surviving row status = %q, want downloading", dl.Status)
+	}
+	// Its subscription_id is NULLed by the FK (fine — it settles on its own).
+	if dl.SubscriptionID != nil {
+		t.Errorf("surviving row subscription_id should be NULL after delete, got %v", *dl.SubscriptionID)
+	}
+
+	// Re-subscribe to the same target still works.
+	if _, err := st.CreateSubscription(Subscription{Kind: KindModel, ModelID: &mid, PollIntervalSecs: 3600}); err != nil {
+		t.Fatalf("re-subscribe after delete: %v", err)
+	}
+}
+
 func TestSubscriptionDedupConstraint(t *testing.T) {
 	st := newTestStore(t)
 	mid := 100

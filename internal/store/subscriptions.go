@@ -126,9 +126,42 @@ func (s *Store) FindCreatorSubscription(username string) (*Subscription, error) 
 	return &sub, nil
 }
 
-// DeleteSubscription removes a subscription (cascading its seen_versions).
+// DeleteSubscription removes a subscription and its per-subscription state — its
+// seen_versions ledger AND its NON-ACTIVE download_queue rows — so a fresh
+// re-subscribe to the same target is a clean slate.
+//
+// It deletes the queue rows EXPLICITLY (not via the FK): the download_queue →
+// subscriptions FK is ON DELETE SET NULL, not CASCADE, so a terminal 'done' row
+// would otherwise survive with subscription_id NULLed. That stale row keeps a
+// slot in the ux_dlq_active partial-unique index on (version_id, file_id), so
+// after the user unsubscribes and deletes the file from disk, a re-subscribe's
+// re-enqueue hits ON CONFLICT DO NOTHING and the version is never re-downloaded
+// ("No file downloaded").
+//
+// A row in 'downloading' status is DELIBERATELY LEFT INTACT: a concurrent serve
+// worker may be mid-download against it, and deleting the row out from under the
+// worker would orphan its .part/finished file with no queue record to reconcile.
+// The FK NULLs that surviving row's subscription_id on the subscription delete
+// (fine — the download completes and settles to a terminal status on its own).
+// Only queued/done/failed/skipped/unverified rows are removed. seen_versions is
+// ON DELETE CASCADE, but we clear it explicitly too so the cleanup is
+// self-contained and order-independent. All deletes run in one transaction,
+// scoped strictly to this subscription id.
 func (s *Store) DeleteSubscription(id int64) error {
-	res, err := s.db.Exec(`DELETE FROM subscriptions WHERE id = ?`, id)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(`DELETE FROM download_queue
+		WHERE subscription_id = ? AND status <> ?`, id, string(StatusDownloading)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM seen_versions WHERE subscription_id = ?`, id); err != nil {
+		return err
+	}
+	res, err := tx.Exec(`DELETE FROM subscriptions WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
@@ -136,7 +169,7 @@ func (s *Store) DeleteSubscription(id int64) error {
 	if n == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return tx.Commit()
 }
 
 // SetSubscriptionFlags updates the auto_download / notify_only toggles.

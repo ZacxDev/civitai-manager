@@ -242,6 +242,12 @@ func newRestoreCmd(gf *globalFlags) *cobra.Command {
 			for _, p := range res.Conflicts {
 				fmt.Printf("  CONFLICT (left in trash, path occupied): %s\n", p)
 			}
+			if len(res.Reindexed) > 0 {
+				// The restored files were re-registered in the library index, but only
+				// with path/sha/size (no model match was retained). Prompt a scan so
+				// they are re-matched and re-evaluated for candidacy.
+				fmt.Printf("Re-indexed %d restored file(s) into the library; run 'scan' to re-match and re-evaluate candidates.\n", len(res.Reindexed))
+			}
 			return nil
 		},
 	}

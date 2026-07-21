@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
+	"github.com/ZacxDev/civitai-manager/internal/config"
 	"github.com/ZacxDev/civitai-manager/internal/poller"
 	"github.com/ZacxDev/civitai-manager/internal/store"
 	g "maragu.dev/gomponents"
@@ -30,11 +31,20 @@ type Subscriber interface {
 type Config struct {
 	BaseURL             string
 	DefaultPollInterval time.Duration
+	// Addr is the server's listen address (host:port). It decides whether the
+	// arbitrary extra-scan-path capability is exposed: only a loopback bind is
+	// treated as single-user-local (see extraPathsAllowed).
+	Addr string
 	// Library-management config (used by the library page + quarantine).
 	ModelRoot    string
 	TrashDir     string
 	LibraryPaths []string
 	Extensions   []string
+	// WebScanTimeout bounds a web-triggered "Scan now"; WebScanMaxFiles caps how
+	// many model files that scan will walk. Both bound the arbitrary-path walk the
+	// endpoint exposes. Zero falls back to the config package defaults.
+	WebScanTimeout  time.Duration
+	WebScanMaxFiles int
 }
 
 // Server wires the store, the CivitAI reader, and the subscriber into an
@@ -58,6 +68,34 @@ func NewServer(st *store.Store, reader civitai.Reader, sub Subscriber, cfg Confi
 		log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	}
 	return &Server{store: st, reader: reader, sub: sub, cfg: cfg, log: log, csrf: newCSRFToken()}
+}
+
+// extraPathsAllowed reports whether the arbitrary extra-scan-path capability is
+// safe to expose: only when the server is bound to a loopback address (a
+// single-user-local surface). On any non-loopback bind the "Scan now" form may
+// scan only model_root + configured library_paths, never a client-submitted
+// host path — the endpoint is unauthenticated, so a non-loopback bind would make
+// it a remote arbitrary-path walk primitive.
+func (s *Server) extraPathsAllowed() bool {
+	return config.IsLoopbackAddr(s.cfg.Addr)
+}
+
+// webScanTimeout returns the deadline for a web-triggered scan, falling back to
+// the config default when unset.
+func (s *Server) webScanTimeout() time.Duration {
+	if s.cfg.WebScanTimeout > 0 {
+		return s.cfg.WebScanTimeout
+	}
+	return config.DefaultWebScanTimeout
+}
+
+// webScanMaxFiles returns the model-file budget for a web-triggered scan,
+// falling back to the config default when unset.
+func (s *Server) webScanMaxFiles() int {
+	if s.cfg.WebScanMaxFiles > 0 {
+		return s.cfg.WebScanMaxFiles
+	}
+	return config.DefaultWebScanMaxFiles
 }
 
 // newCSRFToken returns a fresh random hex token.

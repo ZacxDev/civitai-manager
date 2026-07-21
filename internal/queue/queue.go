@@ -99,13 +99,15 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 }
 
 // DrainAll processes queued items until the queue is empty (used by `check
-// --download` and by `subscribe --backfill-latest`). It returns the number of
-// items that reached a completed (done) state during this drain.
-func (w *Worker) DrainAll(ctx context.Context) (int, error) {
+// --download`). It returns the queue rows that reached a completed (done) state
+// during this drain — the caller uses len() for the count AND the per-row
+// sha256_expected/sha256_actual to print a friendly hash-verification line at
+// the default verbosity (the structured slog lines are suppressed there).
+func (w *Worker) DrainAll(ctx context.Context) ([]store.QueueItem, error) {
 	if _, err := w.store.RequeueInterrupted(); err != nil {
-		return 0, err
+		return nil, err
 	}
-	var done int
+	var done []store.QueueItem
 	for {
 		if ctx.Err() != nil {
 			return done, ctx.Err()
@@ -119,22 +121,23 @@ func (w *Worker) DrainAll(ctx context.Context) (int, error) {
 		}
 		w.process(ctx, item)
 		if it, err := w.store.GetQueueItem(item.ID); err == nil && it.Status == store.StatusDone {
-			done++
+			done = append(done, *it)
 		}
 	}
 }
 
 // DrainSubscription processes queued rows belonging to subID until none remain,
-// returning the number that reached the done state. Unlike DrainAll it is scoped
-// to a single subscription (used by `subscribe --backfill-latest`), so
+// returning the rows that reached the done state (len() is the count; the rows
+// carry the verified hash for the caller's friendly output). Unlike DrainAll it
+// is scoped to a single subscription (used by `subscribe --backfill-latest`), so
 // subscribing to one model never synchronously downloads another subscription's
 // backlog. Because per-item failures are recorded on the row rather than
 // returned, a row that ends in the failed state aborts the drain with an error
 // so a failed backfill surfaces directly to the caller instead of being
 // swallowed. Transient failures are requeued by process/retryOrFail and are
 // re-claimed on the next loop, exactly as DrainAll handles them.
-func (w *Worker) DrainSubscription(ctx context.Context, subID int64) (int, error) {
-	var done int
+func (w *Worker) DrainSubscription(ctx context.Context, subID int64) ([]store.QueueItem, error) {
+	var done []store.QueueItem
 	for {
 		if ctx.Err() != nil {
 			return done, ctx.Err()
@@ -153,7 +156,7 @@ func (w *Worker) DrainSubscription(ctx context.Context, subID int64) (int, error
 		}
 		switch it.Status {
 		case store.StatusDone:
-			done++
+			done = append(done, *it)
 		case store.StatusFailed:
 			return done, fmt.Errorf("download failed for %s: %s", it.FileName, it.LastError)
 		}

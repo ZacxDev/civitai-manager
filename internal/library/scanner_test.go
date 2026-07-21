@@ -2,6 +2,7 @@ package library
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -116,7 +117,7 @@ func TestWalkFindsModelFilesRecursivelyAndSkipsTrashAndHidden(t *testing.T) {
 	writeFile(t, filepath.Join(root, ".hidden", "h.safetensors"), "hidden") // hidden dir skipped
 
 	sc := NewScanner(newTestStore(t), nil, Options{ModelRoot: root, NoRemote: true}, nil)
-	wr, err := sc.walk()
+	wr, err := sc.walk(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,6 +187,87 @@ func TestHashCacheSkipsUnchangedFiles(t *testing.T) {
 	}
 	if hashCalls != 3 {
 		t.Fatalf("re-scan of mtime-changed file hashCalls = %d, want 3", hashCalls)
+	}
+}
+
+// TestScanBudgetAbortsWalk proves finding #1(b)'s budget: a scan that walks more
+// model files than Options.MaxFiles aborts with ErrScanTooLarge, before any
+// hashing.
+func TestScanBudgetAbortsWalk(t *testing.T) {
+	root := t.TempDir()
+	for _, n := range []string{"a.safetensors", "b.safetensors", "c.safetensors"} {
+		writeFile(t, filepath.Join(root, n), n)
+	}
+	st := newTestStore(t)
+	sc := NewScanner(st, nil, Options{ModelRoot: root, NoRemote: true, MaxFiles: 1}, nil)
+	var hashCalls int
+	sc.hashFn = func(p string) (string, error) { hashCalls++; return "h", nil }
+
+	_, err := sc.Scan(context.Background())
+	if !errors.Is(err, ErrScanTooLarge) {
+		t.Fatalf("Scan err = %v, want ErrScanTooLarge", err)
+	}
+	if hashCalls != 0 {
+		t.Errorf("budget must abort before hashing, got %d hash calls", hashCalls)
+	}
+}
+
+// TestScanContextCancelAbortsWalk proves finding #1(a): a cancelled context stops
+// the walk phase promptly (the callback checks ctx.Err()), without hashing.
+func TestScanContextCancelAbortsWalk(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.safetensors"), "a")
+
+	st := newTestStore(t)
+	sc := NewScanner(st, nil, Options{ModelRoot: root, NoRemote: true}, nil)
+	var hashCalls int
+	sc.hashFn = func(p string) (string, error) { hashCalls++; return "h", nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before the walk starts
+	_, err := sc.Scan(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Scan err = %v, want context.Canceled", err)
+	}
+	if hashCalls != 0 {
+		t.Errorf("cancelled walk must not hash, got %d hash calls", hashCalls)
+	}
+}
+
+// TestFailedScanDoesNotWipeCandidates proves finding #1(c): a scan that fails
+// after a prior successful scan leaves the earlier candidate flags intact (the
+// up-front ClearCandidates was the bug — clearing now happens only on a
+// completed walk, right before analyze()).
+func TestFailedScanDoesNotWipeCandidates(t *testing.T) {
+	root := t.TempDir()
+	// Two byte-identical files → one is flagged a duplicate on a normal scan.
+	writeFile(t, filepath.Join(root, "keep.safetensors"), "identical")
+	writeFile(t, filepath.Join(root, "dupe.safetensors"), "identical")
+
+	st := newTestStore(t)
+	sc := NewScanner(st, nil, Options{ModelRoot: root, NoRemote: true}, nil)
+	if _, err := sc.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cands, err := st.ListCandidates(store.CandidateDuplicate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("precondition: want 1 duplicate candidate, got %d", len(cands))
+	}
+
+	// A second scan that fails (over-budget) must NOT wipe the flag.
+	failing := NewScanner(st, nil, Options{ModelRoot: root, NoRemote: true, MaxFiles: 1}, nil)
+	if _, err := failing.Scan(context.Background()); !errors.Is(err, ErrScanTooLarge) {
+		t.Fatalf("second scan err = %v, want ErrScanTooLarge", err)
+	}
+	after, err := st.ListCandidates(store.CandidateDuplicate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("failed scan wiped candidates: want 1, got %d", len(after))
 	}
 }
 
