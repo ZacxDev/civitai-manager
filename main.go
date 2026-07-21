@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/civitai/civitai-manager/internal/cli"
+	"github.com/ZacxDev/civitai-manager/internal/cli"
 )
 
 func main() {
