@@ -132,7 +132,31 @@ civitai-manager unsubscribe <id>
 # fetch queued files immediately instead of leaving them for `serve`:
 civitai-manager check
 civitai-manager check --download
+
+# Library: scan model directories (read-only: hash, match, flag deletion
+# candidates), then quarantine acts on the flags. --path adds extra directories
+# to scan (repeatable) on top of model_root:
+civitai-manager scan
+civitai-manager scan --path ~/ComfyUI/models --path ~/A1111/models/Lora
+
+# `scan` RECORDS, per file, the root it was found under, so a candidate flagged
+# under an extra `scan --path <dir>` stays actionable by a later `quarantine`
+# WITHOUT re-specifying <dir>. A file may only be quarantined if it lies inside
+# model_root, a root that was actually scanned (recorded at scan time), or an
+# explicit --path — never an arbitrary path.
+civitai-manager library candidates
+civitai-manager library quarantine --all              # dry-run over all candidates
+civitai-manager library quarantine --reason duplicate --apply
+civitai-manager library quarantine --id 12 --apply
+# Standalone quarantine of a directory not recorded by a prior scan: union it in
+# explicitly with --path (repeatable; unioned with model_root + recorded roots):
+civitai-manager library quarantine --path ~/loose-loras --all --apply
+civitai-manager library restore <batchID>             # undo a quarantine batch
 ```
+
+By default the one-shot download commands (`subscribe --backfill-latest`,
+`check --download`) print clean friendly progress/summary lines; add `-v` to see
+the detailed structured worker/poller logs.
 
 ## Configuration & authentication
 
@@ -252,7 +276,11 @@ empty.
   invariants (never leaves zero copies of a duplicate set, refuses unmatched /
   newest-version / out-of-root / changed-since-scan files), durable cross-FS move,
   reversible restore, and root-qualified trash paths — via in-memory store + fake
-  reader with injectable hash/move seams.
+  reader with injectable hash/move seams. A candidate scanned under an extra
+  `scan --path` root stays actionable via its persisted `scan_root` (or an explicit
+  `quarantine --path`), while a file inside no scanned root is still refused —
+  containment is verified against real paths, so a mismatched `scan_root` grants no
+  escape.
 - **CLI search** — the `search` command maps flags to query params and renders
   the first page (bounded by `--limit`); `--json` emits the raw body.
 

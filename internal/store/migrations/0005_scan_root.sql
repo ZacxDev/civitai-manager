@@ -1,0 +1,23 @@
+-- Record, per scanned model file, the scan root it was found under.
+--
+-- The library `scan` command may be pointed at extra directories via a repeatable
+-- --path flag that are NOT the model_root and NOT a configured library_path. Once
+-- scan hashes/flags a deletion candidate under such a root, `library quarantine`
+-- (which previously derived its allowed roots from model_root + library_paths
+-- only) had no way to know that root and refused to act on the candidate — a
+-- dead-end for the user.
+--
+-- Persisting the found-under root per file lets quarantine/candidates compute
+-- their allowed roots as (model_root ∪ each file's recorded scan_root ∪ any
+-- explicit --path), so a legitimately-scanned candidate stays actionable without
+-- the user re-specifying the directory.
+--
+-- The containment safety invariant is PRESERVED, not weakened: a file may still
+-- only be quarantined if its path lies INSIDE a root that was actually scanned
+-- (its own scan_root), the model_root, or an explicit --path — never an arbitrary
+-- path. A recorded scan_root that does not actually contain the file grants no
+-- escape (the withinRoots check still verifies real containment).
+--
+-- Empty means "not recorded by a scan" (e.g. a row written by the download
+-- worker, which always writes under model_root and so is covered regardless).
+ALTER TABLE local_files ADD COLUMN scan_root TEXT NOT NULL DEFAULT '';

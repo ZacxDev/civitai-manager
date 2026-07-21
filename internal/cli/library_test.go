@@ -100,7 +100,7 @@ func TestQuarantineBareDryRunsAllCandidates(t *testing.T) {
 	dupe := seedDuplicateOnDisk(t, a)
 
 	var out bytes.Buffer
-	if err := quarantineRun(context.Background(), a, &out, nil, "", false, false); err != nil {
+	if err := quarantineRun(context.Background(), a, &out, nil, "", false, false, nil); err != nil {
 		t.Fatalf("bare quarantine should not error, got %v", err)
 	}
 	if !strings.Contains(out.String(), "Would move") {
@@ -126,7 +126,7 @@ func TestQuarantineApplyWithoutSelectorRefused(t *testing.T) {
 	dupe := seedDuplicateOnDisk(t, a)
 
 	var out bytes.Buffer
-	err := quarantineRun(context.Background(), a, &out, nil, "", false, true) // apply, no selector
+	err := quarantineRun(context.Background(), a, &out, nil, "", false, true, nil) // apply, no selector
 	if err == nil {
 		t.Fatal("--apply with no selector must be refused")
 	}
@@ -135,6 +135,58 @@ func TestQuarantineApplyWithoutSelectorRefused(t *testing.T) {
 	}
 	if _, serr := os.Stat(dupe); serr != nil {
 		t.Fatalf("nothing must be moved when --apply is refused: %v", serr)
+	}
+}
+
+// TestQuarantineRunPathFlagMakesCandidateActionable proves the `--path` flag is
+// wired through quarantineRun to the scanner's allowed roots: a candidate outside
+// model_root (and without a persisted scan_root) is refused with the actionable
+// skip message by default, and becomes movable when its directory is passed via
+// --path.
+func TestQuarantineRunPathFlagMakesCandidateActionable(t *testing.T) {
+	a := newTestApp(t, &cliFakeClient{})
+	extra := t.TempDir() // outside model_root
+
+	keeper := filepath.Join(a.cfg.ModelRoot, "keep.safetensors")
+	dupe := filepath.Join(extra, "dupe.safetensors")
+	for _, p := range []string{keeper, dupe} {
+		if err := os.WriteFile(p, []byte("same-bytes"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mid, vid := 1, 1
+	if err := a.store.UpsertLocalFile(store.LocalFile{Path: keeper, SHA256: "same", ModelID: &mid, VersionID: &vid,
+		Status: store.LocalStatusMatched, Kind: store.LocalKindModel}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.UpsertLocalFile(store.LocalFile{Path: dupe, SHA256: "same", ModelID: &mid, VersionID: &vid,
+		Status: store.LocalStatusMatched, CandidateReason: store.CandidateDuplicate, Kind: store.LocalKindModel}); err != nil {
+		t.Fatal(err)
+	}
+	dupRow, _ := a.store.GetLocalFileByPath(dupe)
+
+	// Default (no --path): refused, with the actionable skip message.
+	var out bytes.Buffer
+	if err := quarantineRun(context.Background(), a, &out, []int64{dupRow.ID}, "", false, true, nil); err != nil {
+		t.Fatalf("quarantineRun: %v", err)
+	}
+	if !strings.Contains(out.String(), "SKIPPED") || !strings.Contains(out.String(), "outside the scanned roots") {
+		t.Fatalf("expected an actionable 'outside the scanned roots' skip message, got %q", out.String())
+	}
+	if _, err := os.Stat(dupe); err != nil {
+		t.Fatalf("the refused candidate must remain: %v", err)
+	}
+
+	// With --path=extra: actionable and moved.
+	var out2 bytes.Buffer
+	if err := quarantineRun(context.Background(), a, &out2, []int64{dupRow.ID}, "", false, true, []string{extra}); err != nil {
+		t.Fatalf("quarantineRun with --path: %v", err)
+	}
+	if !strings.Contains(out2.String(), "Moved") {
+		t.Fatalf("expected a Moved summary once --path covered the candidate, got %q", out2.String())
+	}
+	if _, err := os.Stat(dupe); !os.IsNotExist(err) {
+		t.Fatalf("the candidate should have been quarantined away with --path, stat err=%v", err)
 	}
 }
 

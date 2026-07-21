@@ -92,10 +92,11 @@ func newTestApp(t *testing.T, client civitai.Client) *app {
 		DownloadJitter:      0,
 	}
 	return &app{
-		cfg:    cfg,
-		store:  st,
-		client: client,
-		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:       cfg,
+		store:     st,
+		client:    client,
+		log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logWriter: io.Discard,
 	}
 }
 
@@ -426,6 +427,63 @@ func TestSubscribeBackfillIdempotentOnHealthySub(t *testing.T) {
 	}
 }
 
+// TestBackfillDefaultOutputHasNoStructuredLogs proves the polish item: at the
+// DEFAULT verbosity the subscribe --backfill-latest output is clean — the friendly
+// progress/summary lines WITHOUT the raw `level=INFO msg=downloading …` structured
+// dumps — while -v still yields the detailed structured logs. The friendly prints
+// and the worker/poller logger are pointed at ONE buffer so the assertion inspects
+// exactly the interleaved stream a user sees.
+func TestBackfillDefaultOutputHasNoStructuredLogs(t *testing.T) {
+	payload := []byte("the latest model version bytes")
+	newServer := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write(payload)
+		}))
+	}
+	opts := poller.SubscribeOptions{AutoDownload: true, BackfillLatest: true, PollInterval: time.Hour}
+
+	// Default verbosity: clean output.
+	t.Run("default", func(t *testing.T) {
+		srv := newServer()
+		defer srv.Close()
+		a := newTestApp(t, fixtureClient(srv.URL+"/file", sha256Hex(payload), loopbackDownloader))
+		var buf bytes.Buffer
+		a.logWriter = &buf // worker/poller logs land in the same buffer as friendly output
+
+		if err := subscribeRun(context.Background(), a, &buf, "", []string{"1"}, opts); err != nil {
+			t.Fatalf("subscribeRun: %v", err)
+		}
+		got := buf.String()
+		if strings.Contains(got, "level=INFO") {
+			t.Errorf("default output must NOT contain raw structured INFO lines, got:\n%s", got)
+		}
+		if !strings.Contains(got, "Downloaded 1 file(s).") {
+			t.Errorf("default output must contain the friendly summary, got:\n%s", got)
+		}
+	})
+
+	// -v: detailed structured logs are present.
+	t.Run("verbose", func(t *testing.T) {
+		srv := newServer()
+		defer srv.Close()
+		a := newTestApp(t, fixtureClient(srv.URL+"/file", sha256Hex(payload), loopbackDownloader))
+		a.verbose = true
+		var buf bytes.Buffer
+		a.logWriter = &buf
+
+		if err := subscribeRun(context.Background(), a, &buf, "", []string{"1"}, opts); err != nil {
+			t.Fatalf("subscribeRun -v: %v", err)
+		}
+		got := buf.String()
+		if !strings.Contains(got, "level=INFO") {
+			t.Errorf("-v output must contain the detailed structured logs, got:\n%s", got)
+		}
+		if !strings.Contains(got, "Downloaded 1 file(s).") {
+			t.Errorf("-v output must still contain the friendly summary, got:\n%s", got)
+		}
+	})
+}
+
 // TestCheckSummaryReflectsDownloads proves finding #4: after a run that
 // downloads an item, the summary reports the real counts, not "0 queued".
 func TestCheckSummaryReflectsDownloads(t *testing.T) {
@@ -461,7 +519,7 @@ func TestCheckSummaryReflectsDownloads(t *testing.T) {
 	if newCount < 1 {
 		t.Fatalf("expected >=1 new version found, got %d", newCount)
 	}
-	downloaded, err := drainDownloads(context.Background(), a)
+	downloaded, err := drainDownloads(context.Background(), a, a.cmdLogger())
 	if err != nil {
 		t.Fatalf("drainDownloads: %v", err)
 	}

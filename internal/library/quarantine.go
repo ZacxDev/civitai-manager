@@ -71,8 +71,10 @@ type manifest struct {
 func (s *Scanner) Quarantine(ctx context.Context, ids []int64, apply bool) (*QuarantinePlan, error) {
 	roots := s.Roots()
 	// refuse's containment guard needs symlink-resolved roots; resolve them ONCE
-	// here rather than per file. trashPathFor keeps the UNRESOLVED roots (it takes
-	// a lexical Rel against the original, unresolved path to build the trash relpath).
+	// here rather than per file. These are the "base" allowed roots (model_root ∪
+	// configured library_paths ∪ any explicit --path); refuse additionally allows
+	// each candidate's OWN recorded scan_root. trashPathFor keeps UNRESOLVED roots
+	// (it takes a lexical Rel against the original path to build the trash relpath).
 	resolvedRoots := resolveRoots(roots)
 	plan := &QuarantinePlan{}
 
@@ -89,6 +91,14 @@ func (s *Scanner) Quarantine(ctx context.Context, ids []int64, apply bool) (*Qua
 		requested = append(requested, *lf)
 		moving[id] = true
 	}
+
+	// The trash layout is root-qualified for uniqueness; a candidate actionable
+	// ONLY via its persisted scan_root (an extra --path used at scan time, not now)
+	// would otherwise fall through as "unrooted". Fold each moved file's recorded
+	// scan_root into the roots used for trash-path construction so it stays
+	// root-qualified. (This is purely a layout concern; the SAFETY containment
+	// check in refuse is per-file and never uses another file's scan_root.)
+	trashRoots := rootsWithScanRoots(roots, requested)
 
 	allModels, err := s.modelFilesBySHAAndVersion()
 	if err != nil {
@@ -146,12 +156,12 @@ func (s *Scanner) Quarantine(ctx context.Context, ids []int64, apply bool) (*Qua
 		// Dry-run: fill indicative trash paths for display, move nothing.
 		batchName := s.batchName(0)
 		for i := range plan.Moves {
-			plan.Moves[i].TrashPath = s.trashPathFor(plan.Moves[i].OriginalPath, roots, batchName)
+			plan.Moves[i].TrashPath = s.trashPathFor(plan.Moves[i].OriginalPath, trashRoots, batchName)
 		}
 		return plan, nil
 	}
 
-	return s.applyQuarantine(plan, roots)
+	return s.applyQuarantine(plan, trashRoots)
 }
 
 // applyQuarantine performs the moves for a validated plan and records the batch.
@@ -315,6 +325,13 @@ func changedSinceScan(lf store.LocalFile, fi os.FileInfo) string {
 }
 
 // refuse returns a non-empty safety reason if lf must not be quarantined.
+//
+// resolvedRoots is the symlink-resolved base set (model_root ∪ library_paths ∪
+// explicit --path). A file is additionally allowed within its OWN recorded
+// scan_root, so a candidate scanned via an extra `scan --path <dir>` stays
+// actionable without re-specifying <dir>. Containment is still verified against
+// real paths (withinRoots), so a recorded scan_root that does not actually
+// contain the file grants no escape — the invariant is preserved, not weakened.
 func (s *Scanner) refuse(lf store.LocalFile, resolvedRoots []string, moving map[int64]bool, models []store.LocalFile) string {
 	if lf.Status == store.LocalStatusUnmatched || lf.Status == store.LocalStatusUnmatchedPending {
 		return "refusing to quarantine an unmatched file"
@@ -322,8 +339,8 @@ func (s *Scanner) refuse(lf store.LocalFile, resolvedRoots []string, moving map[
 	if !lf.IsCandidate() {
 		return "not a deletion candidate"
 	}
-	if !withinRoots(lf.Path, resolvedRoots) {
-		return "path is outside every configured scan root"
+	if !withinRoots(lf.Path, s.allowedRootsFor(lf, resolvedRoots)) {
+		return "outside the scanned roots — re-run 'scan --path <dir>' covering it, or pass '--path <dir>' to quarantine"
 	}
 	switch lf.CandidateReason {
 	case store.CandidateDuplicate:
@@ -336,6 +353,43 @@ func (s *Scanner) refuse(lf store.LocalFile, resolvedRoots []string, moving map[
 		}
 	}
 	return ""
+}
+
+// allowedRootsFor returns the resolved containment roots a single candidate may
+// live within: the shared base roots plus the candidate's OWN recorded scan_root
+// (resolved). It never folds in another file's scan_root, so one candidate's
+// recorded root can never make a DIFFERENT file quarantinable.
+func (s *Scanner) allowedRootsFor(lf store.LocalFile, resolvedBaseRoots []string) []string {
+	if lf.ScanRoot == "" {
+		return resolvedBaseRoots
+	}
+	allowed := make([]string, 0, len(resolvedBaseRoots)+1)
+	allowed = append(allowed, resolvedBaseRoots...)
+	allowed = append(allowed, resolveReal(lf.ScanRoot))
+	return allowed
+}
+
+// rootsWithScanRoots returns roots plus each file's distinct, non-empty recorded
+// scan_root (deduped, cleaned-comparison). Used only to keep the trash layout
+// root-qualified for files actionable via a persisted scan_root; it has no safety
+// role.
+func rootsWithScanRoots(roots []string, files []store.LocalFile) []string {
+	out := append([]string(nil), roots...)
+	seen := make(map[string]bool, len(roots))
+	for _, r := range roots {
+		seen[filepath.Clean(r)] = true
+	}
+	for _, f := range files {
+		if f.ScanRoot == "" {
+			continue
+		}
+		key := filepath.Clean(f.ScanRoot)
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, f.ScanRoot)
+		}
+	}
+	return out
 }
 
 // copyWouldRemain reports whether at least one byte-identical copy of lf would

@@ -697,6 +697,179 @@ func TestQuarantineSkipsFileChangedSinceScan(t *testing.T) {
 	}
 }
 
+// TestQuarantineActsOnPersistedScanRoot proves BUG-1's core fix end-to-end: a
+// real scan over an extra root OUTSIDE model_root records that root per file
+// (scan_root), so a duplicate flagged under it stays actionable by a LATER,
+// standalone quarantine run that only knows model_root — no --path re-specified.
+// Dry-run includes it (not SKIPPED); --apply actually moves it.
+func TestQuarantineActsOnPersistedScanRoot(t *testing.T) {
+	modelRoot := t.TempDir()
+	extra := t.TempDir() // a directory OUTSIDE model_root (an extra `scan --path`)
+
+	// A byte-identical pair: the keeper (with a sidecar, so keeper-selection keeps
+	// it) under model_root, the redundant copy under the extra root.
+	keeper := filepath.Join(modelRoot, "a.safetensors")
+	dupe := filepath.Join(extra, "b.safetensors")
+	writeFile(t, keeper, "identical-model-bytes")
+	writeFile(t, filepath.Join(modelRoot, "a.civitai.info"), `{"id":1}`)
+	writeFile(t, dupe, "identical-model-bytes")
+
+	st := newTestStore(t)
+	fr := &fakeReader{byHash: versionMap("shaZ", version(10, 100, "shaZ"))}
+	// Scan BOTH roots. hashFn forces both files to the same hash → duplicate set.
+	sc := NewScanner(st, fr, Options{ModelRoot: modelRoot, Paths: []string{modelRoot, extra}}, nil)
+	sc.hashFn = func(string) (string, error) { return "shaZ", nil }
+
+	report, err := sc.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The scan flagged the extra-root copy as the duplicate candidate.
+	var cand *store.LocalFile
+	for i := range report.Candidates {
+		if report.Candidates[i].Path == dupe {
+			cand = &report.Candidates[i]
+		}
+	}
+	if cand == nil {
+		t.Fatalf("scan should flag the extra-root copy as a duplicate, candidates=%+v", report.Candidates)
+	}
+	if cand.CandidateReason != store.CandidateDuplicate {
+		t.Fatalf("reason = %q, want duplicate", cand.CandidateReason)
+	}
+	// The scan persisted the extra root on that file's row.
+	row, _ := st.GetLocalFileByPath(dupe)
+	if row == nil || row.ScanRoot != extra {
+		t.Fatalf("scan must persist scan_root=%q on the extra-root file, got %+v", extra, row)
+	}
+
+	// A STANDALONE quarantine that only knows model_root (no --path) must still act
+	// on the candidate, via the persisted scan_root.
+	q := NewScanner(st, nil, Options{ModelRoot: modelRoot}, nil)
+
+	dry, err := q.Quarantine(context.Background(), []int64{cand.ID}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dry.Skipped) != 0 {
+		t.Fatalf("candidate under a persisted scan_root must NOT be skipped, got %+v", dry.Skipped)
+	}
+	movedInPlan := false
+	for _, m := range dry.Moves {
+		if m.OriginalPath == dupe {
+			movedInPlan = true
+		}
+	}
+	if !movedInPlan {
+		t.Fatalf("dry-run should plan to move the extra-root candidate, moves=%+v", dry.Moves)
+	}
+
+	// --apply actually quarantines it; the keeper survives.
+	applied, err := q.Quarantine(context.Background(), []int64{cand.ID}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied.Applied || len(applied.Skipped) != 0 {
+		t.Fatalf("apply should move the candidate, got applied=%v skipped=%+v", applied.Applied, applied.Skipped)
+	}
+	if exists(dupe) {
+		t.Error("the extra-root duplicate should have been quarantined away")
+	}
+	if !exists(keeper) {
+		t.Error("the keeper must remain")
+	}
+}
+
+// TestQuarantinePathOverrideMakesCandidateActionable proves BUG-1 fix #2: an
+// explicit --path (Options.Paths) alone — with NO persisted scan_root — makes an
+// in-that-path candidate actionable, and WITHOUT it the same candidate is refused
+// (the containment invariant holds).
+func TestQuarantinePathOverrideMakesCandidateActionable(t *testing.T) {
+	modelRoot := t.TempDir()
+	extra := t.TempDir()
+
+	keeper := filepath.Join(modelRoot, "a.safetensors")
+	dupe := filepath.Join(extra, "b.safetensors")
+	writeFile(t, keeper, "same")
+	writeFile(t, dupe, "same")
+
+	st := newTestStore(t)
+	mid, vid := 1, 1
+	// Hand-built rows with NO scan_root (as if recorded before this feature).
+	upsertGetID(t, st, store.LocalFile{Path: keeper, SHA256: "same", ModelID: &mid, VersionID: &vid,
+		SizeBytes: 4, Status: store.LocalStatusMatched, Kind: store.LocalKindModel})
+	dupID := upsertGetID(t, st, store.LocalFile{Path: dupe, SHA256: "same", ModelID: &mid, VersionID: &vid,
+		SizeBytes: 4, Status: store.LocalStatusMatched, CandidateReason: store.CandidateDuplicate, Kind: store.LocalKindModel})
+
+	// Without --path and without a persisted scan_root: REFUSED (invariant holds).
+	no := NewScanner(st, nil, Options{ModelRoot: modelRoot}, nil)
+	plan, err := no.Quarantine(context.Background(), []int64{dupID}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Moves) != 0 || len(plan.Skipped) != 1 || !strings.Contains(plan.Skipped[0].Reason, "outside") {
+		t.Fatalf("without --path (or scan_root) the out-of-root candidate must be refused, got moves=%d skipped=%+v",
+			len(plan.Moves), plan.Skipped)
+	}
+	if !exists(dupe) {
+		t.Fatal("the refused candidate must remain on disk")
+	}
+
+	// With --path=extra: actionable.
+	with := NewScanner(st, nil, Options{ModelRoot: modelRoot, Paths: []string{extra}}, nil)
+	plan2, err := with.Quarantine(context.Background(), []int64{dupID}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan2.Applied || len(plan2.Skipped) != 0 {
+		t.Fatalf("--path should make the candidate actionable, got applied=%v skipped=%+v", plan2.Applied, plan2.Skipped)
+	}
+	if exists(dupe) {
+		t.Error("the candidate should have been quarantined once --path covered it")
+	}
+	if !exists(keeper) {
+		t.Error("the keeper must remain")
+	}
+}
+
+// TestQuarantineScanRootDoesNotWeakenContainment proves the safety invariant is
+// PRESERVED, not weakened: a recorded scan_root that does NOT actually contain the
+// file grants no escape — containment is verified against real paths, so the file
+// is still refused.
+func TestQuarantineScanRootDoesNotWeakenContainment(t *testing.T) {
+	modelRoot := t.TempDir()
+	realDir := t.TempDir()   // where the file actually lives (outside model_root)
+	bogusRoot := t.TempDir() // a scanned root that does NOT contain the file
+
+	keeper := filepath.Join(modelRoot, "a.safetensors")
+	dupe := filepath.Join(realDir, "b.safetensors")
+	writeFile(t, keeper, "same")
+	writeFile(t, dupe, "same")
+
+	st := newTestStore(t)
+	mid, vid := 1, 1
+	upsertGetID(t, st, store.LocalFile{Path: keeper, SHA256: "same", ModelID: &mid, VersionID: &vid,
+		SizeBytes: 4, Status: store.LocalStatusMatched, Kind: store.LocalKindModel})
+	// The file records a scan_root of bogusRoot — which does NOT contain it.
+	dupID := upsertGetID(t, st, store.LocalFile{Path: dupe, SHA256: "same", ModelID: &mid, VersionID: &vid,
+		SizeBytes: 4, Status: store.LocalStatusMatched, CandidateReason: store.CandidateDuplicate,
+		Kind: store.LocalKindModel, ScanRoot: bogusRoot})
+
+	q := NewScanner(st, nil, Options{ModelRoot: modelRoot}, nil)
+	plan, err := q.Quarantine(context.Background(), []int64{dupID}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Moves) != 0 || len(plan.Skipped) != 1 || !strings.Contains(plan.Skipped[0].Reason, "outside") {
+		t.Fatalf("a scan_root that does not contain the file must NOT let it escape, got moves=%d skipped=%+v",
+			len(plan.Moves), plan.Skipped)
+	}
+	if !exists(dupe) {
+		t.Fatal("the file must remain: a mismatched scan_root grants no escape")
+	}
+}
+
 // --- small test helpers ---
 
 func trashPaths(files []store.QuarantinedFile) []string {
