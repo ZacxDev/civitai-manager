@@ -104,25 +104,31 @@ func (p *Poller) SubscribeCreator(ctx context.Context, username string, opts Sub
 // It is idempotent: enqueueCandidate's dedup guards skip a version that is
 // already actively queued or already present on disk with the expected hash, so
 // re-running after a SUCCESSFUL backfill enqueues nothing. It never touches the
-// seen ledger. Returns the number of versions enqueued (0 or 1).
-func (p *Poller) BackfillLatest(ctx context.Context, subID int64) (int, error) {
+// seen ledger. It returns a BackfillOutcome describing whether the latest was
+// enqueued and, if not, precisely why (so the CLI can report the real reason
+// rather than a single overloaded line).
+func (p *Poller) BackfillLatest(ctx context.Context, subID int64) (BackfillOutcome, error) {
 	sub, err := p.store.GetSubscription(subID)
 	if err != nil {
-		return 0, err
+		return BackfillOutcome{}, err
 	}
 	candidates, err := p.fetchCandidates(ctx, *sub)
 	if err != nil {
-		return 0, err
+		return BackfillOutcome{}, err
 	}
 	if len(candidates) == 0 {
-		return 0, nil
+		return BackfillOutcome{Reason: BackfillNoCandidates}, nil
 	}
 	var res PollResult
 	// jitterStart=false: a user-initiated backfill starts immediately.
-	if p.enqueueCandidate(ctx, *sub, candidates[0], &res, false) == outcomeEnqueued {
-		return 1, nil
-	}
-	return 0, nil
+	outcome := p.enqueueCandidate(ctx, *sub, candidates[0], &res, false)
+	return BackfillOutcome{
+		Enqueued:    outcome == outcomeEnqueued,
+		Reason:      res.backfillReason,
+		VersionID:   res.backfillVersion,
+		VersionName: candidates[0].VersionName,
+		Detail:      res.backfillDetail,
+	}, nil
 }
 
 // seedNew runs the first poll of a freshly-created subscription (seeding the

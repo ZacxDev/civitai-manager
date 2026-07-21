@@ -31,6 +31,21 @@ type Worker struct {
 	log         *slog.Logger
 	idlePoll    time.Duration
 	maxAttempts int
+	// noPreview skips writing the <base>.preview.png sidecar entirely.
+	noPreview bool
+	// maxPreviewBytes, when > 0, skips a preview whose fetched image exceeds it
+	// (the model file is still downloaded). 0 = no cap (historical behavior).
+	maxPreviewBytes int64
+}
+
+// SetPreviewPolicy configures preview-sidecar writing: noPreview skips the
+// <base>.preview.png entirely; maxPreviewBytes (>0) skips a preview larger than
+// the cap. The default (false, 0) preserves the historical behavior of writing
+// the full-resolution preview with no cap. It never affects the model file or
+// the .civitai.info sidecar.
+func (w *Worker) SetPreviewPolicy(noPreview bool, maxPreviewBytes int64) {
+	w.noPreview = noPreview
+	w.maxPreviewBytes = maxPreviewBytes
 }
 
 // New builds a download Worker. reader is optional (sidecar generation); pass
@@ -159,6 +174,38 @@ func (w *Worker) DrainSubscription(ctx context.Context, subID int64) ([]store.Qu
 			done = append(done, *it)
 		case store.StatusFailed:
 			return done, fmt.Errorf("download failed for %s: %s", it.FileName, it.LastError)
+		}
+	}
+}
+
+// DrainItems processes ONLY the queued rows whose id is in ids, until none of
+// them remain, returning the rows that reached the done state (len() is the
+// count; the rows carry the verified hash for the caller's friendly output).
+// Unlike DrainAll it never claims a row outside ids, so `verify --repair` drains
+// exactly the rows it re-enqueued and leaves any unrelated queued backlog
+// untouched. Like DrainAll (and unlike DrainSubscription) a per-item failure
+// does NOT abort the drain: the caller compares the returned done rows against
+// the requested set to report which repairs succeeded, so one unrecoverable file
+// must not prevent the others from being repaired.
+func (w *Worker) DrainItems(ctx context.Context, ids []int64) ([]store.QueueItem, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var done []store.QueueItem
+	for {
+		if ctx.Err() != nil {
+			return done, ctx.Err()
+		}
+		item, err := w.store.ClaimNextQueuedForIDs(ids)
+		if err != nil {
+			return done, err
+		}
+		if item == nil {
+			return done, nil
+		}
+		w.process(ctx, item)
+		if it, err := w.store.GetQueueItem(item.ID); err == nil && it.Status == store.StatusDone {
+			done = append(done, *it)
 		}
 	}
 }
@@ -292,6 +339,12 @@ func (w *Worker) writeSidecars(ctx context.Context, item *store.QueueItem) {
 			w.log.Warn("sidecar: write civitai.info failed", "err", err)
 		}
 	}
+	// Preview sidecar: opt-out with --no-preview, or cap its size with
+	// --max-preview-size. The default writes the full-resolution image (bounded
+	// only by a generous safety limit), matching historical behavior.
+	if w.noPreview {
+		return
+	}
 	if url := civitai.FirstImageURL(raw); url != "" {
 		if err := w.fetchPreview(ctx, url, base+".preview.png"); err != nil {
 			w.log.Warn("sidecar: preview failed", "err", err)
@@ -300,7 +353,17 @@ func (w *Worker) writeSidecars(ctx context.Context, item *store.QueueItem) {
 	_ = vd
 }
 
-// fetchPreview downloads a preview image to path (best-effort).
+// previewSafetyLimit bounds a preview fetch when no explicit --max-preview-size
+// cap is set, so a pathological image cannot exhaust disk. It matches the
+// historical hard limit.
+const previewSafetyLimit = 32 << 20
+
+// fetchPreview downloads a preview image to path (best-effort). When a preview
+// size cap is configured (maxPreviewBytes > 0) it is enforced two ways: an
+// advertised Content-Length over the cap short-circuits before any bytes are
+// written, and the streamed copy is bounded so a lying/absent Content-Length
+// still cannot exceed the cap — an over-cap body is discarded and the preview
+// skipped (the already-finalized model file is untouched).
 func (w *Worker) fetchPreview(ctx context.Context, url, path string) error {
 	resp, err := w.dl.DownloadFile(ctx, url)
 	if err != nil {
@@ -310,12 +373,28 @@ func (w *Worker) fetchPreview(ctx context.Context, url, path string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("preview HTTP %d", resp.StatusCode)
 	}
+	if w.maxPreviewBytes > 0 && resp.ContentLength > w.maxPreviewBytes {
+		w.log.Info("sidecar: preview skipped (exceeds max preview size)",
+			"content_length", resp.ContentLength, "max", w.maxPreviewBytes)
+		return nil
+	}
+
+	// Bound the copy. With a cap, read at most cap+1 bytes so we can detect an
+	// over-cap body whose Content-Length was absent or understated; otherwise use
+	// the generous safety limit.
+	limit := int64(previewSafetyLimit)
+	capped := w.maxPreviewBytes > 0
+	if capped {
+		limit = w.maxPreviewBytes + 1
+	}
+
 	tmp := path + ".part"
 	f, err := os.Create(tmp)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(f, io.LimitReader(resp.Body, 32<<20)); err != nil {
+	written, err := io.Copy(f, io.LimitReader(resp.Body, limit))
+	if err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
 		return err
@@ -323,6 +402,12 @@ func (w *Worker) fetchPreview(ctx context.Context, url, path string) error {
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
 		return err
+	}
+	if capped && written > w.maxPreviewBytes {
+		_ = os.Remove(tmp)
+		w.log.Info("sidecar: preview skipped (exceeds max preview size)",
+			"written", written, "max", w.maxPreviewBytes)
+		return nil
 	}
 	return os.Rename(tmp, path)
 }
