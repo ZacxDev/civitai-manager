@@ -24,7 +24,10 @@ managing subscriptions, searching CivitAI, and watching the download queue.
 - **Download** files with streaming SHA256 verification, atomic finalize, and
   `.civitai.info` / `.preview.png` sidecars.
 - A local **web UI** for subscriptions, search, model/creator pages, the
-  activity feed, and live queue progress.
+  activity feed, live queue progress, and a **Library page** whose "Scan now"
+  form accepts extra scan paths (one absolute directory per line or
+  comma-separated) so cross-directory duplicates outside `model_root` — the same
+  reach as the CLI `scan --path` — surface as quarantinable candidates in the UI.
 - **Search** CivitAI from the CLI or UI (first page / `--limit`).
 - **Library management** — `scan` an existing model directory (hash, match to
   CivitAI, flag superseded/duplicate/broken deletion candidates, read-only), then
@@ -156,7 +159,23 @@ civitai-manager library restore <batchID>             # undo a quarantine batch
 
 By default the one-shot download commands (`subscribe --backfill-latest`,
 `check --download`) print clean friendly progress/summary lines; add `-v` to see
-the detailed structured worker/poller logs.
+the detailed structured worker/poller logs. Each completed download prints a
+per-file verification line so you can see, at a glance, that the bytes were
+hash-checked against the API's expected SHA256:
+
+```
+✓ easynegative.safetensors (sha256 c74b4e810b03 verified)
+⚠ some-model.safetensors (unverified — no hash from API)
+```
+
+A `⚠ unverified` line means the API supplied no hash for that file, so it was
+downloaded but could not be checksum-verified (it is never reported as
+"verified").
+
+`unsubscribe <id>` fully removes the subscription's state — its seen-version
+ledger AND its download-queue rows — so re-subscribing to the same target later
+is a clean slate that re-enqueues and re-downloads (rather than being deduped
+against a stale completed row).
 
 ## Configuration & authentication
 
@@ -281,6 +300,10 @@ empty.
   `quarantine --path`), while a file inside no scanned root is still refused —
   containment is verified against real paths, so a mismatched `scan_root` grants no
   escape.
+  `restore` returns a quarantined batch's files to disk AND re-indexes each
+  restored model file into `local_files` (path/sha/size, nearest known scan
+  root), so it reappears in `library candidates` / the Library page immediately;
+  it prints a hint to run `scan` to re-match and re-evaluate candidacy.
 - **CLI search** — the `search` command maps flags to query params and renders
   the first page (bounded by `--limit`); `--json` emits the raw body.
 

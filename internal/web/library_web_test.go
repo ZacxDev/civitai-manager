@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -123,6 +124,77 @@ func TestLibraryPostsAreCSRFProtected(t *testing.T) {
 	}
 }
 
+// TestScanFormRendersPathsInput proves finding #2's UI: the Library page renders
+// the extra-scan-paths input so the user can scan beyond model_root.
+func TestScanFormRendersPathsInput(t *testing.T) {
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok"))
+	for _, want := range []string{"Scan now", "scan_paths", "Extra scan paths"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("scan form missing %q", want)
+		}
+	}
+}
+
+// TestLibraryScanWithExtraPathFindsCrossDirDuplicate proves finding #2's core: a
+// scan driven from the web form over an EXTRA path (outside model_root) surfaces
+// a cross-directory duplicate as a candidate — the flagship feature previously
+// reachable only via the CLI `scan --path`.
+func TestLibraryScanWithExtraPathFindsCrossDirDuplicate(t *testing.T) {
+	root := t.TempDir()
+	extra := t.TempDir()
+	srv := newLibraryTestServer(t, root)
+
+	// Two byte-identical model files, one in model_root and one in the extra dir.
+	if err := os.WriteFile(filepath.Join(root, "a.safetensors"), []byte("identical-weights"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(extra, "b.safetensors"), []byte("identical-weights"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	form := url.Values{"scan_paths": {extra}}
+	req := httptest.NewRequest(http.MethodPost, "/library/scan", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", srv.csrf)
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("scan status = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "duplicate") {
+		t.Fatalf("cross-dir duplicate not surfaced as a candidate:\n%s", rec.Body.String())
+	}
+
+	// The candidate is persisted and visible on the Library page too.
+	cands, err := srv.store.ListCandidates(store.CandidateDuplicate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("want 1 duplicate candidate persisted, got %d", len(cands))
+	}
+}
+
+// TestLibraryScanRejectsBadPath proves finding #2's validation: a nonexistent
+// extra path yields a friendly error (200 with a message), never a 500/panic.
+func TestLibraryScanRejectsBadPath(t *testing.T) {
+	srv := newLibraryTestServer(t, t.TempDir())
+	rec := httptest.NewRecorder()
+	form := url.Values{"scan_paths": {"/no/such/directory/here"}}
+	req := httptest.NewRequest(http.MethodPost, "/library/scan", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", srv.csrf)
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bad-path scan status = %d, want 200 with a friendly error", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Invalid scan path") {
+		t.Errorf("expected a friendly 'Invalid scan path' error, got:\n%s", rec.Body.String())
+	}
+}
+
 func TestQuarantineHandlerDryRunThenApply(t *testing.T) {
 	root := t.TempDir()
 	srv := newLibraryTestServer(t, root)
@@ -166,7 +238,7 @@ func TestRestoreHandlerRoundTrips(t *testing.T) {
 	srv := newLibraryTestServer(t, root)
 	id, dupe := seedDuplicateCandidate(t, srv, root)
 
-	sc := srv.newScanner(false)
+	sc := srv.newScanner(nil, false)
 	plan, err := sc.Quarantine(context.Background(), []int64{id}, true)
 	if err != nil {
 		t.Fatal(err)

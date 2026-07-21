@@ -163,6 +163,54 @@ func TestQuarantineRestoreRoundTrips(t *testing.T) {
 	}
 }
 
+// TestRestoreReindexesIntoLocalFiles proves finding #4: restoring a batch
+// re-registers each restored MODEL file in the local_files index (quarantine had
+// deleted its row), so `library candidates` / the web Library page see it again
+// without waiting for the next scan. Sidecars are not indexed. The re-indexed row
+// carries the nearest known scan root so the file stays quarantinable.
+func TestRestoreReindexesIntoLocalFiles(t *testing.T) {
+	root := t.TempDir()
+	st, dupID, dupe := dupPair(t, root)
+	sc := NewScanner(st, nil, Options{ModelRoot: root}, nil)
+
+	plan, err := sc.Quarantine(context.Background(), []int64{dupID}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Precondition: quarantine deleted the index row.
+	if got, _ := st.GetLocalFileByPath(dupe); got != nil {
+		t.Fatal("precondition: index row should be gone after quarantine")
+	}
+
+	res, err := sc.Restore(context.Background(), plan.BatchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The model file reappears in local_files.
+	got, err := st.GetLocalFileByPath(dupe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("restore should have re-indexed the model file into local_files")
+	}
+	if got.Kind != store.LocalKindModel {
+		t.Errorf("re-indexed row kind = %q, want model", got.Kind)
+	}
+	if got.ScanRoot != root {
+		t.Errorf("re-indexed scan_root = %q, want %q", got.ScanRoot, root)
+	}
+	if len(res.Reindexed) != 1 || res.Reindexed[0] != dupe {
+		t.Errorf("Reindexed = %v, want [%s]", res.Reindexed, dupe)
+	}
+	// A sidecar must NOT be indexed as a model file.
+	base := dupe[:len(dupe)-len(".safetensors")]
+	if sc, _ := st.GetLocalFileByPath(base + ".civitai.info"); sc != nil {
+		t.Error("sidecars must not be re-indexed into local_files")
+	}
+}
+
 func TestQuarantineRestoreRefusesOccupiedOriginal(t *testing.T) {
 	root := t.TempDir()
 	st, dupID, dupe := dupPair(t, root)

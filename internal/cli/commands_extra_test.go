@@ -427,12 +427,16 @@ func TestSubscribeBackfillIdempotentOnHealthySub(t *testing.T) {
 	}
 }
 
-// TestBackfillDefaultOutputHasNoStructuredLogs proves the polish item: at the
-// DEFAULT verbosity the subscribe --backfill-latest output is clean — the friendly
-// progress/summary lines WITHOUT the raw `level=INFO msg=downloading …` structured
-// dumps — while -v still yields the detailed structured logs. The friendly prints
-// and the worker/poller logger are pointed at ONE buffer so the assertion inspects
-// exactly the interleaved stream a user sees.
+// TestBackfillDefaultOutputHasNoStructuredLogs proves two things about the
+// subscribe --backfill-latest output at DEFAULT verbosity: (1) it is clean — the
+// friendly progress/summary lines WITHOUT the raw `level=INFO msg=downloading …`
+// structured dumps — while -v still yields the detailed structured logs; and (2)
+// it surfaces the hash-VERIFICATION status of each download in that friendly
+// output (the tool's headline safety feature), sourced from the completed queue
+// rows' sha256_expected/actual — NOT from the suppressed slog INFO line. A
+// hash-matched download reads "verified"; a download the API gave no hash for
+// reads "unverified". The friendly prints and the worker/poller logger are
+// pointed at ONE buffer so the assertion inspects exactly the stream a user sees.
 func TestBackfillDefaultOutputHasNoStructuredLogs(t *testing.T) {
 	payload := []byte("the latest model version bytes")
 	newServer := func() *httptest.Server {
@@ -442,7 +446,7 @@ func TestBackfillDefaultOutputHasNoStructuredLogs(t *testing.T) {
 	}
 	opts := poller.SubscribeOptions{AutoDownload: true, BackfillLatest: true, PollInterval: time.Hour}
 
-	// Default verbosity: clean output.
+	// Default verbosity: clean output that still conveys hash verification.
 	t.Run("default", func(t *testing.T) {
 		srv := newServer()
 		defer srv.Close()
@@ -459,6 +463,36 @@ func TestBackfillDefaultOutputHasNoStructuredLogs(t *testing.T) {
 		}
 		if !strings.Contains(got, "Downloaded 1 file(s).") {
 			t.Errorf("default output must contain the friendly summary, got:\n%s", got)
+		}
+		// The verification signal must be present in the friendly output (the API
+		// provided a matching hash → "verified").
+		if !strings.Contains(got, "verified") {
+			t.Errorf("default output must convey hash verification, got:\n%s", got)
+		}
+	})
+
+	// Default verbosity, NO hash from the API: the file is still downloaded, but
+	// the friendly output must explicitly flag it UNVERIFIED (never "verified").
+	t.Run("default-unverified", func(t *testing.T) {
+		srv := newServer()
+		defer srv.Close()
+		// An empty expected hash means the API gave no sha256 for the file.
+		a := newTestApp(t, fixtureClient(srv.URL+"/file", "", loopbackDownloader))
+		var buf bytes.Buffer
+		a.logWriter = &buf
+
+		if err := subscribeRun(context.Background(), a, &buf, "", []string{"1"}, opts); err != nil {
+			t.Fatalf("subscribeRun: %v", err)
+		}
+		got := buf.String()
+		if strings.Contains(got, "level=INFO") {
+			t.Errorf("default output must NOT contain raw structured INFO lines, got:\n%s", got)
+		}
+		if !strings.Contains(got, "Downloaded 1 file(s).") {
+			t.Errorf("default output must contain the friendly summary, got:\n%s", got)
+		}
+		if !strings.Contains(got, "unverified") {
+			t.Errorf("a no-hash download must be flagged unverified, got:\n%s", got)
 		}
 	})
 
@@ -519,20 +553,99 @@ func TestCheckSummaryReflectsDownloads(t *testing.T) {
 	if newCount < 1 {
 		t.Fatalf("expected >=1 new version found, got %d", newCount)
 	}
-	downloaded, err := drainDownloads(context.Background(), a, a.cmdLogger())
+	completed, err := drainDownloads(context.Background(), a, a.cmdLogger())
 	if err != nil {
 		t.Fatalf("drainDownloads: %v", err)
 	}
-	if downloaded < 1 {
-		t.Fatalf("expected >=1 downloaded, got %d", downloaded)
+	if len(completed) < 1 {
+		t.Fatalf("expected >=1 downloaded, got %d", len(completed))
 	}
 	remaining, _ := a.store.ListQueue(store.StatusQueued)
 
-	summary := formatCheckSummary(newCount, downloaded, len(remaining))
+	summary := formatCheckSummary(newCount, len(completed), len(remaining))
 	if !strings.Contains(summary, "1 downloaded") {
 		t.Errorf("summary should report the download count, got %q", summary)
 	}
 	if strings.Contains(summary, "0 item(s) queued") {
 		t.Errorf("summary must not read as if nothing happened, got %q", summary)
+	}
+}
+
+// TestUnsubscribeClearsStateForCleanReSubscribe proves finding #3: unsubscribing
+// must delete the subscription's seen_versions AND its download_queue rows so a
+// later re-subscribe to the same target is a clean slate. Without the cleanup, a
+// terminal `done` queue row survives (its FK is ON DELETE SET NULL, not CASCADE)
+// and, via the ux_dlq_active partial-unique index, dedup-blocks the re-enqueue —
+// so after the user deletes the file from disk, re-subscribing prints "No file
+// downloaded" and never re-fetches. Here the re-subscribe must download AGAIN.
+func TestUnsubscribeClearsStateForCleanReSubscribe(t *testing.T) {
+	payload := []byte("re-subscribe backfill bytes")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	var downloadCalls atomic.Int64
+	counting := func(ctx context.Context, u string) (*http.Response, error) {
+		downloadCalls.Add(1)
+		return loopbackDownloader(ctx, u)
+	}
+	client := fixtureClient(srv.URL+"/file", sha256Hex(payload), counting)
+	a := newTestApp(t, client)
+	opts := poller.SubscribeOptions{AutoDownload: true, BackfillLatest: true, PollInterval: time.Hour}
+
+	// First subscribe + backfill: downloads once, leaves one done row.
+	var out1 bytes.Buffer
+	if err := subscribeRun(context.Background(), a, &out1, "", []string{"1"}, opts); err != nil {
+		t.Fatalf("first subscribe: %v (out=%q)", err, out1.String())
+	}
+	if got := downloadCalls.Load(); got != 1 {
+		t.Fatalf("first backfill should download once, got %d", got)
+	}
+	subs, _ := a.store.ListSubscriptions()
+	if len(subs) != 1 {
+		t.Fatalf("want 1 subscription, got %d", len(subs))
+	}
+	oldSubID := subs[0].ID
+	if n, _ := a.store.CountSeen(oldSubID); n == 0 {
+		t.Fatalf("expected seen_versions recorded for the subscription")
+	}
+	if done, _ := a.store.ListQueue(store.StatusDone); len(done) != 1 {
+		t.Fatalf("want 1 done queue row after first backfill, got %d", len(done))
+	}
+
+	// Simulate the user deleting the downloaded file from disk.
+	path := findFileExt(t, a.cfg.ModelRoot, ".safetensors")
+	if path == "" {
+		t.Fatalf("expected a downloaded file on disk")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove file: %v", err)
+	}
+
+	// Unsubscribe: must wipe the subscription's seen_versions AND queue rows.
+	if err := a.store.DeleteSubscription(oldSubID); err != nil {
+		t.Fatalf("unsubscribe: %v", err)
+	}
+	if n, _ := a.store.CountSeen(oldSubID); n != 0 {
+		t.Errorf("seen_versions must be cleared on unsubscribe, got %d", n)
+	}
+	if done, _ := a.store.ListQueue(store.StatusDone); len(done) != 0 {
+		t.Errorf("download_queue rows must be cleared on unsubscribe, got %d done rows", len(done))
+	}
+
+	// Re-subscribe + backfill: a clean slate, so it must download AGAIN.
+	var out2 bytes.Buffer
+	if err := subscribeRun(context.Background(), a, &out2, "", []string{"1"}, opts); err != nil {
+		t.Fatalf("re-subscribe: %v (out=%q)", err, out2.String())
+	}
+	if got := downloadCalls.Load(); got != 2 {
+		t.Fatalf("re-subscribe must re-download (want 2 total calls), got %d; out=%q", got, out2.String())
+	}
+	if !strings.Contains(out2.String(), "Downloaded 1 file(s).") {
+		t.Errorf("re-subscribe should report a fresh download, got %q", out2.String())
+	}
+	if p := findFileExt(t, a.cfg.ModelRoot, ".safetensors"); p == "" {
+		t.Errorf("re-subscribe should have put the file back on disk")
 	}
 }

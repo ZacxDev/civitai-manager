@@ -1,7 +1,10 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -10,10 +13,15 @@ import (
 	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
-// newScanner builds a library.Scanner from the server's configuration.
-func (s *Server) newScanner(noRemote bool) *library.Scanner {
+// newScanner builds a library.Scanner from the server's configuration, adding
+// any extra scan-path directories (from the Library page's scan form) unioned
+// with the configured library paths and model_root. This reuses the exact same
+// scanner the CLI `scan` command drives — no forked scan logic.
+func (s *Server) newScanner(extraPaths []string, noRemote bool) *library.Scanner {
+	paths := append([]string{}, s.cfg.LibraryPaths...)
+	paths = append(paths, extraPaths...)
 	opts := library.Options{
-		Paths:      s.cfg.LibraryPaths,
+		Paths:      paths,
 		ModelRoot:  s.cfg.ModelRoot,
 		TrashDir:   s.cfg.TrashDir,
 		Extensions: library.ExtensionSet(s.cfg.Extensions),
@@ -24,6 +32,37 @@ func (s *Server) newScanner(noRemote bool) *library.Scanner {
 		reader = s.reader
 	}
 	return library.NewScanner(s.store, reader, opts, s.log)
+}
+
+// parseScanPaths parses the Library page's "scan_paths" field: a set of extra
+// scan directories separated by newlines OR commas. Each path is validated to be
+// absolute and an existing directory; a bad entry yields a friendly error (never
+// a 500). It returns the cleaned, de-duplicated list (possibly empty).
+func parseScanPaths(raw string) ([]string, error) {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ','
+	})
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range fields {
+		p := strings.TrimSpace(f)
+		if p == "" {
+			continue
+		}
+		if !filepath.IsAbs(p) {
+			return nil, fmt.Errorf("path must be absolute: %s", p)
+		}
+		p = filepath.Clean(p)
+		fi, err := os.Stat(p)
+		if err != nil || !fi.IsDir() {
+			return nil, fmt.Errorf("not an existing directory: %s", p)
+		}
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
@@ -43,7 +82,12 @@ func (s *Server) handleLibraryScan(w http.ResponseWriter, r *http.Request) {
 	if !s.verifyCSRF(w, r) {
 		return
 	}
-	sc := s.newScanner(false)
+	extra, err := parseScanPaths(r.FormValue("scan_paths"))
+	if err != nil {
+		s.render(w, http.StatusOK, errorNote("Invalid scan path: "+err.Error()))
+		return
+	}
+	sc := s.newScanner(extra, false)
 	if _, err := sc.Scan(r.Context()); err != nil {
 		s.render(w, http.StatusOK, errorNote("Scan failed: "+err.Error()))
 		return
@@ -71,7 +115,7 @@ func (s *Server) handleQuarantine(w http.ResponseWriter, r *http.Request) {
 	}
 	apply := r.FormValue("apply") == "true"
 
-	sc := s.newScanner(false)
+	sc := s.newScanner(nil, false)
 	plan, err := sc.Quarantine(r.Context(), ids, apply)
 	if err != nil {
 		s.render(w, http.StatusOK, errorNote("Quarantine failed: "+err.Error()))
@@ -148,7 +192,7 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 	if !s.verifyCSRF(w, r) {
 		return
 	}
-	sc := s.newScanner(false)
+	sc := s.newScanner(nil, false)
 	res, err := sc.Restore(r.Context(), id)
 	if err != nil {
 		s.render(w, http.StatusOK, errorNote("Restore failed: "+err.Error()))

@@ -38,22 +38,42 @@ func buildLibraryView(files []store.LocalFile) libraryView {
 func libraryPage(v libraryView, csrf string) g.Node {
 	return page("Library",
 		card(
-			h.Div(
-				h.Class("flex items-center justify-between"),
-				sectionTitle("Library"),
-				h.Button(
-					hx("post", "/library/scan"),
-					hx("vals", fmt.Sprintf(`{"csrf_token":"%s"}`, csrf)),
-					hx("target", "#library-content"),
-					hx("swap", "innerHTML"),
-					hx("indicator", "#scan-spinner"),
-					h.Class("rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"),
-					g.Text("Scan now"),
-				),
-			),
+			sectionTitle("Library"),
+			scanForm(csrf),
 			h.Div(h.ID("scan-spinner"), h.Class("htmx-indicator text-xs text-slate-400 mt-1"), g.Text("Scanning…")),
 		),
 		h.Div(h.ID("library-content"), libraryContent(v, csrf)),
+	)
+}
+
+// scanForm renders the "Scan now" control plus the optional extra-scan-paths
+// input. The extra paths (newline- or comma-separated absolute directories) are
+// unioned with model_root so cross-directory duplicates outside model_root
+// become visible in the UI — the same reach as the CLI `scan --path`. The form
+// carries the CSRF token as a hidden field.
+func scanForm(csrf string) g.Node {
+	return h.Form(
+		hx("post", "/library/scan"),
+		hx("target", "#library-content"),
+		hx("swap", "innerHTML"),
+		hx("indicator", "#scan-spinner"),
+		h.Class("mt-3 space-y-2"),
+		csrfInput(csrf),
+		h.Label(
+			h.Class("block text-xs text-slate-400"),
+			g.Text("Extra scan paths (optional — one absolute directory per line or comma-separated)"),
+		),
+		h.Textarea(
+			h.Name("scan_paths"),
+			h.Rows("2"),
+			h.Placeholder("/mnt/models/loras\n/mnt/external/checkpoints"),
+			h.Class("w-full rounded-md border border-slate-700 bg-slate-900 p-2 text-sm text-slate-200 placeholder:text-slate-600"),
+		),
+		h.Button(
+			h.Type("submit"),
+			h.Class("rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"),
+			g.Text("Scan now"),
+		),
 	)
 }
 

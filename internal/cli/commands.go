@@ -265,17 +265,52 @@ func subscribeRun(ctx context.Context, a *app, out io.Writer, creator string, ar
 	// than recording it on the row and exiting 0), so no separate failed-row scan
 	// is needed.
 	fmt.Fprintln(out, "Downloading latest version...")
-	downloaded, err := drainSubscriptionDownloads(ctx, a, subID, log)
+	completed, err := drainSubscriptionDownloads(ctx, a, subID, log)
 	if err != nil {
 		return fmt.Errorf("backfill download failed: %w", err)
 	}
 
-	if downloaded == 0 {
-		fmt.Fprintln(out, "No file downloaded (nothing to backfill, or filtered out).")
+	if len(completed) == 0 {
+		// A count of 0 means nothing was claimable for this subscription: the
+		// latest version was filtered out (base-model/file-type/size) or there was
+		// no new version to enqueue. An already-present file is NOT this case — the
+		// worker re-verifies it on disk and counts it done (so it prints below).
+		fmt.Fprintln(out, "No file downloaded (latest version filtered out, or nothing new to back-fill).")
 	} else {
-		fmt.Fprintf(out, "Downloaded %d file(s).\n", downloaded)
+		printDownloadVerification(out, completed)
+		fmt.Fprintf(out, "Downloaded %d file(s).\n", len(completed))
 	}
 	return nil
+}
+
+// printDownloadVerification prints one friendly, user-facing line per completed
+// download conveying whether its bytes were hash-verified against the API's
+// expected SHA256. This surfaces the tool's headline safety guarantee at the
+// DEFAULT verbosity: the worker's structured slog lines are suppressed unless -v
+// is set (see app.cmdLogger), so without this the user would see only
+// "Downloaded N file(s)." with no indication the bytes were verified. A file the
+// API gave no hash for is finalized but explicitly flagged UNVERIFIED — it must
+// never read as verified.
+func printDownloadVerification(out io.Writer, items []store.QueueItem) {
+	for _, it := range items {
+		if it.SHA256Expected == "" {
+			fmt.Fprintf(out, "⚠ %s (unverified — no hash from API)\n", it.FileName)
+			continue
+		}
+		sum := it.SHA256Actual
+		if sum == "" {
+			sum = it.SHA256Expected
+		}
+		fmt.Fprintf(out, "✓ %s (sha256 %s verified)\n", it.FileName, shortHash(sum))
+	}
+}
+
+// shortHash truncates a hex digest to a compact display prefix.
+func shortHash(h string) string {
+	if len(h) <= 12 {
+		return h
+	}
+	return h[:12]
 }
 
 // formatCheckSummary renders the `check --download` completion line from the
@@ -289,7 +324,7 @@ func formatCheckSummary(newCount, downloaded, remaining int) string {
 // drainDownloads runs the one-shot download worker to completion, returning the
 // number of files that finished. Shared by `check --download` and
 // `subscribe --backfill-latest` so both use the identical worker path.
-func drainDownloads(ctx context.Context, a *app, log *slog.Logger) (int, error) {
+func drainDownloads(ctx context.Context, a *app, log *slog.Logger) ([]store.QueueItem, error) {
 	wrk := queue.New(a.store, a.client, a.client, log)
 	return wrk.DrainAll(ctx)
 }
@@ -298,7 +333,7 @@ func drainDownloads(ctx context.Context, a *app, log *slog.Logger) (int, error) 
 // rows belonging to subID, returning the number that finished. Used by
 // `subscribe --backfill-latest` so the synchronous drain is confined to the
 // subscription just created and never touches an unrelated backlog.
-func drainSubscriptionDownloads(ctx context.Context, a *app, subID int64, log *slog.Logger) (int, error) {
+func drainSubscriptionDownloads(ctx context.Context, a *app, subID int64, log *slog.Logger) ([]store.QueueItem, error) {
 	wrk := queue.New(a.store, a.client, a.client, log)
 	return wrk.DrainSubscription(ctx, subID)
 }
@@ -392,12 +427,13 @@ func newCheckCmd(gf *globalFlags) *cobra.Command {
 
 			out := cmd.OutOrStdout()
 			if download {
-				downloaded, derr := drainDownloads(ctx, a, log)
+				completed, derr := drainDownloads(ctx, a, log)
 				if derr != nil {
 					return derr
 				}
+				printDownloadVerification(out, completed)
 				remaining, _ := a.store.ListQueue(store.StatusQueued)
-				fmt.Fprintln(out, formatCheckSummary(newCount, downloaded, len(remaining)))
+				fmt.Fprintln(out, formatCheckSummary(newCount, len(completed), len(remaining)))
 				return nil
 			}
 
