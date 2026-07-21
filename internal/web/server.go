@@ -30,6 +30,11 @@ type Subscriber interface {
 type Config struct {
 	BaseURL             string
 	DefaultPollInterval time.Duration
+	// Library-management config (used by the library page + quarantine).
+	ModelRoot    string
+	TrashDir     string
+	LibraryPaths []string
+	Extensions   []string
 }
 
 // Server wires the store, the CivitAI reader, and the subscriber into an
@@ -99,6 +104,12 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /fragments/events", s.handleEventsFragment)
 	mux.HandleFunc("GET /fragments/queue", s.handleQueueFragment)
+
+	mux.HandleFunc("GET /library", s.handleLibrary)
+	mux.HandleFunc("POST /library/scan", s.handleLibraryScan)
+	mux.HandleFunc("POST /library/quarantine", s.handleQuarantine)
+	mux.HandleFunc("GET /trash", s.handleTrash)
+	mux.HandleFunc("POST /trash/{id}/restore", s.handleRestore)
 
 	return logRequests(s.log, mux)
 }

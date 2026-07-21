@@ -51,6 +51,10 @@ var PrimaryFile = sdk.PrimaryFile
 type Reader interface {
 	GetModel(ctx context.Context, id string) (*ModelDetail, []byte, error)
 	GetModelVersion(ctx context.Context, id string) (*ModelVersionDetail, []byte, error)
+	// GetModelVersionByHash resolves a model version from any file hash
+	// (SHA256, AutoV2, …). The library scanner uses it to match local files to
+	// their CivitAI version without knowing the model/version id up front.
+	GetModelVersionByHash(ctx context.Context, hash string) (*ModelVersionDetail, []byte, error)
 	SearchModels(ctx context.Context, q url.Values) (*ModelSearchResult, error)
 	SearchCreators(ctx context.Context, q url.Values) (*CreatorSearchResult, error)
 	SearchImages(ctx context.Context, q url.Values) (*ImageSearchResult, error)

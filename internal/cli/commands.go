@@ -67,6 +67,10 @@ func serveRun(ctx context.Context, st *store.Store, client civitai.Client, cfg *
 	srv := web.NewServer(st, client, pol, web.Config{
 		BaseURL:             cfg.BaseURL,
 		DefaultPollInterval: cfg.DefaultPollInterval.D(),
+		ModelRoot:           cfg.ModelRoot,
+		TrashDir:            cfg.TrashDir,
+		LibraryPaths:        cfg.LibraryPaths,
+		Extensions:          cfg.LibraryExtensions,
 	}, log)
 
 	var wg sync.WaitGroup

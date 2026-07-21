@@ -96,6 +96,9 @@ type Event struct {
 
 // LocalFile is a row of the local_files library index.
 type LocalFile struct {
+	// ID is the row's SQLite rowid (populated on read; ignored on upsert, which
+	// is keyed by Path).
+	ID           int64
 	Path         string
 	SHA256       string
 	AutoV2       string
@@ -103,8 +106,44 @@ type LocalFile struct {
 	VersionID    *int
 	SizeBytes    int64
 	IsSuperseded bool
-	MatchedAt    *time.Time
+	// Mtime is the file's modification time captured at scan (for the
+	// incremental hash cache). Nil when unknown.
+	Mtime *time.Time
+	// Status is the match state: LocalStatusMatched, LocalStatusUnmatched,
+	// LocalStatusUnmatchedPending, or LocalStatusBroken.
+	Status string
+	// CandidateReason is the deletion-candidate flag (CandidateSuperseded,
+	// CandidateDuplicate, CandidateBroken) or "" when the file is not a candidate.
+	CandidateReason string
+	// Kind is LocalKindModel for a model-weight file or LocalKindSidecar for a
+	// tracked broken non-model file (stray part/empty info/orphan preview).
+	Kind      string
+	MatchedAt *time.Time
 }
+
+// Local-file match statuses.
+const (
+	LocalStatusMatched          = "matched"
+	LocalStatusUnmatched        = "unmatched"
+	LocalStatusUnmatchedPending = "unmatched-pending"
+	LocalStatusBroken           = "broken"
+)
+
+// Deletion-candidate reasons.
+const (
+	CandidateSuperseded = "superseded"
+	CandidateDuplicate  = "duplicate"
+	CandidateBroken     = "broken"
+)
+
+// Local-file kinds.
+const (
+	LocalKindModel   = "model"
+	LocalKindSidecar = "sidecar"
+)
+
+// IsCandidate reports whether the file is flagged for quarantine.
+func (lf LocalFile) IsCandidate() bool { return lf.CandidateReason != "" }
 
 func itoa(i int) string {
 	// small local helper to avoid importing strconv in the hot Label path

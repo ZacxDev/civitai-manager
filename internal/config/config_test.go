@@ -192,6 +192,52 @@ func TestMaxFileSizeResolves(t *testing.T) {
 	}
 }
 
+func TestLibraryConfigResolves(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, `
+model_root: /file/models
+library_paths:
+  - /a1111/models/Lora
+  - /comfy/models/checkpoints
+trash_dir: /file/models/.trash
+library_extensions:
+  - .safetensors
+  - .gguf
+`)
+	t.Setenv(EnvToken, "")
+	cfg, err := Resolve(Flags{ConfigPath: cfgPath, LibraryPaths: []string{"/extra/path"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// File paths plus the command-line --path are combined, in that order.
+	if len(cfg.LibraryPaths) != 3 || cfg.LibraryPaths[2] != "/extra/path" {
+		t.Fatalf("LibraryPaths = %v, want file paths + /extra/path", cfg.LibraryPaths)
+	}
+	if cfg.TrashDir != "/file/models/.trash" {
+		t.Errorf("TrashDir = %q", cfg.TrashDir)
+	}
+	if len(cfg.LibraryExtensions) != 2 || cfg.LibraryExtensions[1] != ".gguf" {
+		t.Errorf("LibraryExtensions = %v", cfg.LibraryExtensions)
+	}
+}
+
+func TestLibraryPathsExpandHome(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, "library_paths:\n  - ~/models\ntrash_dir: ~/trash\n")
+	t.Setenv(EnvToken, "")
+	cfg, err := Resolve(Flags{ConfigPath: cfgPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, _ := os.UserHomeDir()
+	if cfg.LibraryPaths[0] != filepath.Join(home, "models") {
+		t.Errorf("LibraryPaths[0] = %q, want expanded ~", cfg.LibraryPaths[0])
+	}
+	if cfg.TrashDir != filepath.Join(home, "trash") {
+		t.Errorf("TrashDir = %q, want expanded ~", cfg.TrashDir)
+	}
+}
+
 func TestDownloadJitterConfig(t *testing.T) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "missing.yaml")
