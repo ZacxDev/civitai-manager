@@ -100,9 +100,16 @@ civitai-manager subscribe --creator someartist
 # Subscription options:
 #   --notify-only        record new versions but don't download
 #   --no-auto            create the subscription with auto-download off
-#   --backfill-latest    download the current latest version now
+#   --backfill-latest    download the current latest version now, synchronously,
+#                        before the command returns (plain subscribe only seeds
+#                        the ledger and downloads nothing)
 #   --base-model SDXL    only download versions matching this base model
 #   --file-type Model    prefer this file type when a version has several
+
+# Search CivitAI from the CLI (first page / --limit; --json for the raw body):
+civitai-manager search "realistic vision"
+civitai-manager search --username someartist --type Checkpoint --limit 20
+civitai-manager search anime --tag style --nsfw --json
 
 # Global flags (apply to serve/check/subscribe):
 #   --max-file-size 2GB     skip auto-downloads whose primary file exceeds this
@@ -129,11 +136,21 @@ The CivitAI **API token** and other settings resolve by precedence:
 1. command-line flag (`--token`, `--base-url`, `--model-root`, `--db`)
 2. environment variable **`CIVITAI_TOKEN`** (token only)
 3. config file (below)
-4. built-in defaults
+4. the official [`civitai` CLI](https://github.com/civitai/cli)'s config, if
+   present — `~/.config/civitai/config.yaml`, the `token:` field (token only,
+   lowest precedence)
+5. built-in defaults
 
 The token is **never logged** — diagnostic output redacts it to `****abcd`.
 The public read endpoints work anonymously; a token is required to download most
 files.
+
+> **Already using the official `civitai` CLI?** Its login token lives in
+> `~/.config/civitai/config.yaml` under `token:`. civitai-manager reads that as a
+> last-resort fallback automatically, so you may not need to configure a token at
+> all. To be explicit instead, copy that value into `CIVITAI_TOKEN`, pass
+> `--token`, or set `token:` in `~/.config/civitai-manager/config.yaml`. A
+> missing or unreadable official-CLI config is ignored.
 
 Config file location honours `XDG_CONFIG_HOME`, defaulting to
 `~/.config/civitai-manager/config.yaml`:
@@ -173,7 +190,7 @@ internal/
   queue/                streaming download worker (verify → atomic rename → sidecars)
   web/                  gomponents pages + htmx handlers + embedded Tailwind/htmx
   hashutil/             SHA256 file digest + compare
-  cli/                  cobra commands: serve, subscribe, list, unsubscribe, check
+  cli/                  cobra commands: serve, subscribe, search, list, unsubscribe, check
 ```
 
 SQLite uses the **pure-Go** `modernc.org/sqlite` driver (no cgo), so the binary

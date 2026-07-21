@@ -98,23 +98,29 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// DrainAll processes queued items until the queue is empty (used by `check`).
-func (w *Worker) DrainAll(ctx context.Context) error {
+// DrainAll processes queued items until the queue is empty (used by `check
+// --download` and by `subscribe --backfill-latest`). It returns the number of
+// items that reached a completed (done) state during this drain.
+func (w *Worker) DrainAll(ctx context.Context) (int, error) {
 	if _, err := w.store.RequeueInterrupted(); err != nil {
-		return err
+		return 0, err
 	}
+	var done int
 	for {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return done, ctx.Err()
 		}
 		item, err := w.store.ClaimNextQueued()
 		if err != nil {
-			return err
+			return done, err
 		}
 		if item == nil {
-			return nil
+			return done, nil
 		}
 		w.process(ctx, item)
+		if it, err := w.store.GetQueueItem(item.ID); err == nil && it.Status == store.StatusDone {
+			done++
+		}
 	}
 }
 

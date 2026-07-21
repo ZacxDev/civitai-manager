@@ -7,6 +7,16 @@ import (
 	"time"
 )
 
+// TestMain insulates the whole package from the developer's real official
+// `civitai` CLI config so token resolution stays deterministic across machines.
+// The official-CLI fallback test overrides this seam locally.
+func TestMain(m *testing.M) {
+	officialCLIConfigPath = func() (string, error) {
+		return filepath.Join(os.TempDir(), "civitai-manager-test-nonexistent", "config.yaml"), nil
+	}
+	os.Exit(m.Run())
+}
+
 func writeConfig(t *testing.T, dir, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, "config.yaml")
@@ -286,4 +296,97 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+// TestResolveOfficialCLITokenFallback proves finding #5: when nothing higher in
+// the precedence chain provides a token, resolution borrows the token from the
+// official `civitai` CLI's config; an absent file is not an error; and any
+// higher-precedence source (env, this app's own config, a flag) wins over it.
+func TestResolveOfficialCLITokenFallback(t *testing.T) {
+	dir := t.TempDir()
+	officialPath := filepath.Join(dir, "civitai", "config.yaml")
+
+	old := officialCLIConfigPath
+	officialCLIConfigPath = func() (string, error) { return officialPath, nil }
+	defer func() { officialCLIConfigPath = old }()
+
+	missingOwnCfg := filepath.Join(dir, "cm-missing.yaml")
+
+	t.Run("absent official file is ignored", func(t *testing.T) {
+		t.Setenv(EnvToken, "")
+		cfg, err := Resolve(Flags{ConfigPath: missingOwnCfg})
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if cfg.Token != "" {
+			t.Errorf("token should be empty when official file is absent, got %q", cfg.Token)
+		}
+	})
+
+	// Now create the official CLI config with a token.
+	if err := os.MkdirAll(filepath.Dir(officialPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(officialPath, []byte("token: official-cli-token\nbase_url: https://civitai.com\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("fallback used when nothing higher set", func(t *testing.T) {
+		t.Setenv(EnvToken, "")
+		cfg, err := Resolve(Flags{ConfigPath: missingOwnCfg})
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if cfg.Token != "official-cli-token" {
+			t.Errorf("token: got %q want official-cli-token", cfg.Token)
+		}
+	})
+
+	t.Run("this app's own config wins over the fallback", func(t *testing.T) {
+		t.Setenv(EnvToken, "")
+		ownCfg := writeConfig(t, t.TempDir(), "token: own-config-token\n")
+		cfg, err := Resolve(Flags{ConfigPath: ownCfg})
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if cfg.Token != "own-config-token" {
+			t.Errorf("own config should win, got %q", cfg.Token)
+		}
+	})
+
+	t.Run("env wins over the fallback", func(t *testing.T) {
+		t.Setenv(EnvToken, "env-token")
+		cfg, err := Resolve(Flags{ConfigPath: missingOwnCfg})
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if cfg.Token != "env-token" {
+			t.Errorf("env should win over fallback, got %q", cfg.Token)
+		}
+	})
+
+	t.Run("flag wins over the fallback", func(t *testing.T) {
+		t.Setenv(EnvToken, "")
+		cfg, err := Resolve(Flags{ConfigPath: missingOwnCfg, Token: "flag-token"})
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if cfg.Token != "flag-token" {
+			t.Errorf("flag should win over fallback, got %q", cfg.Token)
+		}
+	})
+
+	t.Run("malformed official file is ignored", func(t *testing.T) {
+		t.Setenv(EnvToken, "")
+		if err := os.WriteFile(officialPath, []byte("::: not yaml :::\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Resolve(Flags{ConfigPath: missingOwnCfg})
+		if err != nil {
+			t.Fatalf("resolve must not fail on a malformed official file: %v", err)
+		}
+		if cfg.Token != "" {
+			t.Errorf("malformed official file should yield no token, got %q", cfg.Token)
+		}
+	})
 }
