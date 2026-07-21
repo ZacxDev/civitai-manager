@@ -119,6 +119,12 @@ type LocalFile struct {
 	// tracked broken non-model file (stray part/empty info/orphan preview).
 	Kind      string
 	MatchedAt *time.Time
+	// ScanRoot is the scan root this file was found under, recorded by `scan`.
+	// Quarantine reuses it (unioned with model_root and any explicit --path) as an
+	// allowed containment root, so a candidate scanned via `scan --path <dir>`
+	// stays actionable afterwards without re-specifying <dir>. Empty means not
+	// recorded by a scan (e.g. a download-worker row, always under model_root).
+	ScanRoot string
 }
 
 // Local-file match statuses.

@@ -28,8 +28,8 @@ func TestMigrationApplies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 4 {
-		t.Fatalf("schema version = %d, want 4", v)
+	if v != 5 {
+		t.Fatalf("schema version = %d, want 5", v)
 	}
 	// Re-running migrate (via a second Open on a file) is idempotent; here we
 	// just confirm the core tables exist by exercising them below.
@@ -521,5 +521,90 @@ func TestMigration0004DedupesPreexistingActiveDuplicates(t *testing.T) {
 		(model_id, version_id, file_id, file_name, download_url, dest_path, status, created_at, updated_at)
 		VALUES (1, 20, 200, 'f', 'u', '/p', 'queued', 't', 't')`); err == nil {
 		t.Fatal("expected a UNIQUE violation inserting a duplicate active row after 0004")
+	}
+}
+
+// TestMigration0005AppliesOnPopulatedDB proves migration 0005 (the per-file
+// scan_root column) applies cleanly on a DB already populated at the pre-0005
+// schema: the existing rows get the NOT NULL DEFAULT ” backfill and the new
+// column is readable/writable.
+func TestMigration0005AppliesOnPopulatedDB(t *testing.T) {
+	db := applyMigrationsUpTo(t, 4)
+
+	// Seed a local_files row at the pre-0005 schema (no scan_root column exists yet).
+	if _, err := db.Exec(`INSERT INTO local_files
+		(path, sha256, size_bytes, status, candidate_reason, kind, matched_at)
+		VALUES ('/models/a.safetensors', 'abc', 10, 'matched', 'duplicate', 'model', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seed pre-0005 row: %v", err)
+	}
+
+	b, err := migrationsFS.ReadFile("migrations/0005_scan_root.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(string(b)); err != nil {
+		t.Fatalf("migration 0005 must apply cleanly on a populated DB: %v", err)
+	}
+
+	// The pre-existing row backfills to the empty-string default.
+	var sr string
+	if err := db.QueryRow(`SELECT scan_root FROM local_files WHERE path='/models/a.safetensors'`).Scan(&sr); err != nil {
+		t.Fatalf("read scan_root: %v", err)
+	}
+	if sr != "" {
+		t.Errorf("pre-0005 row should default scan_root to '', got %q", sr)
+	}
+
+	// The new column is writable.
+	if _, err := db.Exec(`UPDATE local_files SET scan_root='/extra' WHERE path='/models/a.safetensors'`); err != nil {
+		t.Fatalf("update scan_root: %v", err)
+	}
+	if err := db.QueryRow(`SELECT scan_root FROM local_files WHERE path='/models/a.safetensors'`).Scan(&sr); err != nil {
+		t.Fatal(err)
+	}
+	if sr != "/extra" {
+		t.Errorf("scan_root after update = %q, want /extra", sr)
+	}
+}
+
+// TestUpsertLocalFilePreservesScanRootOnEmpty proves the ON CONFLICT rule: a
+// writer that upserts the same path WITHOUT a scan_root (the download worker) must
+// not clobber a scan_root a prior scan recorded — while a writer that DOES set one
+// updates it.
+func TestUpsertLocalFilePreservesScanRootOnEmpty(t *testing.T) {
+	st := newTestStore(t)
+	mid, vid := 1, 1
+
+	// A scan records the file under /extra.
+	if err := st.UpsertLocalFile(LocalFile{
+		Path: "/extra/x.safetensors", SHA256: "h", ModelID: &mid, VersionID: &vid,
+		Status: LocalStatusMatched, Kind: LocalKindModel, ScanRoot: "/extra",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The download-worker-style upsert (no ScanRoot) must preserve /extra.
+	if err := st.UpsertLocalFile(LocalFile{
+		Path: "/extra/x.safetensors", SHA256: "h", ModelID: &mid, VersionID: &vid,
+		Status: LocalStatusMatched, Kind: LocalKindModel,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetLocalFileByPath("/extra/x.safetensors")
+	if err != nil || got == nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.ScanRoot != "/extra" {
+		t.Errorf("a blank-scan_root upsert clobbered the recorded root: got %q, want /extra", got.ScanRoot)
+	}
+	// A later upsert that DOES set a scan_root updates it.
+	if err := st.UpsertLocalFile(LocalFile{
+		Path: "/extra/x.safetensors", SHA256: "h", ModelID: &mid, VersionID: &vid,
+		Status: LocalStatusMatched, Kind: LocalKindModel, ScanRoot: "/other",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = st.GetLocalFileByPath("/extra/x.safetensors")
+	if got.ScanRoot != "/other" {
+		t.Errorf("a non-empty scan_root upsert should update it: got %q, want /other", got.ScanRoot)
 	}
 }

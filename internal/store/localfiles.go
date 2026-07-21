@@ -9,7 +9,7 @@ import (
 // localFileCols is the read column list, exposing the SQLite rowid as ID so the
 // library CLI/UI can reference a file by a stable integer id.
 const localFileCols = `rowid, path, sha256, autov2, model_id, version_id,
-	size_bytes, is_superseded, mtime, status, candidate_reason, kind, matched_at`
+	size_bytes, is_superseded, mtime, status, candidate_reason, kind, matched_at, scan_root`
 
 func scanLocalFile(sc scanner) (LocalFile, error) {
 	var (
@@ -23,7 +23,7 @@ func scanLocalFile(sc scanner) (LocalFile, error) {
 	)
 	if err := sc.Scan(&lf.ID, &lf.Path, &sha, &autov2, &modelID, &versionID,
 		&lf.SizeBytes, &lf.IsSuperseded, &mtime, &lf.Status, &lf.CandidateReason,
-		&lf.Kind, &matchedAt); err != nil {
+		&lf.Kind, &matchedAt, &lf.ScanRoot); err != nil {
 		return LocalFile{}, err
 	}
 	lf.SHA256 = sha.String
@@ -64,8 +64,8 @@ func (s *Store) UpsertLocalFile(lf LocalFile) error {
 	_, err := s.db.Exec(`
 		INSERT INTO local_files
 			(path, sha256, autov2, model_id, version_id, size_bytes, is_superseded,
-			 mtime, status, candidate_reason, kind, matched_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 mtime, status, candidate_reason, kind, matched_at, scan_root)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (path) DO UPDATE SET
 			sha256 = excluded.sha256,
 			autov2 = excluded.autov2,
@@ -77,11 +77,16 @@ func (s *Store) UpsertLocalFile(lf LocalFile) error {
 			status = excluded.status,
 			candidate_reason = excluded.candidate_reason,
 			kind = excluded.kind,
-			matched_at = excluded.matched_at`,
+			matched_at = excluded.matched_at,
+			-- Preserve a previously-recorded scan_root when the writer does not set
+			-- one (the download worker upserts without a scan_root; a re-scan sets
+			-- it). Never clobber a real root with a blank.
+			scan_root = CASE WHEN excluded.scan_root <> '' THEN excluded.scan_root
+			                 ELSE local_files.scan_root END`,
 		lf.Path, nullStr(lf.SHA256), nullStr(lf.AutoV2),
 		nullInt(lf.ModelID), nullInt(lf.VersionID), lf.SizeBytes,
 		boolToInt(lf.IsSuperseded), nullTimeNanoStr(lf.Mtime), lf.Status,
-		lf.CandidateReason, lf.Kind, nullTimeStr(orNow(lf.MatchedAt)))
+		lf.CandidateReason, lf.Kind, nullTimeStr(orNow(lf.MatchedAt)), lf.ScanRoot)
 	return err
 }
 

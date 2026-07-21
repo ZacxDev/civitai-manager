@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"io"
 	"log/slog"
 	"os"
 
@@ -85,6 +86,12 @@ type app struct {
 	store  *store.Store
 	client civitai.Client
 	log    *slog.Logger
+	// verbose mirrors the global -v flag: it raises the interactive command logger
+	// (see cmdLogger) from WARN to DEBUG.
+	verbose bool
+	// logWriter is where cmdLogger writes (default os.Stderr). Tests point it at a
+	// buffer to assert on / suppress the worker+poller log output.
+	logWriter io.Writer
 }
 
 // close releases the store.
@@ -92,6 +99,25 @@ func (a *app) close() {
 	if a.store != nil {
 		_ = a.store.Close()
 	}
+}
+
+// cmdLogger builds the logger for interactive one-shot commands (subscribe,
+// check) that carry their own friendly progress/summary prints. At the default
+// verbosity it logs at WARN so the raw structured INFO lines (`level=INFO
+// msg=downloading …`) do not interleave with the friendly output; -v raises it to
+// DEBUG so the full structured logs are still available. Errors/warnings always
+// surface. serve keeps its own INFO-level a.log (it is a long-running daemon whose
+// stderr IS its operational log).
+func (a *app) cmdLogger() *slog.Logger {
+	w := a.logWriter
+	if w == nil {
+		w = os.Stderr
+	}
+	level := slog.LevelWarn
+	if a.verbose {
+		level = slog.LevelDebug
+	}
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level}))
 }
 
 // build resolves configuration, opens the store, and constructs the API client.
@@ -122,5 +148,5 @@ func (gf *globalFlags) build() (*app, error) {
 	}
 
 	client := civitai.New(cfg.BaseURL, cfg.Token)
-	return &app{cfg: cfg, store: st, client: client, log: log}, nil
+	return &app{cfg: cfg, store: st, client: client, log: log, verbose: gf.verbose}, nil
 }

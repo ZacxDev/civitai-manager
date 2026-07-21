@@ -97,6 +97,7 @@ func newCandidatesCmd(gf *globalFlags) *cobra.Command {
 	var (
 		reason string
 		asJSON bool
+		paths  []string
 	)
 	cmd := &cobra.Command{
 		Use:   "candidates",
@@ -125,6 +126,10 @@ func newCandidatesCmd(gf *globalFlags) *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&reason, "reason", "", "filter by reason: superseded, duplicate, or broken")
 	f.BoolVar(&asJSON, "json", false, "emit as JSON")
+	// Accepted for parity with `scan` and `library quarantine`; candidates always
+	// lists every flagged file (it is read-only and never acts), so --path does not
+	// restrict the listing.
+	f.StringArrayVar(&paths, "path", nil, "extra scan root, accepted for parity with quarantine (no effect on the listing)")
 	return cmd
 }
 
@@ -134,6 +139,7 @@ func newQuarantineCmd(gf *globalFlags) *cobra.Command {
 		reason string
 		all    bool
 		apply  bool
+		paths  []string
 	)
 	cmd := &cobra.Command{
 		Use:   "quarantine",
@@ -143,7 +149,11 @@ func newQuarantineCmd(gf *globalFlags) *cobra.Command {
 			"Without --apply it is a DRY-RUN that prints exactly what would move; a\n" +
 			"bare `quarantine` (no selector) dry-runs over ALL current candidates.\n" +
 			"--apply actually moves files and REQUIRES an explicit selector (--id,\n" +
-			"--reason, or --all) so the destructive path always names its targets.",
+			"--reason, or --all) so the destructive path always names its targets.\n\n" +
+			"A candidate may only be moved if it lies inside model_root, a root that\n" +
+			"was actually scanned (recorded at scan time), or an explicit --path — so a\n" +
+			"file flagged via `scan --path <dir>` stays actionable without re-passing\n" +
+			"<dir>. --path unions in an extra root for a standalone quarantine run.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateReason(reason); err != nil {
 				return err
@@ -157,7 +167,7 @@ func newQuarantineCmd(gf *globalFlags) *cobra.Command {
 			ctx, cancel := signalContext()
 			defer cancel()
 
-			return quarantineRun(ctx, a, cmd.OutOrStdout(), ids, reason, all, apply)
+			return quarantineRun(ctx, a, cmd.OutOrStdout(), ids, reason, all, apply, paths)
 		},
 	}
 	f := cmd.Flags()
@@ -165,6 +175,7 @@ func newQuarantineCmd(gf *globalFlags) *cobra.Command {
 	f.StringVar(&reason, "reason", "", "quarantine all candidates with this reason (superseded/duplicate/broken)")
 	f.BoolVar(&all, "all", false, "quarantine every current candidate")
 	f.BoolVar(&apply, "apply", false, "actually move files (default: dry-run); requires a selector")
+	f.StringArrayVar(&paths, "path", nil, "additional allowed scan root (repeatable; unioned with model_root and the roots recorded at scan time)")
 	return cmd
 }
 
@@ -174,7 +185,7 @@ func newQuarantineCmd(gf *globalFlags) *cobra.Command {
 // contrast, REFUSES a bare invocation: it requires an explicit selector so it
 // never nukes every candidate implicitly. Factored out of the cobra RunE so it
 // can be exercised with an in-memory app.
-func quarantineRun(ctx context.Context, a *app, out io.Writer, ids []int64, reason string, all, apply bool) error {
+func quarantineRun(ctx context.Context, a *app, out io.Writer, ids []int64, reason string, all, apply bool, paths []string) error {
 	if apply && len(ids) == 0 && reason == "" && !all {
 		return fmt.Errorf("--apply requires an explicit selector: --id, --reason, or --all")
 	}
@@ -188,7 +199,7 @@ func quarantineRun(ctx context.Context, a *app, out io.Writer, ids []int64, reas
 		return nil
 	}
 
-	sc := a.newScanner(nil, false)
+	sc := a.newScanner(paths, false)
 	plan, err := sc.Quarantine(ctx, targetIDs, apply)
 	if err != nil {
 		return err

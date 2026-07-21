@@ -192,7 +192,11 @@ func newSubscribeCmd(gf *globalFlags) *cobra.Command {
 // Plain subscribe (no --backfill-latest) stays enqueue-only. It is factored out
 // of the cobra RunE so it can be exercised with an in-memory app + fake client.
 func subscribeRun(ctx context.Context, a *app, out io.Writer, creator string, args []string, opts poller.SubscribeOptions) error {
-	pol := configuredPoller(a.store, a.client, a.cfg, a.log)
+	// The worker/poller log at WARN by default so their structured INFO lines do
+	// not interleave with the friendly progress prints below; -v raises them to
+	// DEBUG (see app.cmdLogger).
+	log := a.cmdLogger()
+	pol := configuredPoller(a.store, a.client, a.cfg, log)
 
 	var subID int64
 	if creator != "" {
@@ -261,7 +265,7 @@ func subscribeRun(ctx context.Context, a *app, out io.Writer, creator string, ar
 	// than recording it on the row and exiting 0), so no separate failed-row scan
 	// is needed.
 	fmt.Fprintln(out, "Downloading latest version...")
-	downloaded, err := drainSubscriptionDownloads(ctx, a, subID)
+	downloaded, err := drainSubscriptionDownloads(ctx, a, subID, log)
 	if err != nil {
 		return fmt.Errorf("backfill download failed: %w", err)
 	}
@@ -285,8 +289,8 @@ func formatCheckSummary(newCount, downloaded, remaining int) string {
 // drainDownloads runs the one-shot download worker to completion, returning the
 // number of files that finished. Shared by `check --download` and
 // `subscribe --backfill-latest` so both use the identical worker path.
-func drainDownloads(ctx context.Context, a *app) (int, error) {
-	wrk := queue.New(a.store, a.client, a.client, a.log)
+func drainDownloads(ctx context.Context, a *app, log *slog.Logger) (int, error) {
+	wrk := queue.New(a.store, a.client, a.client, log)
 	return wrk.DrainAll(ctx)
 }
 
@@ -294,8 +298,8 @@ func drainDownloads(ctx context.Context, a *app) (int, error) {
 // rows belonging to subID, returning the number that finished. Used by
 // `subscribe --backfill-latest` so the synchronous drain is confined to the
 // subscription just created and never touches an unrelated backlog.
-func drainSubscriptionDownloads(ctx context.Context, a *app, subID int64) (int, error) {
-	wrk := queue.New(a.store, a.client, a.client, a.log)
+func drainSubscriptionDownloads(ctx context.Context, a *app, subID int64, log *slog.Logger) (int, error) {
+	wrk := queue.New(a.store, a.client, a.client, log)
 	return wrk.DrainSubscription(ctx, subID)
 }
 
@@ -377,15 +381,18 @@ func newCheckCmd(gf *globalFlags) *cobra.Command {
 			ctx, cancel := signalContext()
 			defer cancel()
 
-			pol := configuredPoller(a.store, a.client, a.cfg, a.log)
+			// WARN-by-default logger (see app.cmdLogger) so structured INFO lines do
+			// not interleave with the friendly summary; -v restores the detail.
+			log := a.cmdLogger()
+			pol := configuredPoller(a.store, a.client, a.cfg, log)
 			newCount, err := pol.PollAll(ctx)
 			if err != nil {
-				a.log.Warn("some polls failed", "err", err)
+				log.Warn("some polls failed", "err", err)
 			}
 
 			out := cmd.OutOrStdout()
 			if download {
-				downloaded, derr := drainDownloads(ctx, a)
+				downloaded, derr := drainDownloads(ctx, a, log)
 				if derr != nil {
 					return derr
 				}

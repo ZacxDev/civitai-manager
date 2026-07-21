@@ -33,6 +33,11 @@ type walkResult struct {
 	parts      []string
 	infos      []string
 	previews   []string
+	// modelRoots maps each model file's absolute path to the scan root it was
+	// found under (the first root that reached it, in Roots() order). Recorded on
+	// each file's index row so quarantine can act on files scanned via an extra
+	// --path without re-specifying that directory.
+	modelRoots map[string]string
 }
 
 // walk inventories the scan roots, collecting model-weight files (by extension)
@@ -40,6 +45,7 @@ type walkResult struct {
 // directories and the trash dir, and never mutates anything.
 func (s *Scanner) walk() (walkResult, error) {
 	var wr walkResult
+	wr.modelRoots = map[string]string{}
 	seen := map[string]bool{}
 	trash := filepath.Clean(s.opts.TrashDir)
 
@@ -71,7 +77,7 @@ func (s *Scanner) walk() (walkResult, error) {
 				return nil
 			}
 			seen[abs] = true
-			classify(&wr, abs, s.opts.Extensions)
+			classify(&wr, abs, s.opts.Extensions, root)
 			return nil
 		})
 		if err != nil {
@@ -81,8 +87,10 @@ func (s *Scanner) walk() (walkResult, error) {
 	return wr, nil
 }
 
-// classify buckets one file by its name/extension.
-func classify(wr *walkResult, abs string, exts map[string]bool) {
+// classify buckets one file by its name/extension. root is the scan root the
+// file was found under (recorded for model files so quarantine knows which root
+// covered them).
+func classify(wr *walkResult, abs string, exts map[string]bool, root string) {
 	lower := strings.ToLower(abs)
 	switch {
 	case strings.HasSuffix(lower, partSuffix):
@@ -94,6 +102,7 @@ func classify(wr *walkResult, abs string, exts map[string]bool) {
 	default:
 		if exts[strings.ToLower(filepath.Ext(abs))] {
 			wr.modelFiles = append(wr.modelFiles, abs)
+			wr.modelRoots[abs] = root
 		}
 	}
 }
@@ -120,7 +129,7 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanReport, error) {
 			return report, ctx.Err()
 		}
 		seenPaths[path] = true
-		if err := s.processModelFile(ctx, path, report); err != nil {
+		if err := s.processModelFile(ctx, path, wr.modelRoots[path], report); err != nil {
 			s.log.Warn("scan: file failed", "path", path, "err", err)
 		}
 	}
@@ -168,7 +177,7 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanReport, error) {
 // optimization: a file whose size AND mtime match its stored row skips the
 // expensive re-hash and re-uses the stored match, so a re-scan of a multi-GB
 // library is fast and makes no API calls.
-func (s *Scanner) processModelFile(ctx context.Context, path string, report *ScanReport) error {
+func (s *Scanner) processModelFile(ctx context.Context, path, scanRoot string, report *ScanReport) error {
 	fi, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -220,6 +229,7 @@ func (s *Scanner) processModelFile(ctx context.Context, path string, report *Sca
 		Mtime:     &mtime,
 		Status:    result.status,
 		Kind:      store.LocalKindModel,
+		ScanRoot:  scanRoot,
 	}
 	if err := s.store.UpsertLocalFile(lf); err != nil {
 		return err
