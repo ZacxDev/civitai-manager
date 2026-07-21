@@ -224,20 +224,18 @@ func subscribeRun(ctx context.Context, a *app, out io.Writer, creator string, ar
 	// --backfill-latest promises the current latest version is downloaded before
 	// the command returns. Seeding already enqueued it (with no anti-stampede
 	// jitter, so it is immediately claimable); drain it here to disk now.
+	//
+	// The drain is SCOPED to this subscription: DrainAll would claim every due
+	// queued row (including a prior `check`'s backlog or another subscription's
+	// jitter-elapsed auto-downloads), so subscribing to model B could
+	// synchronously download model A's backlog and misreport the count. A scoped
+	// drain also surfaces a failed backfill directly (it returns the error rather
+	// than recording it on the row and exiting 0), so no separate failed-row scan
+	// is needed.
 	fmt.Fprintln(out, "Downloading latest version...")
-	downloaded, err := drainDownloads(ctx, a)
+	downloaded, err := drainSubscriptionDownloads(ctx, a, subID)
 	if err != nil {
 		return fmt.Errorf("backfill download failed: %w", err)
-	}
-
-	// The worker records per-item failures on the row rather than returning them,
-	// so a failed backfill must be surfaced explicitly for a non-zero exit.
-	if failed, ferr := a.store.ListQueue(store.StatusFailed); ferr == nil {
-		for _, it := range failed {
-			if it.SubscriptionID != nil && *it.SubscriptionID == subID {
-				return fmt.Errorf("backfill download failed: %s", it.LastError)
-			}
-		}
 	}
 
 	if downloaded == 0 {
@@ -262,6 +260,15 @@ func formatCheckSummary(newCount, downloaded, remaining int) string {
 func drainDownloads(ctx context.Context, a *app) (int, error) {
 	wrk := queue.New(a.store, a.client, a.client, a.log)
 	return wrk.DrainAll(ctx)
+}
+
+// drainSubscriptionDownloads runs the one-shot download worker but only over
+// rows belonging to subID, returning the number that finished. Used by
+// `subscribe --backfill-latest` so the synchronous drain is confined to the
+// subscription just created and never touches an unrelated backlog.
+func drainSubscriptionDownloads(ctx context.Context, a *app, subID int64) (int, error) {
+	wrk := queue.New(a.store, a.client, a.client, a.log)
+	return wrk.DrainSubscription(ctx, subID)
 }
 
 func newListCmd(gf *globalFlags) *cobra.Command {

@@ -124,6 +124,42 @@ func (w *Worker) DrainAll(ctx context.Context) (int, error) {
 	}
 }
 
+// DrainSubscription processes queued rows belonging to subID until none remain,
+// returning the number that reached the done state. Unlike DrainAll it is scoped
+// to a single subscription (used by `subscribe --backfill-latest`), so
+// subscribing to one model never synchronously downloads another subscription's
+// backlog. Because per-item failures are recorded on the row rather than
+// returned, a row that ends in the failed state aborts the drain with an error
+// so a failed backfill surfaces directly to the caller instead of being
+// swallowed. Transient failures are requeued by process/retryOrFail and are
+// re-claimed on the next loop, exactly as DrainAll handles them.
+func (w *Worker) DrainSubscription(ctx context.Context, subID int64) (int, error) {
+	var done int
+	for {
+		if ctx.Err() != nil {
+			return done, ctx.Err()
+		}
+		item, err := w.store.ClaimNextQueuedForSubscription(subID)
+		if err != nil {
+			return done, err
+		}
+		if item == nil {
+			return done, nil
+		}
+		w.process(ctx, item)
+		it, err := w.store.GetQueueItem(item.ID)
+		if err != nil {
+			return done, err
+		}
+		switch it.Status {
+		case store.StatusDone:
+			done++
+		case store.StatusFailed:
+			return done, fmt.Errorf("download failed for %s: %s", it.FileName, it.LastError)
+		}
+	}
+}
+
 // process downloads, verifies, and finalizes one claimed item. All failure
 // paths update the row; a hash mismatch is terminal (the partial file is
 // removed), while transient IO/network errors are requeued up to maxAttempts.

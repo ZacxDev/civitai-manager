@@ -235,6 +235,79 @@ func TestSubscribeBackfillDownloadErrorFails(t *testing.T) {
 	}
 }
 
+// TestSubscribeBackfillScopedToNewSubscription proves findings #1/#2: the
+// --backfill-latest synchronous drain is confined to the subscription just
+// created. A DUE queued row belonging to a DIFFERENT subscription (mimicking a
+// backlog left by a prior `check` without --download) must be left untouched —
+// still queued, never claimed or downloaded — and the reported count must be 1
+// (only the backfill), not 2.
+func TestSubscribeBackfillScopedToNewSubscription(t *testing.T) {
+	payload := []byte("new subscription backfill bytes")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	client := fixtureClient(srv.URL+"/file", sha256Hex(payload), loopbackDownloader)
+	a := newTestApp(t, client)
+
+	// Pre-seed a DIFFERENT subscription with a DUE queued row (not_before nil, so
+	// it is immediately claimable by an unscoped drain). Its download URL points
+	// at a closed port so that, if the scoped drain ever touched it, the test
+	// would fail loudly rather than silently succeeding.
+	otherMid := 42
+	otherSubID, err := a.store.CreateSubscription(store.Subscription{
+		Kind: store.KindModel, ModelID: &otherMid, AutoDownload: true, PollIntervalSecs: 3600,
+	})
+	if err != nil {
+		t.Fatalf("create other subscription: %v", err)
+	}
+	otherRowID, err := a.store.Enqueue(store.QueueItem{
+		SubscriptionID: &otherSubID,
+		ModelID:        42, VersionID: 200, FileID: 600,
+		FileName:    "other.safetensors",
+		DownloadURL: "http://127.0.0.1:1/never-fetched",
+		DestPath:    filepath.Join(a.cfg.ModelRoot, "other", "other.safetensors"),
+		Status:      store.StatusQueued,
+	})
+	if err != nil {
+		t.Fatalf("enqueue other row: %v", err)
+	}
+
+	var out bytes.Buffer
+	opts := poller.SubscribeOptions{AutoDownload: true, BackfillLatest: true, PollInterval: time.Hour}
+	if err := subscribeRun(context.Background(), a, &out, "", []string{"1"}, opts); err != nil {
+		t.Fatalf("subscribeRun: %v", err)
+	}
+
+	// The NEW subscription's file IS on disk.
+	path := findFileExt(t, a.cfg.ModelRoot, ".safetensors")
+	if path == "" {
+		t.Fatalf("backfill file not on disk after subscribe returned; output=%q", out.String())
+	}
+	got, rerr := os.ReadFile(path)
+	if rerr != nil || string(got) != string(payload) {
+		t.Fatalf("downloaded file content wrong: err=%v", rerr)
+	}
+
+	// The UNRELATED subscription's row is STILL queued and was never claimed.
+	other, gerr := a.store.GetQueueItem(otherRowID)
+	if gerr != nil {
+		t.Fatalf("get other row: %v", gerr)
+	}
+	if other.Status != store.StatusQueued {
+		t.Errorf("unrelated subscription's row must remain queued, got %q", other.Status)
+	}
+	if other.Attempts != 0 {
+		t.Errorf("unrelated subscription's row must not have been claimed, attempts=%d", other.Attempts)
+	}
+
+	// The reported count is ONLY the backfill (1), not the unrelated row too.
+	if !strings.Contains(out.String(), "Downloaded 1 file(s).") {
+		t.Errorf("expected \"Downloaded 1 file(s).\", got %q", out.String())
+	}
+}
+
 // TestCheckSummaryReflectsDownloads proves finding #4: after a run that
 // downloads an item, the summary reports the real counts, not "0 queued".
 func TestCheckSummaryReflectsDownloads(t *testing.T) {
