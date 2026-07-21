@@ -37,25 +37,12 @@ type QuarantinedFile struct {
 
 // CreateQuarantineBatch inserts a batch header and returns its id.
 func (s *Store) CreateQuarantineBatch(trashDir, manifest, reason string) (int64, error) {
-	res, err := s.db.Exec(`INSERT INTO quarantine_batches (created_at, trash_dir, manifest, reason)
-		VALUES (?, ?, ?, ?)`, nowRFC3339(), trashDir, manifest, reason)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
+	return execCreateQuarantineBatch(s.db, trashDir, manifest, reason)
 }
 
 // AddQuarantinedFile records one moved file in a batch and returns its id.
 func (s *Store) AddQuarantinedFile(f QuarantinedFile) (int64, error) {
-	res, err := s.db.Exec(`INSERT INTO quarantined_files
-		(batch_id, original_path, trash_path, reason, is_sidecar, sha256, size_bytes, moved_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		f.BatchID, f.OriginalPath, f.TrashPath, f.Reason, boolToInt(f.IsSidecar),
-		nullStr(f.SHA256), f.SizeBytes, nowRFC3339())
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
+	return execAddQuarantinedFile(s.db, f)
 }
 
 // SetBatchManifest updates a batch's manifest path (written after the moves so

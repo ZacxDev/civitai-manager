@@ -29,9 +29,22 @@ type matchResult struct {
 // candidate); an unresolved transient failure is recorded unmatched-pending so
 // nothing is ever falsely flagged.
 func (s *Scanner) matchFile(ctx context.Context, path, sha string) matchResult {
-	// 1. Civitai-Helper sidecar short-circuit.
-	if mid, vid, ok := parseInfoSidecar(sidecarInfoPath(path, s.opts.Extensions)); ok {
-		return matchResult{status: store.LocalStatusMatched, modelID: ptrIfPos(mid), versionID: ptrIfPos(vid)}
+	// 1. Civitai-Helper sidecar short-circuit — but only when the sidecar's own
+	// declared file hash matches THIS file's bytes. A sidecar whose declared
+	// SHA256 does not match the file (a mislabeled/renamed/tampered sidecar), or
+	// one that carries no file hash at all, is untrustworthy for adopting a
+	// model/version id: we fall through to the authoritative by-hash lookup
+	// (offline: recorded unmatched) rather than misclassify — and potentially
+	// quarantine — the wrong file.
+	if info, ok := parseInfoSidecar(sidecarInfoPath(path, s.opts.Extensions)); ok {
+		if av2, verified := info.verifyHash(sha); verified {
+			return matchResult{
+				status:    store.LocalStatusMatched,
+				modelID:   ptrIfPos(info.modelID),
+				versionID: ptrIfPos(info.versionID),
+				autov2:    av2,
+			}
+		}
 	}
 
 	// 2. Offline mode: no API calls. Without a sidecar we cannot confirm a match.
@@ -83,29 +96,71 @@ func sidecarInfoPath(modelPath string, exts map[string]bool) string {
 	return modelPath + sidecarInfo
 }
 
+// sidecarData is the parsed content of a .civitai.info sidecar: the model/version
+// ids plus every per-file hash pair the sidecar declares (used to verify the
+// sidecar actually describes the local file's bytes before trusting its ids).
+type sidecarData struct {
+	modelID   int
+	versionID int
+	files     []sidecarFileHash
+}
+
+// sidecarFileHash is one file's declared SHA256 (+ AutoV2) from the sidecar.
+type sidecarFileHash struct {
+	sha256 string
+	autoV2 string
+}
+
+// verifyHash reports whether the file whose actual SHA256 is `sha` is one of the
+// files this sidecar describes. It returns that file's AutoV2 (for enrichment)
+// and verified=true only on a hash match. When the sidecar declares NO file
+// SHA256 at all, or none match, it returns verified=false so the caller falls
+// through to the authoritative by-hash lookup instead of trusting the ids.
+func (d sidecarData) verifyHash(sha string) (autoV2 string, verified bool) {
+	for _, f := range d.files {
+		if hashutil.Equal(f.sha256, sha) {
+			return f.autoV2, true
+		}
+	}
+	return "", false
+}
+
 // parseInfoSidecar reads a .civitai.info sidecar and extracts its model/version
-// ids. Civitai-Helper writes the model-version API JSON verbatim, so `id` is the
-// version id and `modelId` the model id. An empty, missing, or corrupt file
-// yields ok=false (never a false match).
-func parseInfoSidecar(infoPath string) (modelID, versionID int, ok bool) {
+// ids and its declared per-file hashes. Civitai-Helper writes the model-version
+// API JSON verbatim, so `id` is the version id, `modelId` the model id, and
+// `files[].hashes` carries the SHA256/AutoV2 that identify each file. An empty,
+// missing, or corrupt file yields ok=false (never a false match).
+func parseInfoSidecar(infoPath string) (sidecarData, bool) {
 	data, err := os.ReadFile(infoPath)
 	if err != nil {
-		return 0, 0, false
+		return sidecarData{}, false
 	}
 	if len(strings.TrimSpace(string(data))) == 0 {
-		return 0, 0, false
+		return sidecarData{}, false
 	}
 	var body struct {
 		ID      int `json:"id"`
 		ModelID int `json:"modelId"`
+		Files   []struct {
+			Hashes struct {
+				SHA256 string `json:"SHA256"`
+				AutoV2 string `json:"AutoV2"`
+			} `json:"hashes"`
+		} `json:"files"`
 	}
 	if err := json.Unmarshal(data, &body); err != nil {
-		return 0, 0, false
+		return sidecarData{}, false
 	}
 	if body.ID <= 0 && body.ModelID <= 0 {
-		return 0, 0, false
+		return sidecarData{}, false
 	}
-	return body.ModelID, body.ID, true
+	out := sidecarData{modelID: body.ModelID, versionID: body.ID}
+	for _, f := range body.Files {
+		if strings.TrimSpace(f.Hashes.SHA256) != "" {
+			out.files = append(out.files, sidecarFileHash{sha256: f.Hashes.SHA256, autoV2: f.Hashes.AutoV2})
+		}
+	}
+	return out, true
 }
 
 // autoV2ForHash returns the AutoV2 hash of whichever version file matches sha,

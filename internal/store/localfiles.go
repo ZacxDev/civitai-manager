@@ -164,8 +164,7 @@ func (s *Store) ClearCandidates() error {
 // DeleteLocalFileByPath removes a file's index row (e.g. after it is quarantined
 // off disk). A missing path is not an error.
 func (s *Store) DeleteLocalFileByPath(path string) error {
-	_, err := s.db.Exec(`DELETE FROM local_files WHERE path = ?`, path)
-	return err
+	return execDeleteLocalFileByPath(s.db, path)
 }
 
 // CountLocalFiles returns how many files are indexed.

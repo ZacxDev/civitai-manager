@@ -25,8 +25,11 @@ func TestMatcherValidSidecarShortCircuitsAPI(t *testing.T) {
 	root := t.TempDir()
 	model := filepath.Join(root, "m.safetensors")
 	writeFile(t, model, "weights")
-	// Civitai-Helper sidecar: model-version JSON with id (version) + modelId.
-	writeFile(t, filepath.Join(root, "m.civitai.info"), `{"id": 555, "modelId": 42}`)
+	// Civitai-Helper sidecar: model-version JSON with id (version) + modelId AND
+	// the file's declared SHA256, which must match this file's bytes for the
+	// short-circuit to be trusted.
+	writeFile(t, filepath.Join(root, "m.civitai.info"),
+		`{"id": 555, "modelId": 42, "files": [{"hashes": {"SHA256": "DEADBEEF", "AutoV2": "av2x"}}]}`)
 
 	fr := &fakeReader{}
 	sc := matcherScanner(t, root, fr, false, "deadbeef")
@@ -38,8 +41,71 @@ func TestMatcherValidSidecarShortCircuitsAPI(t *testing.T) {
 	if res.modelID == nil || *res.modelID != 42 || res.versionID == nil || *res.versionID != 555 {
 		t.Fatalf("ids = %v/%v, want 42/555", res.modelID, res.versionID)
 	}
+	if res.autov2 != "av2x" {
+		t.Fatalf("autov2 = %q, want av2x enriched from the matching sidecar file", res.autov2)
+	}
 	if fr.calls != 0 {
-		t.Fatalf("API called %d times; a valid sidecar must short-circuit it", fr.calls)
+		t.Fatalf("API called %d times; a hash-verified sidecar must short-circuit it", fr.calls)
+	}
+}
+
+// TestMatcherSidecarHashMismatchFallsThrough proves a sidecar whose declared
+// SHA256 does NOT match the file's actual bytes is not trusted: it is ignored and
+// matching falls through to the authoritative by-hash lookup (which here resolves
+// the real ids), so a mislabeled/renamed sidecar can never misclassify the file.
+func TestMatcherSidecarHashMismatchFallsThrough(t *testing.T) {
+	root := t.TempDir()
+	model := filepath.Join(root, "m.safetensors")
+	writeFile(t, model, "weights")
+	// Sidecar claims ids 999/88 for a DIFFERENT file (hash "cafef00d"), but this
+	// file actually hashes to "abc".
+	writeFile(t, filepath.Join(root, "m.civitai.info"),
+		`{"id": 999, "modelId": 88, "files": [{"hashes": {"SHA256": "cafef00d"}}]}`)
+
+	fr := &fakeReader{byHash: versionMap("abc", version(10, 100, "abc"))}
+	sc := matcherScanner(t, root, fr, false, "abc")
+
+	res := sc.matchFile(context.Background(), model, "abc")
+	if res.status != store.LocalStatusMatched || fr.calls != 1 {
+		t.Fatalf("mismatched sidecar must fall through to one API call: status=%q calls=%d", res.status, fr.calls)
+	}
+	if res.modelID == nil || *res.modelID != 100 || res.versionID == nil || *res.versionID != 10 {
+		t.Fatalf("ids = %v/%v, want 100/10 from the by-hash path (not the bogus sidecar 88/999)", res.modelID, res.versionID)
+	}
+}
+
+// TestMatcherSidecarNoHashFallsThrough proves a sidecar carrying ids but NO file
+// hash cannot be trusted to adopt those ids: it falls through to by-hash.
+func TestMatcherSidecarNoHashFallsThrough(t *testing.T) {
+	root := t.TempDir()
+	model := filepath.Join(root, "m.safetensors")
+	writeFile(t, model, "weights")
+	writeFile(t, filepath.Join(root, "m.civitai.info"), `{"id": 555, "modelId": 42}`) // no files/hashes
+
+	fr := &fakeReader{byHash: versionMap("abc", version(10, 100, "abc"))}
+	sc := matcherScanner(t, root, fr, false, "abc")
+
+	res := sc.matchFile(context.Background(), model, "abc")
+	if res.status != store.LocalStatusMatched || fr.calls != 1 {
+		t.Fatalf("hashless sidecar must fall through to one API call: status=%q calls=%d", res.status, fr.calls)
+	}
+	if res.modelID == nil || *res.modelID != 100 {
+		t.Fatalf("ids should come from by-hash (100), got %v", res.modelID)
+	}
+}
+
+// TestMatcherSidecarNoHashOfflineUnmatched proves that in --no-remote mode a
+// hashless (unverifiable) sidecar yields unmatched rather than a blind match.
+func TestMatcherSidecarNoHashOfflineUnmatched(t *testing.T) {
+	root := t.TempDir()
+	model := filepath.Join(root, "m.safetensors")
+	writeFile(t, model, "weights")
+	writeFile(t, filepath.Join(root, "m.civitai.info"), `{"id": 555, "modelId": 42}`) // no hash
+
+	sc := matcherScanner(t, root, &panicReader{}, true, "abc") // NoRemote
+	res := sc.matchFile(context.Background(), model, "abc")
+	if res.status != store.LocalStatusUnmatched {
+		t.Fatalf("offline hashless sidecar should be unmatched, got %q", res.status)
 	}
 }
 

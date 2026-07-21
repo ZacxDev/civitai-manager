@@ -96,6 +96,10 @@ type Scanner struct {
 	// file is actually re-hashed (the incremental-cache assertion).
 	hashFn func(path string) (string, error)
 	nowFn  func() time.Time
+	// moveFn moves src to dst (durably across filesystems), verifying against
+	// expectedSHA when non-empty. Injecting it lets tests force a mid-batch move
+	// failure to exercise the partial-batch recovery path.
+	moveFn func(src, dst, expectedSHA string) error
 	// waitFn sleeps for d honouring ctx (backoff between by-hash retries).
 	waitFn func(ctx context.Context, d time.Duration)
 	// maxHashRetries bounds by-hash retries on rate-limit/transient errors before
@@ -125,6 +129,7 @@ func NewScanner(st *store.Store, reader civitai.Reader, opts Options, log *slog.
 		opts:           opts,
 		hashFn:         hashutil.SumFile,
 		nowFn:          func() time.Time { return time.Now().UTC() },
+		moveFn:         moveFile,
 		waitFn:         sleepCtx,
 		maxHashRetries: 4,
 	}
@@ -173,6 +178,9 @@ func sleepCtx(ctx context.Context, d time.Duration) {
 // is the containment guard the quarantine mover uses so it can never touch a
 // file outside a configured scan root.
 func withinRoots(abs string, roots []string) bool {
+	// TODO(audit): containment is lexical (filepath.Clean only); it does not
+	// EvalSymlinks, so a symlinked path could escape a root. Documented
+	// follow-up, out of scope for the current change.
 	abs = filepath.Clean(abs)
 	for _, root := range roots {
 		root = filepath.Clean(root)
