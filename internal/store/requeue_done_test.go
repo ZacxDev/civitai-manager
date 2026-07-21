@@ -65,6 +65,99 @@ func TestRequeueDoneReenqueuesWithoutTrippingUniqueIndex(t *testing.T) {
 	}
 }
 
+// TestRequeueFailedReenqueuesAndFindActive proves the failed-repair retry
+// primitive behind `verify --repair`: a terminally 'failed' row (a prior repair
+// whose re-download failed) can be transitioned back to 'queued' and re-claimed,
+// and FindActiveQueueItem surfaces the active row for a (version_id, file_id) so
+// the backfill path can inspect its status/dest_path.
+func TestRequeueFailedReenqueuesAndFindActive(t *testing.T) {
+	st := newTestStore(t)
+
+	id, inserted, err := st.Enqueue(QueueItem{
+		ModelID: 3, VersionID: 300, FileID: 700, FileName: "v.safetensors",
+		DownloadURL: "http://example/v", DestPath: "/models/v.safetensors",
+		Status: StatusQueued, SHA256Expected: "abc",
+	})
+	if err != nil || !inserted {
+		t.Fatalf("enqueue: inserted=%v err=%v", inserted, err)
+	}
+
+	// A 'failed' row is NOT active, so FindActiveQueueItem returns nil for it.
+	if err := st.FailDownload(id, "boom", ""); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	if active, err := st.FindActiveQueueItem(300, 700); err != nil || active != nil {
+		t.Fatalf("failed row must not be active, got %+v err=%v", active, err)
+	}
+
+	// RequeueFailed transitions failed→queued, resetting per-attempt state.
+	if err := st.RequeueFailed(id); err != nil {
+		t.Fatalf("RequeueFailed: %v", err)
+	}
+	got, _ := st.GetQueueItem(id)
+	if got.Status != StatusQueued {
+		t.Errorf("status after RequeueFailed = %s, want queued", got.Status)
+	}
+	if got.Attempts != 0 || got.LastError != "" {
+		t.Errorf("per-attempt state must reset, attempts=%d lastErr=%q", got.Attempts, got.LastError)
+	}
+
+	// Now it is active again and re-claimable.
+	active, err := st.FindActiveQueueItem(300, 700)
+	if err != nil || active == nil || active.ID != id {
+		t.Fatalf("re-enqueued row must be active, got %+v err=%v", active, err)
+	}
+	claimed, err := st.ClaimNextQueued()
+	if err != nil || claimed == nil || claimed.ID != id {
+		t.Fatalf("re-enqueued row must be claimable, got %+v err=%v", claimed, err)
+	}
+
+	// RequeueFailed is a no-op on a non-failed row.
+	if err := st.RequeueFailed(id); err != ErrNotFound {
+		t.Errorf("RequeueFailed on a downloading row should be ErrNotFound, got %v", err)
+	}
+}
+
+// TestClaimNextQueuedForIDsIsScoped proves the id-scoped claim behind
+// `verify --repair`: it only claims a row whose id is in the given set, so an
+// unrelated due queued row is never touched.
+func TestClaimNextQueuedForIDsIsScoped(t *testing.T) {
+	st := newTestStore(t)
+	repairID, _, err := st.Enqueue(QueueItem{
+		ModelID: 1, VersionID: 100, FileID: 500, FileName: "a.safetensors",
+		DownloadURL: "http://example/a", DestPath: "/models/a.safetensors", Status: StatusQueued,
+	})
+	if err != nil {
+		t.Fatalf("enqueue repair row: %v", err)
+	}
+	otherID, _, err := st.Enqueue(QueueItem{
+		ModelID: 2, VersionID: 200, FileID: 600, FileName: "b.safetensors",
+		DownloadURL: "http://example/b", DestPath: "/models/b.safetensors", Status: StatusQueued,
+	})
+	if err != nil {
+		t.Fatalf("enqueue other row: %v", err)
+	}
+
+	// Scoped to [repairID]: claims repairID, then nil — never the other row.
+	claimed, err := st.ClaimNextQueuedForIDs([]int64{repairID})
+	if err != nil || claimed == nil || claimed.ID != repairID {
+		t.Fatalf("scoped claim should return the repair row, got %+v err=%v", claimed, err)
+	}
+	next, err := st.ClaimNextQueuedForIDs([]int64{repairID})
+	if err != nil || next != nil {
+		t.Fatalf("scoped claim must not spill to the other row, got %+v err=%v", next, err)
+	}
+	// The other row is untouched (still queued, never claimed).
+	other, _ := st.GetQueueItem(otherID)
+	if other.Status != StatusQueued || other.Attempts != 0 {
+		t.Errorf("unrelated row must be untouched, status=%s attempts=%d", other.Status, other.Attempts)
+	}
+	// An empty id set matches nothing.
+	if it, err := st.ClaimNextQueuedForIDs(nil); err != nil || it != nil {
+		t.Errorf("empty id set must match nothing, got %+v err=%v", it, err)
+	}
+}
+
 // TestRequeueDoneOnlyActsOnDoneRows proves the status guard: RequeueDone is a
 // no-op (ErrNotFound) on a row that is not 'done', so it can never disturb an
 // in-flight (queued/downloading) download.

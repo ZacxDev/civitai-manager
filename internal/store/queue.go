@@ -121,6 +121,27 @@ func (s *Store) ActiveQueueItemExists(versionID, fileID int, statuses ...QueueSt
 	return true, nil
 }
 
+// FindActiveQueueItem returns the ACTIVE ('queued'/'downloading'/'done') queue
+// row for a (version_id, file_id), or (nil, nil) when none exists. It is the
+// row-returning counterpart to ActiveQueueItemExists: the partial-unique index
+// ux_dlq_active guarantees at most one active row per (version_id, file_id), so
+// this returns that single row. Used by the backfill path to inspect WHY a
+// re-enqueue was skipped (e.g. a 'done' row whose file is missing on disk), so
+// the CLI can distinguish "already on disk" from "downloaded then deleted".
+func (s *Store) FindActiveQueueItem(versionID, fileID int) (*QueueItem, error) {
+	row := s.db.QueryRow(`SELECT `+queueCols+` FROM download_queue
+		WHERE version_id = ? AND file_id = ? AND status IN ('queued', 'downloading', 'done')
+		ORDER BY id DESC LIMIT 1`, versionID, fileID)
+	it, err := scanQueueItem(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &it, nil
+}
+
 // ListQueue returns queue rows, optionally filtered to the given statuses,
 // newest first.
 func (s *Store) ListQueue(statuses ...QueueStatus) ([]QueueItem, error) {
@@ -156,7 +177,7 @@ func (s *Store) ListQueue(statuses ...QueueStatus) ([]QueueItem, error) {
 // is empty. The claim is a single UPDATE ... WHERE id = (SELECT ...) so two
 // workers never claim the same row.
 func (s *Store) ClaimNextQueued() (*QueueItem, error) {
-	return s.claimNext(nil)
+	return s.claimNext(nil, nil)
 }
 
 // ClaimNextQueuedForSubscription is ClaimNextQueued scoped to a single
@@ -165,14 +186,28 @@ func (s *Store) ClaimNextQueued() (*QueueItem, error) {
 // picks up another subscription's queued backlog (e.g. rows left by a prior
 // `check` without --download, or auto-download rows whose jitter has elapsed).
 func (s *Store) ClaimNextQueuedForSubscription(subID int64) (*QueueItem, error) {
-	return s.claimNext(&subID)
+	return s.claimNext(&subID, nil)
 }
 
-// claimNext is the shared claim body for ClaimNextQueued and its
-// per-subscription variant. When subID is non-nil the candidate row is
-// additionally filtered to that subscription; the not_before gating,
-// attempt-increment, and single-transaction claim are otherwise identical.
-func (s *Store) claimNext(subID *int64) (*QueueItem, error) {
+// ClaimNextQueuedForIDs is ClaimNextQueued scoped to an explicit set of row ids:
+// it only claims a due queued row whose id is in ids. Used by `verify --repair`
+// so the synchronous drain touches ONLY the rows the repair just re-enqueued and
+// never claims an unrelated queued backlog (e.g. another subscription's
+// jitter-elapsed auto-downloads, or a prior `check`'s queued rows). An empty ids
+// set matches nothing (returns nil, nil).
+func (s *Store) ClaimNextQueuedForIDs(ids []int64) (*QueueItem, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return s.claimNext(nil, ids)
+}
+
+// claimNext is the shared claim body for ClaimNextQueued and its scoped
+// variants. When subID is non-nil the candidate row is additionally filtered to
+// that subscription; when ids is non-empty it is filtered to that id set. The
+// not_before gating, attempt-increment, and single-transaction claim are
+// otherwise identical.
+func (s *Store) claimNext(subID *int64, ids []int64) (*QueueItem, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -192,6 +227,14 @@ func (s *Store) claimNext(subID *int64) (*QueueItem, error) {
 	if subID != nil {
 		query += ` AND subscription_id = ?`
 		args = append(args, *subID)
+	}
+	if len(ids) > 0 {
+		placeholders := make([]string, len(ids))
+		for i, rid := range ids {
+			placeholders[i] = "?"
+			args = append(args, rid)
+		}
+		query += ` AND id IN (` + strings.Join(placeholders, ", ") + `)`
 	}
 	query += ` ORDER BY id ASC LIMIT 1`
 
@@ -302,11 +345,39 @@ func (s *Store) RequeueCanceled(id int64) error {
 // The guard `AND status = 'done'` makes it a no-op (ErrNotFound) on any other
 // status, so it can never disturb an in-flight download.
 func (s *Store) RequeueDone(id int64) error {
+	return s.requeueForRepair(id, StatusDone)
+}
+
+// RequeueFailed transitions a terminally 'failed' row back to 'queued' so the
+// download worker re-attempts it, resetting the per-attempt download state. It
+// is the sibling of RequeueDone for the repair path: `verify --repair` on a row
+// whose PREVIOUS repair download failed (404/gone/exhausted retries/hash
+// mismatch) must be able to re-attempt it, otherwise a failed repair strands the
+// file forever (its version is already in seen_versions, and ListQueue(done)
+// alone would never surface it again).
+//
+// failed→queued moves the row INTO the active status set. The ux_dlq_active
+// partial-unique index therefore applies; the guard `AND status = 'failed'`
+// keeps it from disturbing an in-flight download, and in the repair scenario the
+// row is the sole row for its (version_id, file_id) so the index sees no
+// conflict. Should a separate active row exist for the same (version_id,
+// file_id) the UPDATE surfaces the constraint error to the caller rather than
+// silently corrupting state.
+func (s *Store) RequeueFailed(id int64) error {
+	return s.requeueForRepair(id, StatusFailed)
+}
+
+// requeueForRepair is the shared body behind RequeueDone/RequeueFailed: it
+// transitions a row in the given `from` status back to 'queued', resetting the
+// per-attempt download state (bytes_done, sha256_actual, last_error, attempts,
+// not_before). The `AND status = from` guard makes it a no-op (ErrNotFound) on
+// any other status, so it can never disturb an in-flight download.
+func (s *Store) requeueForRepair(id int64, from QueueStatus) error {
 	res, err := s.db.Exec(`UPDATE download_queue
 		SET status = ?, bytes_done = 0, sha256_actual = NULL, last_error = NULL,
 			attempts = 0, not_before = NULL, updated_at = ?
 		WHERE id = ? AND status = ?`,
-		string(StatusQueued), formatTime(time.Now().UTC()), id, string(StatusDone))
+		string(StatusQueued), formatTime(time.Now().UTC()), id, string(from))
 	if err != nil {
 		return err
 	}

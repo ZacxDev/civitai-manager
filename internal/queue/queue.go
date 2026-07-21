@@ -178,6 +178,38 @@ func (w *Worker) DrainSubscription(ctx context.Context, subID int64) ([]store.Qu
 	}
 }
 
+// DrainItems processes ONLY the queued rows whose id is in ids, until none of
+// them remain, returning the rows that reached the done state (len() is the
+// count; the rows carry the verified hash for the caller's friendly output).
+// Unlike DrainAll it never claims a row outside ids, so `verify --repair` drains
+// exactly the rows it re-enqueued and leaves any unrelated queued backlog
+// untouched. Like DrainAll (and unlike DrainSubscription) a per-item failure
+// does NOT abort the drain: the caller compares the returned done rows against
+// the requested set to report which repairs succeeded, so one unrecoverable file
+// must not prevent the others from being repaired.
+func (w *Worker) DrainItems(ctx context.Context, ids []int64) ([]store.QueueItem, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var done []store.QueueItem
+	for {
+		if ctx.Err() != nil {
+			return done, ctx.Err()
+		}
+		item, err := w.store.ClaimNextQueuedForIDs(ids)
+		if err != nil {
+			return done, err
+		}
+		if item == nil {
+			return done, nil
+		}
+		w.process(ctx, item)
+		if it, err := w.store.GetQueueItem(item.ID); err == nil && it.Status == store.StatusDone {
+			done = append(done, *it)
+		}
+	}
+}
+
 // process downloads, verifies, and finalizes one claimed item. All failure
 // paths update the row; a hash mismatch is terminal (the partial file is
 // removed), while transient IO/network errors are requeued up to maxAttempts.

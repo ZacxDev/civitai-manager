@@ -3,9 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -183,6 +185,228 @@ func TestVerifyCheckHashDetectsAndRepairsCorruptFile(t *testing.T) {
 	}
 	if !strings.Contains(repair.String(), "Repaired 1 of 1 file(s).") {
 		t.Errorf("repair should report 1 repaired, got %q", repair.String())
+	}
+}
+
+// TestVerifyRepairScopedToRepairedRows proves finding #1: `verify --repair`
+// re-downloads ONLY the rows it re-enqueued and leaves an unrelated, due queued
+// row (a different subscription/version) untouched — it must NOT be claimed or
+// synchronously downloaded, and the repaired count is exactly 1.
+func TestVerifyRepairScopedToRepairedRows(t *testing.T) {
+	payload := []byte("the model bytes that get deleted then repaired")
+	srv := previewlessServer(t, payload)
+	defer srv.Close()
+
+	a, calls, path := seedDownloadedModel(t, payload, srv.URL)
+
+	// User deletes the downloaded file → the done row is now MISSING/repairable.
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove file: %v", err)
+	}
+
+	// Pre-seed an UNRELATED subscription with a DUE queued row (not_before nil, so
+	// it is immediately claimable by an unscoped drain). Its download URL points at
+	// a closed port so that, if the repair drain ever touched it, the test would
+	// fail loudly rather than silently succeeding.
+	otherMid := 42
+	otherSubID, err := a.store.CreateSubscription(store.Subscription{
+		Kind: store.KindModel, ModelID: &otherMid, AutoDownload: true, PollIntervalSecs: 3600,
+	})
+	if err != nil {
+		t.Fatalf("create other subscription: %v", err)
+	}
+	otherRowID, _, err := a.store.Enqueue(store.QueueItem{
+		SubscriptionID: &otherSubID,
+		ModelID:        42, VersionID: 200, FileID: 600,
+		FileName:    "other.safetensors",
+		DownloadURL: "http://127.0.0.1:1/never-fetched",
+		DestPath:    filepath.Join(a.cfg.ModelRoot, "other", "other.safetensors"),
+		Status:      store.StatusQueued,
+	})
+	if err != nil {
+		t.Fatalf("enqueue other row: %v", err)
+	}
+
+	// verify --repair: re-downloads ONLY the missing file.
+	var repair bytes.Buffer
+	if err := verifyRun(context.Background(), a, &repair, true, false); err != nil {
+		t.Fatalf("verify --repair: %v (out=%q)", err, repair.String())
+	}
+
+	// The repaired file is back on disk (the fixture download ran a second time).
+	if calls.Load() != 2 {
+		t.Fatalf("repair must re-download the missing file exactly once more (want 2 calls), got %d", calls.Load())
+	}
+	got, rerr := os.ReadFile(path)
+	if rerr != nil || string(got) != string(payload) {
+		t.Fatalf("repaired file wrong: err=%v", rerr)
+	}
+	if !strings.Contains(repair.String(), "Repaired 1 of 1 file(s).") {
+		t.Errorf("repair should report exactly 1 repaired, got %q", repair.String())
+	}
+
+	// The UNRELATED subscription's row is STILL queued and was never claimed.
+	other, gerr := a.store.GetQueueItem(otherRowID)
+	if gerr != nil {
+		t.Fatalf("get other row: %v", gerr)
+	}
+	if other.Status != store.StatusQueued {
+		t.Errorf("unrelated row must remain queued, got %q", other.Status)
+	}
+	if other.Attempts != 0 {
+		t.Errorf("unrelated row must not have been claimed, attempts=%d", other.Attempts)
+	}
+}
+
+// TestVerifyRepairFailureIsReDetectable proves finding #2: when a repair
+// re-download fails (leaving the row terminally 'failed'), a subsequent `verify`
+// must still SEE the row as repairable (not silently "Nothing to repair") and be
+// able to re-attempt it — repair is idempotently retryable, not a dead end.
+func TestVerifyRepairFailureIsReDetectable(t *testing.T) {
+	good := []byte("the real model bytes")
+	var serveGood atomic.Bool // false: serve corrupt (hash mismatch); true: serve good
+	var calls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		if serveGood.Load() {
+			_, _ = w.Write(good)
+		} else {
+			_, _ = w.Write([]byte("corrupt bytes that will not match the expected hash"))
+		}
+	}))
+	defer srv.Close()
+
+	client := fixtureClient(srv.URL+"/file", sha256Hex(good), loopbackDownloader)
+	a := newTestApp(t, client)
+
+	// Seed a healthy done row + file on disk (serve good bytes for the seed).
+	serveGood.Store(true)
+	var seed bytes.Buffer
+	opts := poller.SubscribeOptions{AutoDownload: true, BackfillLatest: true, PollInterval: time.Hour}
+	if err := subscribeRun(context.Background(), a, &seed, "", []string{"1"}, opts); err != nil {
+		t.Fatalf("seed backfill: %v (out=%q)", err, seed.String())
+	}
+	path := findFileExt(t, a.cfg.ModelRoot, ".safetensors")
+	if path == "" {
+		t.Fatalf("seed did not put a file on disk")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("seed should download once, got %d", got)
+	}
+
+	// User deletes the file; the next repair download will fail (serve corrupt →
+	// terminal hash mismatch, no retry backoff).
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove file: %v", err)
+	}
+	serveGood.Store(false)
+
+	// First verify --repair: re-download FAILS. It must report the failure clearly
+	// (non-misleading) and NOT claim success.
+	var r1 bytes.Buffer
+	if err := verifyRun(context.Background(), a, &r1, true, false); err != nil {
+		t.Fatalf("verify --repair (failing): %v (out=%q)", err, r1.String())
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("failing repair should have attempted a download (want 2 calls), got %d", calls.Load())
+	}
+	if !strings.Contains(r1.String(), "Repaired 0 of 1 file(s).") {
+		t.Errorf("failing repair should report 0 repaired, got %q", r1.String())
+	}
+	if !strings.Contains(r1.String(), "could not be repaired") {
+		t.Errorf("failing repair should warn it could not be repaired, got %q", r1.String())
+	}
+	// The row is now terminally failed.
+	if fr, _ := a.store.ListQueue(store.StatusFailed); len(fr) != 1 {
+		t.Fatalf("want exactly 1 failed row after a failed repair, got %d", len(fr))
+	}
+
+	// Second verify (plain): the failed row's file is still missing, so it MUST be
+	// re-detected as repairable — NOT swallowed as "Nothing to repair".
+	var r2 bytes.Buffer
+	if err := verifyRun(context.Background(), a, &r2, false, false); err != nil {
+		t.Fatalf("second verify: %v", err)
+	}
+	if !strings.Contains(r2.String(), "1 missing") || !strings.Contains(r2.String(), "MISSING") {
+		t.Errorf("a failed repair must remain visible as MISSING, got %q", r2.String())
+	}
+	if strings.Contains(r2.String(), "Nothing to repair") {
+		t.Errorf("a failed repair must not read as nothing to repair, got %q", r2.String())
+	}
+
+	// Third pass: serve good bytes and re-run --repair; it must re-attempt the
+	// previously-failed row and succeed this time.
+	serveGood.Store(true)
+	var r3 bytes.Buffer
+	if err := verifyRun(context.Background(), a, &r3, true, false); err != nil {
+		t.Fatalf("recovery verify --repair: %v (out=%q)", err, r3.String())
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("recovery repair should re-attempt the download (want 3 calls), got %d", calls.Load())
+	}
+	if !strings.Contains(r3.String(), "Repaired 1 of 1 file(s).") {
+		t.Errorf("recovery repair should report 1 repaired, got %q", r3.String())
+	}
+	if content, err := os.ReadFile(path); err != nil || string(content) != string(good) {
+		t.Fatalf("recovered file wrong: err=%v", err)
+	}
+}
+
+// TestBackfillDeletedFileDoesNotClaimOnDisk proves finding #3: re-running
+// `subscribe --backfill-latest` for a version whose completed download was DELETED
+// from disk must NOT falsely claim it is "on disk" — it points the user at
+// `verify --repair` instead.
+func TestBackfillDeletedFileDoesNotClaimOnDisk(t *testing.T) {
+	payload := []byte("backfill bytes that get deleted after download")
+	srv := previewlessServer(t, payload)
+	defer srv.Close()
+
+	a, _, path := seedDownloadedModel(t, payload, srv.URL)
+
+	// User deletes the downloaded file, leaving a 'done' row whose file is gone.
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove file: %v", err)
+	}
+
+	// Re-run the backfill: the done-row dedup blocks a fresh enqueue, but the
+	// message must reflect that the file is MISSING, not present.
+	opts := poller.SubscribeOptions{AutoDownload: true, BackfillLatest: true, PollInterval: time.Hour}
+	var out bytes.Buffer
+	if err := subscribeRun(context.Background(), a, &out, "", []string{"1"}, opts); err != nil {
+		t.Fatalf("re-backfill: %v (out=%q)", err, out.String())
+	}
+	got := out.String()
+	if strings.Contains(got, "Already have the latest version") || strings.Contains(got, "on disk.") {
+		t.Errorf("deleted-file backfill must NOT claim the file is on disk, got %q", got)
+	}
+	if !strings.Contains(got, "missing on disk") || !strings.Contains(got, "verify --repair") {
+		t.Errorf("deleted-file backfill should point to verify --repair, got %q", got)
+	}
+}
+
+// TestVerifyCheckHashHonorsContextCancellation proves finding #4: a cancelled
+// context aborts the verify loop promptly, before it re-hashes files, instead of
+// grinding through the whole (potentially multi-GB) set.
+func TestVerifyCheckHashHonorsContextCancellation(t *testing.T) {
+	payload := []byte("healthy present file that must not be re-hashed after cancel")
+	srv := previewlessServer(t, payload)
+	defer srv.Close()
+
+	a, _, _ := seedDownloadedModel(t, payload, srv.URL)
+
+	// A context cancelled before the loop starts: the first iteration must bail out
+	// and return the context error, without producing the summary a completed run
+	// would print.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var out bytes.Buffer
+	err := verifyRun(ctx, a, &out, false, true)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled verify should return context.Canceled, got %v", err)
+	}
+	if strings.Contains(out.String(), "Checked") || strings.Contains(out.String(), "OK") {
+		t.Errorf("cancelled verify must abort before printing the reconcile summary, got %q", out.String())
 	}
 }
 

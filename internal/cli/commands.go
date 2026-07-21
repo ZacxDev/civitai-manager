@@ -305,6 +305,8 @@ func backfillReasonMessage(bf poller.BackfillOutcome) string {
 	switch bf.Reason {
 	case poller.BackfillAlreadyPresent:
 		return fmt.Sprintf("Already have the latest version (%s) on disk.", backfillVersionLabel(bf))
+	case poller.BackfillCompletedMissingOnDisk:
+		return fmt.Sprintf("A completed download exists for %s but the file is missing on disk — run 'verify --repair'.", backfillVersionLabel(bf))
 	case poller.BackfillFilteredBaseModel:
 		return fmt.Sprintf("Latest version skipped: base model does not match filter %q.", bf.Detail)
 	case poller.BackfillFilteredSize:
@@ -403,6 +405,14 @@ func drainDownloads(ctx context.Context, a *app, log *slog.Logger) ([]store.Queu
 // subscription just created and never touches an unrelated backlog.
 func drainSubscriptionDownloads(ctx context.Context, a *app, subID int64, log *slog.Logger) ([]store.QueueItem, error) {
 	return newWorker(a, log).DrainSubscription(ctx, subID)
+}
+
+// drainItemDownloads runs the one-shot download worker over ONLY the given row
+// ids, returning the rows that finished. Used by `verify --repair` so the
+// synchronous re-download is confined to the rows the repair just re-enqueued
+// and never claims an unrelated queued backlog.
+func drainItemDownloads(ctx context.Context, a *app, ids []int64, log *slog.Logger) ([]store.QueueItem, error) {
+	return newWorker(a, log).DrainItems(ctx, ids)
 }
 
 func newListCmd(gf *globalFlags) *cobra.Command {
@@ -547,14 +557,20 @@ func newVerifyCmd(gf *globalFlags) *cobra.Command {
 	return cmd
 }
 
-// verifyRun reconciles the tool's `done` download-queue rows against disk. The
-// source of truth is the set of files civitai-manager downloaded: each done row
-// carries a dest_path and (usually) a sha256_expected. A missing file — the
-// deleted/moved case a normal poll can never recover, because its version is
-// already in seen_versions — is detected here and, with --repair, re-downloaded
-// by transitioning the done row back to queued (see store.RequeueDone) and
-// draining it through the shared worker path. Plain verify only reports and
-// exits 0.
+// verifyRun reconciles the tool's download-queue rows against disk. The source
+// of truth is the set of files civitai-manager downloaded: each row carries a
+// dest_path and (usually) a sha256_expected. A missing file — the deleted/moved
+// case a normal poll can never recover, because its version is already in
+// seen_versions — is detected here and, with --repair, re-downloaded by
+// transitioning the row back to queued (see store.RequeueDone /
+// store.RequeueFailed) and draining ONLY those re-enqueued rows through the
+// shared worker path. Plain verify only reports and exits 0.
+//
+// Both 'done' AND terminally 'failed' rows are reconciled: a prior
+// `verify --repair` whose re-download failed leaves the row in 'failed', so
+// including failed rows here (whose file is absent → MISSING/repairable) is what
+// makes repair idempotently retryable — a second `verify --repair` re-detects
+// and re-attempts it instead of reporting "Nothing to repair".
 func verifyRun(ctx context.Context, a *app, out io.Writer, repair, checkHash bool) error {
 	log := a.cmdLogger()
 
@@ -562,17 +578,31 @@ func verifyRun(ctx context.Context, a *app, out io.Writer, repair, checkHash boo
 	if err != nil {
 		return err
 	}
+	failed, err := a.store.ListQueue(store.StatusFailed)
+	if err != nil {
+		return err
+	}
+	// Reconcile completed downloads AND previously-failed repairs against disk.
+	rows := append(append([]store.QueueItem{}, done...), failed...)
 
 	var (
+		checked int
 		okCount int
 		missing []store.QueueItem
 		corrupt []store.QueueItem
 	)
-	for _, it := range done {
+	for _, it := range rows {
+		// Abort promptly on Ctrl-C: with --check-hash each iteration may re-hash a
+		// multi-GB file, so a cancelled context must not have to wait out the whole
+		// loop. Checked between files (the per-file hash itself is not interruptible).
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
 		if it.DestPath == "" {
 			// No destination recorded — nothing on disk to reconcile against.
 			continue
 		}
+		checked++
 		fi, statErr := os.Stat(it.DestPath)
 		if statErr != nil || fi.IsDir() {
 			// Not a regular file present at the recorded path → treat as missing.
@@ -589,7 +619,7 @@ func verifyRun(ctx context.Context, a *app, out io.Writer, repair, checkHash boo
 	}
 
 	fmt.Fprintf(out, "Checked %d downloaded file(s): %d OK, %d missing, %d corrupt.\n",
-		len(done), okCount, len(missing), len(corrupt))
+		checked, okCount, len(missing), len(corrupt))
 	for _, it := range missing {
 		fmt.Fprintf(out, "  MISSING  %s\n", it.DestPath)
 	}
@@ -609,37 +639,39 @@ func verifyRun(ctx context.Context, a *app, out io.Writer, repair, checkHash boo
 		return nil
 	}
 
-	// Re-enqueue each problem row (done→queued, resetting the download state). The
-	// row stays in the active status set, so the ux_dlq_active partial-unique
-	// index sees no conflict (at most one active row per version_id/file_id, and a
-	// row never conflicts with itself on UPDATE).
-	repairIDs := make(map[int64]bool, len(problems))
+	// Re-enqueue each problem row back to queued, resetting the download state. A
+	// 'done' row uses RequeueDone (done→queued stays in the active status set); a
+	// 'failed' row (a prior repair that could not complete) uses RequeueFailed. The
+	// ux_dlq_active partial-unique index sees no conflict: at most one active row
+	// per version_id/file_id, and a row never conflicts with itself on UPDATE.
+	repairIDs := make([]int64, 0, len(problems))
 	for _, it := range problems {
-		if rerr := a.store.RequeueDone(it.ID); rerr != nil {
+		var rerr error
+		if it.Status == store.StatusFailed {
+			rerr = a.store.RequeueFailed(it.ID)
+		} else {
+			rerr = a.store.RequeueDone(it.ID)
+		}
+		if rerr != nil {
 			return fmt.Errorf("re-enqueue %s: %w", it.DestPath, rerr)
 		}
-		repairIDs[it.ID] = true
+		repairIDs = append(repairIDs, it.ID)
 	}
 
 	fmt.Fprintf(out, "Re-downloading %d file(s)...\n", len(problems))
-	completed, err := drainDownloads(ctx, a, log)
+	// Drain ONLY the rows this repair re-enqueued: an unscoped DrainAll would also
+	// claim (and synchronously download) any unrelated queued backlog — the exact
+	// scope creep the backfill drain avoids via DrainSubscription.
+	completed, err := drainItemDownloads(ctx, a, repairIDs, log)
 	if err != nil {
 		return fmt.Errorf("repair download failed: %w", err)
 	}
 
-	// Report only the rows this repair re-enqueued (drainDownloads drains the whole
-	// queue; other queued rows are not part of this report).
-	var repaired []store.QueueItem
-	for _, it := range completed {
-		if repairIDs[it.ID] {
-			repaired = append(repaired, it)
-		}
-	}
-	printDownloadVerification(out, repaired)
-	fmt.Fprintf(out, "Repaired %d of %d file(s).\n", len(repaired), len(problems))
-	if len(repaired) < len(problems) {
-		fmt.Fprintf(out, "Warning: %d file(s) could not be repaired; re-run 'verify --repair' or check the logs with -v.\n",
-			len(problems)-len(repaired))
+	printDownloadVerification(out, completed)
+	fmt.Fprintf(out, "Repaired %d of %d file(s).\n", len(completed), len(problems))
+	if len(completed) < len(problems) {
+		fmt.Fprintf(out, "Warning: %d file(s) could not be repaired (now marked failed); re-run 'verify --repair' to re-attempt, or check the logs with -v.\n",
+			len(problems)-len(completed))
 	}
 	return nil
 }

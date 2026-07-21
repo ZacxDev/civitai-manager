@@ -165,9 +165,12 @@ civitai-manager verify --check-hash       # also re-hash present files (slower) 
 civitai-manager verify --repair           # re-download files reported MISSING
 civitai-manager verify --repair --check-hash   # also re-download CORRUPT (mismatched) files
 # Plain `verify` only reports and exits 0; `--repair` re-enqueues each offending
-# file (its done row → queued) and re-downloads it through the normal verify
-# pipeline. This is the path that recovers a model you deleted or moved on disk —
-# a normal re-subscribe/`check` cannot, because the version is already "seen".
+# file (its done row → queued) and re-downloads ONLY those rows through the normal
+# verify pipeline (an unrelated queued backlog is left untouched). This is the
+# path that recovers a model you deleted or moved on disk — a normal
+# re-subscribe/`check` cannot, because the version is already "seen". If a repair
+# re-download itself fails (e.g. the source 404s), the row is re-detected as
+# repairable on the next `verify` so you can simply re-run `verify --repair`.
 
 # Library: scan model directories (read-only: hash, match, flag deletion
 # candidates), then quarantine acts on the flags. --path adds extra directories

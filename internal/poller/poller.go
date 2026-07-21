@@ -106,9 +106,15 @@ const (
 	// BackfillEnqueued: a download row was created (the file will be fetched).
 	BackfillEnqueued
 	// BackfillAlreadyPresent: the latest version is already downloaded/queued —
-	// a done/active queue row exists, or the file is on disk with the expected
-	// hash — so there is nothing to fetch.
+	// an active queue row is in flight (queued/downloading), or a completed
+	// download's file is confirmed on disk, or the file is on disk with the
+	// expected hash — so there is nothing to fetch.
 	BackfillAlreadyPresent
+	// BackfillCompletedMissingOnDisk: a completed ('done') download row exists for
+	// the latest version, but its file is no longer on disk (deleted/moved). The
+	// row-exists dedup blocks a fresh enqueue, so this is NOT "already present" —
+	// the CLI points the user at `verify --repair`, which can re-download it.
+	BackfillCompletedMissingOnDisk
 	// BackfillFilteredBaseModel: the latest version's base model does not match
 	// the subscription's base-model filter.
 	BackfillFilteredBaseModel
@@ -317,13 +323,21 @@ func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c
 		}
 	}
 
-	exists, err := p.store.ActiveQueueItemExists(c.VersionID, file.ID)
+	active, err := p.store.FindActiveQueueItem(c.VersionID, file.ID)
 	if err != nil {
 		p.log.Warn("dedup check failed", "err", err)
 	}
-	if exists {
+	if active != nil {
+		// An active row (queued/downloading/done) already covers this file, so a
+		// fresh enqueue is skipped either way. But distinguish the reported reason:
+		// a 'done' row whose file has since been deleted/moved is NOT "already on
+		// disk" — claiming so would misdirect the user away from `verify --repair`.
 		res.Skipped++
-		res.backfillReason = BackfillAlreadyPresent
+		if active.Status == store.StatusDone && active.DestPath != "" && !fileOnDisk(active.DestPath) {
+			res.backfillReason = BackfillCompletedMissingOnDisk
+		} else {
+			res.backfillReason = BackfillAlreadyPresent
+		}
 		return outcomePermanentSkip
 	}
 
@@ -506,6 +520,14 @@ func humanSize(b int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+// fileOnDisk reports whether path is a regular file present on disk. A missing
+// path or a directory reports false — matching how `verify` reconciles a done
+// row's recorded destination.
+func fileOnDisk(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && !fi.IsDir()
 }
 
 func intPtr(i int) *int { return &i }
