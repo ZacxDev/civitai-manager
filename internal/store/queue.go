@@ -130,6 +130,23 @@ func (s *Store) ListQueue(statuses ...QueueStatus) ([]QueueItem, error) {
 // is empty. The claim is a single UPDATE ... WHERE id = (SELECT ...) so two
 // workers never claim the same row.
 func (s *Store) ClaimNextQueued() (*QueueItem, error) {
+	return s.claimNext(nil)
+}
+
+// ClaimNextQueuedForSubscription is ClaimNextQueued scoped to a single
+// subscription: it only claims a due queued row whose subscription_id matches
+// subID. Used by `subscribe --backfill-latest` so the synchronous drain never
+// picks up another subscription's queued backlog (e.g. rows left by a prior
+// `check` without --download, or auto-download rows whose jitter has elapsed).
+func (s *Store) ClaimNextQueuedForSubscription(subID int64) (*QueueItem, error) {
+	return s.claimNext(&subID)
+}
+
+// claimNext is the shared claim body for ClaimNextQueued and its
+// per-subscription variant. When subID is non-nil the candidate row is
+// additionally filtered to that subscription; the not_before gating,
+// attempt-increment, and single-transaction claim are otherwise identical.
+func (s *Store) claimNext(subID *int64) (*QueueItem, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -143,10 +160,17 @@ func (s *Store) ClaimNextQueued() (*QueueItem, error) {
 	// Skip rows whose not_before gate is still in the future: they are not yet
 	// due (fleet anti-stampede jitter), so the worker moves on to the next
 	// eligible row. NULL not_before means immediately claimable.
+	query := `SELECT id FROM download_queue
+		WHERE status = ? AND (not_before IS NULL OR not_before <= ?)`
+	args := []any{string(StatusQueued), now}
+	if subID != nil {
+		query += ` AND subscription_id = ?`
+		args = append(args, *subID)
+	}
+	query += ` ORDER BY id ASC LIMIT 1`
+
 	var id int64
-	err = tx.QueryRow(`SELECT id FROM download_queue
-		WHERE status = ? AND (not_before IS NULL OR not_before <= ?)
-		ORDER BY id ASC LIMIT 1`, string(StatusQueued), now).Scan(&id)
+	err = tx.QueryRow(query, args...).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

@@ -35,6 +35,7 @@ type (
 	ModelVersionSummary = sdk.ModelVersionSummary
 	ModelVersionFile    = sdk.ModelVersionFile
 	ModelListItem       = sdk.ModelListItem
+	ModelStats          = sdk.ModelStats
 	ModelSearchResult   = sdk.ModelSearchResult
 	CreatorSearchResult = sdk.CreatorSearchResult
 	ImageSearchResult   = sdk.ImageSearchResult

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -162,7 +163,6 @@ func newSubscribeCmd(gf *globalFlags) *cobra.Command {
 			ctx, cancel := signalContext()
 			defer cancel()
 
-			pol := configuredPoller(a.store, a.client, a.cfg, a.log)
 			opts := poller.SubscribeOptions{
 				AutoDownload:    !noAuto,
 				NotifyOnly:      notifyOnly,
@@ -171,38 +171,104 @@ func newSubscribeCmd(gf *globalFlags) *cobra.Command {
 				FileTypePref:    fileType,
 				PollInterval:    a.cfg.DefaultPollInterval.D(),
 			}
-
-			if creator != "" {
-				id, err := pol.SubscribeCreator(ctx, creator, opts)
-				if err != nil {
-					return err
-				}
-				fmt.Printf("Subscribed to creator @%s (subscription #%d)\n", creator, id)
-				return nil
-			}
-			if len(args) == 0 {
-				return fmt.Errorf("provide a model id/URL, or use --creator <username>")
-			}
-			modelID, err := civitai.ParseModelRef(args[0])
-			if err != nil {
-				return err
-			}
-			id, err := pol.SubscribeModel(ctx, modelID, opts)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("Subscribed to model %d (subscription #%d)\n", modelID, id)
-			return nil
+			return subscribeRun(ctx, a, cmd.OutOrStdout(), creator, args, opts)
 		},
 	}
 	f := cmd.Flags()
 	f.StringVar(&creator, "creator", "", "subscribe to a creator username instead of a model")
 	f.BoolVar(&notifyOnly, "notify-only", false, "record new versions but do not download")
 	f.BoolVar(&noAuto, "no-auto", false, "disable auto-download for this subscription")
-	f.BoolVar(&backfillLatest, "backfill-latest", false, "download the current latest version on subscribe")
+	f.BoolVar(&backfillLatest, "backfill-latest", false, "download the current latest version now, before returning")
 	f.StringVar(&baseModel, "base-model", "", "only download versions matching this base model")
 	f.StringVar(&fileType, "file-type", "", "preferred file type to download (e.g. Model, VAE)")
 	return cmd
+}
+
+// subscribeRun creates the subscription (seeding its version ledger) and, when
+// --backfill-latest was requested, SYNCHRONOUSLY downloads the enqueued latest
+// version before returning — draining it through the exact one-shot worker path
+// `check --download` uses. A download failure propagates as a non-zero exit.
+// Plain subscribe (no --backfill-latest) stays enqueue-only. It is factored out
+// of the cobra RunE so it can be exercised with an in-memory app + fake client.
+func subscribeRun(ctx context.Context, a *app, out io.Writer, creator string, args []string, opts poller.SubscribeOptions) error {
+	pol := configuredPoller(a.store, a.client, a.cfg, a.log)
+
+	var subID int64
+	if creator != "" {
+		id, err := pol.SubscribeCreator(ctx, creator, opts)
+		if err != nil {
+			return err
+		}
+		subID = id
+		fmt.Fprintf(out, "Subscribed to creator @%s (subscription #%d)\n", creator, id)
+	} else {
+		if len(args) == 0 {
+			return fmt.Errorf("provide a model id/URL, or use --creator <username>")
+		}
+		modelID, err := civitai.ParseModelRef(args[0])
+		if err != nil {
+			return err
+		}
+		id, err := pol.SubscribeModel(ctx, modelID, opts)
+		if err != nil {
+			return err
+		}
+		subID = id
+		fmt.Fprintf(out, "Subscribed to model %d (subscription #%d)\n", modelID, id)
+	}
+
+	if !opts.BackfillLatest {
+		return nil
+	}
+
+	// --backfill-latest promises the current latest version is downloaded before
+	// the command returns. Seeding already enqueued it (with no anti-stampede
+	// jitter, so it is immediately claimable); drain it here to disk now.
+	//
+	// The drain is SCOPED to this subscription: DrainAll would claim every due
+	// queued row (including a prior `check`'s backlog or another subscription's
+	// jitter-elapsed auto-downloads), so subscribing to model B could
+	// synchronously download model A's backlog and misreport the count. A scoped
+	// drain also surfaces a failed backfill directly (it returns the error rather
+	// than recording it on the row and exiting 0), so no separate failed-row scan
+	// is needed.
+	fmt.Fprintln(out, "Downloading latest version...")
+	downloaded, err := drainSubscriptionDownloads(ctx, a, subID)
+	if err != nil {
+		return fmt.Errorf("backfill download failed: %w", err)
+	}
+
+	if downloaded == 0 {
+		fmt.Fprintln(out, "No file downloaded (nothing to backfill, or filtered out).")
+	} else {
+		fmt.Fprintf(out, "Downloaded %d file(s).\n", downloaded)
+	}
+	return nil
+}
+
+// formatCheckSummary renders the `check --download` completion line from the
+// real run counts, so a successful download reads as such instead of the old,
+// confusing "0 item(s) queued for download."
+func formatCheckSummary(newCount, downloaded, remaining int) string {
+	return fmt.Sprintf("Poll complete. %d new version(s) found, %d downloaded, %d remaining in queue.",
+		newCount, downloaded, remaining)
+}
+
+// drainDownloads runs the one-shot download worker to completion, returning the
+// number of files that finished. Shared by `check --download` and
+// `subscribe --backfill-latest` so both use the identical worker path.
+func drainDownloads(ctx context.Context, a *app) (int, error) {
+	wrk := queue.New(a.store, a.client, a.client, a.log)
+	return wrk.DrainAll(ctx)
+}
+
+// drainSubscriptionDownloads runs the one-shot download worker but only over
+// rows belonging to subID, returning the number that finished. Used by
+// `subscribe --backfill-latest` so the synchronous drain is confined to the
+// subscription just created and never touches an unrelated backlog.
+func drainSubscriptionDownloads(ctx context.Context, a *app, subID int64) (int, error) {
+	wrk := queue.New(a.store, a.client, a.client, a.log)
+	return wrk.DrainSubscription(ctx, subID)
 }
 
 func newListCmd(gf *globalFlags) *cobra.Command {
@@ -284,19 +350,25 @@ func newCheckCmd(gf *globalFlags) *cobra.Command {
 			defer cancel()
 
 			pol := configuredPoller(a.store, a.client, a.cfg, a.log)
-			if err := pol.PollAll(ctx); err != nil {
+			newCount, err := pol.PollAll(ctx)
+			if err != nil {
 				a.log.Warn("some polls failed", "err", err)
 			}
 
+			out := cmd.OutOrStdout()
 			if download {
-				wrk := queue.New(a.store, a.client, a.client, a.log)
-				if err := wrk.DrainAll(ctx); err != nil {
-					return err
+				downloaded, derr := drainDownloads(ctx, a)
+				if derr != nil {
+					return derr
 				}
+				remaining, _ := a.store.ListQueue(store.StatusQueued)
+				fmt.Fprintln(out, formatCheckSummary(newCount, downloaded, len(remaining)))
+				return nil
 			}
 
 			queued, _ := a.store.ListQueue(store.StatusQueued)
-			fmt.Printf("Poll complete. %d item(s) queued for download.\n", len(queued))
+			fmt.Fprintf(out, "Poll complete. %d new version(s) found, %d queued for download.\n",
+				newCount, len(queued))
 			return nil
 		},
 	}

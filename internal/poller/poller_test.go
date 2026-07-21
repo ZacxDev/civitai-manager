@@ -465,7 +465,7 @@ func TestPollAllBacksOffOnRateLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := p.PollAll(context.Background())
+	_, err := p.PollAll(context.Background())
 	if !errors.Is(err, civitai.ErrRateLimited) {
 		t.Fatalf("PollAll should surface the rate-limit error, got %v", err)
 	}

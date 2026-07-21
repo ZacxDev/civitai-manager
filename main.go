@@ -21,7 +21,8 @@ var (
 )
 
 func main() {
-	if err := cli.Execute(cli.BuildInfo{Version: version, Commit: commit, Date: date}); err != nil {
+	bi := cli.ResolveBuildInfo(cli.BuildInfo{Version: version, Commit: commit, Date: date})
+	if err := cli.Execute(bi); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}

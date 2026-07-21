@@ -9,7 +9,6 @@ import (
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	"github.com/ZacxDev/civitai-manager/internal/config"
 	"github.com/ZacxDev/civitai-manager/internal/store"
-	sdk "github.com/civitai/cli/pkg/civitai"
 	"github.com/spf13/cobra"
 )
 
@@ -70,6 +69,7 @@ func newRootCmd(bi BuildInfo) *cobra.Command {
 		newSubscribeCmd(gf),
 		newListCmd(gf),
 		newUnsubscribeCmd(gf),
+		newSearchCmd(gf),
 		newCheckCmd(gf),
 		newScanCmd(gf),
 		newLibraryCmd(gf),
@@ -77,11 +77,13 @@ func newRootCmd(bi BuildInfo) *cobra.Command {
 	return root
 }
 
-// app bundles the resolved runtime dependencies.
+// app bundles the resolved runtime dependencies. client is the narrowed
+// civitai.Client interface (not the concrete *sdk.Client) so command logic can
+// be exercised with an in-memory fake in tests.
 type app struct {
 	cfg    *config.Config
 	store  *store.Store
-	client *sdk.Client
+	client civitai.Client
 	log    *slog.Logger
 }
 

@@ -111,30 +111,33 @@ func (p *Poller) seedNew(ctx context.Context, id int64, backfillLatest bool) err
 // polling continues. A small jittered delay is inserted between subscriptions,
 // and an ErrRateLimited response triggers the same escalating backoff the
 // scheduler (Run) uses, so a cron `check` over many subs does not burst the
-// API. Returns the first error encountered, if any.
-func (p *Poller) PollAll(ctx context.Context) error {
+// API. It returns the total number of genuinely new versions found across all
+// subscriptions and the first error encountered, if any.
+func (p *Poller) PollAll(ctx context.Context) (int, error) {
 	subs, err := p.store.ListSubscriptions()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var (
 		firstErr error
 		backoff  time.Duration
+		newTotal int
 	)
 	for i, sub := range subs {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return newTotal, ctx.Err()
 		}
 		// Space out requests so a cron check over many subs does not burst
 		// api.civitai.com.
 		if i > 0 {
 			p.waitFn(ctx, p.checkDelay+p.randJitter(p.checkDelay/2))
 			if ctx.Err() != nil {
-				return ctx.Err()
+				return newTotal, ctx.Err()
 			}
 		}
 
-		_, err := p.PollOnce(ctx, sub, false)
+		res, err := p.PollOnce(ctx, sub, false)
+		newTotal += res.NewCount
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -158,7 +161,7 @@ func (p *Poller) PollAll(ctx context.Context) error {
 		}
 		_ = p.store.TouchPolled(sub.ID, time.Now().UTC())
 	}
-	return firstErr
+	return newTotal, firstErr
 }
 
 // nextBackoff escalates a rate-limit backoff: 0 -> 2m, then doubling up to a

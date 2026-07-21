@@ -150,6 +150,43 @@ func DefaultConfigPath() (string, error) {
 	return filepath.Join(dir, "config.yaml"), nil
 }
 
+// officialCLIConfigPath resolves the official `civitai` CLI's config-file
+// location (~/.config/civitai/config.yaml, honouring XDG_CONFIG_HOME). It is a
+// package var so tests can point it at a fixture and never read the developer's
+// real config.
+var officialCLIConfigPath = func() (string, error) {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "civitai", "config.yaml"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config", "civitai", "config.yaml"), nil
+}
+
+// officialCLIToken best-effort reads the `token:` field from the official
+// `civitai` CLI's config file. Any problem (missing file, unreadable, malformed
+// YAML, absent field) yields "" with no error, so this can never break token
+// resolution — it is only ever a last-resort fallback.
+func officialCLIToken() string {
+	path, err := officialCLIConfigPath()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var body struct {
+		Token string `yaml:"token"`
+	}
+	if err := yaml.Unmarshal(data, &body); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(body.Token)
+}
+
 // defaults returns a Config populated with built-in defaults.
 func defaults() (*Config, error) {
 	dir, err := ConfigDir()
@@ -215,6 +252,14 @@ func Resolve(flags Flags) (*Config, error) {
 	// Flag layer (highest precedence).
 	if flags.Token != "" {
 		cfg.Token = flags.Token
+	}
+
+	// Lowest-precedence fallback: if nothing above (flag / env / this app's own
+	// config file) provided a token, borrow the one from the official `civitai`
+	// CLI's config. Best-effort — a missing or malformed file is ignored so it
+	// can never break resolution.
+	if cfg.Token == "" {
+		cfg.Token = officialCLIToken()
 	}
 	if flags.ModelRoot != "" {
 		cfg.ModelRoot = flags.ModelRoot
