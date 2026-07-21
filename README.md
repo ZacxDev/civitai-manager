@@ -1,5 +1,8 @@
 # civitai-manager
 
+[![CI](https://github.com/ZacxDev/civitai-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/ZacxDev/civitai-manager/actions/workflows/ci.yml)
+[![Release](https://github.com/ZacxDev/civitai-manager/actions/workflows/release.yml/badge.svg)](https://github.com/ZacxDev/civitai-manager/actions/workflows/release.yml)
+
 A single-binary tool that subscribes to CivitAI **models** and **creators**,
 polls for new versions, and auto-queues downloads of anything new — with a local
 web UI (Tailwind + htmx + [gomponents](https://maragu.dev/gomponents)) for
@@ -27,6 +30,41 @@ First-poll behaviour is deliberately conservative: subscribing **seeds** the
 ledger with the current back-catalog *without downloading it*, so a new
 subscription never retro-downloads everything. Pass `--backfill-latest` to also
 grab the current newest version on subscribe.
+
+## Install
+
+`civitai-manager` is a single static binary (SQLite is the pure-Go
+`modernc.org/sqlite` driver, so builds are `CGO_ENABLED=0` — no C toolchain,
+trivially cross-compiled). Pick one:
+
+**1. Prebuilt binary (GitHub Releases).** Download the archive for your
+OS/arch from the [Releases page](https://github.com/ZacxDev/civitai-manager/releases/latest),
+verify it against `checksums.txt`, extract, and put the binary on your `PATH`:
+
+```sh
+# Example: Linux x86_64. Swap the OS/arch for darwin_amd64, darwin_arm64,
+# linux_arm64, or the windows_*.zip archive as appropriate.
+VERSION=0.1.0
+curl -sSLO "https://github.com/ZacxDev/civitai-manager/releases/download/v${VERSION}/civitai-manager_${VERSION}_linux_amd64.tar.gz"
+curl -sSLO "https://github.com/ZacxDev/civitai-manager/releases/download/v${VERSION}/checksums.txt"
+sha256sum --check --ignore-missing checksums.txt
+tar -xzf "civitai-manager_${VERSION}_linux_amd64.tar.gz"
+sudo install civitai-manager /usr/local/bin/
+civitai-manager --version
+```
+
+**2. `go install`** (needs Go 1.25+):
+
+```sh
+go install github.com/ZacxDev/civitai-manager@latest
+```
+
+**3. Build from source** — see [Build & run](#build--run) below.
+
+> The `go.mod` currently pins `github.com/civitai/cli` at a pseudo-version
+> (a commit on its public `main`) because the module hasn't cut a tagged
+> release that includes `pkg/civitai`. Source builds resolve it fine. Once
+> upstream tags such a release, bump the dependency to that tag.
 
 ## Build & run
 

@@ -26,12 +26,20 @@ type globalFlags struct {
 	verbose        bool
 }
 
-// Execute builds and runs the root command.
-func Execute() error {
-	return newRootCmd().Execute()
+// BuildInfo carries release metadata injected via -ldflags into package main
+// and passed through to the root command's version output.
+type BuildInfo struct {
+	Version string
+	Commit  string
+	Date    string
 }
 
-func newRootCmd() *cobra.Command {
+// Execute builds and runs the root command with the given build metadata.
+func Execute(bi BuildInfo) error {
+	return newRootCmd(bi).Execute()
+}
+
+func newRootCmd(bi BuildInfo) *cobra.Command {
 	gf := &globalFlags{}
 	root := &cobra.Command{
 		Use:   "civitai-manager",
@@ -39,9 +47,12 @@ func newRootCmd() *cobra.Command {
 		Long: "civitai-manager subscribes to CivitAI models and creators, polls for new\n" +
 			"versions, and auto-queues downloads. Run `civitai-manager serve` for the\n" +
 			"web UI, or use the CLI subcommands directly.",
+		Version:       bi.Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	root.SetVersionTemplate(
+		"civitai-manager {{.Version}} (commit " + bi.Commit + ", built " + bi.Date + ")\n")
 
 	pf := root.PersistentFlags()
 	pf.StringVar(&gf.configPath, "config", "", "config file path (default: XDG config dir)")

@@ -1,0 +1,100 @@
+# GoReleaser configuration for civitai-manager.
+# Docs: https://goreleaser.com
+#
+# Release is intentionally simple because SQLite is the pure-Go
+# modernc.org/sqlite driver, so CGO_ENABLED=0 cross-compiles cleanly for every
+# target below. The web assets (Tailwind output.css, htmx.min.js) are committed
+# and go:embed-ed, so no JS/CSS toolchain is needed at build time.
+#
+# Cut a release by pushing a tag: `git tag v0.1.0 && git push origin v0.1.0`.
+# The release.yml workflow then runs `goreleaser release --clean`.
+version: 2
+
+project_name: civitai-manager
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: civitai-manager
+    main: .
+    binary: civitai-manager
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # Inject build metadata into the package-main vars wired in main.go.
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+
+archives:
+  - id: civitai-manager
+    ids:
+      - civitai-manager
+    # tar.gz everywhere, zip on Windows.
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^Merge "
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Documentation
+      regexp: '^.*?docs(\(.+\))??!?:.+$'
+      order: 2
+    - title: Others
+      order: 999
+
+release:
+  # GitHub Releases (the default publisher) is the target. No external repo or
+  # extra secret is required — release.yml passes the built-in GITHUB_TOKEN.
+  draft: false
+  prerelease: auto
+
+# --- Homebrew tap (intentionally NOT configured in this pass) ---
+# Publishing a Homebrew formula needs a separate tap repo (e.g.
+# github.com/ZacxDev/homebrew-tap) and a HOMEBREW_TAP_GITHUB_TOKEN secret with
+# write access to it. When you want `brew install`, create that repo, add the
+# token secret, and uncomment/fill the block below.
+#
+# brews:
+#   - name: civitai-manager
+#     repository:
+#       owner: ZacxDev
+#       name: homebrew-tap
+#       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+#     homepage: https://github.com/ZacxDev/civitai-manager
+#     description: Subscribe to CivitAI models/creators and auto-download new versions
+#     license: Apache-2.0

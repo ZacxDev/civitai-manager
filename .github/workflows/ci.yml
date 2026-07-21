@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: build, vet & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: gofmt (fail on unformatted files)
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+      - name: go test -race (concurrency-sensitive packages)
+        run: |
+          go test -race \
+            ./internal/library/... \
+            ./internal/store/... \
+            ./internal/queue/... \
+            ./internal/poller/... \
+            ./internal/web/...
+
+      # Compile-only check of the build-tagged live integration suite. It is NOT
+      # run here (no CIVITAI_TOKEN); the live run lives in integration.yml.
+      - name: compile integration suite
+        run: go build -tags integration ./...
