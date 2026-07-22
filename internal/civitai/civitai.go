@@ -39,9 +39,21 @@ type (
 	ModelSearchResult   = sdk.ModelSearchResult
 	CreatorSearchResult = sdk.CreatorSearchResult
 	ImageSearchResult   = sdk.ImageSearchResult
+	ImageItem           = sdk.ImageItem
+	ImageMeta           = sdk.ImageMeta
+	ImageResource       = sdk.ImageResource
+	MetaState           = sdk.MetaState
 	Metadata            = sdk.Metadata
 	Creator             = sdk.Creator
 	FileHashes          = sdk.FileHashes
+)
+
+// Re-export the image meta-state constants so the web UI classifies an image's
+// generation metadata without importing the SDK directly.
+const (
+	MetaAbsent      = sdk.MetaAbsent
+	MetaOK          = sdk.MetaOK
+	MetaUnparseable = sdk.MetaUnparseable
 )
 
 // PrimaryFile re-exports the SDK's primary-file selector.

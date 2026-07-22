@@ -63,18 +63,106 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-	defer cancel()
-	m, _, err := s.reader.GetModel(ctx, id)
-	if err != nil {
+	view, errNode := s.loadModelView(r.Context(), id, r.URL.Query().Get("version"))
+	if errNode != nil {
 		status := http.StatusBadGateway
-		if errors.Is(err, civitai.ErrNotFound) {
+		if view.Model == nil && errors.Is(view.loadErr, civitai.ErrNotFound) {
 			status = http.StatusNotFound
 		}
-		s.render(w, status, page("Not found", errorNote("Could not load model "+id+": "+err.Error())))
+		s.render(w, status, page("Not found", errNode))
 		return
 	}
-	s.render(w, http.StatusOK, modelDetailPage(m, s.csrf))
+	s.render(w, http.StatusOK, modelDetailPage(view, s.csrf))
+}
+
+// nsfwMode returns the persisted global NSFW display mode (default blur).
+func (s *Server) nsfwMode() string {
+	v, err := s.store.GetSettingDefault(nsfwSettingKey, NSFWBlur)
+	if err != nil {
+		return NSFWBlur
+	}
+	return normalizeNSFWMode(v)
+}
+
+// loadModelView fetches and assembles the rich model-detail view: model detail
+// (with a description parsed from the raw body), the selected version's detail
+// (default: the latest), and the showcase image gallery. The version and image
+// calls degrade gracefully — a failure there still renders the page. It returns a
+// non-nil error node only when the model itself cannot be loaded.
+func (s *Server) loadModelView(parent context.Context, id, versionParam string) (modelDetailView, g.Node) {
+	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
+	defer cancel()
+
+	m, raw, err := s.reader.GetModel(ctx, id)
+	if err != nil {
+		return modelDetailView{loadErr: err},
+			errorNote("Could not load model " + id + ": " + err.Error())
+	}
+
+	view := modelDetailView{
+		Model:       m,
+		Description: parseModelDescription(raw),
+		NSFWMode:    s.nsfwMode(),
+	}
+
+	// Selected version: the ?version= override, else the latest (first listed).
+	selVID := 0
+	if versionParam != "" {
+		selVID, _ = strconv.Atoi(versionParam)
+	}
+	if selVID == 0 && len(m.ModelVersions) > 0 {
+		selVID = m.ModelVersions[0].ID
+	}
+	view.SelectedVersionID = selVID
+	if selVID > 0 {
+		if vd, vraw, verr := s.reader.GetModelVersion(ctx, strconv.Itoa(selVID)); verr == nil {
+			view.Version = vd
+			view.PublishedAt = parsePublishedAt(vraw)
+		}
+	}
+
+	// Showcase images: request generation metadata + all NSFW levels; the render
+	// mode decides what is shown/blurred/omitted.
+	q := url.Values{}
+	q.Set("modelId", strconv.Itoa(m.ID))
+	q.Set("limit", "30")
+	q.Set("nsfw", "X")
+	q.Set("sort", "Most Reactions")
+	q.Set("withMeta", "true")
+	q.Set("flatMeta", "true")
+	if res, ierr := s.reader.SearchImages(ctx, q); ierr == nil && res != nil {
+		view.Images = res.Items
+	}
+	return view, nil
+}
+
+// handleSetNSFWDisplay persists the global NSFW display mode and re-renders the
+// model page (target body) so the gallery reflects the new mode immediately.
+func (s *Server) handleSetNSFWDisplay(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	mode := normalizeNSFWMode(r.FormValue("mode"))
+	if err := s.store.SetSetting(nsfwSettingKey, mode); err != nil {
+		s.renderError(w, "save nsfw setting", err)
+		return
+	}
+	modelID := strings.TrimSpace(r.FormValue("model_id"))
+	if modelID == "" {
+		// No model context: just acknowledge (the setting is persisted).
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	view, errNode := s.loadModelView(r.Context(), modelID, r.FormValue("version"))
+	if errNode != nil {
+		s.render(w, http.StatusOK, page("Not found", errNode))
+		return
+	}
+	s.render(w, http.StatusOK, modelDetailPage(view, s.csrf))
 }
 
 func (s *Server) handleCreator(w http.ResponseWriter, r *http.Request) {
