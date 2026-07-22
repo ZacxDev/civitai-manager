@@ -85,19 +85,27 @@ type Server struct {
 
 // discoveryJob is the in-memory state of a single background discovery crawl.
 // All fields are read/written only under Server.discoverMu.
+//
+// The crawl STREAMS results: it appends to installs incrementally (under the
+// mutex) as the walker finds them, so a /status poll shows the growing list. A
+// reader MUST snapshot-copy the slice under the lock before rendering — never
+// hand the live, still-appended slice header across the lock boundary.
 type discoveryJob struct {
-	// running is true from job start until the crawl goroutine records results.
+	// running is true from job start until the crawl goroutine settles.
 	running bool
-	// installs are the candidates found by the (possibly still-running) crawl.
+	// installs are the candidates found so far by the (possibly still-running)
+	// crawl. It is APPENDED incrementally under Server.discoverMu as installs
+	// stream in, so any reader must snapshot-copy it under the lock.
 	installs []library.Install
-	// truncated is true when the crawl hit its budget/was cancelled before
-	// exhausting the tree (the job's err is non-nil).
-	truncated  bool
+	// stopped is true when the user explicitly stopped the crawl (POST
+	// /library/discover/stop), so the terminal fragment can say "Scan stopped"
+	// rather than "Scan complete".
+	stopped    bool
 	err        error
 	startedAt  time.Time
 	finishedAt time.Time
 	// cancel cancels the crawl's context; invoked when the crawl finishes (to
-	// release the timeout context) and available for an explicit stop.
+	// release the timeout context), on server shutdown, and on an explicit Stop.
 	cancel context.CancelFunc
 }
 
@@ -194,6 +202,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /library/scan", s.handleLibraryScan)
 	mux.HandleFunc("POST /library/discover", s.handleLibraryDiscover)
 	mux.HandleFunc("GET /library/discover/status", s.handleDiscoverStatus)
+	mux.HandleFunc("POST /library/discover/stop", s.handleDiscoverStop)
 	mux.HandleFunc("POST /library/browse", s.handleLibraryBrowse)
 	mux.HandleFunc("POST /library/scan-dirs/add", s.handleScanDirAdd)
 	mux.HandleFunc("POST /library/scan-dirs/remove", s.handleScanDirRemove)

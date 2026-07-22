@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
-	"time"
 
 	"github.com/ZacxDev/civitai-manager/internal/library"
 	g "maragu.dev/gomponents"
@@ -67,57 +66,99 @@ func selectedDirsList(dirs []string, csrf string) g.Node {
 	return h.Div(h.Class("space-y-1"), g.Group(rows))
 }
 
-// discoverScanning renders the in-progress fragment: a spinner, the scanning
-// copy, and an htmx poller. The element polls GET /library/discover/status every
-// second and swaps ITSELF (outerHTML) with the response — so when the crawl
-// finishes and status returns the poller-less results fragment, polling stops.
-// The crawl runs in a background goroutine, so this can honestly promise it keeps
-// scanning after the initiating request returned.
-func discoverScanning() g.Node {
-	return h.Div(
-		h.ID("discover-poll"),
-		hx("get", "/library/discover/status"),
-		hx("trigger", "every 1s"),
-		hx("swap", "outerHTML"),
-		h.Class("mt-2 flex items-center gap-2 text-xs text-slate-400"),
-		spinnerGlyph(),
-		g.Text("Scanning your system for ComfyUI / Automatic1111 installs… (large home dirs can take ~30s)"),
-	)
-}
-
-// discoverResults renders the auto-discovery candidates: each install as a card
-// with a type badge, model-dir count, git branch + dirty indicator, confidence,
-// and an "Add" button that persists it into the selection. selected marks
-// installs already in the persisted set as added.
-//
-// It distinguishes a COMPLETED crawl that found nothing ("no installs found")
-// from one that hit the time budget ("stopped after Ns … add a path manually").
-// When truncated it renders any partial installs found so far PLUS the note, so
-// the user sees progress and a truthful reason some may be missing.
-func discoverResults(installs []library.Install, selected []string, truncated bool, budget time.Duration, csrf string) g.Node {
+// discoverScanning renders the in-progress fragment: a spinner, the "found N so
+// far" copy, a Stop button, the installs streamed so far (each with an Add
+// control), and an htmx poller. The element (#discover-poll) polls GET
+// /library/discover/status every second and swaps ITSELF (outerHTML) with the
+// response — so when the crawl settles and status returns the poller-less results
+// fragment, polling stops. The crawl keeps scanning ALL disks in the background
+// until the user Stops it or the tree is exhausted.
+func discoverScanning(installs []library.Install, selected []string, csrf string) g.Node {
 	selSet := map[string]bool{}
 	for _, s := range selected {
 		selSet[s] = true
 	}
-	if len(installs) == 0 && !truncated {
+	header := h.Div(
+		h.Class("flex items-start justify-between gap-2"),
+		h.Div(
+			h.Class("flex items-center gap-2 text-xs text-slate-400"),
+			spinnerGlyph(),
+			g.Text(fmt.Sprintf(
+				"Scanning all disks for ComfyUI / Automatic1111 installs… found %d so far (large/slow drives can take a while — Stop when you see the one you want)",
+				len(installs))),
+		),
+		discoverStopButton(csrf),
+	)
+	children := []g.Node{
+		h.ID("discover-poll"),
+		hx("get", "/library/discover/status"),
+		hx("trigger", "every 1s"),
+		hx("swap", "outerHTML"),
+		h.Class("mt-2 space-y-2"),
+		header,
+	}
+	if len(installs) > 0 {
+		var cards []g.Node
+		for _, in := range installs {
+			// running=true → each Add control carries the "stop the scan?" prompt.
+			cards = append(cards, discoverCard(in, selSet[in.Path], true, csrf))
+		}
+		children = append(children, h.Div(h.Class("space-y-2"), g.Group(cards)))
+	}
+	return h.Div(children...)
+}
+
+// discoverStopButton renders the Stop control shown while a scan runs. It POSTs
+// /library/discover/stop (CSRF via hx-vals) and swaps the poller element with the
+// server's current status fragment.
+func discoverStopButton(csrf string) g.Node {
+	return civButton("outline", "sm", []g.Node{
+		h.Type("button"),
+		hx("post", "/library/discover/stop"),
+		hx("target", "#discover-poll"),
+		hx("swap", "outerHTML"),
+		csrfInline(csrf),
+		h.Class("shrink-0"),
+	}, g.Text("Stop"))
+}
+
+// discoverResults renders the TERMINAL auto-discovery result (no poller): each
+// install as a card with an Add button, plus a status line. It distinguishes an
+// exhausted crawl ("Scan complete — found N") from a user-stopped or cancelled
+// one ("Scan stopped — found N"). A completed crawl that found nothing renders
+// the plain "no installs" copy.
+func discoverResults(installs []library.Install, selected []string, stopped bool, err error, csrf string) g.Node {
+	selSet := map[string]bool{}
+	for _, s := range selected {
+		selSet[s] = true
+	}
+	// A clean, exhausted crawl that found nothing: the plain no-installs copy.
+	if len(installs) == 0 && !stopped && err == nil {
 		return h.P(h.Class("text-xs text-slate-500 mt-2"),
 			g.Text("No ComfyUI or Automatic1111/Forge installs found in the usual locations."))
 	}
 	var cards []g.Node
 	for _, in := range installs {
-		cards = append(cards, discoverCard(in, selSet[in.Path], csrf))
+		// Terminal fragment: the scan is no longer running, so Add adds silently.
+		cards = append(cards, discoverCard(in, selSet[in.Path], false, csrf))
 	}
-	nodes := []g.Node{h.Class("mt-2 space-y-2"), g.Group(cards)}
-	if truncated {
-		nodes = append(nodes, h.P(h.Class("text-xs text-amber-400"),
-			g.Text(fmt.Sprintf(
-				"Stopped after %ds — your home directory is large, so some installs may be missing. Use the directory browser below to add a path manually.",
-				int(budget.Round(time.Second).Seconds())))))
+	// "stopped" covers an explicit user Stop AND any other cancellation/error (e.g.
+	// server shutdown); only a clean exhaustion reads "complete".
+	statusText := fmt.Sprintf("Scan complete — found %d", len(installs))
+	statusClass := "text-xs text-emerald-400"
+	if stopped || err != nil {
+		statusText = fmt.Sprintf("Scan stopped — found %d", len(installs))
+		statusClass = "text-xs text-amber-400"
+	}
+	nodes := []g.Node{
+		h.Class("mt-2 space-y-2"),
+		g.Group(cards),
+		h.P(h.Class(statusClass), g.Text(statusText)),
 	}
 	return h.Div(nodes...)
 }
 
-func discoverCard(in library.Install, added bool, csrf string) g.Node {
+func discoverCard(in library.Install, added, scanRunning bool, csrf string) g.Node {
 	kindLabel := "ComfyUI"
 	kindVariant := "indigo"
 	if in.Kind == library.KindA1111 {
@@ -148,14 +189,22 @@ func discoverCard(in library.Install, added bool, csrf string) g.Node {
 	if added {
 		action = h.Span(h.Class("text-xs text-emerald-400"), g.Text("added ✓"))
 	} else {
-		action = civButton("light", "sm", []g.Node{
+		addAttrs := []g.Node{
 			h.Type("button"),
 			hx("post", "/library/scan-dirs/add"),
 			hx("vals", fmt.Sprintf(`{"path":%q,"csrf_token":%q}`, in.Path, csrf)),
 			hx("target", "#selected-dirs"),
 			hx("swap", "innerHTML"),
 			h.Class("shrink-0"),
-		}, g.Text("Add"))
+		}
+		// Add-mid-scan: when a scan is still running, adding an install likely means
+		// the user found what they came for — prompt them to Stop the scan. When no
+		// scan runs, Add just adds silently (no prompt).
+		if scanRunning {
+			addAttrs = append(addAttrs, hx("confirm",
+				"Add this install? (the background scan is still running — you can Stop it after)"))
+		}
+		action = civButton("light", "sm", addAttrs, g.Text("Add"))
 	}
 
 	return h.Div(
