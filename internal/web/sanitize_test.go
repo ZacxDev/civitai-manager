@@ -36,6 +36,17 @@ func TestNSFWRankAndMode(t *testing.T) {
 	if nsfwRank("X") <= nsfwRank("Mature") || nsfwRank("Mature") <= nsfwRank("Soft") {
 		t.Error("nsfw ranks should be ordered Soft < Mature < X")
 	}
+	// Fail closed: any unrecognized/new label ranks as NSFW (above the safe
+	// threshold), so it is blurred/omitted rather than shown in the clear.
+	for _, unknown := range []string{"garbage", "SuperSpicy9000", "r18"} {
+		if nsfwRank(unknown) <= 0 {
+			t.Errorf("nsfwRank(%q) = %d, want > 0 (unknown must fail closed)", unknown, nsfwRank(unknown))
+		}
+	}
+	// Whitespace-only / absent is genuinely-safe, not "unknown".
+	if nsfwRank("   ") != 0 {
+		t.Error("whitespace-only level should rank 0 (absent = safe)")
+	}
 	for in, want := range map[string]string{
 		"hide": NSFWHide, "HIDE": NSFWHide, "show": NSFWShow,
 		"blur": NSFWBlur, "": NSFWBlur, "garbage": NSFWBlur,

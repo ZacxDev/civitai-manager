@@ -106,6 +106,16 @@ func (s *Server) handleLibraryBrowse(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusOK, errorNote("Refusing to browse a system directory: "+path))
 		return
 	}
+	// Constrain the interactive browser to the dirs a user could plausibly scan:
+	// $HOME plus the tool's own model_root and configured library_paths. This is
+	// checked on the symlink-resolved real path, so a symlink out of an allowed
+	// dir cannot escape it. (Defense-in-depth atop the loopback+CSRF gate.)
+	allowedRoots := append([]string{s.cfg.ModelRoot}, s.cfg.LibraryPaths...)
+	if !library.BrowseAllowed(path, allowedRoots) {
+		s.render(w, http.StatusOK, errorNote(
+			"Refusing to browse outside your home directory, model_root, or library_paths: "+path))
+		return
+	}
 
 	entries, err := os.ReadDir(path)
 	if err != nil {

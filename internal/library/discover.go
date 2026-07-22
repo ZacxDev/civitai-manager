@@ -98,6 +98,39 @@ func BlockedForBrowse(p string) bool {
 	return isSystemPath(resolveReal(filepath.Clean(p)))
 }
 
+// BrowseAllowed reports whether the interactive directory browser may list p
+// (symlink-resolved). Beyond refusing system dirs (BlockedForBrowse), the
+// browser is CONSTRAINED to the directories a user could plausibly want to
+// scan: $HOME plus the tool's own model_root and configured library_paths
+// (passed as allowedRoots). Anything outside that set — /root, /home/otheruser,
+// an unrelated top-level dir like /mnt/other — is refused even though it is not
+// a system dir, closing the "enumerate any non-system directory" gap. The check
+// is on the symlink-RESOLVED real path, so a symlink from an allowed dir to an
+// outside dir does not escape the constraint. This bounds only the interactive
+// browser; the discovery crawl (which legitimately probes common locations) is
+// unaffected.
+func BrowseAllowed(p string, allowedRoots []string) bool {
+	resolved := resolveReal(filepath.Clean(p))
+	if isSystemPath(resolved) {
+		return false
+	}
+	roots := make([]string, 0, len(allowedRoots)+1)
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		roots = append(roots, home)
+	}
+	roots = append(roots, allowedRoots...)
+	for _, root := range roots {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		r := resolveReal(filepath.Clean(root))
+		if resolved == r || isUnder(resolved, r) {
+			return true
+		}
+	}
+	return false
+}
+
 // isSystemPath reports whether resolved is a system dir or nested under one.
 func isSystemPath(resolved string) bool {
 	for _, d := range systemDirs {
@@ -364,18 +397,52 @@ func defaultDiscoverRoots() []string {
 	return roots
 }
 
+// gitProbeHardeningFlags neutralize repo-local, config- and hook-driven code
+// execution when we probe an UNTRUSTED .git directory. Discovery crawls dirs
+// under $HOME, so a .git/config planted by an attacker (in a dir shaped like a
+// ComfyUI/A1111 install) is untrusted input. `git status` runs the program
+// named by the repo's own core.fsmonitor config, and hooks named by
+// core.hooksPath — so a bare `git -C <dir> status` on such a dir is a local RCE
+// the moment the user clicks "Discover installs". These flags override both to
+// empty/inert (they win over the repo config), so no repo-local program runs.
+// DO NOT REMOVE without an equivalent mitigation.
+var gitProbeHardeningFlags = []string{"-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null"}
+
+// gitProbeArgs builds the full argv for a hardened git probe in dir: the
+// neutralizing -c flags FIRST (they must precede the subcommand to take
+// effect), then -C <dir> (so a leading-dash dir name can't be read as a flag),
+// then the subcommand. Kept as a separate function so a unit test can assert the
+// hardening flags are always present. The resulting form is a valid git
+// invocation: `git -c k=v -c k2=v2 -C <dir> <subcommand...>`.
+func gitProbeArgs(dir string, sub ...string) []string {
+	args := make([]string, 0, len(gitProbeHardeningFlags)+2+len(sub))
+	args = append(args, gitProbeHardeningFlags...)
+	args = append(args, "-C", dir)
+	args = append(args, sub...)
+	return args
+}
+
 // probeGit is the default GitState resolver: it runs cheap, short-timeout git
 // queries and tolerates git being absent or the dir not really being a repo.
+//
+// SECURITY: every invocation is hardened (see gitProbeHardeningFlags) because
+// the probed .git dir is untrusted (attacker-plantable under $HOME). We also
+// set GIT_OPTIONAL_LOCKS=0 so probing a repo the user is mid-operation on never
+// creates/touches index.lock. The existing safety (CommandContext, fixed args,
+// -C dir, the short per-call timeout) is preserved.
 func probeGit(ctx context.Context, dir string) *GitState {
 	st := &GitState{IsRepo: true}
 	git, err := exec.LookPath("git")
 	if err != nil {
 		return st // git not installed: report repo presence only
 	}
-	run := func(args ...string) (string, bool) {
+	run := func(sub ...string) (string, bool) {
 		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
-		out, err := exec.CommandContext(cctx, git, args...).Output()
+		cmd := exec.CommandContext(cctx, git, gitProbeArgs(dir, sub...)...)
+		// GIT_OPTIONAL_LOCKS=0: never touch index.lock while merely probing.
+		cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+		out, err := cmd.Output()
 		if err != nil {
 			return "", false
 		}
@@ -383,12 +450,12 @@ func probeGit(ctx context.Context, dir string) *GitState {
 	}
 	// `branch --show-current` reports the checked-out branch even in a repo with
 	// no commits yet (unlike `rev-parse --abbrev-ref HEAD`, which errors there).
-	if branch, ok := run("-C", dir, "branch", "--show-current"); ok && branch != "" {
+	if branch, ok := run("branch", "--show-current"); ok && branch != "" {
 		st.Branch = branch
-	} else if b, ok := run("-C", dir, "rev-parse", "--abbrev-ref", "HEAD"); ok {
+	} else if b, ok := run("rev-parse", "--abbrev-ref", "HEAD"); ok {
 		st.Branch = b
 	}
-	if porcelain, ok := run("-C", dir, "status", "--porcelain"); ok {
+	if porcelain, ok := run("status", "--porcelain"); ok {
 		st.Dirty = porcelain != ""
 	}
 	return st

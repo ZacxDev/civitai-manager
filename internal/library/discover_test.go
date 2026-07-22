@@ -253,3 +253,118 @@ func TestBlockedForBrowse(t *testing.T) {
 		t.Error("HOME should be browsable")
 	}
 }
+
+func TestBrowseAllowed(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "sub")
+	mkdirAll(t, child)
+
+	// In-scope: model_root itself and a subdirectory of it.
+	if !BrowseAllowed(root, []string{root}) {
+		t.Error("model_root itself should be browsable")
+	}
+	if !BrowseAllowed(child, []string{root}) {
+		t.Error("a subdir of model_root should be browsable")
+	}
+
+	// Out-of-scope: an unrelated dir not under HOME or an allowed root.
+	outside := t.TempDir()
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if r, err := filepath.EvalSymlinks(outside); err == nil {
+			outside = r
+		}
+		if isUnder(outside, resolveReal(home)) {
+			t.Skip("TMPDIR is under $HOME; cannot construct an out-of-scope dir")
+		}
+	}
+	if BrowseAllowed(outside, []string{root}) {
+		t.Error("an unrelated dir outside HOME/model_root should be refused")
+	}
+
+	// A system dir is never browsable, even if somehow passed as an allowed root.
+	if BrowseAllowed("/etc", []string{root}) {
+		t.Error("a system dir must never be browsable")
+	}
+
+	// HOME is always in-scope.
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if !BrowseAllowed(home, nil) {
+			t.Error("HOME should be browsable")
+		}
+	}
+}
+
+// TestGitProbeArgsHardened asserts the neutralizing flags are always present, in
+// the correct order (config -c flags BEFORE -C <dir> and the subcommand). This
+// is the belt-and-suspenders unit check that the hardening can't be silently
+// dropped by a future edit to the arg builder.
+func TestGitProbeArgsHardened(t *testing.T) {
+	got := gitProbeArgs("/x/dir", "status", "--porcelain")
+	want := []string{
+		"-c", "core.fsmonitor=",
+		"-c", "core.hooksPath=/dev/null",
+		"-C", "/x/dir",
+		"status", "--porcelain",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("gitProbeArgs = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("gitProbeArgs[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+// TestProbeGitNeutralizesMaliciousFsmonitor is the security-critical test: a
+// repo whose OWN .git/config sets core.fsmonitor to an attacker script must not
+// execute that script when probeGit runs `git status`. It first proves the
+// vector is real (an UNHARDENED status fires it) so the assertion isn't vacuous,
+// then asserts probeGit does NOT fire it while still returning correct git state.
+func TestProbeGitNeutralizesMaliciousFsmonitor(t *testing.T) {
+	dir := t.TempDir()
+	if !gitInit(t, dir) {
+		t.Skip("git not available; cannot exercise the core.fsmonitor RCE vector")
+	}
+
+	// Plant a malicious core.fsmonitor program in the repo's own config. When git
+	// status runs it, it writes a sentinel file (proof it executed).
+	sentinel := filepath.Join(t.TempDir(), "pwned")
+	script := filepath.Join(dir, "fsmon.sh")
+	writeFile(t, script, "#!/bin/sh\ntouch "+sentinel+"\nexit 1\n")
+	if err := os.Chmod(script, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", dir, "config", "core.fsmonitor", script).CombinedOutput(); err != nil {
+		t.Fatalf("git config core.fsmonitor: %v (%s)", err, out)
+	}
+	// An untracked file so status reports the repo as dirty.
+	writeFile(t, filepath.Join(dir, "untracked.txt"), "x\n")
+
+	// Control: an UNHARDENED status must fire the vector. If this git build does
+	// not invoke core.fsmonitor on a plain status, the hardened assertion below
+	// would be meaningless — skip loudly rather than pass vacuously.
+	_ = exec.Command("git", "-C", dir, "status", "--porcelain").Run()
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Skip("this git build did not invoke core.fsmonitor on a plain status; RCE vector not reproducible here")
+	}
+	if err := os.Remove(sentinel); err != nil {
+		t.Fatal(err)
+	}
+
+	// Hardened probe: the malicious program must NOT run.
+	st := probeGit(context.Background(), dir)
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Fatalf("SECURITY: malicious core.fsmonitor executed during probeGit (sentinel created)")
+	}
+	// ...and the probe must still return correct git state.
+	if st == nil || !st.IsRepo {
+		t.Fatalf("probeGit did not report a repo: %+v", st)
+	}
+	if !st.Dirty {
+		t.Errorf("probeGit should report the repo dirty (untracked files present), got %+v", st)
+	}
+	if st.Branch == "" {
+		t.Errorf("probeGit should report a branch, got %+v", st)
+	}
+}

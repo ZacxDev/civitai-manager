@@ -32,9 +32,18 @@ func normalizeNSFWMode(s string) string {
 	}
 }
 
-// nsfwRank maps a CivitAI image nsfwLevel label to an ordered severity. Anything
-// above "None"/"Soft"-safe is treated as NSFW for the blur/hide gate; unknown
-// labels are treated as safe.
+// nsfwRankUnknown is the severity assigned to any nsfwLevel label the tool does
+// not explicitly recognize as safe. It is high (above every known level) so the
+// blur/hide gate FAILS CLOSED: an unknown/new label is blurred (blur mode) and
+// omitted (hide mode) rather than rendered in the clear.
+const nsfwRankUnknown = 99
+
+// nsfwRank maps a CivitAI image nsfwLevel label to an ordered severity used by
+// the blur/hide gate. It FAILS CLOSED: only an explicitly-recognized SAFE value
+// ("" / "none") ranks 0; "Soft" and above are treated as NSFW (blurred/hidden),
+// and any unrecognized/unparseable label ranks nsfwRankUnknown so a level the
+// tool doesn't know is never shown un-obscured. A genuinely-absent ("") level on
+// a safe image still ranks 0, so this does not blur everything.
 func nsfwRank(level string) int {
 	switch strings.ToLower(strings.TrimSpace(level)) {
 	case "", "none":
@@ -46,12 +55,12 @@ func nsfwRank(level string) int {
 	case "x", "xxx":
 		return 3
 	default:
-		return 0
+		return nsfwRankUnknown // unknown/unparseable → fail closed (treat as NSFW)
 	}
 }
 
 // isNSFWImage reports whether an image should be treated as NSFW (rank above the
-// safe threshold — Soft and higher).
+// safe threshold — Soft and higher, plus any unrecognized level).
 func isNSFWImage(im civitai.ImageItem) bool { return nsfwRank(im.NSFWLevel) > 0 }
 
 // modelDetailView bundles everything the rich model page renders. Any of the

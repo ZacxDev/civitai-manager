@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -86,7 +87,10 @@ func TestBrowseEndpointListsSubdirsAndRefusesSystemDir(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(base, "childdir"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	srv := newLibraryTestServer(t, t.TempDir())
+	// Point model_root at base so it is within the browse allowlist (the browser
+	// is constrained to $HOME ∪ model_root ∪ library_paths — see
+	// TestBrowseConstrainedToAllowedRoots).
+	srv := newLibraryTestServer(t, base)
 
 	// Lists immediate subdirs.
 	rec := post(t, srv, "/library/browse", url.Values{"path": {base}}, true)
@@ -107,6 +111,57 @@ func TestBrowseEndpointListsSubdirsAndRefusesSystemDir(t *testing.T) {
 	rec = post(t, srv, "/library/browse", url.Values{"path": {base}}, false)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("browse without CSRF = %d, want 403", rec.Code)
+	}
+}
+
+// TestBrowseConstrainedToAllowedRoots proves the interactive directory browser
+// is bounded to $HOME ∪ model_root ∪ library_paths: a subdir of model_root is
+// browsable, an unrelated top-level dir is refused, and a symlink escaping an
+// allowed dir to an outside dir is refused on the resolved real path.
+func TestBrowseConstrainedToAllowedRoots(t *testing.T) {
+	root := t.TempDir() // model_root
+	child := filepath.Join(root, "sub")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	srv := newLibraryTestServer(t, root)
+
+	// In-scope: a subdir of model_root is browsable.
+	rec := post(t, srv, "/library/browse", url.Values{"path": {child}}, true)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "Refusing to browse outside") {
+		t.Fatalf("subdir of model_root should be browsable, got %d:\n%s", rec.Code, rec.Body.String())
+	}
+
+	// Out-of-scope: an unrelated top-level dir (exists, not under HOME/model_root).
+	outside := t.TempDir()
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		resolved := outside
+		if r, err := filepath.EvalSymlinks(outside); err == nil {
+			resolved = r
+		}
+		if hr, err := filepath.EvalSymlinks(home); err == nil {
+			home = hr
+		}
+		if strings.HasPrefix(resolved+string(filepath.Separator), home+string(filepath.Separator)) {
+			t.Skip("TMPDIR is under $HOME; cannot construct an out-of-scope dir")
+		}
+	}
+	rec = post(t, srv, "/library/browse", url.Values{"path": {outside}}, true)
+	if !strings.Contains(rec.Body.String(), "Refusing to browse outside") {
+		t.Errorf("out-of-scope dir %s should be refused, got:\n%s", outside, rec.Body.String())
+	}
+
+	// Symlink escape: a symlink under model_root pointing at an outside dir is
+	// refused on the resolved real path.
+	if runtime.GOOS != "windows" {
+		link := filepath.Join(root, "escape")
+		if err := os.Symlink(outside, link); err != nil {
+			t.Fatal(err)
+		}
+		rec = post(t, srv, "/library/browse", url.Values{"path": {link}}, true)
+		if !strings.Contains(rec.Body.String(), "Refusing to browse outside") {
+			t.Errorf("symlink escaping to %s should be refused, got:\n%s", outside, rec.Body.String())
+		}
 	}
 }
 

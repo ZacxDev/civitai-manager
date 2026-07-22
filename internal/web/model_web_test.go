@@ -193,6 +193,45 @@ func TestModelNSFWHideOmits(t *testing.T) {
 	}
 }
 
+// TestModelNSFWUnknownLevelFailsClosed proves an image carrying an
+// unrecognized nsfwLevel label is treated as NSFW (fail closed): blurred in blur
+// mode and omitted in hide mode. A genuinely-safe ("None") image is unaffected.
+func TestModelNSFWUnknownLevelFailsClosed(t *testing.T) {
+	reader := newModelReader(t)
+	reader.images = []civitai.ImageItem{
+		{ID: 100, URL: "https://image.civitai.com/safe.jpeg", Width: 512, Height: 512,
+			NSFWLevel: "None", Meta: rawMeta(t, "safe")},
+		{ID: 300, URL: "https://image.civitai.com/unknown.jpeg", Width: 512, Height: 512,
+			NSFWLevel: "SuperSpicy9000", Meta: rawMeta(t, "unknown level")},
+	}
+	srv := newModelServer(t, reader)
+
+	// Blur mode (default): the unknown-level image is present but blurred, while
+	// the genuinely-safe image is NOT blurred (we didn't blur everything).
+	body := getModelPage(t, srv, "/models/7")
+	if !strings.Contains(body, "unknown.jpeg") {
+		t.Fatal("unknown-level image should be present in blur mode")
+	}
+	if !strings.Contains(body, `data-blurred="1"`) || !strings.Contains(body, "blur-xl") {
+		t.Error("unknown-level image must be blurred (fail closed)")
+	}
+	if !strings.Contains(body, "safe.jpeg") {
+		t.Error("genuinely-safe image should still be shown")
+	}
+
+	// Hide mode: the unknown-level image is omitted; the safe image remains.
+	if err := srv.store.SetSetting(nsfwSettingKey, NSFWHide); err != nil {
+		t.Fatal(err)
+	}
+	body = getModelPage(t, srv, "/models/7")
+	if strings.Contains(body, "unknown.jpeg") {
+		t.Error("hide mode must omit the unknown-level (fail-closed NSFW) image")
+	}
+	if !strings.Contains(body, "safe.jpeg") {
+		t.Error("hide mode should still show the safe image")
+	}
+}
+
 func TestModelGalleryLightboxAndMetadata(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
 	body := getModelPage(t, srv, "/models/7")

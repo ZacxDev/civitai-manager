@@ -110,6 +110,12 @@ go build -o civitai-manager .
 > `scan_paths` is rejected. On loopback the web scan is still confined (no `/`,
 > no system dirs, not `$HOME` itself) and bounded by `--web-scan-timeout` and a
 > model-file cap.
+>
+> The interactive **directory browser** (used to pick a scan dir) is additionally
+> constrained to paths within `$HOME`, `model_root`, and configured
+> `library_paths` — it will not enumerate unrelated locations such as `/root` or
+> another user's home, and the constraint is enforced on the symlink-resolved
+> real path.
 
 ### CLI
 
