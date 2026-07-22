@@ -121,9 +121,11 @@ func (s *Server) nsfwMode() string {
 
 // loadModelView fetches and assembles the rich model-detail view: model detail
 // (with a description parsed from the raw body), the selected version's detail
-// (default: the latest), and the showcase image gallery. The version and image
-// calls degrade gracefully — a failure there still renders the page. It returns a
-// non-nil error node only when the model itself cannot be loaded.
+// (default: the latest), and the showcase image gallery — the latter sourced
+// entirely from the version's INLINE images[] in the model/version JSON, with no
+// separate /api/v1/images call in the page path. The version call degrades
+// gracefully — a failure there still renders the page. It returns a non-nil error
+// node only when the model itself cannot be loaded.
 func (s *Server) loadModelView(parent context.Context, id, versionParam string) (modelDetailView, g.Node) {
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
@@ -149,25 +151,21 @@ func (s *Server) loadModelView(parent context.Context, id, versionParam string) 
 		selVID = m.ModelVersions[0].ID
 	}
 	view.SelectedVersionID = selVID
+	var versionRaw []byte
 	if selVID > 0 {
 		if vd, vraw, verr := s.reader.GetModelVersion(ctx, strconv.Itoa(selVID)); verr == nil {
 			view.Version = vd
 			view.PublishedAt = parsePublishedAt(vraw)
+			versionRaw = vraw
 		}
 	}
 
-	// Showcase images: request generation metadata + all NSFW levels; the render
-	// mode decides what is shown/blurred/omitted.
-	q := url.Values{}
-	q.Set("modelId", strconv.Itoa(m.ID))
-	q.Set("limit", "30")
-	q.Set("nsfw", "X")
-	q.Set("sort", "Most Reactions")
-	q.Set("withMeta", "true")
-	q.Set("flatMeta", "true")
-	if res, ierr := s.reader.SearchImages(ctx, q); ierr == nil && res != nil {
-		view.Images = res.Items
-	}
+	// Showcase gallery: sourced from the version's INLINE images[] — already
+	// present in the model/version JSON fetched above. This deliberately does NOT
+	// make a separate GET /api/v1/images (SearchImages) call: that call was slow
+	// (20s+, frequently timing out) and its error was silently swallowed into an
+	// empty gallery. The render mode decides what is shown/blurred/omitted.
+	view.Images = parseVersionImages(versionRaw, raw, selVID)
 	return view, nil
 }
 

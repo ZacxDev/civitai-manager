@@ -32,47 +32,148 @@ func normalizeNSFWMode(s string) string {
 	}
 }
 
-// nsfwRankUnknown is the severity assigned to any nsfwLevel label the tool does
-// not explicitly recognize as safe. It is high (above every known level) so the
-// blur/hide gate FAILS CLOSED: an unknown/new label is blurred (blur mode) and
-// omitted (hide mode) rather than rendered in the clear.
-const nsfwRankUnknown = 99
+// CivitAI encodes an image's nsfwLevel as a NUMBER (a bitmask-ish severity) on
+// the inline modelVersions[].images[] payload: 1=None/PG, 2=Soft/PG-13,
+// 4=Mature/R, 8=X, 16=XX, 32=XXX. nsfwSafeLevel is the highest level rendered in
+// the clear — only None/PG (1, and the never-observed 0) is safe; everything at
+// Soft (2) and above is treated NSFW.
+const nsfwSafeLevel = 1
 
-// nsfwRank maps a CivitAI image nsfwLevel label to an ordered severity used by
-// the blur/hide gate. It FAILS CLOSED: only an explicitly-recognized SAFE value
-// ("" / "none") ranks 0; "Soft" and above are treated as NSFW (blurred/hidden),
-// and any unrecognized/unparseable label ranks nsfwRankUnknown so a level the
-// tool doesn't know is never shown un-obscured. A genuinely-absent ("") level on
-// a safe image still ranks 0, so this does not blur everything.
-func nsfwRank(level string) int {
-	switch strings.ToLower(strings.TrimSpace(level)) {
-	case "", "none":
-		return 0
-	case "soft":
-		return 1
-	case "mature":
-		return 2
-	case "x", "xxx":
-		return 3
-	default:
-		return nsfwRankUnknown // unknown/unparseable → fail closed (treat as NSFW)
-	}
+// nsfwLevelUnknown is the sentinel the image parser assigns when an image's
+// nsfwLevel is ABSENT or not an integer. It is above every real level so the
+// blur/hide gate FAILS CLOSED: an image with no/garbage level is blurred (blur
+// mode) and omitted (hide mode) rather than rendered un-obscured.
+const nsfwLevelUnknown = 99
+
+// isNSFWLevel reports whether a numeric CivitAI nsfwLevel should be treated as
+// NSFW. Fail-closed: only an explicitly-safe level (<= nsfwSafeLevel) is safe;
+// Soft (2) and above — and the nsfwLevelUnknown sentinel for an absent/garbage
+// level — are NSFW.
+func isNSFWLevel(level int) bool { return level > nsfwSafeLevel }
+
+// galleryImage is one showcase image sourced from a model version's INLINE
+// images[] (already present in the GetModel / GetModelVersion raw JSON) — not
+// from a separate /api/v1/images call. NSFWLevel is the numeric CivitAI level
+// (nsfwLevelUnknown when absent/unparseable). Meta is the flat generation
+// metadata object, decoded best-effort at render time.
+type galleryImage struct {
+	URL       string
+	NSFWLevel int
+	Width     int
+	Height    int
+	Meta      json.RawMessage
 }
 
-// isNSFWImage reports whether an image should be treated as NSFW (rank above the
-// safe threshold — Soft and higher, plus any unrecognized level).
-func isNSFWImage(im civitai.ImageItem) bool { return nsfwRank(im.NSFWLevel) > 0 }
+// rawInlineImage mirrors one object of a version's inline images[] array. The
+// numeric-ish nsfwLevel is captured as raw JSON (not int) so an absent or
+// non-integer value can be detected and mapped to nsfwLevelUnknown (fail closed)
+// rather than silently decoding to 0 (which would read as safe).
+type rawInlineImage struct {
+	URL       string          `json:"url"`
+	NSFWLevel json.RawMessage `json:"nsfwLevel"`
+	Width     int             `json:"width"`
+	Height    int             `json:"height"`
+	Meta      json.RawMessage `json:"meta"`
+}
+
+// toGalleryImages converts parsed inline-image objects to galleryImage values,
+// mapping each nsfwLevel to its numeric level (fail-closed to nsfwLevelUnknown
+// when absent/unparseable) and dropping entries with no URL.
+func toGalleryImages(raws []rawInlineImage) []galleryImage {
+	var out []galleryImage
+	for _, ri := range raws {
+		if strings.TrimSpace(ri.URL) == "" {
+			continue
+		}
+		out = append(out, galleryImage{
+			URL:       ri.URL,
+			NSFWLevel: parseNSFWLevel(ri.NSFWLevel),
+			Width:     ri.Width,
+			Height:    ri.Height,
+			Meta:      ri.Meta,
+		})
+	}
+	return out
+}
+
+// parseNSFWLevel decodes a raw nsfwLevel value to its integer level. An absent
+// (empty/null) or non-integer value → nsfwLevelUnknown (fail closed).
+func parseNSFWLevel(raw json.RawMessage) int {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return nsfwLevelUnknown
+	}
+	var n int
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return nsfwLevelUnknown
+	}
+	return n
+}
+
+// parseVersionImages sources the showcase gallery from inline image data already
+// fetched with the model — NEVER a separate /api/v1/images call. It prefers the
+// selected version's own raw JSON (GetModelVersion) top-level images[]; when that
+// carries none, it falls back to the matching version object inside the model's
+// raw JSON (GetModel) modelVersions[]. Returns nil (not an error) when neither
+// has any inline images.
+func parseVersionImages(versionRaw, modelRaw []byte, versionID int) []galleryImage {
+	if imgs := parseInlineImages(versionRaw); len(imgs) > 0 {
+		return imgs
+	}
+	return parseModelVersionImages(modelRaw, versionID)
+}
+
+// parseInlineImages extracts a top-level images[] array from a raw JSON body
+// (a version detail body). Returns nil when absent/unparseable.
+func parseInlineImages(raw []byte) []galleryImage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var body struct {
+		Images []rawInlineImage `json:"images"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil
+	}
+	return toGalleryImages(body.Images)
+}
+
+// parseModelVersionImages finds the version whose id == versionID inside a model
+// detail raw body's modelVersions[] and returns its inline images[]. When
+// versionID is 0 (no selection) it uses the first listed version. Returns nil
+// when the version or its images are absent.
+func parseModelVersionImages(modelRaw []byte, versionID int) []galleryImage {
+	if len(modelRaw) == 0 {
+		return nil
+	}
+	var body struct {
+		ModelVersions []struct {
+			ID     int              `json:"id"`
+			Images []rawInlineImage `json:"images"`
+		} `json:"modelVersions"`
+	}
+	if err := json.Unmarshal(modelRaw, &body); err != nil {
+		return nil
+	}
+	for _, ver := range body.ModelVersions {
+		if versionID == 0 || ver.ID == versionID {
+			return toGalleryImages(ver.Images)
+		}
+	}
+	return nil
+}
 
 // modelDetailView bundles everything the rich model page renders. Any of the
 // optional pieces (Version, Images) may be zero if the corresponding API call
-// failed — the page degrades gracefully rather than erroring.
+// failed or the data genuinely carries none — the page degrades gracefully
+// rather than erroring.
 type modelDetailView struct {
 	Model             *civitai.ModelDetail
 	Description       string // raw author HTML; sanitized at render time
 	SelectedVersionID int
 	Version           *civitai.ModelVersionDetail
 	PublishedAt       string
-	Images            []civitai.ImageItem
+	Images            []galleryImage
 	NSFWMode          string
 	// loadErr carries the model-load failure (used only to classify the HTTP
 	// status: a not-found model → 404, anything else → 502).
@@ -275,16 +376,16 @@ func fileList(files []civitai.ModelVersionFile) g.Node {
 
 // modelGalleryCard renders the showcase image gallery with NSFW handling + the
 // global display-mode control.
-func modelGalleryCard(images []civitai.ImageItem, mode string, modelID int, csrf string) g.Node {
+func modelGalleryCard(images []galleryImage, mode string, modelID int, csrf string) g.Node {
 	var tiles []g.Node
 	shown := 0
-	for _, im := range images {
-		nsfw := isNSFWImage(im)
+	for i, im := range images {
+		nsfw := isNSFWLevel(im.NSFWLevel)
 		if nsfw && mode == NSFWHide {
 			continue // hide mode omits NSFW images entirely
 		}
 		blur := nsfw && mode == NSFWBlur
-		tiles = append(tiles, galleryTile(im, blur))
+		tiles = append(tiles, galleryTile(im, i, blur))
 		shown++
 	}
 
@@ -341,8 +442,8 @@ func nsfwControl(mode string, modelID int, csrf string) g.Node {
 // galleryTile renders one showcase image. When blur is true the image is shown
 // blurred behind a click-to-reveal overlay; otherwise clicking opens the
 // lightbox. Generation metadata is stashed in a hidden node the lightbox shows.
-func galleryTile(im civitai.ImageItem, blur bool) g.Node {
-	metaID := fmt.Sprintf("cm-meta-%d", im.ID)
+func galleryTile(im galleryImage, idx int, blur bool) g.Node {
+	metaID := fmt.Sprintf("cm-meta-%d", idx)
 	imgClass := "h-full w-full cursor-zoom-in object-cover transition"
 	if blur {
 		imgClass += " blur-xl"
@@ -377,8 +478,10 @@ func galleryTile(im civitai.ImageItem, blur bool) g.Node {
 
 // imageMetaHidden renders the (hidden) generation-metadata block the lightbox
 // reveals when the image is expanded.
-func imageMetaHidden(metaID string, im civitai.ImageItem) g.Node {
-	meta, state := im.ParseMeta()
+func imageMetaHidden(metaID string, im galleryImage) g.Node {
+	// Reuse the SDK's robust meta decoder (numeric-ish steps/cfg/seed handled)
+	// by wrapping the inline meta bytes in an ImageItem.
+	meta, state := civitai.ImageItem{Meta: im.Meta}.ParseMeta()
 	var rows []g.Node
 	if state == civitai.MetaOK {
 		add := func(label, val string) {
