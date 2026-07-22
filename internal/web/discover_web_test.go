@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -301,12 +302,15 @@ func TestDiscoverLoadingIndicatorMarkup(t *testing.T) {
 		}
 	}
 	// The real progress affordance lives on the scanning fragment: a self-polling
-	// element with the spinner + scanning copy.
-	scan := renderString(t, discoverScanning())
+	// element with the spinner + scanning copy + a Stop button.
+	scan := renderString(t, discoverScanning(nil, nil, "csrf"))
 	for _, want := range []string{
 		`hx-get="/library/discover/status"`,
 		`hx-trigger="every 1s"`,
-		"Scanning your system for ComfyUI / Automatic1111 installs",
+		"Scanning all disks for ComfyUI / Automatic1111 installs",
+		"found 0 so far",
+		`hx-post="/library/discover/stop"`,
+		"Stop",
 	} {
 		if !strings.Contains(scan, want) {
 			t.Errorf("scanning fragment missing progress affordance %q", want)
@@ -314,43 +318,51 @@ func TestDiscoverLoadingIndicatorMarkup(t *testing.T) {
 	}
 }
 
-// TestDiscoverResultsMessaging proves the three distinct render states:
-// completed-empty, truncated-with-partial, and truncated-empty.
+// TestDiscoverResultsMessaging proves the distinct terminal render states:
+// completed-with-installs, completed-empty, user-stopped, and cancelled/errored.
 func TestDiscoverResultsMessaging(t *testing.T) {
 	install := library.Install{
 		Path: "/home/u/ComfyUI", Kind: library.KindComfyUI,
 		Confidence: library.ConfidenceHigh, ModelDirs: []string{"checkpoints"},
 	}
-	const budget = 6 * time.Second
 
-	// Completed, nothing found → plain "no installs" copy, no timeout note.
-	completed := renderString(t, discoverResults(nil, nil, false, budget, "csrf"))
-	if !strings.Contains(completed, "No ComfyUI or Automatic1111/Forge installs found") {
-		t.Errorf("completed-empty should render the plain no-installs copy:\n%s", completed)
+	// Exhausted crawl WITH installs → "Scan complete — found N", never "stopped".
+	complete := renderString(t, discoverResults([]library.Install{install}, nil, false, nil, "csrf"))
+	if !strings.Contains(complete, install.Path) {
+		t.Errorf("completed result should render the install:\n%s", complete)
 	}
-	if strings.Contains(completed, "Stopped after") {
-		t.Errorf("completed-empty must NOT claim it was stopped:\n%s", completed)
+	if !strings.Contains(complete, "Scan complete — found 1") {
+		t.Errorf("exhausted crawl should say 'Scan complete — found 1':\n%s", complete)
 	}
-
-	// Truncated WITH partial installs → renders the install AND the stopped note.
-	partial := renderString(t, discoverResults([]library.Install{install}, nil, true, budget, "csrf"))
-	if !strings.Contains(partial, install.Path) {
-		t.Errorf("truncated result should still render the partial install:\n%s", partial)
-	}
-	for _, want := range []string{"Stopped after 6s", "some installs may be missing", "add a path manually"} {
-		if !strings.Contains(partial, want) {
-			t.Errorf("truncated result missing %q:\n%s", want, partial)
-		}
+	if strings.Contains(complete, "Scan stopped") {
+		t.Errorf("exhausted crawl must NOT claim it was stopped:\n%s", complete)
 	}
 
-	// Truncated with NOTHING found → still the stopped note, NOT the plain
-	// "completed, none found" copy (the two states must be distinguishable).
-	truncatedEmpty := renderString(t, discoverResults(nil, nil, true, budget, "csrf"))
-	if !strings.Contains(truncatedEmpty, "Stopped after 6s") {
-		t.Errorf("truncated-empty should render the stopped note:\n%s", truncatedEmpty)
+	// Completed, nothing found → plain "no installs" copy (not a stopped note).
+	completedEmpty := renderString(t, discoverResults(nil, nil, false, nil, "csrf"))
+	if !strings.Contains(completedEmpty, "No ComfyUI or Automatic1111/Forge installs found") {
+		t.Errorf("completed-empty should render the plain no-installs copy:\n%s", completedEmpty)
 	}
-	if strings.Contains(truncatedEmpty, "No ComfyUI or Automatic1111/Forge installs found") {
-		t.Errorf("truncated-empty must not claim a completed empty search:\n%s", truncatedEmpty)
+	if strings.Contains(completedEmpty, "Scan stopped") {
+		t.Errorf("completed-empty must NOT claim it was stopped:\n%s", completedEmpty)
+	}
+
+	// User-stopped WITH installs → "Scan stopped — found N", renders the install.
+	stopped := renderString(t, discoverResults([]library.Install{install}, nil, true, nil, "csrf"))
+	if !strings.Contains(stopped, install.Path) {
+		t.Errorf("stopped result should still render the found install:\n%s", stopped)
+	}
+	if !strings.Contains(stopped, "Scan stopped — found 1") {
+		t.Errorf("user-stopped crawl should say 'Scan stopped — found 1':\n%s", stopped)
+	}
+	if strings.Contains(stopped, "Scan complete") {
+		t.Errorf("user-stopped crawl must NOT claim it completed:\n%s", stopped)
+	}
+
+	// Cancelled/errored (e.g. shutdown) is also a "stopped", never "complete".
+	cancelled := renderString(t, discoverResults(nil, nil, false, context.Canceled, "csrf"))
+	if !strings.Contains(cancelled, "Scan stopped — found 0") {
+		t.Errorf("cancelled crawl should say 'Scan stopped — found 0':\n%s", cancelled)
 	}
 }
 
@@ -369,7 +381,7 @@ func TestDiscoverBrowseDisabledOnNonLoopback(t *testing.T) {
 		ModelRoot: root, TrashDir: filepath.Join(root, ".trash"),
 	}, nil)
 
-	for _, path := range []string{"/library/discover", "/library/browse", "/library/scan-dirs/add"} {
+	for _, path := range []string{"/library/discover", "/library/discover/stop", "/library/browse", "/library/scan-dirs/add"} {
 		rec := post(t, srv, path, url.Values{"path": {t.TempDir()}}, true)
 		if !strings.Contains(rec.Body.String(), "disabled when the server is bound to a non-loopback") {
 			t.Errorf("%s should be gated on a non-loopback bind, got:\n%s", path, rec.Body.String())
