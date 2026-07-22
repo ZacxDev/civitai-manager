@@ -29,24 +29,37 @@ func TestSanitizeDescriptionStripsDangerousMarkup(t *testing.T) {
 	}
 }
 
-func TestNSFWRankAndMode(t *testing.T) {
-	if nsfwRank("None") != 0 || nsfwRank("") != 0 {
-		t.Error("None/empty should rank 0 (safe)")
+func TestNSFWLevelAndMode(t *testing.T) {
+	// The inline nsfwLevel is NUMERIC (1=None/PG .. 32=XXX). Only None/PG (<= 1)
+	// is safe; Soft (2) and above are NSFW.
+	if isNSFWLevel(1) {
+		t.Error("level 1 (None/PG) must be treated as safe")
 	}
-	if nsfwRank("X") <= nsfwRank("Mature") || nsfwRank("Mature") <= nsfwRank("Soft") {
-		t.Error("nsfw ranks should be ordered Soft < Mature < X")
-	}
-	// Fail closed: any unrecognized/new label ranks as NSFW (above the safe
-	// threshold), so it is blurred/omitted rather than shown in the clear.
-	for _, unknown := range []string{"garbage", "SuperSpicy9000", "r18"} {
-		if nsfwRank(unknown) <= 0 {
-			t.Errorf("nsfwRank(%q) = %d, want > 0 (unknown must fail closed)", unknown, nsfwRank(unknown))
+	for _, nsfw := range []int{2, 4, 8, 16, 32} {
+		if !isNSFWLevel(nsfw) {
+			t.Errorf("level %d must be treated as NSFW", nsfw)
 		}
 	}
-	// Whitespace-only / absent is genuinely-safe, not "unknown".
-	if nsfwRank("   ") != 0 {
-		t.Error("whitespace-only level should rank 0 (absent = safe)")
+	// Fail closed: the nsfwLevelUnknown sentinel (assigned to absent/garbage
+	// levels) is NSFW, so an unmapped image is blurred/omitted, not shown clear.
+	if !isNSFWLevel(nsfwLevelUnknown) {
+		t.Error("unknown-level sentinel must fail closed (NSFW)")
 	}
+
+	// parseNSFWLevel: integers pass through; absent/null/non-integer → sentinel.
+	for raw, want := range map[string]int{
+		"1": 1, "4": 4, "32": 32, "0": 0,
+		"":              nsfwLevelUnknown,
+		"null":          nsfwLevelUnknown,
+		`"garbage"`:     nsfwLevelUnknown,
+		"1.5":           nsfwLevelUnknown,
+		`"SuperSpicy9"`: nsfwLevelUnknown,
+	} {
+		if got := parseNSFWLevel([]byte(raw)); got != want {
+			t.Errorf("parseNSFWLevel(%q) = %d, want %d", raw, got, want)
+		}
+	}
+
 	for in, want := range map[string]string{
 		"hide": NSFWHide, "HIDE": NSFWHide, "show": NSFWShow,
 		"blur": NSFWBlur, "": NSFWBlur, "garbage": NSFWBlur,
