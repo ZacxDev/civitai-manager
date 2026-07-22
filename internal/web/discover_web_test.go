@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/civitai-manager/internal/library"
 	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
@@ -46,6 +47,63 @@ func post(t *testing.T, srv *Server, path string, form url.Values, withCSRF bool
 	return rec
 }
 
+// get issues a GET (no CSRF) against the server handler.
+func get(t *testing.T, srv *Server, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	srv.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// discoverPollerMarkup is the set of htmx attributes that MUST be present in a
+// scanning fragment for the client to keep polling; their ABSENCE marks a
+// terminal (done) fragment.
+var discoverPollerMarkup = []string{
+	`hx-get="/library/discover/status"`,
+	`hx-trigger="every 1s"`,
+	`hx-swap="outerHTML"`,
+}
+
+// hasPoller reports whether body is a scanning fragment (still polling).
+func hasPoller(body string) bool {
+	for _, want := range discoverPollerMarkup {
+		if !strings.Contains(body, want) {
+			return false
+		}
+	}
+	return true
+}
+
+// pollDiscoverUntilDone polls the status endpoint until it returns a terminal
+// (poller-less) fragment, then returns that body. It fails the test if the job
+// does not finish within a generous deadline.
+func pollDiscoverUntilDone(t *testing.T, srv *Server) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec := get(t, srv, "/library/discover/status")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		body := rec.Body.String()
+		if !hasPoller(body) {
+			return body // terminal fragment
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("discovery did not finish before deadline; last body:\n%s", body)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestDiscoverEndpointRendersCandidates proves the async flow end to end: the
+// POST returns immediately with the scanning fragment (WITH the poller), and
+// polling the status endpoint eventually yields the candidate with its Add
+// control (WITHOUT the poller).
+//
+// (Adapted from the pre-async test, which asserted the POST returned the
+// candidates directly on the request thread — discovery is now a background job.)
 func TestDiscoverEndpointRendersCandidates(t *testing.T) {
 	root, install := buildComfyFixture(t)
 	srv := newLibraryTestServer(t, t.TempDir())
@@ -57,12 +115,17 @@ func TestDiscoverEndpointRendersCandidates(t *testing.T) {
 		t.Fatalf("discover without CSRF = %d, want 403", rec.Code)
 	}
 
-	// With the token → renders the candidate with an Add control.
+	// With the token → returns the scanning fragment immediately (with the poller).
 	rec = post(t, srv, "/library/discover", url.Values{}, true)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("discover = %d", rec.Code)
 	}
-	body := rec.Body.String()
+	if !hasPoller(rec.Body.String()) {
+		t.Fatalf("POST should return the scanning fragment with the poller, got:\n%s", rec.Body.String())
+	}
+
+	// Poll to completion → the candidate is rendered with an Add control.
+	body := pollDiscoverUntilDone(t, srv)
 	for _, want := range []string{install, "ComfyUI", "/library/scan-dirs/add", "Add", "confidence"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("discover results missing %q in:\n%s", want, body)
@@ -70,15 +133,20 @@ func TestDiscoverEndpointRendersCandidates(t *testing.T) {
 	}
 }
 
+// TestDiscoverDedupesAgainstModelRoot proves an install equal to model_root is
+// de-duped from the results. (Adapted for the async flow: poll to done.)
 func TestDiscoverDedupesAgainstModelRoot(t *testing.T) {
 	root, install := buildComfyFixture(t)
 	// Point model_root AT the discovered install so it is de-duped away.
 	srv := newLibraryTestServer(t, install)
 	srv.discoverRoots = []string{root}
 
-	rec := post(t, srv, "/library/discover", url.Values{}, true)
-	if strings.Contains(rec.Body.String(), "/library/scan-dirs/add") {
-		t.Errorf("install equal to model_root should be de-duped, got:\n%s", rec.Body.String())
+	if rec := post(t, srv, "/library/discover", url.Values{}, true); rec.Code != http.StatusOK {
+		t.Fatalf("discover = %d", rec.Code)
+	}
+	body := pollDiscoverUntilDone(t, srv)
+	if strings.Contains(body, "/library/scan-dirs/add") {
+		t.Errorf("install equal to model_root should be de-duped, got:\n%s", body)
 	}
 }
 
@@ -211,6 +279,81 @@ func TestScanDirAddRemovePersistAndScan(t *testing.T) {
 	}
 }
 
+// TestDiscoverLoadingIndicatorMarkup asserts the non-hanging loading affordance.
+// Since the POST now returns instantly and swaps in the polling scanning
+// fragment, the progress spinner + copy live on that fragment (discoverScanning),
+// NOT as a button-level hx-indicator. The button keeps a brief click-guard.
+func TestDiscoverLoadingIndicatorMarkup(t *testing.T) {
+	// allowExtra=true so the discover control is rendered.
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, nil, "dark"))
+	for _, want := range []string{
+		`hx-post="/library/discover"`,
+		`hx-disabled-elt="this"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("library page missing discover control attr %q", want)
+		}
+	}
+	// The stale button-level indicator must be gone (it caused a double spinner).
+	for _, gone := range []string{`hx-indicator="#discover-spinner"`, `id="discover-spinner"`} {
+		if strings.Contains(out, gone) {
+			t.Errorf("library page still has removed button indicator %q", gone)
+		}
+	}
+	// The real progress affordance lives on the scanning fragment: a self-polling
+	// element with the spinner + scanning copy.
+	scan := renderString(t, discoverScanning())
+	for _, want := range []string{
+		`hx-get="/library/discover/status"`,
+		`hx-trigger="every 1s"`,
+		"Scanning your system for ComfyUI / Automatic1111 installs",
+	} {
+		if !strings.Contains(scan, want) {
+			t.Errorf("scanning fragment missing progress affordance %q", want)
+		}
+	}
+}
+
+// TestDiscoverResultsMessaging proves the three distinct render states:
+// completed-empty, truncated-with-partial, and truncated-empty.
+func TestDiscoverResultsMessaging(t *testing.T) {
+	install := library.Install{
+		Path: "/home/u/ComfyUI", Kind: library.KindComfyUI,
+		Confidence: library.ConfidenceHigh, ModelDirs: []string{"checkpoints"},
+	}
+	const budget = 6 * time.Second
+
+	// Completed, nothing found → plain "no installs" copy, no timeout note.
+	completed := renderString(t, discoverResults(nil, nil, false, budget, "csrf"))
+	if !strings.Contains(completed, "No ComfyUI or Automatic1111/Forge installs found") {
+		t.Errorf("completed-empty should render the plain no-installs copy:\n%s", completed)
+	}
+	if strings.Contains(completed, "Stopped after") {
+		t.Errorf("completed-empty must NOT claim it was stopped:\n%s", completed)
+	}
+
+	// Truncated WITH partial installs → renders the install AND the stopped note.
+	partial := renderString(t, discoverResults([]library.Install{install}, nil, true, budget, "csrf"))
+	if !strings.Contains(partial, install.Path) {
+		t.Errorf("truncated result should still render the partial install:\n%s", partial)
+	}
+	for _, want := range []string{"Stopped after 6s", "some installs may be missing", "add a path manually"} {
+		if !strings.Contains(partial, want) {
+			t.Errorf("truncated result missing %q:\n%s", want, partial)
+		}
+	}
+
+	// Truncated with NOTHING found → still the stopped note, NOT the plain
+	// "completed, none found" copy (the two states must be distinguishable).
+	truncatedEmpty := renderString(t, discoverResults(nil, nil, true, budget, "csrf"))
+	if !strings.Contains(truncatedEmpty, "Stopped after 6s") {
+		t.Errorf("truncated-empty should render the stopped note:\n%s", truncatedEmpty)
+	}
+	if strings.Contains(truncatedEmpty, "No ComfyUI or Automatic1111/Forge installs found") {
+		t.Errorf("truncated-empty must not claim a completed empty search:\n%s", truncatedEmpty)
+	}
+}
+
 // TestDiscoverBrowseDisabledOnNonLoopback proves the discovery/browser controls
 // are refused when the server is bound to a non-loopback interface.
 func TestDiscoverBrowseDisabledOnNonLoopback(t *testing.T) {
@@ -231,5 +374,12 @@ func TestDiscoverBrowseDisabledOnNonLoopback(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), "disabled when the server is bound to a non-loopback") {
 			t.Errorf("%s should be gated on a non-loopback bind, got:\n%s", path, rec.Body.String())
 		}
+	}
+
+	// The status GET endpoint is loopback-gated too (it exposes discovered host
+	// paths), even though it needs no CSRF.
+	rec := get(t, srv, "/library/discover/status")
+	if !strings.Contains(rec.Body.String(), "disabled when the server is bound to a non-loopback") {
+		t.Errorf("/library/discover/status should be gated on a non-loopback bind, got:\n%s", rec.Body.String())
 	}
 }

@@ -80,6 +80,9 @@ func serveRun(ctx context.Context, st *store.Store, client civitai.Client, cfg *
 		WebScanTimeout:      cfg.WebScanTimeout.D(),
 		WebScanMaxFiles:     cfg.WebScanMaxFiles,
 	}, log)
+	// Tie background discovery crawls to the server lifecycle: cancelling ctx on
+	// shutdown cancels any in-flight crawl instead of leaking its goroutine.
+	srv.SetBaseContext(ctx)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
