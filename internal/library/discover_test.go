@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 )
@@ -366,5 +367,59 @@ func TestProbeGitNeutralizesMaliciousFsmonitor(t *testing.T) {
 	}
 	if st.Branch == "" {
 		t.Errorf("probeGit should report a branch, got %+v", st)
+	}
+}
+
+// TestDiscoverStreamsInstalls proves opts.OnInstall delivers each discovered
+// install incrementally (first-writer-wins, from worker goroutines) and that the
+// streamed set exactly matches the final returned slice.
+func TestDiscoverStreamsInstalls(t *testing.T) {
+	root, comfy, a1111, _ := buildFixtureTree(t)
+
+	var mu sync.Mutex
+	var streamed []Install
+	opts := DiscoverOptions{
+		gitProbe: func(context.Context, string) *GitState { return &GitState{IsRepo: true} },
+		OnInstall: func(in Install) {
+			mu.Lock()
+			streamed = append(streamed, in)
+			mu.Unlock()
+		},
+	}
+
+	got, err := DiscoverInstalls(context.Background(), []string{root}, opts)
+	if err != nil {
+		t.Fatalf("DiscoverInstalls: %v", err)
+	}
+
+	// Both genuine installs must be found and returned.
+	returnedPaths := map[string]bool{}
+	for _, in := range got {
+		returnedPaths[in.Path] = true
+	}
+	for _, want := range []string{comfy, a1111} {
+		if !returnedPaths[want] {
+			t.Errorf("returned set missing %q; got %v", want, got)
+		}
+	}
+
+	// The streamed set must equal the returned set (no dup, no omission).
+	mu.Lock()
+	defer mu.Unlock()
+	if len(streamed) != len(got) {
+		t.Fatalf("streamed %d installs, returned %d — must match: streamed=%v returned=%v",
+			len(streamed), len(got), streamed, got)
+	}
+	streamedPaths := map[string]bool{}
+	for _, in := range streamed {
+		if streamedPaths[in.Path] {
+			t.Errorf("install %q streamed more than once", in.Path)
+		}
+		streamedPaths[in.Path] = true
+	}
+	for p := range returnedPaths {
+		if !streamedPaths[p] {
+			t.Errorf("install %q was returned but never streamed via OnInstall", p)
+		}
 	}
 }
