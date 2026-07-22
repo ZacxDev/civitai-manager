@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/civitai-manager/internal/library"
 	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
@@ -208,6 +209,66 @@ func TestScanDirAddRemovePersistAndScan(t *testing.T) {
 	}
 	if dirs, _ = srv.store.ListScanDirs(); len(dirs) != 0 {
 		t.Fatalf("remove should clear the selection, got %v", dirs)
+	}
+}
+
+// TestDiscoverLoadingIndicatorMarkup asserts the Discover control renders a
+// visible, non-hanging loading affordance: an hx-indicator wiring the spinner,
+// hx-disabled-elt so the button disables during the crawl, and the scanning copy.
+func TestDiscoverLoadingIndicatorMarkup(t *testing.T) {
+	// allowExtra=true so the discover control is rendered.
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, nil, "dark"))
+	for _, want := range []string{
+		`hx-post="/library/discover"`,
+		`hx-indicator="#discover-spinner"`,
+		`hx-disabled-elt="this"`,
+		`id="discover-spinner"`,
+		"htmx-indicator",
+		"Scanning your system for ComfyUI / Automatic1111 installs",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("library page missing discover loading affordance %q", want)
+		}
+	}
+}
+
+// TestDiscoverResultsMessaging proves the three distinct render states:
+// completed-empty, truncated-with-partial, and truncated-empty.
+func TestDiscoverResultsMessaging(t *testing.T) {
+	install := library.Install{
+		Path: "/home/u/ComfyUI", Kind: library.KindComfyUI,
+		Confidence: library.ConfidenceHigh, ModelDirs: []string{"checkpoints"},
+	}
+	const budget = 6 * time.Second
+
+	// Completed, nothing found → plain "no installs" copy, no timeout note.
+	completed := renderString(t, discoverResults(nil, nil, false, budget, "csrf"))
+	if !strings.Contains(completed, "No ComfyUI or Automatic1111/Forge installs found") {
+		t.Errorf("completed-empty should render the plain no-installs copy:\n%s", completed)
+	}
+	if strings.Contains(completed, "Stopped after") {
+		t.Errorf("completed-empty must NOT claim it was stopped:\n%s", completed)
+	}
+
+	// Truncated WITH partial installs → renders the install AND the stopped note.
+	partial := renderString(t, discoverResults([]library.Install{install}, nil, true, budget, "csrf"))
+	if !strings.Contains(partial, install.Path) {
+		t.Errorf("truncated result should still render the partial install:\n%s", partial)
+	}
+	for _, want := range []string{"Stopped after 6s", "some installs may be missing", "add a path manually"} {
+		if !strings.Contains(partial, want) {
+			t.Errorf("truncated result missing %q:\n%s", want, partial)
+		}
+	}
+
+	// Truncated with NOTHING found → still the stopped note, NOT the plain
+	// "completed, none found" copy (the two states must be distinguishable).
+	truncatedEmpty := renderString(t, discoverResults(nil, nil, true, budget, "csrf"))
+	if !strings.Contains(truncatedEmpty, "Stopped after 6s") {
+		t.Errorf("truncated-empty should render the stopped note:\n%s", truncatedEmpty)
+	}
+	if strings.Contains(truncatedEmpty, "No ComfyUI or Automatic1111/Forge installs found") {
+		t.Errorf("truncated-empty must not claim a completed empty search:\n%s", truncatedEmpty)
 	}
 }
 

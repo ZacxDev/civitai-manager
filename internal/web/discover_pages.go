@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/ZacxDev/civitai-manager/internal/library"
 	g "maragu.dev/gomponents"
@@ -70,12 +71,17 @@ func selectedDirsList(dirs []string, csrf string) g.Node {
 // with a type badge, model-dir count, git branch + dirty indicator, confidence,
 // and an "Add" button that persists it into the selection. selected marks
 // installs already in the persisted set as added.
-func discoverResults(installs []library.Install, selected []string, truncated bool, csrf string) g.Node {
+//
+// It distinguishes a COMPLETED crawl that found nothing ("no installs found")
+// from one that hit the time budget ("stopped after Ns … add a path manually").
+// When truncated it renders any partial installs found so far PLUS the note, so
+// the user sees progress and a truthful reason some may be missing.
+func discoverResults(installs []library.Install, selected []string, truncated bool, budget time.Duration, csrf string) g.Node {
 	selSet := map[string]bool{}
 	for _, s := range selected {
 		selSet[s] = true
 	}
-	if len(installs) == 0 {
+	if len(installs) == 0 && !truncated {
 		return h.P(h.Class("text-xs text-slate-500 mt-2"),
 			g.Text("No ComfyUI or Automatic1111/Forge installs found in the usual locations."))
 	}
@@ -86,7 +92,9 @@ func discoverResults(installs []library.Install, selected []string, truncated bo
 	nodes := []g.Node{h.Class("mt-2 space-y-2"), g.Group(cards)}
 	if truncated {
 		nodes = append(nodes, h.P(h.Class("text-xs text-amber-400"),
-			g.Text("Search stopped at the time budget; results may be incomplete.")))
+			g.Text(fmt.Sprintf(
+				"Stopped after %ds — your home directory is large, so some installs may be missing. Use the directory browser below to add a path manually.",
+				int(budget.Round(time.Second).Seconds())))))
 	}
 	return h.Div(nodes...)
 }

@@ -11,6 +11,13 @@ import (
 	h "maragu.dev/gomponents/html"
 )
 
+// spinnerGlyph is a small CSS-animated spinner used inside an htmx-indicator so
+// a running request reads as active progress, not a hang.
+func spinnerGlyph() g.Node {
+	return h.Span(h.Class(
+		"inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-slate-500 border-t-transparent"))
+}
+
 // libraryView bundles the data the library page renders.
 type libraryView struct {
 	Files       []store.LocalFile
@@ -84,9 +91,15 @@ func scanForm(csrf string, allowExtra bool, selectedDirs []string) g.Node {
 						hx("target", "#discover-results"),
 						hx("swap", "innerHTML"),
 						hx("indicator", "#discover-spinner"),
+						// Disable the button for the duration of the request so it
+						// cannot be re-clicked mid-crawl and the user sees it is busy.
+						hx("disabled-elt", "this"),
 						csrfInline(csrf),
 					}, g.Text("Discover installs")),
-					h.Span(h.ID("discover-spinner"), h.Class("htmx-indicator text-xs text-slate-400"), g.Text("Searching…")),
+					h.Span(h.ID("discover-spinner"),
+						h.Class("htmx-indicator inline-flex items-center gap-1 text-xs text-slate-400"),
+						spinnerGlyph(),
+						g.Text("Scanning your system for ComfyUI / Automatic1111 installs… (up to a few seconds)")),
 				),
 				h.Div(h.ID("discover-results")),
 				directoryBrowser(csrf),

@@ -3,11 +3,13 @@ package library
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -63,22 +65,47 @@ type DiscoverOptions struct {
 	// gitProbe resolves a directory's GitState. Nil uses the real git-backed
 	// probe; tests inject a deterministic stub.
 	gitProbe func(ctx context.Context, dir string) *GitState
+	// readDir lists a directory's entries; nil uses os.ReadDir. Tests inject a
+	// seam here to simulate a blocked/slow ReadDir so the hard-deadline guarantee
+	// (the crawl returns AT the deadline even when a worker is stuck in a syscall)
+	// can be exercised deterministically.
+	readDir func(name string) ([]os.DirEntry, error)
 }
 
 const (
-	// DefaultDiscoverMaxDepth bounds a discovery walk's depth below each root.
-	DefaultDiscoverMaxDepth = 6
-	// DefaultDiscoverBudget bounds a discovery crawl's wall-clock time.
-	DefaultDiscoverBudget = 15 * time.Second
+	// DefaultDiscoverMaxDepth bounds a discovery walk's depth below each root. It
+	// is deliberately shallow: genuine installs live at or near the top of $HOME
+	// (or under /opt), and a deep general walk of a large $HOME is the dominant
+	// cost. Known locations ($HOME/ComfyUI, $HOME/stable-diffusion-webui,
+	// $HOME/workspace/*, /opt/*) all sit within this depth.
+	DefaultDiscoverMaxDepth = 3
+	// DefaultDiscoverBudget bounds a discovery crawl's wall-clock time. Now that
+	// the budget is HARD-enforced (the crawl returns at the deadline even if a
+	// worker is blocked in a ReadDir syscall) it can be snappy.
+	DefaultDiscoverBudget = 6 * time.Second
+	// discoverWorkerCap caps the concurrent-walk worker pool. Discovery is
+	// I/O-bound (ReadDir/stat), so a handful of workers parallelizes the crawl and
+	// cuts wall-clock several-fold on SSD without exhausting file descriptors.
+	discoverWorkerCap = 12
 )
 
 // discoveryPruneDirs are directory basenames the crawl never descends into:
-// obvious noise (VCS internals, package/venv caches) that cannot be an install
-// root and would only waste the time budget. ".git" is still stat-probed at the
-// candidate level (for GitState) — this only stops DESCENDING into it.
+// obvious noise (VCS internals, package/venv/tool caches) that cannot be an
+// install root and would only waste the time budget. ".git" is still stat-probed
+// at the candidate level (for GitState) — this only stops DESCENDING into it.
+// Note the crawl also prunes ALL dot-directories (so .cache/.cargo/.rustup/.npm
+// etc. are pruned by the hidden-dir rule); the non-hidden heavies below are the
+// ones that rule does not already cover.
 var discoveryPruneDirs = map[string]bool{
 	".git": true, "node_modules": true, "venv": true, ".venv": true,
 	".cache": true, "__pycache__": true, ".hg": true, ".svn": true,
+	// Non-hidden dev-tool heavies that are never an AI-model install root but can
+	// hold tens of thousands of directories (e.g. ~/go/pkg/mod). Cheap to prune,
+	// large to walk.
+	"go": true, "site-packages": true, "dist-packages": true,
+	// Belt-and-suspenders: also list the hidden package caches explicitly so the
+	// intent survives even if the hidden-dir rule is ever changed.
+	".cargo": true, ".rustup": true, ".npm": true, ".pnpm-store": true,
 }
 
 // systemDirs are top-level system roots a scan/discovery must never walk:
@@ -178,15 +205,26 @@ func CheckScanRoot(p string) error {
 }
 
 // DiscoverInstalls crawls roots (plus, when roots is empty, a set of sensible
-// defaults: $HOME and common install locations) for ComfyUI and
-// Automatic1111/Forge installations, returning each candidate with its kind,
-// confidence, model-dir count and git state.
+// defaults: $HOME and /opt) for ComfyUI and Automatic1111/Forge installations,
+// returning each candidate with its kind, confidence, model-dir count and git
+// state, SORTED by path for deterministic output.
 //
 // It is deliberately BOUNDED and SAFE, reusing the scan hardening: a max depth,
-// a wall-clock budget (ctx deadline), the system-dir blocklist, a
-// context-cancellable walk, and it NEVER descends symlinked directories
-// (filepath.WalkDir uses Lstat, so a symlinked dir is reported but not
-// followed). Discovery only stats/marker-checks — it never hashes a file.
+// a HARD wall-clock budget, the system-dir blocklist, a ctx-cancellable
+// concurrent walk, and it NEVER descends symlinked directories (os.ReadDir
+// reports a symlinked dir with a symlink type, so d.IsDir() is false and it is
+// not followed). Discovery only stats/marker-checks — it never hashes a file.
+//
+// Concurrency: the crawl runs a bounded worker pool over a directory queue so
+// the I/O-bound walk of a large $HOME parallelizes and finishes inside the
+// budget instead of timing out with partial results.
+//
+// Hard deadline: the crawl runs in a background goroutine and DiscoverInstalls
+// returns as soon as either the crawl finishes OR ctx is done — so even if a
+// worker is blocked in a ReadDir syscall past the deadline, the caller returns
+// on time with the installs found so far. The background workers cannot corrupt
+// the returned slice: results are collected through a mutex-guarded collector,
+// never a bare shared map.
 //
 // On a cancelled context or exceeded budget it returns the installs found so far
 // together with the context error, so a caller can render partial results and
@@ -201,6 +239,9 @@ func DiscoverInstalls(ctx context.Context, roots []string, opts DiscoverOptions)
 	if opts.gitProbe == nil {
 		opts.gitProbe = probeGit
 	}
+	if opts.readDir == nil {
+		opts.readDir = os.ReadDir
+	}
 	// Apply our own budget only when the caller's context has no deadline.
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
@@ -211,101 +252,299 @@ func DiscoverInstalls(ctx context.Context, roots []string, opts DiscoverOptions)
 	if len(roots) == 0 {
 		roots = defaultDiscoverRoots()
 	}
+	// Dedupe so an ancestor and its descendant are never both walked (e.g. $HOME
+	// and $HOME/workspace collapse to $HOME).
+	roots = dedupeRoots(roots)
+
+	// Pre-filter to existing, non-system directories.
+	var seeds []string
+	for _, r := range roots {
+		r = filepath.Clean(r)
+		fi, err := os.Stat(r)
+		if err != nil || !fi.IsDir() {
+			continue
+		}
+		if isSystemPath(resolveReal(r)) {
+			continue
+		}
+		seeds = append(seeds, r)
+	}
 
 	skip := map[string]bool{}
 	for _, s := range opts.Skip {
 		skip[resolveReal(filepath.Clean(s))] = true
 	}
+	coll := &collector{skip: skip, found: map[string]Install{}}
 
-	found := map[string]Install{} // keyed by resolved path, first-writer-wins
-	var order []string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		concurrentWalk(ctx, seeds, opts, coll)
+	}()
 
-	record := func(dir string, in Install) {
-		key := resolveReal(dir)
-		if skip[key] {
-			return
-		}
-		if _, ok := found[key]; ok {
-			return
-		}
-		found[key] = in
-		order = append(order, key)
+	// Hard deadline: return the moment the crawl finishes OR ctx fires, whichever
+	// comes first. Straggler workers (still blocked in a syscall) only ever write
+	// to the mutex-guarded collector, so reading it here is race-free.
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
-
-	for _, root := range roots {
-		if ctx.Err() != nil {
-			break
-		}
-		root = filepath.Clean(root)
-		fi, err := os.Stat(root)
-		if err != nil || !fi.IsDir() {
-			continue
-		}
-		if isSystemPath(resolveReal(root)) {
-			continue
-		}
-		if err := crawlRoot(ctx, root, opts, record); err != nil {
-			// Assemble partial results and surface the cancellation/deadline.
-			return assembleInstalls(found, order), err
-		}
-	}
-	return assembleInstalls(found, order), ctx.Err()
+	return coll.installs(), ctx.Err()
 }
 
-func assembleInstalls(found map[string]Install, order []string) []Install {
-	out := make([]Install, 0, len(order))
-	for _, k := range order {
-		out = append(out, found[k])
+// collector accumulates discovered installs from concurrent workers. All access
+// is mutex-guarded so workers and the deadline reader never race on the map.
+type collector struct {
+	mu    sync.Mutex
+	skip  map[string]bool
+	found map[string]Install // keyed by resolved path, first-writer-wins
+}
+
+// record adds an install unless its resolved path is skipped or already present.
+func (c *collector) record(dir string, in Install) {
+	key := resolveReal(dir)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.skip[key] {
+		return
 	}
+	if _, ok := c.found[key]; ok {
+		return
+	}
+	c.found[key] = in
+}
+
+// installs returns a stable, path-sorted snapshot of the installs found so far.
+// Safe to call concurrently with in-flight workers.
+func (c *collector) installs() []Install {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]Install, 0, len(c.found))
+	for _, in := range c.found {
+		out = append(out, in)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
 }
 
-// crawlRoot walks one root, bounded by depth + ctx, recording detected installs.
-func crawlRoot(ctx context.Context, root string, opts DiscoverOptions, record func(string, Install)) error {
-	rootDepth := strings.Count(filepath.Clean(root), string(filepath.Separator))
+// walkItem is one directory queued for processing.
+type walkItem struct {
+	path  string
+	depth int
+}
 
-	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if cerr := ctx.Err(); cerr != nil {
-			return cerr
-		}
-		if err != nil {
-			// Unreadable subtree: skip it, never abort the whole crawl.
-			if d != nil && d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if !d.IsDir() {
-			return nil // WalkDir reports a symlinked dir as a non-dir → not followed
-		}
-		if path != root {
-			base := d.Name()
-			if strings.HasPrefix(base, ".") && base != "." {
-				// Hidden dir: prune (covers .git, .cache, .venv, etc.).
-				return fs.SkipDir
-			}
-			if discoveryPruneDirs[base] {
-				return fs.SkipDir
-			}
-		}
-		resolved := resolveReal(path)
-		if isSystemPath(resolved) {
-			return fs.SkipDir
-		}
-		// Depth bound: stop descending past MaxDepth below the root.
-		depth := strings.Count(filepath.Clean(path), string(filepath.Separator)) - rootDepth
-		if depth > opts.MaxDepth {
-			return fs.SkipDir
-		}
+// dirWalker is the bounded concurrent directory walker. The queue is an
+// unbounded FIFO slice guarded by mu; a sync.Cond wakes idle workers when work
+// arrives, when the last active worker drains the queue (termination), or when
+// ctx is cancelled. This scheme cannot deadlock (no bounded channel a worker can
+// block on while holding others) nor panic (no channel to close-with-pending-
+// senders), and the fixed worker count bounds concurrent ReadDir/fd use.
+//
+// The queue is FIFO (breadth-first) so shallow directories — where the common
+// installs live ($HOME/ComfyUI, $HOME/stable-diffusion-webui) — are processed
+// before the deep tail. On a budget-truncated crawl that maximizes the chance
+// the well-known installs are already in the partial results.
+type dirWalker struct {
+	readDir  func(name string) ([]os.DirEntry, error)
+	maxDepth int
+	gitProbe func(context.Context, string) *GitState
+	coll     *collector
 
-		if in, ok := detectInstall(ctx, path, opts.gitProbe); ok {
-			record(path, in)
-			// An install root is a leaf for discovery: its models/ subtree holds
-			// no nested installs and would only burn the budget.
-			return fs.SkipDir
+	mu        sync.Mutex
+	cond      *sync.Cond
+	queue     []walkItem
+	active    int             // workers currently processing an item
+	cancelled bool            // ctx fired: stop promptly
+	visited   map[string]bool // resolved paths already processed (dedupe overlapping subtrees)
+}
+
+// concurrentWalk crawls seeds with a bounded worker pool, recording installs via
+// coll. It honors the depth cap, prune list, system-dir blocklist, no-symlink
+// descent, and prompt ctx cancellation. It returns when the crawl is exhausted
+// or ctx is done.
+func concurrentWalk(ctx context.Context, seeds []string, opts DiscoverOptions, coll *collector) {
+	numWorkers := runtime.NumCPU()
+	if numWorkers > discoverWorkerCap {
+		numWorkers = discoverWorkerCap
+	}
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
+	w := &dirWalker{
+		readDir:  opts.readDir,
+		maxDepth: opts.MaxDepth,
+		gitProbe: opts.gitProbe,
+		coll:     coll,
+		visited:  map[string]bool{},
+	}
+	w.cond = sync.NewCond(&w.mu)
+
+	w.mu.Lock()
+	for _, s := range seeds {
+		w.queue = append(w.queue, walkItem{path: s, depth: 0})
+	}
+	w.mu.Unlock()
+
+	// Cancellation waker: on ctx.Done, flip the flag and wake every worker so a
+	// worker idling in cond.Wait exits promptly (a worker blocked in a ReadDir
+	// syscall exits after the syscall returns; the outer DiscoverInstalls has
+	// already returned via its own ctx.Done select, so that straggler is harmless).
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			w.mu.Lock()
+			w.cancelled = true
+			w.cond.Broadcast()
+			w.mu.Unlock()
+		case <-stop:
 		}
-		return nil
-	})
+	}()
+
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w.run(ctx)
+		}()
+	}
+	wg.Wait()
+}
+
+// run is one worker: pull a directory, process it, repeat until the queue is
+// drained (with no active workers) or ctx is cancelled.
+func (w *dirWalker) run(ctx context.Context) {
+	for {
+		w.mu.Lock()
+		for len(w.queue) == 0 && w.active > 0 && !w.cancelled {
+			w.cond.Wait()
+		}
+		if w.cancelled || (len(w.queue) == 0 && w.active == 0) {
+			w.mu.Unlock()
+			return
+		}
+		it := w.queue[0]
+		w.queue = w.queue[1:] // FIFO: breadth-first
+		w.active++
+		w.mu.Unlock()
+
+		w.process(ctx, it)
+
+		w.mu.Lock()
+		w.active--
+		if len(w.queue) == 0 && w.active == 0 {
+			w.cond.Broadcast() // last worker drained the queue: everyone can exit
+		}
+		w.mu.Unlock()
+	}
+}
+
+// process handles one directory: dedupe, blocklist, install-detect, then enqueue
+// non-pruned subdirectories (bounded by depth). It checks ctx before every
+// syscall and between entries so cancellation is prompt.
+func (w *dirWalker) process(ctx context.Context, it walkItem) {
+	if ctx.Err() != nil {
+		return
+	}
+	resolved := resolveReal(it.path)
+
+	w.mu.Lock()
+	if w.visited[resolved] {
+		w.mu.Unlock()
+		return // already processed via another (overlapping) root — never double-walk
+	}
+	w.visited[resolved] = true
+	w.mu.Unlock()
+
+	if isSystemPath(resolved) {
+		return
+	}
+
+	// An install root is a leaf for discovery: its models/ subtree holds no
+	// nested installs and would only burn the budget.
+	if in, ok := detectInstall(ctx, it.path, w.gitProbe); ok {
+		w.coll.record(it.path, in)
+		return
+	}
+
+	if it.depth >= w.maxDepth {
+		return // depth bound: do not enqueue this dir's children
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	entries, err := w.readDir(it.path)
+	if err != nil {
+		return // unreadable subtree: skip it, never abort the whole crawl
+	}
+
+	var children []walkItem
+	for _, e := range entries {
+		if ctx.Err() != nil {
+			return
+		}
+		// os.ReadDir reports a symlinked dir with a symlink type (not a dir type),
+		// so IsDir() is false → symlinked directories are never descended.
+		if !e.IsDir() {
+			continue
+		}
+		base := e.Name()
+		if strings.HasPrefix(base, ".") {
+			continue // hidden dir: prune (covers .git, .cache, .venv, .cargo, …)
+		}
+		if discoveryPruneDirs[base] {
+			continue
+		}
+		children = append(children, walkItem{path: filepath.Join(it.path, base), depth: it.depth + 1})
+	}
+	if len(children) == 0 {
+		return
+	}
+	w.mu.Lock()
+	w.queue = append(w.queue, children...)
+	w.mu.Unlock()
+	for range children {
+		w.cond.Signal() // wake up to len(children) idle workers
+	}
+}
+
+// dedupeRoots normalizes roots (clean + symlink-resolve) and drops both exact
+// duplicates and any root that is nested under another root, so an ancestor and
+// its descendant are never both walked. The ORIGINAL (unresolved) path of each
+// surviving root is returned, preserving the caller's intended crawl targets.
+func dedupeRoots(roots []string) []string {
+	type nr struct{ orig, real string }
+	var norm []nr
+	seen := map[string]bool{}
+	for _, r := range roots {
+		r = filepath.Clean(r)
+		real := resolveReal(r)
+		if seen[real] {
+			continue
+		}
+		seen[real] = true
+		norm = append(norm, nr{orig: r, real: real})
+	}
+	var out []string
+	for i, a := range norm {
+		descendant := false
+		for j, b := range norm {
+			if i == j {
+				continue
+			}
+			if a.real != b.real && isUnder(a.real, b.real) {
+				descendant = true
+				break
+			}
+		}
+		if !descendant {
+			out = append(out, a.orig)
+		}
+	}
+	return out
 }
 
 // detectInstall marker-checks a single directory for a ComfyUI or A1111 install.
@@ -378,20 +617,15 @@ func listModelDirs(models string) []string {
 	return out
 }
 
-// defaultDiscoverRoots returns the fast-path probe locations plus $HOME. The
-// specific paths are stat-cheap fast-paths probed first; the $HOME entry drives
-// the bounded general walk.
+// defaultDiscoverRoots returns the general-walk roots: $HOME and /opt. Known
+// install locations ($HOME/ComfyUI, $HOME/stable-diffusion-webui,
+// $HOME/workspace/*, /opt/*) all fall within DefaultDiscoverMaxDepth of these
+// roots, so the bounded concurrent walk finds them without a separate probe
+// list; dedupeRoots collapses any overlap.
 func defaultDiscoverRoots() []string {
 	var roots []string
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		roots = append(roots,
-			filepath.Join(home, "ComfyUI"),
-			filepath.Join(home, "comfyui"),
-			filepath.Join(home, "stable-diffusion-webui"),
-			filepath.Join(home, "workspace"),
-			filepath.Join(home, "ai"),
-		)
-		roots = append(roots, home) // bounded general walk, last
+		roots = append(roots, home)
 	}
 	roots = append(roots, "/opt")
 	return roots
@@ -429,7 +663,8 @@ func gitProbeArgs(dir string, sub ...string) []string {
 // the probed .git dir is untrusted (attacker-plantable under $HOME). We also
 // set GIT_OPTIONAL_LOCKS=0 so probing a repo the user is mid-operation on never
 // creates/touches index.lock. The existing safety (CommandContext, fixed args,
-// -C dir, the short per-call timeout) is preserved.
+// -C dir, the short per-call timeout) is preserved. The per-call timeout is
+// derived from ctx, so git probes are also bounded by the overall crawl deadline.
 func probeGit(ctx context.Context, dir string) *GitState {
 	st := &GitState{IsRepo: true}
 	git, err := exec.LookPath("git")

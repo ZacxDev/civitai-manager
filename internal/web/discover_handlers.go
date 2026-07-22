@@ -14,8 +14,10 @@ import (
 
 // discoverBudget bounds a web-triggered discovery crawl. It is independent of
 // the scan timeout: discovery only stats/marker-checks (no hashing), so it is
-// cheap, but it still needs a hard ceiling on a huge $HOME.
-const discoverBudget = 15 * time.Second
+// cheap. The budget is HARD-enforced by library.DiscoverInstalls (it returns at
+// the deadline even if a worker is blocked in a ReadDir syscall), so it can be
+// snappy rather than a loose 15s ceiling that a large $HOME would blow past.
+const discoverBudget = 6 * time.Second
 
 // browseEntry is one immediate subdirectory listed by the directory browser.
 type browseEntry struct {
@@ -66,7 +68,7 @@ func (s *Server) handleLibraryDiscover(w http.ResponseWriter, r *http.Request) {
 	// them and note the truncation rather than failing.
 	truncated := err != nil
 	selected, _ := s.store.ListScanDirs()
-	s.render(w, http.StatusOK, discoverResults(installs, selected, truncated, s.csrf))
+	s.render(w, http.StatusOK, discoverResults(installs, selected, truncated, discoverBudget, s.csrf))
 }
 
 // handleLibraryBrowse lists the immediate subdirectories of a server path,
