@@ -13,7 +13,6 @@ import (
 	"github.com/ZacxDev/civitai-manager/internal/poller"
 	"github.com/ZacxDev/civitai-manager/internal/store"
 	g "maragu.dev/gomponents"
-	h "maragu.dev/gomponents/html"
 )
 
 const searchLimit = "24"
@@ -24,7 +23,43 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load subscriptions", err)
 		return
 	}
-	s.render(w, http.StatusOK, dashboardPage(subs, s.csrf))
+	s.render(w, http.StatusOK, dashboardPage(subs, s.csrf, s.currentTheme()))
+}
+
+// themeSettingKey persists the UI light/dark choice.
+const themeSettingKey = "theme"
+
+// currentTheme returns the persisted UI theme ("light"|"dark"), defaulting to
+// dark (civitai-manager's established look). Reflected onto <html data-theme>.
+func (s *Server) currentTheme() string {
+	v, _ := s.store.GetSettingDefault(themeSettingKey, "dark")
+	if v != "light" {
+		v = "dark"
+	}
+	return v
+}
+
+// handleSetTheme persists the light/dark choice and asks htmx to refresh so the
+// page re-renders under the new <html data-theme> (from which every --civitai-*
+// token re-resolves). CSRF-protected like every other state-changing POST.
+func (s *Server) handleSetTheme(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	theme := "dark"
+	if strings.EqualFold(strings.TrimSpace(r.FormValue("theme")), "light") {
+		theme = "light"
+	}
+	if err := s.store.SetSetting(themeSettingKey, theme); err != nil {
+		s.renderError(w, "save theme setting", err)
+		return
+	}
+	w.Header().Set("HX-Refresh", "true")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -36,7 +71,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			s.render(w, http.StatusOK, searchResults(nil, s.cfg.BaseURL))
 			return
 		}
-		s.render(w, http.StatusOK, searchPage("", nil, s.cfg.BaseURL))
+		s.render(w, http.StatusOK, searchPage("", nil, s.cfg.BaseURL, s.csrf, s.currentTheme()))
 		return
 	}
 
@@ -51,14 +86,14 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			s.render(w, http.StatusOK, errorNote("Search failed: "+err.Error()))
 			return
 		}
-		s.render(w, http.StatusOK, searchPage(query, nil, s.cfg.BaseURL))
+		s.render(w, http.StatusOK, searchPage(query, nil, s.cfg.BaseURL, s.csrf, s.currentTheme()))
 		return
 	}
 	if isHX {
 		s.render(w, http.StatusOK, searchResults(res, s.cfg.BaseURL))
 		return
 	}
-	s.render(w, http.StatusOK, searchPage(query, res, s.cfg.BaseURL))
+	s.render(w, http.StatusOK, searchPage(query, res, s.cfg.BaseURL, s.csrf, s.currentTheme()))
 }
 
 func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
@@ -69,10 +104,10 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 		if view.Model == nil && errors.Is(view.loadErr, civitai.ErrNotFound) {
 			status = http.StatusNotFound
 		}
-		s.render(w, status, page("Not found", errNode))
+		s.render(w, status, page("Not found", s.currentTheme(), s.csrf, errNode))
 		return
 	}
-	s.render(w, http.StatusOK, modelDetailPage(view, s.csrf))
+	s.render(w, http.StatusOK, modelDetailPage(view, s.csrf, s.currentTheme()))
 }
 
 // nsfwMode returns the persisted global NSFW display mode (default blur).
@@ -159,10 +194,10 @@ func (s *Server) handleSetNSFWDisplay(w http.ResponseWriter, r *http.Request) {
 	}
 	view, errNode := s.loadModelView(r.Context(), modelID, r.FormValue("version"))
 	if errNode != nil {
-		s.render(w, http.StatusOK, page("Not found", errNode))
+		s.render(w, http.StatusOK, page("Not found", s.currentTheme(), s.csrf, errNode))
 		return
 	}
-	s.render(w, http.StatusOK, modelDetailPage(view, s.csrf))
+	s.render(w, http.StatusOK, modelDetailPage(view, s.csrf, s.currentTheme()))
 }
 
 func (s *Server) handleCreator(w http.ResponseWriter, r *http.Request) {
@@ -175,10 +210,10 @@ func (s *Server) handleCreator(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	res, err := s.reader.SearchModels(ctx, q)
 	if err != nil {
-		s.render(w, http.StatusBadGateway, page("@"+username, errorNote("Could not load creator: "+err.Error())))
+		s.render(w, http.StatusBadGateway, page("@"+username, s.currentTheme(), s.csrf, errorNote("Could not load creator: "+err.Error())))
 		return
 	}
-	s.render(w, http.StatusOK, creatorPage(username, res, s.csrf))
+	s.render(w, http.StatusOK, creatorPage(username, res, s.csrf, s.currentTheme()))
 }
 
 func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
@@ -311,10 +346,7 @@ func (s *Server) renderError(w http.ResponseWriter, what string, err error) {
 }
 
 func errorNote(msg string) g.Node {
-	return h.Div(
-		h.Class("rounded-md border border-rose-800 bg-rose-950 px-3 py-2 text-sm text-rose-200"),
-		g.Text(msg),
-	)
+	return alert("error", "", g.Text(msg))
 }
 
 func checkboxVal(r *http.Request, name string) bool {

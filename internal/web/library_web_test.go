@@ -64,7 +64,7 @@ func TestLibraryAndTrashPagesRender(t *testing.T) {
 		{ID: 2, Path: "/m/b.safetensors", ModelID: intPtr(10), VersionID: intPtr(2), SizeBytes: 2048,
 			Status: store.LocalStatusMatched, CandidateReason: store.CandidateSuperseded, Kind: store.LocalKindModel},
 	}
-	out := renderString(t, libraryPage(buildLibraryView(files), "csrf-tok", true, nil))
+	out := renderString(t, libraryPage(buildLibraryView(files), "csrf-tok", true, nil, "dark"))
 	for _, want := range []string{"Library", "Scan selected", "Summary", "Deletion candidates", "superseded", "Reclaimable"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("library page missing %q", want)
@@ -73,7 +73,7 @@ func TestLibraryAndTrashPagesRender(t *testing.T) {
 
 	created := time.Now()
 	batches := []batchView{{Batch: store.QuarantineBatch{ID: 7, CreatedAt: created, Reason: "duplicate"}, Files: 3}}
-	tout := renderString(t, trashPage(batches, "csrf-tok"))
+	tout := renderString(t, trashPage(batches, "csrf-tok", "dark"))
 	for _, want := range []string{"Trash", "Restore", "#7", "duplicate"} {
 		if !strings.Contains(tout, want) {
 			t.Errorf("trash page missing %q", want)
@@ -132,7 +132,7 @@ func TestLibraryPostsAreCSRFProtected(t *testing.T) {
 // selection) so the user can scan beyond model_root, plus the opt-in
 // remote-match checkbox.
 func TestScanFormRendersPathsInput(t *testing.T) {
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, nil))
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, nil, "dark"))
 	for _, want := range []string{
 		"Scan selected", "Extra scan directories", "Discover installs",
 		"/library/discover", "Browse server directories", "/library/browse", "match_remote",
@@ -146,7 +146,7 @@ func TestScanFormRendersPathsInput(t *testing.T) {
 // TestScanFormRendersPersistedSelection proves the persisted selection pre-fills
 // the form as pre-checked checkboxes.
 func TestScanFormRendersPersistedSelection(t *testing.T) {
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, []string{"/data/loras"}))
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, []string{"/data/loras"}, "dark"))
 	for _, want := range []string{`name="scan_dir"`, "/data/loras", "checked"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("persisted selection missing %q in:\n%s", want, out)
@@ -159,7 +159,7 @@ func TestScanFormRendersPersistedSelection(t *testing.T) {
 // controls are not rendered, so a network-exposed server never offers the
 // arbitrary-path control.
 func TestScanFormOmitsPathsInputWhenNotAllowed(t *testing.T) {
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", false, nil))
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", false, nil, "dark"))
 	if !strings.Contains(out, "Scan selected") {
 		t.Error("scan form should still offer 'Scan selected'")
 	}
