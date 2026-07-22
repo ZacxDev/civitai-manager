@@ -11,10 +11,12 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	"github.com/ZacxDev/civitai-manager/internal/config"
+	"github.com/ZacxDev/civitai-manager/internal/library"
 	"github.com/ZacxDev/civitai-manager/internal/poller"
 	"github.com/ZacxDev/civitai-manager/internal/store"
 	g "maragu.dev/gomponents"
@@ -64,7 +66,45 @@ type Server struct {
 	// uses the built-in default locations ($HOME + common install dirs); tests
 	// point it at a fixture tree for a deterministic, hermetic crawl.
 	discoverRoots []string
+
+	// baseCtx is the server's long-lived base context, from which a background
+	// discovery crawl derives its own timeout context. It is tied to serveRun's
+	// context (via SetBaseContext) so server shutdown cancels an in-flight crawl
+	// instead of leaking its goroutine. Nil is treated as context.Background().
+	baseCtx context.Context
+	// crawlFn performs the discovery crawl. Nil (production) uses
+	// library.DiscoverInstalls; tests inject a seam to count/gate crawls and to
+	// drive job-state transitions deterministically without touching the real FS.
+	crawlFn func(ctx context.Context, roots []string, opts library.DiscoverOptions) ([]library.Install, error)
+	// discoverMu guards discoverJob. One discovery job runs at a time.
+	discoverMu sync.Mutex
+	// discoverJob is the current (or most recent) background discovery job, or nil
+	// before the first crawl is triggered.
+	discoverJob *discoveryJob
 }
+
+// discoveryJob is the in-memory state of a single background discovery crawl.
+// All fields are read/written only under Server.discoverMu.
+type discoveryJob struct {
+	// running is true from job start until the crawl goroutine records results.
+	running bool
+	// installs are the candidates found by the (possibly still-running) crawl.
+	installs []library.Install
+	// truncated is true when the crawl hit its budget/was cancelled before
+	// exhausting the tree (the job's err is non-nil).
+	truncated  bool
+	err        error
+	startedAt  time.Time
+	finishedAt time.Time
+	// cancel cancels the crawl's context; invoked when the crawl finishes (to
+	// release the timeout context) and available for an explicit stop.
+	cancel context.CancelFunc
+}
+
+// SetBaseContext sets the server's base context, from which background discovery
+// crawls derive. Cancelling ctx (server shutdown) cancels any in-flight crawl.
+// Call before Handler is served.
+func (s *Server) SetBaseContext(ctx context.Context) { s.baseCtx = ctx }
 
 // NewServer builds a Server.
 func NewServer(st *store.Store, reader civitai.Reader, sub Subscriber, cfg Config, log *slog.Logger) *Server {
@@ -153,6 +193,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /library", s.handleLibrary)
 	mux.HandleFunc("POST /library/scan", s.handleLibraryScan)
 	mux.HandleFunc("POST /library/discover", s.handleLibraryDiscover)
+	mux.HandleFunc("GET /library/discover/status", s.handleDiscoverStatus)
 	mux.HandleFunc("POST /library/browse", s.handleLibraryBrowse)
 	mux.HandleFunc("POST /library/scan-dirs/add", s.handleScanDirAdd)
 	mux.HandleFunc("POST /library/scan-dirs/remove", s.handleScanDirRemove)

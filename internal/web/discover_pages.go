@@ -67,6 +67,24 @@ func selectedDirsList(dirs []string, csrf string) g.Node {
 	return h.Div(h.Class("space-y-1"), g.Group(rows))
 }
 
+// discoverScanning renders the in-progress fragment: a spinner, the scanning
+// copy, and an htmx poller. The element polls GET /library/discover/status every
+// second and swaps ITSELF (outerHTML) with the response — so when the crawl
+// finishes and status returns the poller-less results fragment, polling stops.
+// The crawl runs in a background goroutine, so this can honestly promise it keeps
+// scanning after the initiating request returned.
+func discoverScanning() g.Node {
+	return h.Div(
+		h.ID("discover-poll"),
+		hx("get", "/library/discover/status"),
+		hx("trigger", "every 1s"),
+		hx("swap", "outerHTML"),
+		h.Class("mt-2 flex items-center gap-2 text-xs text-slate-400"),
+		spinnerGlyph(),
+		g.Text("Scanning your system for ComfyUI / Automatic1111 installs… (large home dirs can take ~30s)"),
+	)
+}
+
 // discoverResults renders the auto-discovery candidates: each install as a card
 // with a type badge, model-dir count, git branch + dirty indicator, confidence,
 // and an "Add" button that persists it into the selection. selected marks

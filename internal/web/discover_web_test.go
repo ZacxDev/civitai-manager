@@ -47,6 +47,63 @@ func post(t *testing.T, srv *Server, path string, form url.Values, withCSRF bool
 	return rec
 }
 
+// get issues a GET (no CSRF) against the server handler.
+func get(t *testing.T, srv *Server, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	srv.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// discoverPollerMarkup is the set of htmx attributes that MUST be present in a
+// scanning fragment for the client to keep polling; their ABSENCE marks a
+// terminal (done) fragment.
+var discoverPollerMarkup = []string{
+	`hx-get="/library/discover/status"`,
+	`hx-trigger="every 1s"`,
+	`hx-swap="outerHTML"`,
+}
+
+// hasPoller reports whether body is a scanning fragment (still polling).
+func hasPoller(body string) bool {
+	for _, want := range discoverPollerMarkup {
+		if !strings.Contains(body, want) {
+			return false
+		}
+	}
+	return true
+}
+
+// pollDiscoverUntilDone polls the status endpoint until it returns a terminal
+// (poller-less) fragment, then returns that body. It fails the test if the job
+// does not finish within a generous deadline.
+func pollDiscoverUntilDone(t *testing.T, srv *Server) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec := get(t, srv, "/library/discover/status")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		body := rec.Body.String()
+		if !hasPoller(body) {
+			return body // terminal fragment
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("discovery did not finish before deadline; last body:\n%s", body)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestDiscoverEndpointRendersCandidates proves the async flow end to end: the
+// POST returns immediately with the scanning fragment (WITH the poller), and
+// polling the status endpoint eventually yields the candidate with its Add
+// control (WITHOUT the poller).
+//
+// (Adapted from the pre-async test, which asserted the POST returned the
+// candidates directly on the request thread — discovery is now a background job.)
 func TestDiscoverEndpointRendersCandidates(t *testing.T) {
 	root, install := buildComfyFixture(t)
 	srv := newLibraryTestServer(t, t.TempDir())
@@ -58,12 +115,17 @@ func TestDiscoverEndpointRendersCandidates(t *testing.T) {
 		t.Fatalf("discover without CSRF = %d, want 403", rec.Code)
 	}
 
-	// With the token → renders the candidate with an Add control.
+	// With the token → returns the scanning fragment immediately (with the poller).
 	rec = post(t, srv, "/library/discover", url.Values{}, true)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("discover = %d", rec.Code)
 	}
-	body := rec.Body.String()
+	if !hasPoller(rec.Body.String()) {
+		t.Fatalf("POST should return the scanning fragment with the poller, got:\n%s", rec.Body.String())
+	}
+
+	// Poll to completion → the candidate is rendered with an Add control.
+	body := pollDiscoverUntilDone(t, srv)
 	for _, want := range []string{install, "ComfyUI", "/library/scan-dirs/add", "Add", "confidence"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("discover results missing %q in:\n%s", want, body)
@@ -71,15 +133,20 @@ func TestDiscoverEndpointRendersCandidates(t *testing.T) {
 	}
 }
 
+// TestDiscoverDedupesAgainstModelRoot proves an install equal to model_root is
+// de-duped from the results. (Adapted for the async flow: poll to done.)
 func TestDiscoverDedupesAgainstModelRoot(t *testing.T) {
 	root, install := buildComfyFixture(t)
 	// Point model_root AT the discovered install so it is de-duped away.
 	srv := newLibraryTestServer(t, install)
 	srv.discoverRoots = []string{root}
 
-	rec := post(t, srv, "/library/discover", url.Values{}, true)
-	if strings.Contains(rec.Body.String(), "/library/scan-dirs/add") {
-		t.Errorf("install equal to model_root should be de-duped, got:\n%s", rec.Body.String())
+	if rec := post(t, srv, "/library/discover", url.Values{}, true); rec.Code != http.StatusOK {
+		t.Fatalf("discover = %d", rec.Code)
+	}
+	body := pollDiscoverUntilDone(t, srv)
+	if strings.Contains(body, "/library/scan-dirs/add") {
+		t.Errorf("install equal to model_root should be de-duped, got:\n%s", body)
 	}
 }
 
@@ -292,5 +359,12 @@ func TestDiscoverBrowseDisabledOnNonLoopback(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), "disabled when the server is bound to a non-loopback") {
 			t.Errorf("%s should be gated on a non-loopback bind, got:\n%s", path, rec.Body.String())
 		}
+	}
+
+	// The status GET endpoint is loopback-gated too (it exposes discovered host
+	// paths), even though it needs no CSRF.
+	rec := get(t, srv, "/library/discover/status")
+	if !strings.Contains(rec.Body.String(), "disabled when the server is bound to a non-loopback") {
+		t.Errorf("/library/discover/status should be gated on a non-loopback bind, got:\n%s", rec.Body.String())
 	}
 }
