@@ -12,14 +12,17 @@ import (
 	"github.com/ZacxDev/civitai-manager/internal/library"
 )
 
-// discoveryJobBudget bounds a web-triggered discovery crawl. Discovery runs in a
-// BACKGROUND job (not on the request thread), so it need not fit inside an HTTP
-// request's patience: a full crawl of a large $HOME on a slow disk can take
-// ~26s, so the budget is generous. It is HARD-enforced by library.DiscoverInstalls
-// (which returns at the deadline even if a worker is blocked in a ReadDir
-// syscall), so a genuinely huge tree yields partial results + a truncation note
-// rather than an unbounded goroutine.
-const discoveryJobBudget = 30 * time.Second
+// discoveryJobBudget is a RUNAWAY BACKSTOP, not the normal termination path. The
+// discovery crawl now STREAMS installs as it finds them and is meant to keep
+// crawling ALL disks — including slow/spun-down drives where reading a couple of
+// directories can take tens of seconds — until the USER stops it (they Stop the
+// moment they see the install they want) or the crawl exhausts the tree. The
+// budget only bounds a genuinely stuck/forgotten job so it cannot leak a
+// goroutine forever; it is deliberately huge (hours), so in practice termination
+// is user-Stop, crawl exhaustion, or server shutdown. It is HARD-enforced by
+// library.DiscoverInstalls (which returns at the deadline even if a worker is
+// blocked in a ReadDir syscall).
+const discoveryJobBudget = 6 * time.Hour
 
 // browseEntry is one immediate subdirectory listed by the directory browser.
 type browseEntry struct {
@@ -61,15 +64,20 @@ func (s *Server) handleLibraryDiscover(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.startDiscovery()
-	// Return the scanning fragment immediately; the poller drives it to results.
-	s.render(w, http.StatusOK, discoverScanning())
+	// Return the scanning fragment immediately (always WITH the poller, even if the
+	// crawl already finished) so the first poll deterministically drives it to the
+	// terminal results. The fragment shows whatever has streamed in so far.
+	_, _, installs, _, _ := s.discoverJobState()
+	selected, _ := s.store.ListScanDirs()
+	s.render(w, http.StatusOK, discoverScanning(installs, selected, s.csrf))
 }
 
 // startDiscovery launches a background discovery crawl unless one is already
 // running (idempotent — a re-click while a crawl is in flight starts no second
 // goroutine). The crawl derives its context from the server base context (so
-// shutdown cancels it) with a hard discoveryJobBudget timeout, and writes its
-// result into the job under the mutex when it completes.
+// shutdown cancels it) with the runaway-backstop discoveryJobBudget timeout, and
+// STREAMS each discovered install into the job (appended under the mutex) so a
+// /status poll shows the growing list. On settle it records the final state.
 func (s *Server) startDiscovery() {
 	s.discoverMu.Lock()
 	defer s.discoverMu.Unlock()
@@ -98,50 +106,118 @@ func (s *Server) startDiscovery() {
 	job := &discoveryJob{running: true, startedAt: time.Now(), cancel: cancel}
 	s.discoverJob = job
 
+	// onInstall streams each newly-found install into the job. It is called from
+	// walker goroutines and MUST take the mutex: job.installs is read concurrently
+	// by /status. First-writer-wins dedup already happened in the collector, so a
+	// path never streams twice.
+	onInstall := func(in library.Install) {
+		s.discoverMu.Lock()
+		job.installs = append(job.installs, in)
+		s.discoverMu.Unlock()
+	}
+
 	go func() {
 		defer cancel()
-		installs, err := crawl(ctx, roots, library.DiscoverOptions{Skip: skip})
+		installs, err := crawl(ctx, roots, library.DiscoverOptions{Skip: skip, OnInstall: onInstall})
 		s.discoverMu.Lock()
-		job.installs = installs
+		// Merge any installs the crawl RETURNED but did not stream (a crawlFn seam
+		// may return a final slice without calling OnInstall; the real crawl streams
+		// AND returns the same set, so this de-dups by path and adds nothing).
+		seen := make(map[string]bool, len(job.installs))
+		for _, in := range job.installs {
+			seen[in.Path] = true
+		}
+		for _, in := range installs {
+			if !seen[in.Path] {
+				seen[in.Path] = true
+				job.installs = append(job.installs, in)
+			}
+		}
 		job.err = err
-		// A budget/cancel abort still yields the partial results found so far; mark
-		// the job truncated so the UI can note it rather than claim a clean finish.
-		job.truncated = err != nil
 		job.running = false
 		job.finishedAt = time.Now()
 		s.discoverMu.Unlock()
 	}()
 }
 
+// stopDiscovery marks the running job stopped and cancels its context. Idempotent:
+// a stop with no running job is a harmless no-op. The crawl goroutine settles on
+// its own (running=false) once cancellation propagates; job.stopped stays set so
+// the terminal fragment reads "Scan stopped".
+func (s *Server) stopDiscovery() {
+	s.discoverMu.Lock()
+	defer s.discoverMu.Unlock()
+	j := s.discoverJob
+	if j == nil || !j.running {
+		return
+	}
+	j.stopped = true
+	if j.cancel != nil {
+		j.cancel()
+	}
+}
+
 // discoverJobState returns a locked snapshot of the current job. started is false
-// when no crawl has ever been triggered.
-func (s *Server) discoverJobState() (started, running bool, installs []library.Install, truncated bool, err error) {
+// when no crawl has ever been triggered. installs is a COPY of the job's slice
+// taken under the lock (never the live, still-appended header) and sorted by path
+// for stable rendering.
+func (s *Server) discoverJobState() (started, running bool, installs []library.Install, stopped bool, err error) {
 	s.discoverMu.Lock()
 	defer s.discoverMu.Unlock()
 	j := s.discoverJob
 	if j == nil {
 		return false, false, nil, false, nil
 	}
-	return true, j.running, j.installs, j.truncated, j.err
+	snap := make([]library.Install, len(j.installs))
+	copy(snap, j.installs)
+	sort.Slice(snap, func(a, b int) bool { return snap[a].Path < snap[b].Path })
+	return true, j.running, snap, j.stopped, j.err
 }
 
-// handleDiscoverStatus is polled by the scanning fragment. While the job runs it
-// returns the scanning fragment (WITH the poller) so htmx keeps polling; once the
-// job finishes it returns the results fragment (WITHOUT the poller) so polling
-// stops. GET (no state change, so no CSRF) but still loopback-gated.
+// renderDiscoverStatus renders the current job state: while running, the scanning
+// fragment (WITH the poller, Stop button, and the installs streamed so far);
+// once settled, the terminal results fragment (WITHOUT the poller) so htmx stops
+// polling. Shared by the status poll and the Stop handler.
+func (s *Server) renderDiscoverStatus(w http.ResponseWriter) {
+	started, running, installs, stopped, err := s.discoverJobState()
+	selected, _ := s.store.ListScanDirs()
+	if started && running {
+		s.render(w, http.StatusOK, discoverScanning(installs, selected, s.csrf))
+		return
+	}
+	// Not started, or finished: terminal results (no poller). An unstarted job
+	// renders the plain "no installs" copy, which also halts any stray poller.
+	s.render(w, http.StatusOK, discoverResults(installs, selected, stopped, err, s.csrf))
+}
+
+// handleDiscoverStatus is polled by the scanning fragment. GET (no state change,
+// so no CSRF) but still loopback-gated.
 func (s *Server) handleDiscoverStatus(w http.ResponseWriter, r *http.Request) {
 	if !s.gate(w) {
 		return
 	}
-	started, running, installs, truncated, _ := s.discoverJobState()
-	if started && running {
-		s.render(w, http.StatusOK, discoverScanning())
+	s.renderDiscoverStatus(w)
+}
+
+// handleDiscoverStop cancels the running discovery crawl (the user found the
+// install they wanted). CSRF-protected and loopback-gated like the other POSTs.
+// Idempotent — stopping when nothing runs is a no-op. It returns the current
+// status fragment (which the #discover-poll element swaps in): still scanning if
+// the crawl has not yet settled — the poller then drives it to the terminal
+// "Scan stopped" fragment — or the terminal fragment directly.
+func (s *Server) handleDiscoverStop(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
-	// Not started, or finished: render terminal results (no poller). An unstarted
-	// job renders the plain "no installs" copy, which also halts any stray poller.
-	selected, _ := s.store.ListScanDirs()
-	s.render(w, http.StatusOK, discoverResults(installs, selected, truncated, discoveryJobBudget, s.csrf))
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	if !s.gate(w) {
+		return
+	}
+	s.stopDiscovery()
+	s.renderDiscoverStatus(w)
 }
 
 // handleLibraryBrowse lists the immediate subdirectories of a server path,

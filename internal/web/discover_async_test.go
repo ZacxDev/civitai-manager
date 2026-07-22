@@ -48,8 +48,9 @@ func TestDiscoverPostReturnsScanningFragment(t *testing.T) {
 	}
 	for _, want := range []string{
 		`id="discover-poll"`,
-		"Scanning your system for ComfyUI / Automatic1111 installs",
-		"large home dirs can take ~30s",
+		"Scanning all disks for ComfyUI / Automatic1111 installs",
+		"found 0 so far",
+		`hx-post="/library/discover/stop"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("scanning fragment missing %q in:\n%s", want, body)
@@ -116,16 +117,19 @@ func TestDiscoverStatusEmptyTree(t *testing.T) {
 	}
 }
 
-// TestDiscoverStatusTruncated proves a budget-truncated crawl (crawlFn returns
-// partial installs + a deadline error) renders the partial install AND the
-// "stopped after Ns" note keyed to the job budget.
-func TestDiscoverStatusTruncated(t *testing.T) {
+// TestDiscoverStatusCancelledCrawl proves a crawl that ends with a context error
+// (e.g. the runaway backstop firing, or shutdown) still renders the installs
+// found so far AND a "Scan stopped — found N" note, without the poller.
+func TestDiscoverStatusCancelledCrawl(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
 	srv.discoverRoots = []string{t.TempDir()}
 	install := library.Install{
 		Path: "/home/u/ComfyUI", Kind: library.KindComfyUI, Confidence: library.ConfidenceHigh,
 	}
-	srv.crawlFn = func(context.Context, []string, library.DiscoverOptions) ([]library.Install, error) {
+	srv.crawlFn = func(_ context.Context, _ []string, opts library.DiscoverOptions) ([]library.Install, error) {
+		if opts.OnInstall != nil {
+			opts.OnInstall(install)
+		}
 		return []library.Install{install}, context.DeadlineExceeded
 	}
 
@@ -133,13 +137,13 @@ func TestDiscoverStatusTruncated(t *testing.T) {
 		t.Fatalf("discover = %d", rec.Code)
 	}
 	body := pollDiscoverUntilDone(t, srv)
-	for _, want := range []string{install.Path, "Stopped after 30s", "add a path manually"} {
+	for _, want := range []string{install.Path, "Scan stopped — found 1"} {
 		if !strings.Contains(body, want) {
-			t.Errorf("truncated result missing %q in:\n%s", want, body)
+			t.Errorf("cancelled result missing %q in:\n%s", want, body)
 		}
 	}
 	if hasPoller(body) {
-		t.Errorf("terminal (truncated) fragment must not include the poller, got:\n%s", body)
+		t.Errorf("terminal (cancelled) fragment must not include the poller, got:\n%s", body)
 	}
 }
 
@@ -200,16 +204,19 @@ func TestDiscoverShutdownCancelsCrawl(t *testing.T) {
 
 	cancelBase() // simulate server shutdown
 
-	// The crawl goroutine must return; the job settles to finished + truncated.
+	// The crawl goroutine must return; the job settles to finished with the context
+	// error recorded. A shutdown is NOT a user Stop, so `stopped` stays false — the
+	// terminal fragment still reads as stopped because err != nil (see
+	// TestDiscoverResultsMessaging), but the job flag distinguishes the two.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		_, running, _, truncated, err := srv.discoverJobState()
+		_, running, _, stopped, err := srv.discoverJobState()
 		if !running {
 			if err == nil {
 				t.Fatalf("cancelled crawl should record a context error")
 			}
-			if !truncated {
-				t.Fatalf("cancelled crawl should mark the job truncated")
+			if stopped {
+				t.Fatalf("a base-ctx (shutdown) cancel is not a user Stop; stopped must be false")
 			}
 			break
 		}

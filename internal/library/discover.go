@@ -62,6 +62,16 @@ type DiscoverOptions struct {
 	// tool's own model_root plus configured library_paths), so an install the
 	// tool already tracks is not re-offered.
 	Skip []string
+	// OnInstall, when non-nil, is invoked ONCE per newly-discovered install as the
+	// crawl finds it — so a caller can STREAM results incrementally instead of
+	// waiting for the whole (potentially very long, multi-disk) crawl to finish.
+	// It fires first-writer-wins (never twice for the same resolved path, never for
+	// a Skip-ed path) and is called from worker goroutines, so the callback must be
+	// safe to invoke concurrently. It is called OUTSIDE the collector's lock, so a
+	// callback that takes its own lock cannot deadlock the crawl. The same installs
+	// are ALSO present in the final returned slice, so a caller may rely on either
+	// the stream or the return (or both, de-duping by Install.Path).
+	OnInstall func(Install)
 	// gitProbe resolves a directory's GitState. Nil uses the real git-backed
 	// probe; tests inject a deterministic stub.
 	gitProbe func(ctx context.Context, dir string) *GitState
@@ -229,6 +239,12 @@ func CheckScanRoot(p string) error {
 // On a cancelled context or exceeded budget it returns the installs found so far
 // together with the context error, so a caller can render partial results and
 // note the truncation.
+//
+// Streaming: when opts.OnInstall is set, each install is ALSO delivered to that
+// callback the moment it is found (first-writer-wins, from worker goroutines), so
+// a caller can surface installs incrementally during a long multi-disk crawl
+// rather than only at the end. The final returned slice still contains the full
+// set.
 func DiscoverInstalls(ctx context.Context, roots []string, opts DiscoverOptions) ([]Install, error) {
 	if opts.MaxDepth <= 0 {
 		opts.MaxDepth = DefaultDiscoverMaxDepth
@@ -274,7 +290,7 @@ func DiscoverInstalls(ctx context.Context, roots []string, opts DiscoverOptions)
 	for _, s := range opts.Skip {
 		skip[resolveReal(filepath.Clean(s))] = true
 	}
-	coll := &collector{skip: skip, found: map[string]Install{}}
+	coll := &collector{skip: skip, found: map[string]Install{}, onInstall: opts.OnInstall}
 
 	done := make(chan struct{})
 	go func() {
@@ -298,20 +314,32 @@ type collector struct {
 	mu    sync.Mutex
 	skip  map[string]bool
 	found map[string]Install // keyed by resolved path, first-writer-wins
+	// onInstall, when non-nil, is fired once per NEW install (outside the lock) so
+	// results can be streamed to the caller as they are discovered.
+	onInstall func(Install)
 }
 
 // record adds an install unless its resolved path is skipped or already present.
+// On a genuinely-new install it fires onInstall OUTSIDE the lock (so a callback
+// that takes its own lock cannot deadlock a worker holding c.mu).
 func (c *collector) record(dir string, in Install) {
 	key := resolveReal(dir)
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.skip[key] {
+		c.mu.Unlock()
 		return
 	}
 	if _, ok := c.found[key]; ok {
+		c.mu.Unlock()
 		return
 	}
 	c.found[key] = in
+	cb := c.onInstall
+	c.mu.Unlock()
+
+	if cb != nil {
+		cb(in)
+	}
 }
 
 // installs returns a stable, path-sorted snapshot of the installs found so far.
