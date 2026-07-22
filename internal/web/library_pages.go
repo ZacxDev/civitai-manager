@@ -373,16 +373,16 @@ func statusBadge(f store.LocalFile) g.Node {
 	case store.LocalStatusBroken:
 		return badge("broken", "red")
 	default:
-		return badge("unmatched", "amber")
+		return badge("unmatched", "slate")
 	}
 }
 
 func candidateBadge(reason string) g.Node {
 	switch reason {
 	case store.CandidateDuplicate:
-		return badge("duplicate", "amber")
+		return badge("duplicate", "blue")
 	case store.CandidateBroken:
-		return badge("broken", "red")
+		return badge("broken", "amber")
 	default:
 		return badge("superseded", "amber")
 	}

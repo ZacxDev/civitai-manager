@@ -57,11 +57,109 @@ func TestCivitaiContractMarkup(t *testing.T) {
 		}
 	}
 
-	// Badge semantic-color override: green -> success token (Badge has no
-	// data-color, so the color is applied via the token-override escape hatch).
+	// Badge semantic color via the 0.1.2 native data-color contract (replaces
+	// the removed per-element --civitai-color-primary token-override hack).
 	gb := renderString(t, badge("done", "green"))
-	if !strings.Contains(gb, "--civitai-color-primary:var(--civitai-color-success)") {
-		t.Errorf("green badge should override the primary token with success, got %q", gb)
+	if !strings.Contains(gb, `data-color="success"`) {
+		t.Errorf("green badge should carry data-color=success, got %q", gb)
+	}
+	if strings.Contains(gb, "--civitai-color-primary:") {
+		t.Errorf("green badge must not emit the removed --civitai-color-primary override hack, got %q", gb)
+	}
+}
+
+// TestBadgeDataColorMapping asserts the app's status badges emit the correct
+// @civitai/components 0.1.2 `data-color` intent (info|success|warning|error),
+// neutral/brand chips emit NO data-color, and NO badge uses the removed
+// per-element --civitai-color-primary token-override hack.
+func TestBadgeDataColorMapping(t *testing.T) {
+	// Download-queue statuses.
+	queue := map[store.QueueStatus]string{
+		store.StatusDone:        `data-color="success"`,
+		store.StatusFailed:      `data-color="error"`,
+		store.StatusDownloading: `data-color="info"`,
+		store.StatusQueued:      `data-color="info"`,
+		store.StatusSkipped:     `data-color="warning"`,
+	}
+	for st, want := range queue {
+		out := renderString(t, queueStatusBadge(st))
+		if !strings.Contains(out, want) {
+			t.Errorf("queueStatusBadge(%q) missing %q, got %q", st, want, out)
+		}
+		if strings.Contains(out, "--civitai-color-primary:") {
+			t.Errorf("queueStatusBadge(%q) uses removed token-override hack, got %q", st, out)
+		}
+	}
+
+	// Event levels.
+	levels := map[string]string{
+		store.LevelError: `data-color="error"`,
+		store.LevelWarn:  `data-color="warning"`,
+		store.LevelInfo:  `data-color="info"`,
+	}
+	for lv, want := range levels {
+		out := renderString(t, levelBadge(lv))
+		if !strings.Contains(out, want) {
+			t.Errorf("levelBadge(%q) missing %q, got %q", lv, want, out)
+		}
+	}
+
+	// Library candidate reasons.
+	cands := map[string]string{
+		store.CandidateDuplicate:  `data-color="info"`,
+		store.CandidateBroken:     `data-color="warning"`,
+		store.CandidateSuperseded: `data-color="warning"`,
+	}
+	for reason, want := range cands {
+		out := renderString(t, candidateBadge(reason))
+		if !strings.Contains(out, want) {
+			t.Errorf("candidateBadge(%q) missing %q, got %q", reason, want, out)
+		}
+	}
+
+	// Library file statuses: matched -> success; unmatched -> neutral (no
+	// data-color at all).
+	matched := renderString(t, statusBadge(store.LocalFile{Status: store.LocalStatusMatched}))
+	if !strings.Contains(matched, `data-color="success"`) {
+		t.Errorf("matched statusBadge missing data-color=success, got %q", matched)
+	}
+	unmatched := renderString(t, statusBadge(store.LocalFile{Status: store.LocalStatusUnmatched}))
+	if strings.Contains(unmatched, "data-color=") {
+		t.Errorf("unmatched statusBadge should be neutral (no data-color), got %q", unmatched)
+	}
+	if strings.Contains(unmatched, "--civitai-color-primary:") {
+		t.Errorf("unmatched statusBadge should not use the removed token-override hack, got %q", unmatched)
+	}
+}
+
+// TestVendored012DesignSystemFixes guards that the embedded design-system CSS is
+// the 0.1.2 vintage: the Badge `data-color` block (F2) and the dark-palette
+// `--civitai-color-primary-fg` token (F8) are both present in the bytes shipped
+// in the binary.
+func TestVendored012DesignSystemFixes(t *testing.T) {
+	comp, err := assetsFS.ReadFile("assets/civitai-components.css")
+	if err != nil {
+		t.Fatalf("read embedded civitai-components.css: %v", err)
+	}
+	// This comment is unique to the 0.1.2 Badge data-color block.
+	if !strings.Contains(string(comp), "mirroring Alert's `data-color` contract") {
+		t.Errorf("civitai-components.css is not 0.1.2: missing the Badge data-color block (F2)")
+	}
+	if !strings.Contains(string(comp), "&[data-color='success']") {
+		t.Errorf("civitai-components.css missing data-color intent rules (F2)")
+	}
+
+	theme, err := assetsFS.ReadFile("assets/civitai-theme.css")
+	if err != nil {
+		t.Fatalf("read embedded civitai-theme.css: %v", err)
+	}
+	// The dark block specifically must ship --civitai-color-primary-fg (F8).
+	darkIdx := strings.Index(string(theme), "[data-theme='dark']")
+	if darkIdx < 0 {
+		t.Fatalf("civitai-theme.css missing [data-theme='dark'] block")
+	}
+	if !strings.Contains(string(theme)[darkIdx:], "--civitai-color-primary-fg") {
+		t.Errorf("civitai-theme.css dark block missing --civitai-color-primary-fg (F8 not present)")
 	}
 }
 

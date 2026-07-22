@@ -278,7 +278,7 @@ func queueStatusBadge(st store.QueueStatus) g.Node {
 	case store.StatusDone:
 		return badge("done", "green")
 	case store.StatusDownloading:
-		return badge("downloading", "indigo")
+		return badge("downloading", "blue")
 	case store.StatusFailed:
 		return badge("failed", "red")
 	case store.StatusSkipped:

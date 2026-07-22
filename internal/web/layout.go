@@ -151,28 +151,30 @@ func sectionTitle(text string) g.Node {
 
 // badge renders a @civitai/components badge (light variant, small).
 //
-// The app uses semantically-colored badges (green/amber/red/blue/indigo/slate),
-// but @civitai/components 0.1.1 Badge has NO data-color attribute — it is
-// monochrome (primary only), unlike Alert which does carry data-color. So each
-// semantic color is expressed with the DOCUMENTED token-override escape hatch:
-// locally redeclare --civitai-color-primary to the matching status token. See
-// REPORT.md (friction: "Badge lacks semantic color").
+// The app uses semantically-colored badges (green/amber/red/blue/indigo/slate).
+// As of @civitai/components 0.1.2 the Badge carries a native `data-color`
+// intent attribute (info|success|warning|error, mirroring Alert), so semantic
+// color is expressed by setting `data-color` — no per-element token override.
+// Brand/neutral chips (indigo/slate) set no data-color and render in the
+// default primary style.
 func badge(text, variant string) g.Node {
 	attrs := []g.Node{
 		dataAttr("civitai-ui", "badge"),
 		dataAttr("variant", "light"),
 		dataAttr("size", "sm"),
 	}
-	if tok := badgeToken(variant); tok != "" {
-		attrs = append(attrs, h.StyleAttr("--civitai-color-primary:var(--civitai-color-"+tok+")"))
+	if c := badgeColor(variant); c != "" {
+		attrs = append(attrs, dataAttr("color", c))
 	}
 	attrs = append(attrs, g.Text(text))
 	return h.Span(attrs...)
 }
 
-// badgeToken maps the app's badge color name to the civitai status token used to
-// re-tint the badge. "" means keep the default primary color (no override).
-func badgeToken(variant string) string {
+// badgeColor maps the app's badge color name to a @civitai/components Badge
+// `data-color` intent (info|success|warning|error). "" means emit no data-color
+// — the badge keeps the default primary style, used for brand (indigo) and
+// neutral (slate) chips (the 0.1.2 Badge has no dedicated grey intent).
+func badgeColor(variant string) string {
 	switch variant {
 	case "green":
 		return "success"
@@ -182,10 +184,8 @@ func badgeToken(variant string) string {
 		return "error"
 	case "blue":
 		return "info"
-	case "indigo":
-		return "" // already primary
-	default: // slate / unknown -> neutral grey
-		return "text-dimmed"
+	default: // indigo (brand) and slate (neutral): no data-color
+		return ""
 	}
 }
 
