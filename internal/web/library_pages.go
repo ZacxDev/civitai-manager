@@ -90,16 +90,12 @@ func scanForm(csrf string, allowExtra bool, selectedDirs []string) g.Node {
 						hx("post", "/library/discover"),
 						hx("target", "#discover-results"),
 						hx("swap", "innerHTML"),
-						hx("indicator", "#discover-spinner"),
-						// Disable the button for the duration of the request so it
-						// cannot be re-clicked mid-crawl and the user sees it is busy.
+						// Brief click-guard: the POST returns instantly with the
+						// scanning fragment (which carries its own polling spinner),
+						// so no button-level indicator is needed.
 						hx("disabled-elt", "this"),
 						csrfInline(csrf),
 					}, g.Text("Discover installs")),
-					h.Span(h.ID("discover-spinner"),
-						h.Class("htmx-indicator inline-flex items-center gap-1 text-xs text-slate-400"),
-						spinnerGlyph(),
-						g.Text("Scanning your system for ComfyUI / Automatic1111 installs… (up to a few seconds)")),
 				),
 				h.Div(h.ID("discover-results")),
 				directoryBrowser(csrf),

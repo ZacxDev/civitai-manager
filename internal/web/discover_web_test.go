@@ -279,22 +279,37 @@ func TestScanDirAddRemovePersistAndScan(t *testing.T) {
 	}
 }
 
-// TestDiscoverLoadingIndicatorMarkup asserts the Discover control renders a
-// visible, non-hanging loading affordance: an hx-indicator wiring the spinner,
-// hx-disabled-elt so the button disables during the crawl, and the scanning copy.
+// TestDiscoverLoadingIndicatorMarkup asserts the non-hanging loading affordance.
+// Since the POST now returns instantly and swaps in the polling scanning
+// fragment, the progress spinner + copy live on that fragment (discoverScanning),
+// NOT as a button-level hx-indicator. The button keeps a brief click-guard.
 func TestDiscoverLoadingIndicatorMarkup(t *testing.T) {
 	// allowExtra=true so the discover control is rendered.
 	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, nil, "dark"))
 	for _, want := range []string{
 		`hx-post="/library/discover"`,
-		`hx-indicator="#discover-spinner"`,
 		`hx-disabled-elt="this"`,
-		`id="discover-spinner"`,
-		"htmx-indicator",
-		"Scanning your system for ComfyUI / Automatic1111 installs",
 	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("library page missing discover loading affordance %q", want)
+			t.Errorf("library page missing discover control attr %q", want)
+		}
+	}
+	// The stale button-level indicator must be gone (it caused a double spinner).
+	for _, gone := range []string{`hx-indicator="#discover-spinner"`, `id="discover-spinner"`} {
+		if strings.Contains(out, gone) {
+			t.Errorf("library page still has removed button indicator %q", gone)
+		}
+	}
+	// The real progress affordance lives on the scanning fragment: a self-polling
+	// element with the spinner + scanning copy.
+	scan := renderString(t, discoverScanning())
+	for _, want := range []string{
+		`hx-get="/library/discover/status"`,
+		`hx-trigger="every 1s"`,
+		"Scanning your system for ComfyUI / Automatic1111 installs",
+	} {
+		if !strings.Contains(scan, want) {
+			t.Errorf("scanning fragment missing progress affordance %q", want)
 		}
 	}
 }
