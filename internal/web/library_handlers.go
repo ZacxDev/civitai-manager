@@ -39,56 +39,31 @@ func (s *Server) newScanner(extraPaths []string, noRemote bool) *library.Scanner
 	return library.NewScanner(s.store, reader, opts, s.log)
 }
 
-// dangerousRoots are the filesystem roots a web-triggered scan must refuse to
-// walk: "/" and the top-level system directories. Scanning one of these would
-// hash a huge, sensitive, irrelevant subtree — a local footgun and, on a
-// non-loopback bind, a remote arbitrary-read/DoS primitive. A submitted path is
-// rejected if, after symlink resolution, it IS one of these or lives UNDER one.
-var dangerousRoots = []string{
-	"/proc", "/sys", "/dev", "/etc", "/boot", "/run",
-	"/var", "/usr", "/bin", "/sbin", "/lib",
-}
+// checkScanRoot delegates to library.CheckScanRoot, the single source of truth
+// for the dangerous-scan-root blocklist (shared so the scan form and the
+// discovery crawl enforce one identical guard: "/", the system dirs, and HOME
+// itself are refused).
+func checkScanRoot(p string) error { return library.CheckScanRoot(p) }
 
-// checkScanRoot rejects an obviously-dangerous scan root. It judges the CLEANED,
-// SYMLINK-RESOLVED absolute path (resolved first so a symlink pointing at "/" or
-// a system dir is caught, not the innocent-looking link name). It rejects:
-//   - "/" itself,
-//   - any dangerousRoots entry or a path nested under one,
-//   - the user's HOME directory ITSELF (too broad to hash wholesale); a
-//     subdirectory of HOME is allowed.
-func checkScanRoot(p string) error {
-	resolved := p
-	if r, err := filepath.EvalSymlinks(p); err == nil {
-		resolved = r
+// validateScanDir validates one submitted directory: absolute, an existing
+// directory, and not a dangerous root. It returns the cleaned path.
+func validateScanDir(p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", fmt.Errorf("empty path")
 	}
-	resolved = filepath.Clean(resolved)
-
-	if resolved == string(filepath.Separator) {
-		return fmt.Errorf("refusing to scan the filesystem root: %s", p)
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("path must be absolute: %s", p)
 	}
-	for _, d := range dangerousRoots {
-		if resolved == d || isUnderDir(resolved, d) {
-			return fmt.Errorf("refusing to scan a system directory (%s): %s", d, p)
-		}
+	p = filepath.Clean(p)
+	fi, err := os.Stat(p)
+	if err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("not an existing directory: %s", p)
 	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		if hr, err := filepath.EvalSymlinks(home); err == nil {
-			home = hr
-		}
-		if resolved == filepath.Clean(home) {
-			return fmt.Errorf("refusing to scan your entire home directory (pick a subdirectory): %s", p)
-		}
+	if err := checkScanRoot(p); err != nil {
+		return "", err
 	}
-	return nil
-}
-
-// isUnderDir reports whether path is nested under dir (not equal to it).
-func isUnderDir(path, dir string) bool {
-	rel, err := filepath.Rel(dir, path)
-	if err != nil {
-		return false
-	}
-	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return p, nil
 }
 
 // parseScanPaths parses the Library page's "scan_paths" field: a set of extra
@@ -103,19 +78,11 @@ func parseScanPaths(raw string) ([]string, error) {
 	seen := map[string]bool{}
 	var out []string
 	for _, f := range fields {
-		p := strings.TrimSpace(f)
-		if p == "" {
+		if strings.TrimSpace(f) == "" {
 			continue
 		}
-		if !filepath.IsAbs(p) {
-			return nil, fmt.Errorf("path must be absolute: %s", p)
-		}
-		p = filepath.Clean(p)
-		fi, err := os.Stat(p)
-		if err != nil || !fi.IsDir() {
-			return nil, fmt.Errorf("not an existing directory: %s", p)
-		}
-		if err := checkScanRoot(p); err != nil {
+		p, err := validateScanDir(f)
+		if err != nil {
 			return nil, err
 		}
 		if !seen[p] {
@@ -132,7 +99,13 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load library", err)
 		return
 	}
-	s.render(w, http.StatusOK, libraryPage(buildLibraryView(files), s.csrf, s.extraPathsAllowed()))
+	var selected []string
+	if s.extraPathsAllowed() {
+		if sel, err := s.store.ListScanDirs(); err == nil {
+			selected = sel
+		}
+	}
+	s.render(w, http.StatusOK, libraryPage(buildLibraryView(files), s.csrf, s.extraPathsAllowed(), selected))
 }
 
 func (s *Server) handleLibraryScan(w http.ResponseWriter, r *http.Request) {
@@ -143,11 +116,21 @@ func (s *Server) handleLibraryScan(w http.ResponseWriter, r *http.Request) {
 	if !s.verifyCSRF(w, r) {
 		return
 	}
+	// Extra scan dirs come from two inputs: the new "scan_dir" checkboxes (the
+	// selected-installs UI) and, for backward compatibility, the legacy
+	// "scan_paths" textarea field. Both are validated identically.
 	extra, err := parseScanPaths(r.FormValue("scan_paths"))
 	if err != nil {
 		s.render(w, http.StatusOK, errorNote("Invalid scan path: "+err.Error()))
 		return
 	}
+	selectedDirs, err := s.collectScanDirs(r)
+	if err != nil {
+		s.render(w, http.StatusOK, errorNote("Invalid scan path: "+err.Error()))
+		return
+	}
+	extra = unionPaths(extra, selectedDirs)
+
 	// Non-loopback gating: the arbitrary extra-scan-path capability is a local,
 	// single-user convenience. When the server is exposed on a non-loopback
 	// interface it becomes an unauthenticated remote arbitrary-path walk, so any
@@ -158,6 +141,15 @@ func (s *Server) handleLibraryScan(w http.ResponseWriter, r *http.Request) {
 			"Extra scan paths are disabled when the server is bound to a non-loopback address. "+
 				"Only model_root and configured library_paths are scanned."))
 		return
+	}
+
+	// Persist the selection so it survives across scans and pre-fills the form on
+	// the next load. Only the checkbox selection is persisted (the legacy textarea
+	// is a one-shot input).
+	if s.extraPathsAllowed() {
+		if err := s.store.SetScanDirs(selectedDirs); err != nil {
+			s.log.Warn("persist scan dirs", "err", err)
+		}
 	}
 
 	// noRemote defaults to true for web scans: a web-triggered scan should not
@@ -183,6 +175,42 @@ func (s *Server) handleLibraryScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, http.StatusOK, libraryContent(buildLibraryView(files), s.csrf))
+}
+
+// collectScanDirs validates every "scan_dir" checkbox value on the request,
+// returning the cleaned, de-duplicated list. A bad entry yields a friendly error.
+func (s *Server) collectScanDirs(r *http.Request) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for _, raw := range r.Form["scan_dir"] {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		p, err := validateScanDir(raw)
+		if err != nil {
+			return nil, err
+		}
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// unionPaths merges two path lists, de-duplicating (order-preserving).
+func unionPaths(a, b []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, list := range [][]string{a, b} {
+		for _, p := range list {
+			if !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }
 
 // scanErrorMessage maps a scan failure to a friendly, actionable message. The

@@ -390,44 +390,6 @@ func modelCard(it civitai.ModelListItem) g.Node {
 	)
 }
 
-// modelDetailPage renders a model's versions with a subscribe button.
-func modelDetailPage(m *civitai.ModelDetail, csrf string) g.Node {
-	creator := ""
-	if m.Creator != nil {
-		creator = m.Creator.Username
-	}
-	return page(m.Name,
-		card(
-			h.Div(
-				h.Class("flex items-start justify-between gap-4"),
-				h.Div(
-					h.H1(h.Class("text-xl font-semibold"), g.Text(m.Name)),
-					h.Div(
-						h.Class("mt-1 flex items-center gap-2 text-sm text-slate-400"),
-						badge(m.Type, "indigo"),
-						g.If(m.NSFW, badge("NSFW", "red")),
-						g.If(creator != "", h.A(h.Href("/creators/"+creator), h.Class("hover:underline"), g.Text("@"+creator))),
-					),
-				),
-				subscribeInline("model", strconv.Itoa(m.ID), "Subscribe", csrf),
-			),
-		),
-		card(
-			sectionTitle("Versions"),
-			h.Ul(
-				h.Class("divide-y divide-slate-800 text-sm"),
-				g.Map(m.ModelVersions, func(v civitai.ModelVersionSummary) g.Node {
-					return h.Li(
-						h.Class("flex items-center justify-between py-2"),
-						h.Span(h.Class("text-slate-200"), g.Text(v.Name)),
-						g.If(v.BaseModel != "", badge(v.BaseModel, "blue")),
-					)
-				}),
-			),
-		),
-	)
-}
-
 // creatorPage renders a creator's models with a subscribe-to-creator button.
 func creatorPage(username string, res *civitai.ModelSearchResult, csrf string) g.Node {
 	return page("@"+username,

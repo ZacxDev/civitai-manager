@@ -64,8 +64,8 @@ func TestLibraryAndTrashPagesRender(t *testing.T) {
 		{ID: 2, Path: "/m/b.safetensors", ModelID: intPtr(10), VersionID: intPtr(2), SizeBytes: 2048,
 			Status: store.LocalStatusMatched, CandidateReason: store.CandidateSuperseded, Kind: store.LocalKindModel},
 	}
-	out := renderString(t, libraryPage(buildLibraryView(files), "csrf-tok", true))
-	for _, want := range []string{"Library", "Scan now", "Summary", "Deletion candidates", "superseded", "Reclaimable"} {
+	out := renderString(t, libraryPage(buildLibraryView(files), "csrf-tok", true, nil))
+	for _, want := range []string{"Library", "Scan selected", "Summary", "Deletion candidates", "superseded", "Reclaimable"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("library page missing %q", want)
 		}
@@ -89,8 +89,8 @@ func TestLibraryHandlerRenders(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "Scan now") {
-		t.Error("library page missing Scan now")
+	if !strings.Contains(rec.Body.String(), "Scan selected") {
+		t.Error("library page missing Scan selected")
 	}
 }
 
@@ -128,26 +128,45 @@ func TestLibraryPostsAreCSRFProtected(t *testing.T) {
 }
 
 // TestScanFormRendersPathsInput proves finding #2's UI: on a loopback bind the
-// Library page renders the extra-scan-paths input so the user can scan beyond
-// model_root, plus the opt-in remote-match checkbox.
+// Library page renders the rich extra-directory selector (discovery + browser +
+// selection) so the user can scan beyond model_root, plus the opt-in
+// remote-match checkbox.
 func TestScanFormRendersPathsInput(t *testing.T) {
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true))
-	for _, want := range []string{"Scan now", "scan_paths", "Extra scan paths", "match_remote"} {
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, nil))
+	for _, want := range []string{
+		"Scan selected", "Extra scan directories", "Discover installs",
+		"/library/discover", "Browse server directories", "/library/browse", "match_remote",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("scan form missing %q", want)
 		}
 	}
 }
 
-// TestScanFormOmitsPathsInputWhenNotAllowed proves finding #1(b)'s non-loopback
-// gating at the UI layer: when extra paths are disabled the input is not even
-// rendered, so a network-exposed server never offers the arbitrary-path control.
-func TestScanFormOmitsPathsInputWhenNotAllowed(t *testing.T) {
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", false))
-	if !strings.Contains(out, "Scan now") {
-		t.Error("scan form should still offer 'Scan now'")
+// TestScanFormRendersPersistedSelection proves the persisted selection pre-fills
+// the form as pre-checked checkboxes.
+func TestScanFormRendersPersistedSelection(t *testing.T) {
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, []string{"/data/loras"}))
+	for _, want := range []string{`name="scan_dir"`, "/data/loras", "checked"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("persisted selection missing %q in:\n%s", want, out)
+		}
 	}
-	for _, unwanted := range []string{"scan_paths", "Extra scan paths", "match_remote"} {
+}
+
+// TestScanFormOmitsPathsInputWhenNotAllowed proves finding #1(b)'s non-loopback
+// gating at the UI layer: when extra paths are disabled the discovery/browser
+// controls are not rendered, so a network-exposed server never offers the
+// arbitrary-path control.
+func TestScanFormOmitsPathsInputWhenNotAllowed(t *testing.T) {
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", false, nil))
+	if !strings.Contains(out, "Scan selected") {
+		t.Error("scan form should still offer 'Scan selected'")
+	}
+	for _, unwanted := range []string{
+		"scan_paths", "Extra scan directories", "Discover installs",
+		"/library/discover", "Browse server directories", "match_remote",
+	} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("scan form must omit %q when extra paths are disabled", unwanted)
 		}

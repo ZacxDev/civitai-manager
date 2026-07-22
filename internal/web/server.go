@@ -60,6 +60,10 @@ type Server struct {
 	// cross-site request forgery (a malicious page in the user's browser cannot
 	// read it, so it cannot forge a valid POST) without any login system.
 	csrf string
+	// discoverRoots overrides the auto-discovery crawl roots. Nil (production)
+	// uses the built-in default locations ($HOME + common install dirs); tests
+	// point it at a fixture tree for a deterministic, hermetic crawl.
+	discoverRoots []string
 }
 
 // NewServer builds a Server.
@@ -136,6 +140,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /models/{id}", s.handleModel)
 	mux.HandleFunc("GET /creators/{username}", s.handleCreator)
 
+	mux.HandleFunc("POST /settings/nsfw", s.handleSetNSFWDisplay)
+
 	mux.HandleFunc("POST /subscribe", s.handleSubscribe)
 	mux.HandleFunc("POST /subscriptions/{id}/flags", s.handleFlags)
 	mux.HandleFunc("POST /subscriptions/{id}/delete", s.handleDelete)
@@ -145,6 +151,10 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /library", s.handleLibrary)
 	mux.HandleFunc("POST /library/scan", s.handleLibraryScan)
+	mux.HandleFunc("POST /library/discover", s.handleLibraryDiscover)
+	mux.HandleFunc("POST /library/browse", s.handleLibraryBrowse)
+	mux.HandleFunc("POST /library/scan-dirs/add", s.handleScanDirAdd)
+	mux.HandleFunc("POST /library/scan-dirs/remove", s.handleScanDirRemove)
 	mux.HandleFunc("POST /library/quarantine", s.handleQuarantine)
 	mux.HandleFunc("GET /trash", s.handleTrash)
 	mux.HandleFunc("POST /trash/{id}/restore", s.handleRestore)

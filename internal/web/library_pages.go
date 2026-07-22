@@ -35,50 +35,63 @@ func buildLibraryView(files []store.LocalFile) libraryView {
 }
 
 // libraryPage is the full Library page. allowExtra gates the arbitrary
-// extra-scan-path input: it is rendered only on a loopback bind (see
+// extra-scan-path controls (discovery, the directory browser, and the selected
+// -dirs list): they are rendered only on a loopback bind (see
 // Server.extraPathsAllowed), so a network-exposed server never even offers the
-// remote arbitrary-path walk control.
-func libraryPage(v libraryView, csrf string, allowExtra bool) g.Node {
+// remote arbitrary-path walk control. selectedDirs pre-fills the persisted
+// selection.
+func libraryPage(v libraryView, csrf string, allowExtra bool, selectedDirs []string) g.Node {
 	return page("Library",
 		card(
 			sectionTitle("Library"),
-			scanForm(csrf, allowExtra),
+			scanForm(csrf, allowExtra, selectedDirs),
 			h.Div(h.ID("scan-spinner"), h.Class("htmx-indicator text-xs text-slate-400 mt-1"), g.Text("Scanning…")),
 		),
 		h.Div(h.ID("library-content"), libraryContent(v, csrf)),
 	)
 }
 
-// scanForm renders the "Scan now" control. When allowExtra is true (loopback
-// bind only) it also renders the optional extra-scan-paths input and the remote
-// -match opt-in. The extra paths (newline- or comma-separated absolute
-// directories) are unioned with model_root so cross-directory duplicates outside
-// model_root become visible — the same reach as the CLI `scan --path`. The form
-// carries the CSRF token as a hidden field.
+// scanForm renders the scan controls. When allowExtra is true (loopback bind
+// only) it renders the rich extra-directory selector: the persisted selection as
+// pre-checked checkboxes, an auto-discovery button, a server-side directory
+// browser, and the remote-match opt-in. The selected dirs are unioned with
+// model_root so cross-directory duplicates outside model_root become visible —
+// the same reach as the CLI `scan --path`. The form carries the CSRF token.
 //
 // The remote-match checkbox is OPT-IN: by default a web scan runs offline (local
 // duplicate/broken analysis only) and does NOT send file SHA256 hashes to
 // CivitAI's by-hash lookup. Ticking it enables CivitAI matching for this scan.
-func scanForm(csrf string, allowExtra bool) g.Node {
+func scanForm(csrf string, allowExtra bool, selectedDirs []string) g.Node {
 	children := []g.Node{
 		hx("post", "/library/scan"),
 		hx("target", "#library-content"),
 		hx("swap", "innerHTML"),
 		hx("indicator", "#scan-spinner"),
-		h.Class("mt-3 space-y-2"),
+		h.Class("mt-3 space-y-3"),
 		csrfInput(csrf),
 	}
 	if allowExtra {
 		children = append(children,
-			h.Label(
-				h.Class("block text-xs text-slate-400"),
-				g.Text("Extra scan paths (optional — one absolute directory per line or comma-separated)"),
-			),
-			h.Textarea(
-				h.Name("scan_paths"),
-				h.Rows("2"),
-				h.Placeholder("/mnt/models/loras\n/mnt/external/checkpoints"),
-				h.Class("w-full rounded-md border border-slate-700 bg-slate-900 p-2 text-sm text-slate-200 placeholder:text-slate-600"),
+			h.Div(
+				h.Class("space-y-2 rounded-md border border-slate-800 bg-slate-900/60 p-3"),
+				h.Div(h.Class("text-xs font-medium text-slate-300"), g.Text("Extra scan directories")),
+				h.Div(h.ID("selected-dirs"), selectedDirsList(selectedDirs, csrf)),
+				h.Div(
+					h.Class("flex flex-wrap items-center gap-2"),
+					h.Button(
+						h.Type("button"),
+						hx("post", "/library/discover"),
+						hx("target", "#discover-results"),
+						hx("swap", "innerHTML"),
+						hx("indicator", "#discover-spinner"),
+						csrfInline(csrf),
+						h.Class("rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-700"),
+						g.Text("Discover installs"),
+					),
+					h.Span(h.ID("discover-spinner"), h.Class("htmx-indicator text-xs text-slate-400"), g.Text("Searching…")),
+				),
+				h.Div(h.ID("discover-results")),
+				directoryBrowser(csrf),
 			),
 			h.Label(
 				h.Class("flex items-center gap-2 text-xs text-slate-400"),
@@ -92,7 +105,7 @@ func scanForm(csrf string, allowExtra bool) g.Node {
 		h.Button(
 			h.Type("submit"),
 			h.Class("rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"),
-			g.Text("Scan now"),
+			g.Text("Scan selected"),
 		),
 	)
 	return h.Form(children...)

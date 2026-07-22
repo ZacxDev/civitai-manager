@@ -64,7 +64,9 @@ func TestPagesRenderWithoutPanic(t *testing.T) {
 		m := &civitai.ModelDetail{ID: 7, Name: "Great Model", Type: "Checkpoint",
 			Creator:       &civitai.Creator{Username: "carol"},
 			ModelVersions: []civitai.ModelVersionSummary{{ID: 1, Name: "v1", BaseModel: "SDXL"}}}
-		out := renderString(t, modelDetailPage(m, "test-csrf"))
+		view := modelDetailView{Model: m, SelectedVersionID: 1,
+			Version: &civitai.ModelVersionDetail{ID: 1, BaseModel: "SDXL"}}
+		out := renderString(t, modelDetailPage(view, "test-csrf"))
 		for _, want := range []string{"Great Model", "Versions", "v1", "SDXL", "Subscribe"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("model detail missing %q", want)
