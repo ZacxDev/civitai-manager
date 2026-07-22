@@ -122,15 +122,14 @@ func discoverCard(in library.Install, added bool, csrf string) g.Node {
 	if added {
 		action = h.Span(h.Class("text-xs text-emerald-400"), g.Text("added ✓"))
 	} else {
-		action = h.Button(
+		action = civButton("light", "sm", []g.Node{
 			h.Type("button"),
 			hx("post", "/library/scan-dirs/add"),
 			hx("vals", fmt.Sprintf(`{"path":%q,"csrf_token":%q}`, in.Path, csrf)),
 			hx("target", "#selected-dirs"),
 			hx("swap", "innerHTML"),
-			h.Class("shrink-0 rounded-md border border-indigo-700 bg-indigo-900/40 px-2 py-1 text-xs text-indigo-200 hover:bg-indigo-900"),
-			g.Text("Add"),
-		)
+			h.Class("shrink-0"),
+		}, g.Text("Add"))
 	}
 
 	return h.Div(
@@ -151,22 +150,20 @@ func directoryBrowser(csrf string) g.Node {
 		h.Class("space-y-2 border-t border-slate-800 pt-2"),
 		h.Div(h.Class("text-xs font-medium text-slate-400"), g.Text("Browse server directories")),
 		h.Div(
-			h.Class("flex items-center gap-2"),
-			h.Input(
-				h.Type("text"), h.Name("browse_path"), h.ID("browse-path"),
-				h.Placeholder("Leave blank for your home directory"),
-				h.Class("flex-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 placeholder:text-slate-600"),
+			h.Class("flex items-end gap-2"),
+			h.Div(h.Class("flex-1"),
+				textInput("text-input", "browse-path", "Path",
+					h.Name("browse_path"),
+					h.Placeholder("Leave blank for your home directory")),
 			),
-			h.Button(
+			civButton("outline", "sm", []g.Node{
 				h.Type("button"),
 				hx("post", "/library/browse"),
 				hx("include", "#browse-path"),
 				hx("vals", fmt.Sprintf(`{"csrf_token":%q}`, csrf)),
 				hx("target", "#browse-results"),
 				hx("swap", "innerHTML"),
-				h.Class("rounded-md border border-slate-700 bg-slate-800 px-3 py-1 text-xs text-slate-200 hover:bg-slate-700"),
-				g.Text("Browse"),
-			),
+			}, g.Text("Browse")),
 		),
 		h.Div(h.ID("browse-results")),
 	)
@@ -181,15 +178,14 @@ func browseResults(path string, dirs []browseEntry, canAdd bool, csrf string) g.
 		h.Span(h.Class("truncate text-xs text-slate-300"), g.Text(path)),
 	}
 	if canAdd {
-		header = append(header, h.Button(
+		header = append(header, civButton("light", "sm", []g.Node{
 			h.Type("button"),
 			hx("post", "/library/scan-dirs/add"),
 			hx("vals", fmt.Sprintf(`{"path":%q,"csrf_token":%q}`, path, csrf)),
 			hx("target", "#selected-dirs"),
 			hx("swap", "innerHTML"),
-			h.Class("shrink-0 rounded-md border border-indigo-700 bg-indigo-900/40 px-2 py-1 text-xs text-indigo-200 hover:bg-indigo-900"),
-			g.Text("Add this directory"),
-		))
+			h.Class("shrink-0"),
+		}, g.Text("Add this directory")))
 	}
 
 	var items []g.Node

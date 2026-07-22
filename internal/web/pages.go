@@ -12,8 +12,8 @@ import (
 )
 
 // dashboardPage is the full dashboard: subscriptions, activity feed, and queue.
-func dashboardPage(subs []store.Subscription, csrf string) g.Node {
-	return page("Dashboard",
+func dashboardPage(subs []store.Subscription, csrf, theme string) g.Node {
+	return page("Dashboard", theme, csrf,
 		card(
 			sectionTitle("Add a subscription"),
 			subscribeForm(csrf),
@@ -66,21 +66,14 @@ func subscribeForm(csrf string) g.Node {
 	)
 }
 
+// labeledInput renders a civitai text-input (label + control) sized for inline
+// form rows.
 func labeledInput(name, label, placeholder string, required bool) g.Node {
-	inputAttrs := []g.Node{
-		h.Type("text"),
-		h.Name(name),
-		h.Placeholder(placeholder),
-		h.Class("rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none w-80"),
-	}
+	ctrl := []g.Node{h.Type("text"), h.Name(name), h.Placeholder(placeholder)}
 	if required {
-		inputAttrs = append(inputAttrs, g.Attr("required"))
+		ctrl = append(ctrl, g.Attr("required"))
 	}
-	return h.Div(
-		h.Class("flex flex-col gap-1"),
-		h.Label(h.Class("text-xs text-slate-400"), g.Text(label)),
-		h.Input(inputAttrs...),
-	)
+	return h.Div(h.Class("w-80"), textInput("text-input", "f-"+name, label, ctrl...))
 }
 
 func checkbox(name, label string, checked bool) g.Node {
@@ -121,8 +114,7 @@ func subscriptionsTable(subs []store.Subscription, errMsg, csrf string) g.Node {
 		h.ID("subscriptions-table"),
 		h.Class("overflow-x-auto"),
 		g.If(errMsg != "",
-			h.Div(h.Class("mb-3 rounded-md border border-rose-800 bg-rose-950 px-3 py-2 text-sm text-rose-200"),
-				g.Text(errMsg)),
+			h.Div(h.Class("mb-3"), alert("error", "", g.Text(errMsg))),
 		),
 		h.Table(
 			h.Class("min-w-full text-sm"),
@@ -169,15 +161,15 @@ func subscriptionRow(s store.Subscription, csrf string) g.Node {
 		h.Td(h.Class("px-3 py-2 text-slate-400"), g.Text(humanDuration(s.PollInterval()))),
 		h.Td(h.Class("px-3 py-2 text-slate-400"), g.Text(last)),
 		h.Td(h.Class("px-3 py-2 text-right"),
-			h.Button(
+			civButton("subtle", "sm", []g.Node{
+				h.Type("button"),
 				hx("post", "/subscriptions/"+strconv.FormatInt(s.ID, 10)+"/delete"),
 				hx("vals", fmt.Sprintf(`{"csrf_token":"%s"}`, csrf)),
 				hx("target", "#sub-"+strconv.FormatInt(s.ID, 10)),
 				hx("swap", "outerHTML"),
 				hx("confirm", "Unsubscribe from "+target+"?"),
-				h.Class("text-xs text-rose-400 hover:text-rose-300"),
-				g.Text("Unsubscribe"),
-			),
+				h.StyleAttr("--civitai-color-primary:var(--civitai-color-error)"),
+			}, g.Text("Unsubscribe")),
 		),
 	)
 }
@@ -192,22 +184,21 @@ func flagToggle(s store.Subscription, field, label string, on bool, csrf string)
 	case "notify_only":
 		newNotify = !s.NotifyOnly
 	}
-	variant := "off"
-	cls := "cursor-pointer rounded-full px-2 py-0.5 text-xs font-medium bg-slate-700 text-slate-400 hover:bg-slate-600"
+	// "on" tints the pill with the success token; "off" with the dimmed-text
+	// token (the documented per-element --civitai-color-primary override).
+	tok := "text-dimmed"
 	if on {
-		variant = "on"
-		cls = "cursor-pointer rounded-full px-2 py-0.5 text-xs font-medium bg-emerald-800 text-emerald-200 hover:bg-emerald-700"
+		tok = "success"
 	}
-	_ = variant
 	vals := fmt.Sprintf(`{"auto_download":"%t","notify_only":"%t","csrf_token":"%s"}`, newAuto, newNotify, csrf)
-	return h.Button(
+	return civButton("light", "sm", []g.Node{
+		h.Type("button"),
 		hx("post", "/subscriptions/"+strconv.FormatInt(s.ID, 10)+"/flags"),
 		hx("vals", vals),
 		hx("target", "#sub-"+strconv.FormatInt(s.ID, 10)),
 		hx("swap", "outerHTML"),
-		h.Class(cls),
-		g.Text(label),
-	)
+		h.StyleAttr("--civitai-color-primary:var(--civitai-color-" + tok + ")"),
+	}, g.Text(label))
 }
 
 // eventsFragment renders the recent activity list.
@@ -287,7 +278,7 @@ func queueStatusBadge(st store.QueueStatus) g.Node {
 	case store.StatusDone:
 		return badge("done", "green")
 	case store.StatusDownloading:
-		return badge("downloading", "indigo")
+		return badge("downloading", "blue")
 	case store.StatusFailed:
 		return badge("failed", "red")
 	case store.StatusSkipped:
@@ -324,8 +315,8 @@ func progressBar(it store.QueueItem) g.Node {
 }
 
 // searchPage renders the model search page. results may be nil (initial load).
-func searchPage(query string, res *civitai.ModelSearchResult, baseURL string) g.Node {
-	return page("Search",
+func searchPage(query string, res *civitai.ModelSearchResult, baseURL, csrf, theme string) g.Node {
+	return page("Search", theme, csrf,
 		card(
 			sectionTitle("Search models"),
 			h.Form(
@@ -335,12 +326,10 @@ func searchPage(query string, res *civitai.ModelSearchResult, baseURL string) g.
 				hx("swap", "innerHTML"),
 				hx("trigger", "submit"),
 				h.Div(
-					h.Class("flex flex-col gap-1 flex-1"),
-					h.Input(
+					h.Class("flex-1"),
+					textInput("text-input", "search-q", "Query",
 						h.Type("text"), h.Name("q"), h.Value(query),
-						h.Placeholder("Search by name, tag, …"),
-						h.Class("w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none"),
-					),
+						h.Placeholder("Search by name, tag, …")),
 				),
 				btnPrimary(g.Text("Search")),
 			),
@@ -370,8 +359,8 @@ func modelCard(it civitai.ModelListItem) g.Node {
 	if it.Creator != nil {
 		creator = it.Creator.Username
 	}
-	return h.Div(
-		h.Class("rounded-lg border border-slate-800 bg-slate-900 p-4 flex flex-col gap-2"),
+	return card(
+		h.Class("flex flex-col gap-2"),
 		h.A(
 			h.Href("/models/"+strconv.Itoa(it.ID)),
 			h.Class("font-medium text-indigo-400 hover:underline"),
@@ -391,8 +380,8 @@ func modelCard(it civitai.ModelListItem) g.Node {
 }
 
 // creatorPage renders a creator's models with a subscribe-to-creator button.
-func creatorPage(username string, res *civitai.ModelSearchResult, csrf string) g.Node {
-	return page("@"+username,
+func creatorPage(username string, res *civitai.ModelSearchResult, csrf, theme string) g.Node {
+	return page("@"+username, theme, csrf,
 		card(
 			h.Div(
 				h.Class("flex items-center justify-between"),

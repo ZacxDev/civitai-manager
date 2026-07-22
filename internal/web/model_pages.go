@@ -204,7 +204,7 @@ func parsePublishedAt(raw []byte) string {
 // modelDetailPage renders the rich model detail page: header + stats, sanitized
 // description, tags, a version selector with per-version detail, and a showcase
 // image gallery with NSFW handling + a lightbox.
-func modelDetailPage(v modelDetailView, csrf string) g.Node {
+func modelDetailPage(v modelDetailView, csrf, theme string) g.Node {
 	m := v.Model
 	creator := ""
 	if m.Creator != nil {
@@ -212,7 +212,7 @@ func modelDetailPage(v modelDetailView, csrf string) g.Node {
 	}
 	mode := normalizeNSFWMode(v.NSFWMode)
 
-	return page(m.Name,
+	return page(m.Name, theme, csrf,
 		modelHeaderCard(m, creator, csrf),
 		g.If(strings.TrimSpace(v.Description) != "", modelDescriptionCard(v.Description)),
 		g.If(len(m.Tags) > 0, modelTagsCard(m.Tags)),

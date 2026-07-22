@@ -1,0 +1,29 @@
+/*
+ * app.css — cascade bridge between civitai-manager's Tailwind build and the
+ * vendored @civitai/components design-system CSS.
+ *
+ * WHY THIS FILE EXISTS (the retrofit crux): @civitai/components ships every rule
+ * inside `@layer civitai.components`. civitai-manager's Tailwind build
+ * (output.css) is UNLAYERED, and unlayered CSS beats any @layer regardless of
+ * specificity — so Tailwind's Preflight reset (`button { background-color:
+ * transparent }`, `padding: 0` on form controls, etc.) silently wins over the
+ * design-system component styles, leaving `data-civitai-ui` buttons/inputs
+ * transparent and unpadded. To let the design system actually style its own
+ * components, we pull the whole Tailwind build DOWN into a named layer (`app`)
+ * and declare `app` BEFORE `civitai.components`, so the component layer wins for
+ * civitai elements while the app's utilities still style everything else.
+ *
+ * The layer ORDER is fixed by an inline `<style>@layer app, civitai.components;</style>`
+ * emitted first in <head> (see layout.go) so it is deterministic regardless of
+ * <link> load order. The @import below simply assigns output.css to `app`.
+ */
+@import url("/assets/output.css") layer(app);
+
+/* Unlayered app tweaks — win over the `app` layer, don't touch component styles. */
+body {
+  font-family: var(--civitai-font);
+}
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--civitai-color-primary);
+}

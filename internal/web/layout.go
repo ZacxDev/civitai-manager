@@ -1,6 +1,8 @@
 package web
 
 import (
+	"fmt"
+
 	g "maragu.dev/gomponents"
 	h "maragu.dev/gomponents/html"
 )
@@ -8,21 +10,47 @@ import (
 // hx builds an htmx attribute (hx-get, hx-post, hx-target, ...).
 func hx(name, value string) g.Node { return g.Attr("hx-"+name, value) }
 
-// page wraps body content in the full HTML document shell: embedded Tailwind
-// CSS, embedded htmx, and a top nav. Self-contained -- no external requests.
-func page(title string, body ...g.Node) g.Node {
+// dataAttr builds a data-<name>="<value>" attribute.
+func dataAttr(name, value string) g.Node { return g.Attr("data-"+name, value) }
+
+// dataFlag builds a valueless data-<name> attribute (the @civitai/components
+// contract uses several presence-only markers, e.g. data-civitai-ui-control).
+func dataFlag(name string) g.Node { return g.Attr("data-" + name) }
+
+// page wraps body content in the full HTML document shell.
+//
+// The civitai design system is served from vendored, embedded stylesheets (no
+// CDN, fully offline): @civitai/theme's design tokens, @civitai/components'
+// attribute-driven component CSS, and app.css which pulls the Tailwind build
+// into the `app` cascade layer so the component layer wins where it must (see
+// app.css for the cascade rationale). `theme` ("light"|"dark") is reflected onto
+// <html data-theme> so every --civitai-* token re-resolves; `csrf` powers the
+// persisted theme toggle in the nav.
+func page(title, theme, csrf string, body ...g.Node) g.Node {
+	if theme != "light" {
+		theme = "dark"
+	}
 	return g.El("html",
 		h.Lang("en"),
+		dataAttr("theme", theme),
 		h.Head(
 			h.Meta(h.Charset("utf-8")),
 			h.Meta(h.Name("viewport"), h.Content("width=device-width, initial-scale=1")),
 			h.TitleEl(g.Text(title+" · civitai-manager")),
-			h.Link(h.Rel("stylesheet"), h.Href("/assets/output.css")),
+			// Fix the cascade-layer order FIRST, before any layered stylesheet
+			// loads, so civitai.components deterministically wins over the app's
+			// Tailwind build regardless of <link> order (see app.css).
+			g.El("style", g.Raw("@layer app, civitai.components;")),
+			// Vendored civitai design system: tokens, then components.
+			h.Link(h.Rel("stylesheet"), h.Href("/assets/civitai-theme.css")),
+			h.Link(h.Rel("stylesheet"), h.Href("/assets/civitai-components.css")),
+			// app.css @imports the Tailwind build into layer(app).
+			h.Link(h.Rel("stylesheet"), h.Href("/assets/app.css")),
 			h.Script(h.Src("/assets/htmx.min.js"), h.Defer()),
 		),
 		h.Body(
 			h.Class("min-h-screen bg-slate-950 text-slate-100 antialiased"),
-			navbar(),
+			navbar(theme, csrf),
 			h.Main(
 				h.Class("mx-auto max-w-6xl px-4 py-6 space-y-6"),
 				g.Group(body),
@@ -31,7 +59,7 @@ func page(title string, body ...g.Node) g.Node {
 	)
 }
 
-func navbar() g.Node {
+func navbar(theme, csrf string) g.Node {
 	return h.Nav(
 		h.Class("border-b border-slate-800 bg-slate-900"),
 		h.Div(
@@ -41,6 +69,7 @@ func navbar() g.Node {
 			navLink("/search", "Search"),
 			navLink("/library", "Library"),
 			navLink("/trash", "Trash"),
+			h.Div(h.Class("ml-auto"), themeToggle(theme, csrf)),
 		),
 	)
 }
@@ -53,48 +82,139 @@ func navLink(href, label string) g.Node {
 	)
 }
 
-// card is a padded panel container.
-func card(children ...g.Node) g.Node {
-	return h.Div(
-		h.Class("rounded-lg border border-slate-800 bg-slate-900 p-4"),
-		g.Group(children),
+// themeToggle renders the light/dark switch: a civitai outline button that POSTs
+// the NEXT theme (with the CSRF token) to /settings/theme; the handler persists
+// it in the settings store and replies HX-Refresh so the page re-renders under
+// the new <html data-theme>. civitai resolves all tokens from that ancestor
+// attribute, so one round-trip re-themes everything.
+func themeToggle(theme, csrf string) g.Node {
+	next, label := "dark", "Dark"
+	if theme == "dark" {
+		next, label = "light", "Light"
+	}
+	return civButton("outline", "sm",
+		[]g.Node{
+			h.Type("button"),
+			hx("post", "/settings/theme"),
+			hx("vals", fmt.Sprintf(`{"theme":%q,"csrf_token":%q}`, next, csrf)),
+			hx("swap", "none"),
+			g.Attr("aria-label", "Switch to "+next+" theme"),
+		},
+		g.Text(label),
 	)
+}
+
+// civButton renders a button per the @civitai/components contract:
+//
+//	<button data-civitai-ui="button" data-variant=… data-size=…>…</button>
+//
+// variant is filled|light|outline|subtle, size is sm|md|lg. Extra attributes
+// (type, hx-*, aria-*, disabled, …) are supplied via attrs; children are the
+// button label/content.
+func civButton(variant, size string, attrs []g.Node, children ...g.Node) g.Node {
+	all := []g.Node{
+		dataAttr("civitai-ui", "button"),
+		dataAttr("variant", variant),
+		dataAttr("size", size),
+	}
+	all = append(all, attrs...)
+	all = append(all, children...)
+	return h.Button(all...)
+}
+
+// btnPrimary is the filled primary button used as the submit control in forms.
+func btnPrimary(children ...g.Node) g.Node {
+	return civButton("filled", "md", []g.Node{h.Type("submit")}, children...)
+}
+
+// btnSecondary is a lower-emphasis outline button.
+func btnSecondary(children ...g.Node) g.Node {
+	return civButton("outline", "md", []g.Node{h.Type("button")}, children...)
+}
+
+// card is a padded, bordered panel — a @civitai/components card. data-with-border
+// is always set: in the light palette surface==body, so a borderless card would
+// be invisible (the design system documents this caveat).
+func card(children ...g.Node) g.Node {
+	all := []g.Node{
+		dataAttr("civitai-ui", "card"),
+		dataAttr("with-border", "true"),
+		dataAttr("padding", "md"),
+	}
+	all = append(all, children...)
+	return h.Div(all...)
 }
 
 func sectionTitle(text string) g.Node {
 	return h.H2(h.Class("text-lg font-semibold text-slate-100 mb-3"), g.Text(text))
 }
 
-// badge renders a small pill with a color variant.
+// badge renders a @civitai/components badge (light variant, small).
+//
+// The app uses semantically-colored badges (green/amber/red/blue/indigo/slate).
+// As of @civitai/components 0.1.2 the Badge carries a native `data-color`
+// intent attribute (info|success|warning|error, mirroring Alert), so semantic
+// color is expressed by setting `data-color` — no per-element token override.
+// Brand/neutral chips (indigo/slate) set no data-color and render in the
+// default primary style.
 func badge(text, variant string) g.Node {
-	base := "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium "
-	color := "bg-slate-700 text-slate-200"
-	switch variant {
-	case "green":
-		color = "bg-emerald-900 text-emerald-200"
-	case "amber":
-		color = "bg-amber-900 text-amber-200"
-	case "red":
-		color = "bg-rose-900 text-rose-200"
-	case "indigo":
-		color = "bg-indigo-900 text-indigo-200"
-	case "blue":
-		color = "bg-sky-900 text-sky-200"
+	attrs := []g.Node{
+		dataAttr("civitai-ui", "badge"),
+		dataAttr("variant", "light"),
+		dataAttr("size", "sm"),
 	}
-	return h.Span(h.Class(base+color), g.Text(text))
+	if c := badgeColor(variant); c != "" {
+		attrs = append(attrs, dataAttr("color", c))
+	}
+	attrs = append(attrs, g.Text(text))
+	return h.Span(attrs...)
 }
 
-// btn renders a primary or secondary button-styled element.
-func btnPrimary(children ...g.Node) g.Node {
-	return h.Button(
-		h.Class("rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"),
-		g.Group(children),
+// badgeColor maps the app's badge color name to a @civitai/components Badge
+// `data-color` intent (info|success|warning|error). "" means emit no data-color
+// — the badge keeps the default primary style, used for brand (indigo) and
+// neutral (slate) chips (the 0.1.2 Badge has no dedicated grey intent).
+func badgeColor(variant string) string {
+	switch variant {
+	case "green":
+		return "success"
+	case "amber":
+		return "warning"
+	case "red":
+		return "error"
+	case "blue":
+		return "info"
+	default: // indigo (brand) and slate (neutral): no data-color
+		return ""
+	}
+}
+
+// alert renders a @civitai/components alert: role=alert + data-color, with an
+// alert-body wrapper and an optional bold title. color is info|success|warning|
+// error.
+func alert(color, title string, body ...g.Node) g.Node {
+	inner := []g.Node{dataFlag("civitai-ui-alert-body")}
+	if title != "" {
+		inner = append(inner, h.Div(dataFlag("civitai-ui-alert-title"), g.Text(title)))
+	}
+	inner = append(inner, body...)
+	return h.Div(
+		dataAttr("civitai-ui", "alert"),
+		dataAttr("color", color),
+		g.Attr("role", "alert"),
+		h.Div(inner...),
 	)
 }
 
-func btnSecondary(children ...g.Node) g.Node {
-	return h.Button(
-		h.Class("rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-700"),
-		g.Group(children),
+// textInput renders a @civitai/components text-input: a wrapper carrying the
+// role, a bound label, and the control input. `kind` is text-input, textarea or
+// number-input; controlAttrs carry name/type/value/placeholder/required/etc. on
+// the control element (which already gets data-civitai-ui-control + id).
+func textInput(kind, id, label string, controlAttrs ...g.Node) g.Node {
+	ctrl := append([]g.Node{dataFlag("civitai-ui-control"), h.ID(id)}, controlAttrs...)
+	return h.Div(
+		dataAttr("civitai-ui", kind),
+		h.Label(dataFlag("civitai-ui-label"), h.For(id), g.Text(label)),
+		h.Input(ctrl...),
 	)
 }

@@ -40,8 +40,8 @@ func buildLibraryView(files []store.LocalFile) libraryView {
 // Server.extraPathsAllowed), so a network-exposed server never even offers the
 // remote arbitrary-path walk control. selectedDirs pre-fills the persisted
 // selection.
-func libraryPage(v libraryView, csrf string, allowExtra bool, selectedDirs []string) g.Node {
-	return page("Library",
+func libraryPage(v libraryView, csrf string, allowExtra bool, selectedDirs []string, theme string) g.Node {
+	return page("Library", theme, csrf,
 		card(
 			sectionTitle("Library"),
 			scanForm(csrf, allowExtra, selectedDirs),
@@ -78,16 +78,14 @@ func scanForm(csrf string, allowExtra bool, selectedDirs []string) g.Node {
 				h.Div(h.ID("selected-dirs"), selectedDirsList(selectedDirs, csrf)),
 				h.Div(
 					h.Class("flex flex-wrap items-center gap-2"),
-					h.Button(
+					civButton("outline", "sm", []g.Node{
 						h.Type("button"),
 						hx("post", "/library/discover"),
 						hx("target", "#discover-results"),
 						hx("swap", "innerHTML"),
 						hx("indicator", "#discover-spinner"),
 						csrfInline(csrf),
-						h.Class("rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-700"),
-						g.Text("Discover installs"),
-					),
+					}, g.Text("Discover installs")),
 					h.Span(h.ID("discover-spinner"), h.Class("htmx-indicator text-xs text-slate-400"), g.Text("Searching…")),
 				),
 				h.Div(h.ID("discover-results")),
@@ -102,11 +100,7 @@ func scanForm(csrf string, allowExtra bool, selectedDirs []string) g.Node {
 		)
 	}
 	children = append(children,
-		h.Button(
-			h.Type("submit"),
-			h.Class("rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"),
-			g.Text("Scan selected"),
-		),
+		btnPrimary(g.Text("Scan selected")),
 	)
 	return h.Form(children...)
 }
@@ -196,15 +190,14 @@ func candidatesTable(cands []store.LocalFile, csrf string) g.Node {
 			h.Td(h.Class("px-3 py-2 text-slate-400"), g.Text(humanBytes(c.SizeBytes))),
 			h.Td(h.Class("px-3 py-2 text-slate-300 truncate max-w-md"), g.Text(c.Path)),
 			h.Td(h.Class("px-3 py-2 text-right"),
-				h.Button(
+				civButton("subtle", "sm", []g.Node{
 					h.Type("button"),
 					hx("post", "/library/quarantine"),
 					hx("vals", fmt.Sprintf(`{"id":"%s","apply":"false","csrf_token":"%s"}`, id, csrf)),
 					hx("target", "#quarantine-preview"),
 					hx("swap", "innerHTML"),
-					h.Class("text-xs text-amber-400 hover:text-amber-300"),
-					g.Text("Quarantine"),
-				),
+					h.StyleAttr("--civitai-color-primary:var(--civitai-color-warning)"),
+				}, g.Text("Quarantine")),
 			),
 		))
 	}
@@ -227,11 +220,10 @@ func candidatesTable(cands []store.LocalFile, csrf string) g.Node {
 		),
 		h.Div(
 			h.Class("mt-3"),
-			h.Button(
+			civButton("light", "md", []g.Node{
 				h.Type("submit"),
-				h.Class("rounded-md border border-amber-700 bg-amber-900 px-3 py-1.5 text-sm text-amber-100 hover:bg-amber-800"),
-				g.Text("Preview quarantine (selected)"),
-			),
+				h.StyleAttr("--civitai-color-primary:var(--civitai-color-warning)"),
+			}, g.Text("Preview quarantine (selected)")),
 		),
 	)
 }
@@ -262,19 +254,18 @@ func quarantinePreview(plan *library.QuarantinePlan, ids []int64, csrf string) g
 	}
 
 	if plan.Applied {
-		return h.Div(
-			h.Class("rounded-md border border-emerald-800 bg-emerald-950 p-3"),
-			h.P(h.Class("text-sm text-emerald-200"),
-				g.Text(fmt.Sprintf("Quarantined %d file(s) (%s) as batch #%d. Restore from the Trash page.",
-					len(plan.Moves), humanBytes(plan.TotalBytes), plan.BatchID))),
+		return alert("success",
+			fmt.Sprintf("Quarantined %d file(s) (%s) as batch #%d. Restore from the Trash page.",
+				len(plan.Moves), humanBytes(plan.TotalBytes), plan.BatchID),
 			h.Ul(h.Class("mt-2 space-y-1"), g.Group(moveRows)),
 			h.Ul(h.Class("mt-2 space-y-1"), g.Group(skipRows)),
-			h.Button(
-				hx("get", "/library"),
-				hx("target", "body"),
-				hx("swap", "outerHTML"),
-				h.Class("mt-3 rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-700"),
-				g.Text("Refresh library"),
+			h.Div(h.Class("mt-3"),
+				civButton("outline", "sm", []g.Node{
+					h.Type("button"),
+					hx("get", "/library"),
+					hx("target", "body"),
+					hx("swap", "outerHTML"),
+				}, g.Text("Refresh library")),
 			),
 		)
 	}
@@ -287,31 +278,30 @@ func quarantinePreview(plan *library.QuarantinePlan, ids []int64, csrf string) g
 		}
 		idVals += strconv.FormatInt(id, 10)
 	}
-	return h.Div(
-		h.Class("rounded-md border border-amber-800 bg-amber-950 p-3"),
-		h.P(h.Class("text-sm text-amber-100"),
-			g.Text(fmt.Sprintf("Dry-run: would move %d file(s) (%s). Confirm to move them to the trash dir (reversible).",
-				len(plan.Moves), humanBytes(plan.TotalBytes)))),
+	return alert("warning",
+		fmt.Sprintf("Dry-run: would move %d file(s) (%s). Confirm to move them to the trash dir (reversible).",
+			len(plan.Moves), humanBytes(plan.TotalBytes)),
 		h.Ul(h.Class("mt-2 space-y-1"), g.Group(moveRows)),
 		h.Ul(h.Class("mt-2 space-y-1"), g.Group(skipRows)),
 		g.If(len(plan.Moves) > 0,
-			h.Button(
-				h.Type("button"),
-				hx("post", "/library/quarantine"),
-				hx("vals", fmt.Sprintf(`{"ids":"%s","apply":"true","csrf_token":"%s"}`, idVals, csrf)),
-				hx("target", "#quarantine-preview"),
-				hx("swap", "innerHTML"),
-				hx("confirm", "Move these files to the trash dir?"),
-				h.Class("mt-3 rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-500"),
-				g.Text("Confirm quarantine"),
+			h.Div(h.Class("mt-3"),
+				civButton("filled", "md", []g.Node{
+					h.Type("button"),
+					hx("post", "/library/quarantine"),
+					hx("vals", fmt.Sprintf(`{"ids":"%s","apply":"true","csrf_token":"%s"}`, idVals, csrf)),
+					hx("target", "#quarantine-preview"),
+					hx("swap", "innerHTML"),
+					hx("confirm", "Move these files to the trash dir?"),
+					h.StyleAttr("--civitai-color-primary:var(--civitai-color-warning)"),
+				}, g.Text("Confirm quarantine")),
 			),
 		),
 	)
 }
 
 // trashPage lists quarantine batches with restore controls.
-func trashPage(batches []batchView, csrf string) g.Node {
-	return page("Trash",
+func trashPage(batches []batchView, csrf, theme string) g.Node {
+	return page("Trash", theme, csrf,
 		card(
 			sectionTitle("Quarantine trash"),
 			h.Div(h.ID("trash-content"), trashTable(batches, csrf)),
@@ -336,15 +326,15 @@ func trashTable(batches []batchView, csrf string) g.Node {
 		if b.Restored() {
 			action = badge("restored", "green")
 		} else {
-			action = h.Button(
+			action = civButton("subtle", "sm", []g.Node{
+				h.Type("button"),
 				hx("post", "/trash/"+id+"/restore"),
 				hx("vals", fmt.Sprintf(`{"csrf_token":"%s"}`, csrf)),
 				hx("target", "#trash-content"),
 				hx("swap", "innerHTML"),
 				hx("confirm", "Restore batch #"+id+" to its original locations?"),
-				h.Class("text-xs text-emerald-400 hover:text-emerald-300"),
-				g.Text("Restore"),
-			)
+				h.StyleAttr("--civitai-color-primary:var(--civitai-color-success)"),
+			}, g.Text("Restore"))
 		}
 		rows = append(rows, h.Tr(
 			h.ID("batch-"+id),
@@ -383,16 +373,16 @@ func statusBadge(f store.LocalFile) g.Node {
 	case store.LocalStatusBroken:
 		return badge("broken", "red")
 	default:
-		return badge("unmatched", "amber")
+		return badge("unmatched", "slate")
 	}
 }
 
 func candidateBadge(reason string) g.Node {
 	switch reason {
 	case store.CandidateDuplicate:
-		return badge("duplicate", "amber")
+		return badge("duplicate", "blue")
 	case store.CandidateBroken:
-		return badge("broken", "red")
+		return badge("broken", "amber")
 	default:
 		return badge("superseded", "amber")
 	}

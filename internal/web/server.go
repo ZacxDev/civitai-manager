@@ -141,6 +141,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /creators/{username}", s.handleCreator)
 
 	mux.HandleFunc("POST /settings/nsfw", s.handleSetNSFWDisplay)
+	mux.HandleFunc("POST /settings/theme", s.handleSetTheme)
 
 	mux.HandleFunc("POST /subscribe", s.handleSubscribe)
 	mux.HandleFunc("POST /subscriptions/{id}/flags", s.handleFlags)

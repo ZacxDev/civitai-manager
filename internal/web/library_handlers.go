@@ -105,7 +105,7 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			selected = sel
 		}
 	}
-	s.render(w, http.StatusOK, libraryPage(buildLibraryView(files), s.csrf, s.extraPathsAllowed(), selected))
+	s.render(w, http.StatusOK, libraryPage(buildLibraryView(files), s.csrf, s.extraPathsAllowed(), selected, s.currentTheme()))
 }
 
 func (s *Server) handleLibraryScan(w http.ResponseWriter, r *http.Request) {
@@ -304,7 +304,7 @@ func (s *Server) handleTrash(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load trash", err)
 		return
 	}
-	s.render(w, http.StatusOK, trashPage(batches, s.csrf))
+	s.render(w, http.StatusOK, trashPage(batches, s.csrf, s.currentTheme()))
 }
 
 func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
