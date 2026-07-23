@@ -191,6 +191,65 @@ func TestScanScanningRendersCounts(t *testing.T) {
 	}
 }
 
+// TestScanScanningRendersHashingProgress proves the phase-1 fix: DURING hashing
+// (discovered known, hashed climbing, no card streamed yet) the scanning line shows
+// a MOVING "Hashing files… N / D discovered" numerator — not a frozen "0 / total".
+// It then shows "Matching…" once every file is hashed but before any card, and
+// finally the streaming "N / D discovered · matched…" line once cards arrive.
+func TestScanScanningRendersHashingProgress(t *testing.T) {
+	// Phase 1 — hashing in progress (Scanned==0, Hashed < Discovered).
+	hashing := renderString(t, scanScanning(scanSnapshot{
+		Started: true, Running: true, Discovered: 454, Hashed: 42,
+	}, "csrf"))
+	if !strings.Contains(hashing, "Hashing files… 42 / 454 discovered") {
+		t.Errorf("mid-hash snapshot should show a moving 'Hashing files… N / D discovered' line:\n%s", hashing)
+	}
+	if strings.Contains(hashing, "matched") {
+		t.Errorf("no cards have streamed yet; the hashing line must not show a match breakdown:\n%s", hashing)
+	}
+
+	// Phase 2 — every file hashed, batch by-hash lookup in flight (Scanned still 0).
+	matching := renderString(t, scanScanning(scanSnapshot{
+		Started: true, Running: true, Discovered: 454, Hashed: 454,
+	}, "csrf"))
+	if !strings.Contains(matching, "Matching… (454 files hashed)") {
+		t.Errorf("all-hashed snapshot should show the 'Matching…' batch line:\n%s", matching)
+	}
+
+	// Phase 3 — cards streaming: the existing match breakdown returns.
+	streaming := renderString(t, scanScanning(scanSnapshot{
+		Started: true, Running: true, Discovered: 454, Hashed: 454, Scanned: 120, Matched: 40, Unmatched: 78,
+	}, "csrf"))
+	if !strings.Contains(streaming, "120 / 454 discovered · matched 40 · unmatched 78") {
+		t.Errorf("phase-3 snapshot should show the streaming match breakdown:\n%s", streaming)
+	}
+}
+
+// TestScanAccumulatesHashed proves the web job accumulates the scanner's OnHashed
+// increments under scanMu and that scanJobState's snapshot carries the total —
+// the counter the "Hashing… N / D" line reads.
+func TestScanAccumulatesHashed(t *testing.T) {
+	srv := newLibraryTestServer(t, t.TempDir())
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int), onHashed func(int)) error {
+		onDiscovered(3)
+		onHashed(1) // phase 1 — three files hash, one increment each
+		onHashed(1)
+		onHashed(1)
+		onFile(fileResult("a.safetensors", intp(1))) // phase 3 — cards stream
+		onFile(fileResult("b.safetensors", nil))
+		onFile(fileResult("c.safetensors", nil))
+		return nil
+	}
+	if rec := post(t, srv, "/library/scan", url.Values{}, true); rec.Code != http.StatusOK {
+		t.Fatalf("scan = %d", rec.Code)
+	}
+	pollScanUntilDone(t, srv)
+
+	if snap := srv.scanJobState(); snap.Hashed != 3 {
+		t.Fatalf("job should accumulate hashed increments: got %d, want 3", snap.Hashed)
+	}
+}
+
 // TestMatchingOffIndicator proves the matching-off note appears (only) when the
 // scan ran with matching disabled, in both the scanning and terminal fragments.
 func TestMatchingOffIndicator(t *testing.T) {

@@ -217,7 +217,9 @@ func TestScanStopsDiscovery(t *testing.T) {
 		return nil, ctx.Err()
 	}
 	// A trivially-completing scan seam so the scan itself does not block.
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int), onHashed func(int)) error { return nil }
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int), onHashed func(int)) error {
+		return nil
+	}
 
 	if rec := post(t, srv, "/library/discover", url.Values{}, true); rec.Code != http.StatusOK {
 		t.Fatalf("discover = %d", rec.Code)

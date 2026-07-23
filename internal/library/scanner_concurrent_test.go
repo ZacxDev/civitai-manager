@@ -193,8 +193,17 @@ func TestConcurrentScanRaceWithStreamingOnFile(t *testing.T) {
 		count++
 		mu.Unlock()
 	}
+	// OnHashed is ALSO fired from the concurrent phase-1 workers (see the web job's
+	// onHashed). Accumulate it under the same mutex so -race proves the new counter's
+	// concurrent fan-in is data-race free, and assert one increment per file.
+	hashed := 0
+	onHashed := func(k int) {
+		mu.Lock()
+		hashed += k
+		mu.Unlock()
+	}
 
-	sc := NewScanner(newTestStore(t), nil, Options{ModelRoot: root, NoRemote: true, OnFile: onFile}, nil)
+	sc := NewScanner(newTestStore(t), nil, Options{ModelRoot: root, NoRemote: true, OnFile: onFile, OnHashed: onHashed}, nil)
 	sc.hashFn = contentHashFn
 
 	report, err := sc.Scan(context.Background())
@@ -205,6 +214,9 @@ func TestConcurrentScanRaceWithStreamingOnFile(t *testing.T) {
 	defer mu.Unlock()
 	if count != n {
 		t.Errorf("OnFile fired %d times, want %d", count, n)
+	}
+	if hashed != n {
+		t.Errorf("OnHashed accumulated %d, want %d (one increment per hashed file)", hashed, n)
 	}
 	if len(seen) != n {
 		t.Errorf("distinct streamed files=%d, want %d (no drop/dup under concurrency)", len(seen), n)

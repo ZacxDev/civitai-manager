@@ -152,3 +152,71 @@ func TestScanReportsDiscoveredTotal(t *testing.T) {
 		t.Fatalf("scan with nil OnDiscovered: %v", err)
 	}
 }
+
+// TestScanReportsHashedProgress proves the phase-1 OnHashed seam: it fires ONCE
+// per model file as it finishes hashing (increment-style, +1; sidecars excluded),
+// and every OnHashed fires BEFORE any OnFile — the ordering the "Hashing… N / D"
+// progress line relies on (all files are hashed in phase 1 before any card streams
+// in phase 3). A nil OnHashed is a harmless no-op.
+func TestScanReportsHashedProgress(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.safetensors"), "aaa")
+	writeFile(t, filepath.Join(root, "sub", "b.ckpt"), "bbb")
+	writeFile(t, filepath.Join(root, "c.safetensors"), "ccc")
+	// Sidecars/partials must NOT be hashed or counted.
+	writeFile(t, filepath.Join(root, "c.preview.png"), "img")
+	writeFile(t, filepath.Join(root, "a.civitai.info"), "{}")
+
+	var (
+		mu              sync.Mutex
+		hashedTotal     int // accumulated increments, exactly as the web job does
+		hashedCalls     int // number of OnHashed invocations
+		onFileCalls     int
+		hashAfterCard   int  // an OnHashed that fired AFTER a card streamed (ordering bug)
+		firstFileHashed = -1 // hashedCalls at the moment the first OnFile fired
+	)
+	sc := NewScanner(newTestStore(t), nil, Options{
+		ModelRoot: root, NoRemote: true,
+		OnHashed: func(n int) {
+			mu.Lock()
+			hashedTotal += n
+			hashedCalls++
+			if onFileCalls > 0 {
+				hashAfterCard++
+			}
+			mu.Unlock()
+		},
+		OnFile: func(fr FileResult) {
+			mu.Lock()
+			if firstFileHashed < 0 {
+				firstFileHashed = hashedCalls
+			}
+			onFileCalls++
+			mu.Unlock()
+		},
+	}, nil)
+	sc.hashFn = func(p string) (string, error) { return "hash-" + filepath.Base(p), nil }
+
+	if _, err := sc.Scan(context.Background()); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if hashedCalls != 3 {
+		t.Fatalf("OnHashed fired %d times, want 3 (one per model file; sidecars excluded)", hashedCalls)
+	}
+	if hashedTotal != 3 {
+		t.Errorf("accumulated hashed=%d, want 3 (each call increments by 1)", hashedTotal)
+	}
+	if hashAfterCard != 0 {
+		t.Errorf("every OnHashed must fire BEFORE any OnFile; saw %d hash callbacks after a card", hashAfterCard)
+	}
+	if firstFileHashed != 3 {
+		t.Errorf("all 3 files must be hashed before the first card streams; hashed=%d at first OnFile", firstFileHashed)
+	}
+
+	// A nil OnHashed is a harmless no-op (the default/CLI scan path).
+	sc2 := NewScanner(newTestStore(t), nil, Options{ModelRoot: root, NoRemote: true}, nil)
+	sc2.hashFn = func(p string) (string, error) { return "h", nil }
+	if _, err := sc2.Scan(context.Background()); err != nil {
+		t.Fatalf("scan with nil OnHashed: %v", err)
+	}
+}
