@@ -83,3 +83,72 @@ func TestScanStreamsOnFile(t *testing.T) {
 		t.Errorf("streamed size=%d, want %d", byName["a.safetensors"].SizeBytes, fi.Size())
 	}
 }
+
+// TestScanReportsDiscoveredTotal proves the OnDiscovered seam: it fires EXACTLY
+// ONCE with the total number of model files the walk found (the progress
+// denominator), that the total equals the report's FilesScanned, and that it
+// fires BEFORE any OnFile — the ordering the web progress line relies on ("N /
+// total discovered"). Sidecars/previews are NOT counted; only model-weight files.
+func TestScanReportsDiscoveredTotal(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.safetensors"), "aaa")
+	writeFile(t, filepath.Join(root, "sub", "b.ckpt"), "bbb")
+	writeFile(t, filepath.Join(root, "c.safetensors"), "ccc")
+	// Sidecars/partials the walk classifies separately — they must NOT inflate the
+	// discovered model-file total.
+	writeFile(t, filepath.Join(root, "c.preview.png"), "img")
+	writeFile(t, filepath.Join(root, "a.civitai.info"), "{}")
+
+	var (
+		mu             sync.Mutex
+		discoveredN    = -1
+		discoveredHits int
+		onFileCount    int
+		onFileBefore   int // OnFile calls that happened before OnDiscovered fired
+	)
+	sc := NewScanner(newTestStore(t), nil, Options{
+		ModelRoot: root, NoRemote: true,
+		OnDiscovered: func(total int) {
+			mu.Lock()
+			discoveredN = total
+			discoveredHits++
+			mu.Unlock()
+		},
+		OnFile: func(fr FileResult) {
+			mu.Lock()
+			onFileCount++
+			if discoveredHits == 0 {
+				onFileBefore++
+			}
+			mu.Unlock()
+		},
+	}, nil)
+	sc.hashFn = func(p string) (string, error) { return "hash-" + filepath.Base(p), nil }
+
+	report, err := sc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if discoveredHits != 1 {
+		t.Fatalf("OnDiscovered fired %d times, want exactly 1", discoveredHits)
+	}
+	if discoveredN != 3 {
+		t.Errorf("discovered total=%d, want 3 (a.safetensors, sub/b.ckpt, c.safetensors — sidecars excluded)", discoveredN)
+	}
+	if discoveredN != report.FilesScanned {
+		t.Errorf("discovered total=%d must equal report.FilesScanned=%d", discoveredN, report.FilesScanned)
+	}
+	if onFileCount != 3 {
+		t.Errorf("OnFile fired %d times, want 3", onFileCount)
+	}
+	if onFileBefore != 0 {
+		t.Errorf("OnDiscovered must fire BEFORE any OnFile; saw %d OnFile calls first", onFileBefore)
+	}
+
+	// A nil OnDiscovered is a harmless no-op (the default scan path).
+	sc2 := NewScanner(newTestStore(t), nil, Options{ModelRoot: root, NoRemote: true}, nil)
+	sc2.hashFn = func(p string) (string, error) { return "h", nil }
+	if _, err := sc2.Scan(context.Background()); err != nil {
+		t.Fatalf("scan with nil OnDiscovered: %v", err)
+	}
+}

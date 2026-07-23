@@ -154,6 +154,14 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanReport, error) {
 		return nil, err
 	}
 
+	// The walk is done: the total discovered model-file count is now known. Report
+	// it ONCE, before per-file streaming, so the web layer can show progress against
+	// this denominator ("N / total discovered"). Fires only on a successful walk (a
+	// cancelled/errored walk returns above), and before OnFile ever fires.
+	if s.opts.OnDiscovered != nil {
+		s.opts.OnDiscovered(len(wr.modelFiles))
+	}
+
 	report := &ScanReport{Roots: s.Roots()}
 
 	// NOTE: candidate flags are deliberately NOT cleared here. Clearing up front
@@ -413,6 +421,12 @@ func (s *Scanner) processModelFile(ctx context.Context, path, scanRoot string) (
 // construction. The web layer uses it to stream results into a background scan
 // job without threading OnFile through NewScanner's every call site.
 func (s *Scanner) SetOnFile(fn func(FileResult)) { s.opts.OnFile = fn }
+
+// SetOnDiscovered installs (or clears, with nil) the walk-total callback after
+// construction — the OnDiscovered twin of SetOnFile. The web layer uses it to
+// record a scan's discovered denominator without threading OnDiscovered through
+// NewScanner's every call site.
+func (s *Scanner) SetOnDiscovered(fn func(total int)) { s.opts.OnDiscovered = fn }
 
 // hasPreviewSibling reports whether a ".preview.png" image sits next to the
 // model file (the Civitai-Helper preview convention: the model path with its
