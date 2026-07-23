@@ -191,9 +191,11 @@ func filesPanel(v libraryView, csrf string, allowExtra bool, selectedDirs []stri
 // NO scan_dir checkboxes — the dirs to scan are the persisted selection managed in
 // Tab A (handleLibraryScan falls back to them when no checkboxes are submitted).
 //
-// The remote-match checkbox is OPT-IN: by default a web scan runs offline (local
-// duplicate/broken analysis only) and does NOT send file SHA256 hashes to
-// CivitAI's by-hash lookup. Ticking it enables CivitAI matching for this scan.
+// The remote-match checkbox defaults ON (matchRemoteEnabled defaults true when
+// unset): by default a web scan matches against CivitAI by hash so the library is
+// identified. Matching sends each file's SHA256 to civitai.com's by-hash lookup —
+// stated inline beneath the toggle. Unchecking it makes THIS and future scans run
+// offline (local duplicate/broken analysis only); that choice persists.
 func modelScanForm(csrf string, matchRemote bool) g.Node {
 	// The toggle PERSISTS on change (POST /settings/match-remote, no swap) so it is
 	// the single source of truth the Tab-A CTA also reads. A single checkbox posts
@@ -223,6 +225,8 @@ func modelScanForm(csrf string, matchRemote bool) g.Node {
 			h.Input(cb...),
 			g.Text("Match against CivitAI (sends file hashes to civitai.com)"),
 		),
+		h.P(h.Class("text-xs text-slate-500"),
+			g.Text("Matches your files against CivitAI by hash (sends file hashes to civitai.com). Uncheck to scan offline.")),
 		btnPrimary(g.Text("Scan for model files")),
 	)
 }

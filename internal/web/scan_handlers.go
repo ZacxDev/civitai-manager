@@ -23,10 +23,15 @@ const scanJobBudget = 6 * time.Hour
 // carries no per-form checkbox) reads it, and the Tab-B toggle writes it.
 const matchRemoteSettingKey = "match_remote"
 
-// matchRemoteEnabled reports the persisted opt-in state (default off: a web scan
-// stays offline unless the operator explicitly enabled remote matching).
+// matchRemoteEnabled reports the persisted opt-in state. It defaults ON when the
+// setting is UNSET: a fresh web scan matches against CivitAI by hash so a user's
+// library is actually identified out of the box (the prior default-off silently
+// left almost everything "unmatched"). An operator who explicitly turned it OFF
+// stays off — a persisted "false" is respected. Matching sends file SHA256 hashes
+// to civitai.com; that is surfaced at the scan CTA / Match toggle (see
+// modelScanForm / scanForModelsCTA).
 func (s *Server) matchRemoteEnabled() bool {
-	v, _ := s.store.GetSettingDefault(matchRemoteSettingKey, "false")
+	v, _ := s.store.GetSettingDefault(matchRemoteSettingKey, "true")
 	return v == "true"
 }
 
