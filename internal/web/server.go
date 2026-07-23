@@ -81,6 +81,48 @@ type Server struct {
 	// discoverJob is the current (or most recent) background discovery job, or nil
 	// before the first crawl is triggered.
 	discoverJob *discoveryJob
+
+	// scanFn performs the streaming model-file scan. Nil (production) builds a
+	// library.Scanner from the resolved dirs and runs Scan with the OnFile stream;
+	// tests inject a seam to emit FileResults over time (deterministic streaming)
+	// without hashing a real tree. It reports the terminal error (nil, deadline,
+	// cancel, too-large).
+	scanFn func(ctx context.Context, onFile func(library.FileResult)) error
+	// scanMu guards scanJob. One model-scan job runs at a time (idempotent start,
+	// mirroring discovery).
+	scanMu sync.Mutex
+	// scanJob is the current (or most recent) background model-scan job, or nil
+	// before the first scan is triggered.
+	scanJob *scanJob
+}
+
+// scanJob is the in-memory state of a single background streaming model-file
+// scan. All fields are read/written only under Server.scanMu.
+//
+// The scan STREAMS results: it appends to results incrementally (under the
+// mutex) as the walker hashes/matches each file, so a /library/scan/status poll
+// shows the growing list. A reader MUST snapshot-copy the slice under the lock
+// before rendering — never hand the live, still-appended slice header across the
+// lock boundary (the same torn-slice guard the discovery job uses).
+type scanJob struct {
+	// running is true from job start until the scan goroutine settles.
+	running bool
+	// results are the per-file cards streamed so far by the (possibly still
+	// running) scan. APPENDED incrementally under Server.scanMu, so any reader
+	// must snapshot-copy it under the lock.
+	results []library.FileResult
+	// scanned counts files streamed; matched counts those with a CivitAI match.
+	scanned int
+	matched int
+	// stopped is true when the user explicitly stopped the scan (POST
+	// /library/scan/stop) so the terminal fragment reads "Scan stopped".
+	stopped    bool
+	err        error
+	startedAt  time.Time
+	finishedAt time.Time
+	// cancel cancels the scan's context; invoked when the scan finishes (to
+	// release the timeout context), on server shutdown, and on an explicit Stop.
+	cancel context.CancelFunc
 }
 
 // discoveryJob is the in-memory state of a single background discovery crawl.
@@ -200,6 +242,9 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /library", s.handleLibrary)
 	mux.HandleFunc("POST /library/scan", s.handleLibraryScan)
+	mux.HandleFunc("GET /library/scan/status", s.handleScanStatus)
+	mux.HandleFunc("POST /library/scan/stop", s.handleScanStop)
+	mux.HandleFunc("POST /settings/match-remote", s.handleSetMatchRemote)
 	mux.HandleFunc("POST /library/discover", s.handleLibraryDiscover)
 	mux.HandleFunc("GET /library/discover/status", s.handleDiscoverStatus)
 	mux.HandleFunc("POST /library/discover/stop", s.handleDiscoverStop)

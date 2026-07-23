@@ -48,11 +48,15 @@ func TestBrowserHarness(t *testing.T) {
 	}
 
 	srv.discoverRoots = []string{root}
+	// One discovered install points at a REAL temp dir so its Add succeeds (the
+	// dir must exist to pass validateScanDir); the others are illustrative fake
+	// paths whose Add is a no-op error — the demo adds the real one.
+	realInstall := t.TempDir()
 	// Deterministic streaming crawl: emit three installs ~1.2s apart, then idle so
 	// the "scanning" state persists long enough to click Stop; honor ctx so Stop
 	// (context cancel) settles the job promptly.
 	installs := []library.Install{
-		{Path: "/opt/ComfyUI", Kind: library.KindComfyUI, Confidence: library.ConfidenceHigh, ModelDirs: []string{"checkpoints", "loras", "vae"}},
+		{Path: realInstall, Kind: library.KindComfyUI, Confidence: library.ConfidenceHigh, ModelDirs: []string{"checkpoints", "loras", "vae"}},
 		{Path: "/opt/stable-diffusion-webui", Kind: library.KindA1111, Confidence: library.ConfidenceHigh, ModelDirs: []string{"Stable-diffusion", "Lora"}},
 		{Path: "/home/user/AI/ComfyUI-portable", Kind: library.KindComfyUI, Confidence: library.ConfidenceLow, ModelDirs: []string{"checkpoints"}},
 	}
@@ -77,6 +81,35 @@ func TestBrowserHarness(t *testing.T) {
 		case <-time.After(20 * time.Second):
 		}
 		return out, nil
+	}
+
+	// Deterministic streaming SCAN seam: emit a handful of scanned-file cards ~1s
+	// apart (a mix of matched/unmatched with a preview), then idle so a browser can
+	// observe the streaming Model-files view and click Stop before it exhausts.
+	// Honors ctx so Stop (context cancel) settles the job promptly.
+	scanFiles := []library.FileResult{
+		{Path: "/opt/ComfyUI/models/checkpoints/dreamshaper.safetensors", Name: "dreamshaper.safetensors", SizeBytes: 2147483648, SHA256: "aaa", Status: "matched", ModelID: intPtr(4384), VersionID: intPtr(128713), HasPreview: true},
+		{Path: "/opt/ComfyUI/models/loras/detail-tweaker.safetensors", Name: "detail-tweaker.safetensors", SizeBytes: 151000000, SHA256: "bbb", Status: "matched", ModelID: intPtr(58390), VersionID: intPtr(62833)},
+		{Path: "/opt/ComfyUI/models/checkpoints/mystery-merge.ckpt", Name: "mystery-merge.ckpt", SizeBytes: 5368709120, SHA256: "ccc", Status: "unmatched"},
+		{Path: "/opt/ComfyUI/models/vae/broken.safetensors", Name: "broken.safetensors", SizeBytes: 320, SHA256: "ddd", Status: "broken"},
+	}
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult)) error {
+		for _, fr := range scanFiles {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(1100 * time.Millisecond):
+			}
+			onFile(fr)
+		}
+		// Brief idle so a browser can observe the fully-streamed view and Stop before
+		// the scan exhausts; short enough that a completed scan is reachable too.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(6 * time.Second):
+		}
+		return nil
 	}
 
 	ts := httptest.NewServer(srv.Handler())

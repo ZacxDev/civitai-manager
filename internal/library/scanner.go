@@ -158,8 +158,25 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanReport, error) {
 			return report, ctx.Err()
 		}
 		seenPaths[path] = true
-		if err := s.processModelFile(ctx, path, wr.modelRoots[path], report); err != nil {
+		lf, err := s.processModelFile(ctx, path, wr.modelRoots[path], report)
+		if err != nil {
 			s.log.Warn("scan: file failed", "path", path, "err", err)
+			continue
+		}
+		// STREAM the per-file result AFTER the row is persisted (mirrors how the
+		// discovery collector calls OnInstall). Scan runs single-goroutine, so this
+		// is never concurrent; the web layer serializes appends under its own mutex.
+		if s.opts.OnFile != nil {
+			s.opts.OnFile(FileResult{
+				Path:       lf.Path,
+				Name:       filepath.Base(lf.Path),
+				SizeBytes:  lf.SizeBytes,
+				SHA256:     lf.SHA256,
+				Status:     lf.Status,
+				ModelID:    lf.ModelID,
+				VersionID:  lf.VersionID,
+				HasPreview: hasPreviewSibling(path, s.opts.Extensions),
+			})
 		}
 	}
 	report.FilesScanned = len(wr.modelFiles)
@@ -214,14 +231,14 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanReport, error) {
 // optimization: a file whose size AND mtime match its stored row skips the
 // expensive re-hash and re-uses the stored match, so a re-scan of a multi-GB
 // library is fast and makes no API calls.
-func (s *Scanner) processModelFile(ctx context.Context, path, scanRoot string, report *ScanReport) error {
+func (s *Scanner) processModelFile(ctx context.Context, path, scanRoot string, report *ScanReport) (store.LocalFile, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
-		return err
+		return store.LocalFile{}, err
 	}
 	cached, err := s.store.GetLocalFileByPath(path)
 	if err != nil {
-		return err
+		return store.LocalFile{}, err
 	}
 
 	var (
@@ -239,7 +256,7 @@ func (s *Scanner) processModelFile(ctx context.Context, path, scanRoot string, r
 	} else {
 		sum, herr := s.hashFn(path)
 		if herr != nil {
-			return herr
+			return store.LocalFile{}, herr
 		}
 		sha = sum
 		report.Hashed++
@@ -269,7 +286,7 @@ func (s *Scanner) processModelFile(ctx context.Context, path, scanRoot string, r
 		ScanRoot:  scanRoot,
 	}
 	if err := s.store.UpsertLocalFile(lf); err != nil {
-		return err
+		return store.LocalFile{}, err
 	}
 
 	switch result.status {
@@ -281,7 +298,27 @@ func (s *Scanner) processModelFile(ctx context.Context, path, scanRoot string, r
 		report.Unmatched++
 	}
 	_ = reused
-	return nil
+	return lf, nil
+}
+
+// SetOnFile installs (or clears, with nil) the per-file streaming callback after
+// construction. The web layer uses it to stream results into a background scan
+// job without threading OnFile through NewScanner's every call site.
+func (s *Scanner) SetOnFile(fn func(FileResult)) { s.opts.OnFile = fn }
+
+// hasPreviewSibling reports whether a ".preview.png" image sits next to the
+// model file (the Civitai-Helper preview convention: the model path with its
+// weight extension replaced by ".preview.png"). It is a cheap os.Stat used only
+// to annotate the streamed FileResult; a missing/unreadable sibling is reported
+// absent.
+func hasPreviewSibling(modelPath string, exts map[string]bool) bool {
+	ext := filepath.Ext(modelPath)
+	base := modelPath
+	if exts[strings.ToLower(ext)] {
+		base = strings.TrimSuffix(modelPath, ext)
+	}
+	fi, err := os.Stat(base + sidecarPreview)
+	return err == nil && !fi.IsDir()
 }
 
 // cacheHit reports whether the cached row can be trusted without re-hashing: it

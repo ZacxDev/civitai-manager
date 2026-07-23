@@ -119,8 +119,19 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Bootstrap the stable #scan-results container from the live scan job so a
+	// reload / tab-switch (including the CTA's HX-Redirect landing) during a scan
+	// resumes the scanning view + re-arming poller instead of the idle content.
+	var scanInitial g.Node
+	if started, running, results, scanned, matched, stopped, serr := s.scanJobState(); started {
+		if running {
+			scanInitial = scanScanning(results, scanned, matched, s.csrf)
+		} else {
+			scanInitial = scanResults(buildLibraryView(files), scanned, matched, true, stopped, serr, s.csrf)
+		}
+	}
 	tab := r.URL.Query().Get("tab")
-	s.render(w, http.StatusOK, libraryPage(buildLibraryView(files), s.csrf, s.extraPathsAllowed(), selected, s.currentTheme(), tab, discoverInitial))
+	s.render(w, http.StatusOK, libraryPage(buildLibraryView(files), s.csrf, s.extraPathsAllowed(), selected, s.currentTheme(), tab, discoverInitial, s.matchRemoteEnabled(), scanInitial))
 }
 
 func (s *Server) handleLibraryScan(w http.ResponseWriter, r *http.Request) {
@@ -178,29 +189,33 @@ func (s *Server) handleLibraryScan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// noRemote defaults to true for web scans: a web-triggered scan should not
-	// send SHA256 hashes of arbitrary host files to CivitAI's by-hash lookup
-	// without the operator explicitly opting in. Local duplicate/broken analysis
-	// still runs offline. The "match_remote" checkbox opts into remote matching.
-	noRemote := r.FormValue("match_remote") != "true"
-
-	// Budget the scan: a deadline plus the model-file cap (threaded into the
-	// scanner via MaxFiles) bound the walk so an over-broad path cannot tie up the
-	// server. Derive from the request context so a client disconnect also aborts.
-	ctx, cancel := context.WithTimeout(r.Context(), s.webScanTimeout())
-	defer cancel()
-
-	sc := s.newScanner(extra, noRemote)
-	if _, err := sc.Scan(ctx); err != nil {
-		s.render(w, http.StatusOK, errorNote(scanErrorMessage(err)))
-		return
+	// The "Match against CivitAI" opt-in is PERSISTED (the Tab B toggle) and is the
+	// single source of truth: the Tab-A "Scan for models" CTA carries no per-form
+	// checkbox, so it must read the setting. A legacy form that still submits
+	// match_remote persists that value first, then we read the persisted setting.
+	// A web scan stays offline (local duplicate/broken analysis only) unless the
+	// operator explicitly enabled remote matching.
+	if _, ok := r.Form["match_remote"]; ok {
+		val := "false"
+		if r.FormValue("match_remote") == "true" {
+			val = "true"
+		}
+		if err := s.store.SetSetting(matchRemoteSettingKey, val); err != nil {
+			s.log.Warn("persist match_remote", "err", err)
+		}
 	}
-	files, err := s.store.ListLocalFiles()
-	if err != nil {
-		s.renderError(w, "reload library", err)
-		return
-	}
-	s.render(w, http.StatusOK, libraryContent(buildLibraryView(files), s.csrf))
+	noRemote := !s.matchRemoteEnabled()
+
+	// Moving to the model-scan phase: STOP any running install-discovery crawl (the
+	// user is done finding install dirs), then start the STREAMING scan on a
+	// background context (NOT r.Context()) so it outlives the request and a long
+	// hash of a multi-GB library completes. Land the user on the Model files tab,
+	// whose #scan-results container bootstraps the live scanning view + re-arming
+	// poller from the job just started (mirrors how discovery resumes on reload).
+	s.stopDiscovery()
+	s.startScan(extra, noRemote)
+	w.Header().Set("HX-Redirect", "/library?tab=files")
+	w.WriteHeader(http.StatusOK)
 }
 
 // collectScanDirs validates every "scan_dir" checkbox value on the request,

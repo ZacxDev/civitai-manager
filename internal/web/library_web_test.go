@@ -22,13 +22,57 @@ func newLibraryTestServer(t *testing.T, root string) *Server {
 		t.Fatalf("store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return NewServer(st, stubReader{}, stubSubscriber{}, Config{
+	srv := NewServer(st, stubReader{}, stubSubscriber{}, Config{
 		BaseURL: "https://civitai.com", DefaultPollInterval: time.Hour,
 		// A loopback Addr so the extra-scan-path capability is enabled for the
 		// tests that exercise it; the non-loopback gating is tested separately.
 		Addr:      "127.0.0.1:8787",
 		ModelRoot: root, TrashDir: filepath.Join(root, ".trash"),
 	}, nil)
+	// Tie background discovery/scan jobs to a cancellable base context and cancel
+	// it at test end. Registered AFTER the store-close cleanup so it runs BEFORE it
+	// (LIFO): a leaked background scan is cancelled before its store is closed,
+	// avoiding "database is closed" noise from a job that outlives the test.
+	base, cancel := context.WithCancel(context.Background())
+	srv.SetBaseContext(base)
+	t.Cleanup(cancel)
+	return srv
+}
+
+// hasScanPoller reports whether body is a model-scan scanning fragment (still
+// polling): the presence of the re-arming #scan-poll targeting #scan-results.
+func hasScanPoller(body string) bool {
+	for _, want := range []string{
+		`hx-get="/library/scan/status"`,
+		`hx-trigger="load delay:1s"`,
+		`hx-target="#scan-results"`,
+	} {
+		if !strings.Contains(body, want) {
+			return false
+		}
+	}
+	return true
+}
+
+// pollScanUntilDone polls /library/scan/status until it returns a terminal
+// (poller-less) fragment, then returns that body. Fails the test on timeout.
+func pollScanUntilDone(t *testing.T, srv *Server) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec := get(t, srv, "/library/scan/status")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("scan status = %d", rec.Code)
+		}
+		body := rec.Body.String()
+		if !hasScanPoller(body) {
+			return body
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("scan did not finish before deadline; last body:\n%s", body)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func intPtr(i int) *int { return &i }
@@ -66,7 +110,7 @@ func TestLibraryAndTrashPagesRender(t *testing.T) {
 	}
 	// Tab B ("Model files") holds the scan control + results; a non-empty selection
 	// avoids the empty state so the Summary/candidates render.
-	out := renderString(t, libraryPage(buildLibraryView(files), "csrf-tok", true, []string{"/data/models"}, "dark", "files", nil))
+	out := renderString(t, libraryPage(buildLibraryView(files), "csrf-tok", true, []string{"/data/models"}, "dark", "files", nil, false, nil))
 	for _, want := range []string{"Library", "Scan for model files", "Summary", "Deletion candidates", "superseded", "Reclaimable"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("library page (files tab) missing %q", want)
@@ -162,7 +206,7 @@ func TestLibraryPostsAreCSRFProtected(t *testing.T) {
 // and Tab B renders the model-scan control + opt-in remote-match checkbox.
 func TestScanFormRendersPathsInput(t *testing.T) {
 	// Tab A ("Install directories"): discovery + manual add + browser, NO scan control.
-	sources := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, nil, "dark", "sources", nil))
+	sources := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, nil, "dark", "sources", nil, false, nil))
 	for _, want := range []string{
 		"Discover installs", "/library/discover",
 		"Add a directory by path", "/library/scan-dirs/add",
@@ -177,7 +221,7 @@ func TestScanFormRendersPathsInput(t *testing.T) {
 	}
 
 	// Tab B ("Model files") with a selection: scan control + remote-match opt-in.
-	files := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, []string{"/data/x"}, "dark", "files", nil))
+	files := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, []string{"/data/x"}, "dark", "files", nil, false, nil))
 	for _, want := range []string{"Scan for model files", "match_remote"} {
 		if !strings.Contains(files, want) {
 			t.Errorf("Tab B missing %q", want)
@@ -188,7 +232,7 @@ func TestScanFormRendersPathsInput(t *testing.T) {
 // TestScanFormRendersPersistedSelection proves the persisted selection pre-fills
 // the form as pre-checked checkboxes.
 func TestScanFormRendersPersistedSelection(t *testing.T) {
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, []string{"/data/loras"}, "dark", "sources", nil))
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, []string{"/data/loras"}, "dark", "sources", nil, false, nil))
 	for _, want := range []string{`name="scan_dir"`, "/data/loras", "checked"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("persisted selection missing %q in:\n%s", want, out)
@@ -202,7 +246,7 @@ func TestScanFormRendersPersistedSelection(t *testing.T) {
 // arbitrary-path control.
 func TestScanFormOmitsPathsInputWhenNotAllowed(t *testing.T) {
 	// Tab A on a non-loopback bind: only the gating note, no discovery/browser UI.
-	sources := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", false, nil, "dark", "sources", nil))
+	sources := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", false, nil, "dark", "sources", nil, false, nil))
 	if !strings.Contains(sources, "disabled when the server is bound to a non-loopback") {
 		t.Errorf("Tab A should show the non-loopback gating note:\n%s", sources)
 	}
@@ -217,7 +261,7 @@ func TestScanFormOmitsPathsInputWhenNotAllowed(t *testing.T) {
 
 	// Tab B still offers a plain model-scan (scans model_root only) with no empty
 	// state, since the user cannot add install dirs on a non-loopback bind.
-	files := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", false, nil, "dark", "files", nil))
+	files := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", false, nil, "dark", "files", nil, false, nil))
 	if !strings.Contains(files, "Scan for model files") {
 		t.Errorf("Tab B should still offer 'Scan for model files' on a non-loopback bind:\n%s", files)
 	}
@@ -240,18 +284,18 @@ func TestLibraryScanWithExtraPathFindsCrossDirDuplicate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rec := httptest.NewRecorder()
-	form := url.Values{"scan_paths": {extra}}
-	req := httptest.NewRequest(http.MethodPost, "/library/scan", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("X-CSRF-Token", srv.csrf)
-	srv.Handler().ServeHTTP(rec, req)
-
+	// The scan is now ASYNC: the POST starts a background streaming job and
+	// HX-Redirects to the Model files tab; the cross-dir duplicate surfaces in the
+	// terminal status view (poll to done).
+	rec := postScan(t, srv, url.Values{"scan_paths": {extra}})
 	if rec.Code != http.StatusOK {
-		t.Fatalf("scan status = %d", rec.Code)
+		t.Fatalf("scan start = %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "duplicate") {
-		t.Fatalf("cross-dir duplicate not surfaced as a candidate:\n%s", rec.Body.String())
+	if rec.Header().Get("HX-Redirect") != "/library?tab=files" {
+		t.Fatalf("scan start should HX-Redirect to the Model files tab, got %q", rec.Header().Get("HX-Redirect"))
+	}
+	if term := pollScanUntilDone(t, srv); !strings.Contains(term, "duplicate") {
+		t.Fatalf("cross-dir duplicate not surfaced as a candidate in the terminal view:\n%s", term)
 	}
 
 	// The candidate is persisted and visible on the Library page too.
@@ -357,13 +401,19 @@ func TestLibraryScanNonLoopbackDisablesExtraPaths(t *testing.T) {
 		t.Fatalf("expected the non-loopback gating message, got status=%d:\n%s", rec.Code, rec.Body.String())
 	}
 
-	// A plain model_root scan (no extra paths) still succeeds.
+	// A plain model_root scan (no extra paths) still succeeds — async: the POST
+	// HX-Redirects to the Model files tab and the terminal status view shows the
+	// Summary. The scan status endpoint is not loopback-gated (only the extra-path
+	// selection is), so a model_root scan works on a non-loopback bind too.
 	if err := os.WriteFile(filepath.Join(root, "m.safetensors"), []byte("bytes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	rec = postScan(t, srv, url.Values{})
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Summary") {
-		t.Fatalf("model_root-only scan should still work, got status=%d:\n%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || rec.Header().Get("HX-Redirect") != "/library?tab=files" {
+		t.Fatalf("model_root-only scan should start and redirect, got status=%d redirect=%q", rec.Code, rec.Header().Get("HX-Redirect"))
+	}
+	if term := pollScanUntilDone(t, srv); !strings.Contains(term, "Summary") {
+		t.Fatalf("model_root-only scan should still produce a Summary:\n%s", term)
 	}
 }
 
@@ -394,9 +444,15 @@ func TestLibraryScanBudgetDoesNotWipeCandidates(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Async: the POST starts the job and redirects; the too-large abort (enforced in
+	// the walk before any hashing/candidate mutation) surfaces in the terminal
+	// status view.
 	rec := postScan(t, srv, url.Values{"scan_paths": {big}})
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Scan too large") {
-		t.Fatalf("expected a friendly 'Scan too large' abort, got status=%d:\n%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || rec.Header().Get("HX-Redirect") != "/library?tab=files" {
+		t.Fatalf("expected the scan to start and redirect, got status=%d redirect=%q", rec.Code, rec.Header().Get("HX-Redirect"))
+	}
+	if term := pollScanUntilDone(t, srv); !strings.Contains(term, "Scan too large") {
+		t.Fatalf("expected a friendly 'Scan too large' abort in the terminal view:\n%s", term)
 	}
 
 	// The prior candidate flags must survive the aborted scan.
