@@ -85,6 +85,38 @@ type Options struct {
 	// operator typed the path knowingly). The web endpoint sets a finite cap so
 	// its arbitrary-path walk cannot be unbounded.
 	MaxFiles int
+	// OnFile, when non-nil, STREAMS each model file's per-file result as it is
+	// scanned (after its index row is upserted, BEFORE the cross-file
+	// duplicate/superseded analysis runs). It mirrors DiscoverOptions.OnInstall:
+	// the web layer appends each result into a background job so a /status poll
+	// shows the growing list. It is invoked from Scan's single scanning goroutine
+	// — never concurrently — so the callback needs no internal synchronization of
+	// its own beyond whatever it does with the value. It does NOT replace the
+	// ScanReport/local_files persistence; it is an additional, incremental view.
+	OnFile func(FileResult)
+}
+
+// FileResult is the per-file outcome streamed via Options.OnFile as a scan walks
+// its roots. It carries only what is known at scan time (the match state and the
+// row just written); the cross-file deletion-candidate classification
+// (duplicate/superseded) is derived later, in analyze(), and surfaces in the
+// completed ScanReport / local_files view, not here.
+type FileResult struct {
+	// Path is the model file's absolute path; Name is its on-disk base name.
+	Path string
+	Name string
+	// SizeBytes is the file size; SHA256 is its content hash (possibly reused
+	// from the incremental cache).
+	SizeBytes int64
+	SHA256    string
+	// Status is the match state (store.LocalStatusMatched / Unmatched /
+	// UnmatchedPending / Broken).
+	Status string
+	// ModelID / VersionID are the matched CivitAI ids, or nil when unmatched.
+	ModelID   *int
+	VersionID *int
+	// HasPreview reports whether a sibling ".preview.png" image exists on disk.
+	HasPreview bool
 }
 
 // Scanner runs the read-only scan/match/analyze pipeline and the quarantine
