@@ -16,7 +16,6 @@
 package library
 
 import (
-	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -80,12 +79,6 @@ type Options struct {
 	// local .civitai.info sidecars; everything else is recorded unmatched. Local
 	// analysis (duplicates, broken) still runs.
 	NoRemote bool
-	// MatchConcurrency caps the number of IN-FLIGHT CivitAI by-hash lookups the
-	// scan may have outstanding at once, SHARED across the whole hashing worker
-	// pool. Hashing stays fully parallel (scanWorkerCap); only the remote match
-	// calls are throttled, so the disk win is preserved without bursting the API.
-	// 0 or negative means the default (matchConcurrencyDefault, 3).
-	MatchConcurrency int
 	// MaxFiles bounds how many model-extension files the walk will collect before
 	// aborting with ErrScanTooLarge. 0 means unlimited (the CLI default — the
 	// operator typed the path knowingly). The web endpoint sets a finite cap so
@@ -156,14 +149,6 @@ type Scanner struct {
 	// expectedSHA when non-empty. Injecting it lets tests force a mid-batch move
 	// failure to exercise the partial-batch recovery path.
 	moveFn func(src, dst, expectedSHA string) error
-	// waitFn sleeps for d honouring ctx (backoff between by-hash retries).
-	waitFn func(ctx context.Context, d time.Duration)
-	// maxHashRetries bounds by-hash retries on rate-limit/transient errors before
-	// a file is left unmatched-pending.
-	maxHashRetries int
-	// matchLimiter paces the remote by-hash lookups as ONE client: a shared
-	// in-flight semaphore plus a pool-wide 429 cooldown. Shared by all workers.
-	matchLimiter *matchLimiter
 }
 
 // NewScanner builds a Scanner. A nil logger discards output; a nil reader is
@@ -182,16 +167,13 @@ func NewScanner(st *store.Store, reader civitai.Reader, opts Options, log *slog.
 		opts.Paths = []string{opts.ModelRoot}
 	}
 	return &Scanner{
-		store:          st,
-		reader:         reader,
-		log:            log,
-		opts:           opts,
-		hashFn:         hashutil.SumFile,
-		nowFn:          func() time.Time { return time.Now().UTC() },
-		moveFn:         moveFile,
-		waitFn:         sleepCtx,
-		maxHashRetries: 4,
-		matchLimiter:   newMatchLimiter(opts.MatchConcurrency),
+		store:  st,
+		reader: reader,
+		log:    log,
+		opts:   opts,
+		hashFn: hashutil.SumFile,
+		nowFn:  func() time.Time { return time.Now().UTC() },
+		moveFn: moveFile,
 	}
 }
 
@@ -219,19 +201,6 @@ func (s *Scanner) Roots() []string {
 	}
 	add(s.opts.ModelRoot)
 	return roots
-}
-
-// sleepCtx sleeps for d, returning early if ctx is cancelled.
-func sleepCtx(ctx context.Context, d time.Duration) {
-	if d <= 0 {
-		return
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-	case <-t.C:
-	}
 }
 
 // resolveRoots symlink-resolves each scan root ONCE (via resolveReal) so the
