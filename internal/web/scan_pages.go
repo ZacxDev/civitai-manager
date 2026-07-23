@@ -70,24 +70,50 @@ func scanStopButton(csrf string) g.Node {
 	}, g.Text("Stop scanning"))
 }
 
+// scanProgressText renders the muted running/terminal count line
+// "scanned N · matched M · unmatched U" (with "· pending P" only when any file is
+// pending). unmatched is a normal outcome, so it is a plain count, not alarming.
+func scanProgressText(scanned, matched, unmatched, pending int) string {
+	s := fmt.Sprintf("scanned %d · matched %d · unmatched %d", scanned, matched, unmatched)
+	if pending > 0 {
+		s += fmt.Sprintf(" · pending %d", pending)
+	}
+	return s
+}
+
+// matchingOffNote is the muted advisory shown while (and after) a scan that ran
+// with CivitAI matching DISABLED, so a user who sees near-zero matches knows WHY
+// (matching is off) and how to fix it — rather than assuming the scan is broken.
+func matchingOffNote() g.Node {
+	return h.P(h.Class("text-xs text-amber-400"),
+		g.Text("CivitAI matching is OFF — enable “Match against CivitAI” to identify models."))
+}
+
 // scanScanning renders the in-progress fragment swapped into the STABLE
 // #scan-results container (innerHTML): a card with a large PRIMARY "Stop
-// scanning" CTA, a spinner, live progress ("scanned N files, matched M"), the
-// result cards streamed so far, and the one-shot re-arming poller.
-func scanScanning(results []library.FileResult, scanned, matched int, csrf string) g.Node {
+// scanning" CTA, a spinner, live progress
+// ("scanned N · matched M · unmatched U · pending P"), a matching-off note when
+// matching is disabled, the result cards streamed so far, and the one-shot
+// re-arming poller.
+func scanScanning(snap scanSnapshot, csrf string) g.Node {
 	header := h.Div(
 		h.Class("flex items-center gap-2 text-sm text-slate-300"),
 		spinnerGlyph(),
-		g.Text(fmt.Sprintf("Scanning selected directories for model files… scanned %d, matched %d (Stop any time)", scanned, matched)),
+		g.Text("Scanning selected directories for model files… "+
+			scanProgressText(snap.Scanned, snap.Matched, snap.Unmatched, snap.Pending)+
+			" (Stop any time)"),
 	)
 	cardChildren := []g.Node{
 		h.Class("space-y-3 border-indigo-500/50"),
 		header,
-		h.Div(h.Class("flex"), scanStopButton(csrf)),
 	}
-	if len(results) > 0 {
+	if snap.NoRemote {
+		cardChildren = append(cardChildren, matchingOffNote())
+	}
+	cardChildren = append(cardChildren, h.Div(h.Class("flex"), scanStopButton(csrf)))
+	if len(snap.Results) > 0 {
 		var cards []g.Node
-		for _, fr := range results {
+		for _, fr := range snap.Results {
 			cards = append(cards, scanResultCard(fr))
 		}
 		cardChildren = append(cardChildren, h.Div(h.Class("space-y-2"), g.Group(cards)))
@@ -100,36 +126,52 @@ func scanScanning(results []library.FileResult, scanned, matched int, csrf strin
 }
 
 // scanResults renders the TERMINAL model-scan view (no poller): a "Scan complete
-// / stopped" status line followed by the authoritative Summary / Files /
-// Deletion-candidate view rebuilt from the completed local_files. started=false
-// (no scan ever ran) renders just the plain library content so any stray poller
-// halts. It distinguishes an exhausted scan ("Scan complete — N files, M
-// matched") from a user-stopped or errored one ("Scan stopped — …" / a friendly
-// budget/deadline message).
-func scanResults(v libraryView, scanned, matched int, started, stopped bool, err error, csrf string) g.Node {
-	if !started {
+// / stopped" status line (with the scanned/matched/unmatched breakdown) followed
+// by the authoritative Summary / Files / Deletion-candidate view rebuilt from the
+// completed local_files. snap.Started=false (no scan ever ran) renders just the
+// plain library content so any stray poller halts. It distinguishes an exhausted
+// scan ("Scan complete — N files · M matched · U unmatched") from a user-stopped
+// or errored one ("Scan stopped — …" / a friendly budget/deadline message), and
+// surfaces the matching-off note when the scan ran with matching disabled.
+func scanResults(v libraryView, snap scanSnapshot, csrf string) g.Node {
+	if !snap.Started {
 		return libraryContent(v, csrf)
 	}
 	var status g.Node
 	switch {
-	case err != nil && !stopped:
+	case snap.Err != nil && !snap.Stopped:
 		// A non-user error (too-large / deadline / shutdown): friendly message.
-		status = h.P(h.Class("text-xs text-amber-400"), g.Text(scanErrorMessage(err)))
-	case stopped || err != nil:
+		status = h.P(h.Class("text-xs text-amber-400"), g.Text(scanErrorMessage(snap.Err)))
+	case snap.Stopped || snap.Err != nil:
 		status = h.P(h.Class("text-xs text-amber-400"),
-			g.Text(fmt.Sprintf("Scan stopped — scanned %d files, matched %d", scanned, matched)))
+			g.Text("Scan stopped — "+scanProgressText(snap.Scanned, snap.Matched, snap.Unmatched, snap.Pending)))
 	default:
 		status = h.P(h.Class("text-xs text-emerald-400"),
-			g.Text(fmt.Sprintf("Scan complete — %d files, %d matched", scanned, matched)))
+			g.Text(fmt.Sprintf("Scan complete — %d files · %d matched · %d unmatched",
+				snap.Scanned, snap.Matched, snap.Unmatched)+pendingSuffix(snap.Pending)))
+	}
+	cardChildren := []g.Node{
+		h.Class("space-y-1"),
+		sectionTitle("Scan result"),
+		status,
+	}
+	if snap.NoRemote {
+		cardChildren = append(cardChildren, matchingOffNote())
 	}
 	return h.Div(
 		h.Class("space-y-4"),
-		card(h.Class("space-y-1"),
-			sectionTitle("Scan result"),
-			status,
-		),
+		card(cardChildren...),
 		libraryContent(v, csrf),
 	)
+}
+
+// pendingSuffix appends "· P pending" only when any file is pending, so the
+// common (no-pending) terminal line stays clean.
+func pendingSuffix(pending int) string {
+	if pending > 0 {
+		return fmt.Sprintf(" · %d pending", pending)
+	}
+	return ""
 }
 
 // scanResultCard renders one streamed scanned file as a themed card: the matched

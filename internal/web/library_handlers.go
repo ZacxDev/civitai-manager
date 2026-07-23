@@ -123,11 +123,11 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 	// reload / tab-switch (including the CTA's HX-Redirect landing) during a scan
 	// resumes the scanning view + re-arming poller instead of the idle content.
 	var scanInitial g.Node
-	if started, running, results, scanned, matched, stopped, serr := s.scanJobState(); started {
-		if running {
-			scanInitial = scanScanning(results, scanned, matched, s.csrf)
+	if snap := s.scanJobState(); snap.Started {
+		if snap.Running {
+			scanInitial = scanScanning(snap, s.csrf)
 		} else {
-			scanInitial = scanResults(buildLibraryView(files), scanned, matched, true, stopped, serr, s.csrf)
+			scanInitial = scanResults(buildLibraryView(files), snap, s.csrf)
 		}
 	}
 	tab := r.URL.Query().Get("tab")

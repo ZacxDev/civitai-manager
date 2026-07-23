@@ -111,9 +111,18 @@ type scanJob struct {
 	// running) scan. APPENDED incrementally under Server.scanMu, so any reader
 	// must snapshot-copy it under the lock.
 	results []library.FileResult
-	// scanned counts files streamed; matched counts those with a CivitAI match.
-	scanned int
-	matched int
+	// scanned counts files streamed; matched/unmatched/pending partition them by
+	// the streamed FileResult status (matched + unmatched + pending == scanned).
+	// unmatched is a normal outcome (the file is not on CivitAI, or matching is
+	// off), NOT an error; pending is a rate-limited/transient lookup to retry.
+	scanned   int
+	matched   int
+	unmatched int
+	pending   int
+	// noRemote records whether this scan ran with CivitAI matching DISABLED, so
+	// the progress/terminal fragment can tell the user that near-zero matches are
+	// expected (matching is off) rather than a broken scan.
+	noRemote bool
 	// stopped is true when the user explicitly stopped the scan (POST
 	// /library/scan/stop) so the terminal fragment reads "Scan stopped".
 	stopped    bool
