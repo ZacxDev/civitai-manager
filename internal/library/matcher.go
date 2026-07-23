@@ -52,14 +52,30 @@ func (s *Scanner) matchFile(ctx context.Context, path, sha string) matchResult {
 		return matchResult{status: store.LocalStatusUnmatched}
 	}
 
-	// 3. By-hash lookup with bounded backoff+retry.
-	var backoff time.Duration
+	// 3. By-hash lookup governed by the Scanner's SHARED match limiter: a small
+	// in-flight concurrency cap plus a pool-wide 429 cooldown, so the worker pool
+	// paces CivitAI as ONE client instead of bursting up to 8 simultaneous
+	// requests and backing off per worker. Only this network call takes a permit;
+	// the sidecar short-circuit and NoRemote paths above never touch the limiter.
 	for attempt := 0; attempt <= s.maxHashRetries; attempt++ {
 		if ctx.Err() != nil {
 			return matchResult{status: store.LocalStatusUnmatchedPending}
 		}
+		// Respect the shared cooldown BEFORE taking a permit, so a cooling pool
+		// holds no in-flight slots idle. A ctx cancel during cooldown aborts
+		// promptly (waitCooldown selects on ctx.Done via waitFn).
+		if !s.matchLimiter.waitCooldown(ctx, s.waitFn, s.nowFn) {
+			return matchResult{status: store.LocalStatusUnmatchedPending}
+		}
+		if !s.matchLimiter.acquire(ctx) {
+			return matchResult{status: store.LocalStatusUnmatchedPending}
+		}
 		vd, _, err := s.reader.GetModelVersionByHash(ctx, sha)
+		s.matchLimiter.release()
 		if err == nil {
+			// A call got through: release the shared cooldown so the pool resumes
+			// full pace and the 429 escalation resets.
+			s.matchLimiter.onSuccess()
 			return matchResult{
 				status:    store.LocalStatusMatched,
 				modelID:   ptrIfPos(vd.ModelID),
@@ -72,15 +88,14 @@ func (s *Scanner) matchFile(ctx context.Context, path, sha string) matchResult {
 			// NEVER treated as a deletion candidate.
 			return matchResult{status: store.LocalStatusUnmatched}
 		}
-		// Rate-limited or transient network error: back off and retry. Anything
-		// else that is not a clean 404 is also treated as transient so we never
-		// falsely flag on an ambiguous failure.
-		if attempt < s.maxHashRetries {
-			backoff = nextBackoff(backoff)
-			s.log.Warn("by-hash lookup failed; backing off",
-				"path", path, "attempt", attempt+1, "backoff", backoff, "err", err)
-			s.waitFn(ctx, backoff)
-		}
+		// Rate-limited or transient network error: escalate the SHARED cooldown so
+		// the WHOLE pool slows before its next by-hash call, not just this worker.
+		// Anything that is not a clean 404 is treated as transient so we never
+		// falsely flag on an ambiguous failure. The next attempt (and every other
+		// worker) waits on the cooldown at the top of the loop.
+		s.matchLimiter.onRateLimited(s.nowFn)
+		s.log.Warn("by-hash lookup failed; pool backing off",
+			"path", path, "attempt", attempt+1, "err", err)
 	}
 	// Still failing after retries: leave it pending, do not flag anything.
 	return matchResult{status: store.LocalStatusUnmatchedPending}
