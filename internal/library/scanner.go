@@ -301,6 +301,11 @@ func (s *Scanner) processModelFile(ctx context.Context, path, scanRoot string, r
 	return lf, nil
 }
 
+// SetOnFile installs (or clears, with nil) the per-file streaming callback after
+// construction. The web layer uses it to stream results into a background scan
+// job without threading OnFile through NewScanner's every call site.
+func (s *Scanner) SetOnFile(fn func(FileResult)) { s.opts.OnFile = fn }
+
 // hasPreviewSibling reports whether a ".preview.png" image sits next to the
 // model file (the Civitai-Helper preview convention: the model path with its
 // weight extension replaced by ".preview.png"). It is a cheap os.Stat used only

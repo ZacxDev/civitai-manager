@@ -19,7 +19,7 @@ func countPoller(body string) int { return strings.Count(body, `id="discover-pol
 // "Install directories" (Tab A): the discovery UI renders and the model-scan
 // control does not.
 func TestDefaultTabIsInstallDirectories(t *testing.T) {
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf", true, nil, "dark", "", nil))
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf", true, nil, "dark", "", nil, false, nil))
 	if !strings.Contains(out, `href="/library?tab=sources"`) || !strings.Contains(out, `href="/library?tab=files"`) {
 		t.Errorf("tab strip missing both tab links:\n%s", out)
 	}
@@ -38,7 +38,7 @@ func TestDefaultTabIsInstallDirectories(t *testing.T) {
 // TestFilesTabEmptyStateWhenNoDirs proves Tab B shows a clear empty state (not a
 // bare scan button) when no install directories have been selected yet.
 func TestFilesTabEmptyStateWhenNoDirs(t *testing.T) {
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf", true, nil, "dark", "files", nil))
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf", true, nil, "dark", "files", nil, false, nil))
 	if !strings.Contains(out, "Add install directories first") {
 		t.Errorf("files tab with no dirs should show the empty state:\n%s", out)
 	}

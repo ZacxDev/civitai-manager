@@ -262,7 +262,9 @@ func TestScanDirAddRemovePersistAndScan(t *testing.T) {
 	}
 
 	// A "Scan selected" over the persisted dir surfaces a cross-dir duplicate and
-	// re-persists exactly the checked selection.
+	// re-persists exactly the checked selection. The scan is now ASYNC: the POST
+	// starts a background streaming job and HX-Redirects to the Model files tab;
+	// the duplicate surfaces in the terminal status view (poll to done).
 	if err := os.WriteFile(filepath.Join(root, "a.safetensors"), []byte("dup"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -270,12 +272,19 @@ func TestScanDirAddRemovePersistAndScan(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec = post(t, srv, "/library/scan", url.Values{"scan_dir": {extra}}, true)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "duplicate") {
-		t.Fatalf("scan selected should surface the duplicate, got %d:\n%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("scan start = %d", rec.Code)
 	}
+	if rec.Header().Get("HX-Redirect") != "/library?tab=files" {
+		t.Fatalf("scan start should HX-Redirect to the Model files tab, got %q", rec.Header().Get("HX-Redirect"))
+	}
+	// The checked selection is persisted synchronously (before the job starts).
 	dirs, _ = srv.store.ListScanDirs()
 	if len(dirs) != 1 || dirs[0] != extra {
 		t.Fatalf("scan should persist the checked selection, got %v", dirs)
+	}
+	if term := pollScanUntilDone(t, srv); !strings.Contains(term, "duplicate") {
+		t.Fatalf("streaming scan should surface the cross-dir duplicate in the terminal view:\n%s", term)
 	}
 
 	// Remove → selection cleared.
@@ -294,7 +303,7 @@ func TestScanDirAddRemovePersistAndScan(t *testing.T) {
 // NOT as a button-level hx-indicator. The button keeps a brief click-guard.
 func TestDiscoverLoadingIndicatorMarkup(t *testing.T) {
 	// allowExtra=true, Tab A (sources) so the discover control is rendered.
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, nil, "dark", "sources", nil))
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, nil, "dark", "sources", nil, false, nil))
 	for _, want := range []string{
 		`hx-post="/library/discover"`,
 		`hx-disabled-elt="this"`,

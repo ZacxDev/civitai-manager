@@ -54,13 +54,13 @@ func buildLibraryView(files []store.LocalFile) libraryView {
 // discoverInitial is the initial content of the stable #discover-results
 // container (idle controls, or the live scanning/terminal fragment when a crawl
 // is in flight); nil falls back to the idle controls.
-func libraryPage(v libraryView, csrf string, allowExtra bool, selectedDirs []string, theme, activeTab string, discoverInitial g.Node) g.Node {
+func libraryPage(v libraryView, csrf string, allowExtra bool, selectedDirs []string, theme, activeTab string, discoverInitial g.Node, matchRemote bool, scanInitial g.Node) g.Node {
 	if activeTab != "files" {
 		activeTab = "sources"
 	}
 	var panel g.Node
 	if activeTab == "files" {
-		panel = filesPanel(v, csrf, allowExtra, selectedDirs)
+		panel = filesPanel(v, csrf, allowExtra, selectedDirs, matchRemote, scanInitial)
 	} else {
 		panel = sourcesPanel(csrf, allowExtra, selectedDirs, discoverInitial)
 	}
@@ -134,7 +134,11 @@ func sourcesPanel(csrf string, allowExtra bool, selectedDirs []string, discoverI
 // quarantine results. It renders NO discovery UI. When no install directories
 // have been selected yet (loopback bind), it shows an empty state pointing at Tab
 // A rather than a bare scan button.
-func filesPanel(v libraryView, csrf string, allowExtra bool, selectedDirs []string) g.Node {
+// scanInitial is the initial content of the STABLE #scan-results container (the
+// idle library content, or the live scanning/terminal fragment when a scan is in
+// flight); nil falls back to the idle library content. matchRemote pre-checks the
+// persisted "Match against CivitAI" toggle.
+func filesPanel(v libraryView, csrf string, allowExtra bool, selectedDirs []string, matchRemote bool, scanInitial g.Node) g.Node {
 	if allowExtra && len(selectedDirs) == 0 {
 		return card(
 			sectionTitle("Model files"),
@@ -144,14 +148,19 @@ func filesPanel(v libraryView, csrf string, allowExtra bool, selectedDirs []stri
 			),
 		)
 	}
+	if scanInitial == nil {
+		scanInitial = libraryContent(v, csrf)
+	}
 	return h.Div(
 		h.Class("space-y-6"),
 		card(
 			sectionTitle("Model files"),
-			modelScanForm(csrf),
-			h.Div(h.ID("scan-spinner"), h.Class("htmx-indicator text-xs text-slate-400 mt-1"), g.Text("Scanning…")),
+			modelScanForm(csrf, matchRemote),
 		),
-		h.Div(h.ID("library-content"), libraryContent(v, csrf)),
+		// The STABLE poll/results container: only its innerHTML is ever swapped, so
+		// the re-arming scan poller can never orphan a #scan-poll (mirrors
+		// #discover-results). It bootstraps from the live scan job on reload.
+		h.Div(h.ID("scan-results"), scanInitial),
 	)
 }
 
@@ -163,18 +172,33 @@ func filesPanel(v libraryView, csrf string, allowExtra bool, selectedDirs []stri
 // The remote-match checkbox is OPT-IN: by default a web scan runs offline (local
 // duplicate/broken analysis only) and does NOT send file SHA256 hashes to
 // CivitAI's by-hash lookup. Ticking it enables CivitAI matching for this scan.
-func modelScanForm(csrf string) g.Node {
+func modelScanForm(csrf string, matchRemote bool) g.Node {
+	// The toggle PERSISTS on change (POST /settings/match-remote, no swap) so it is
+	// the single source of truth the Tab-A CTA also reads. A single checkbox posts
+	// its value only when checked, so presence == enabled.
+	cb := []g.Node{
+		h.Type("checkbox"), h.Name("match_remote"), h.Value("true"),
+		hx("post", "/settings/match-remote"),
+		hx("trigger", "change"),
+		hx("swap", "none"),
+		csrfInline(csrf),
+		h.Class("rounded border-slate-600 bg-slate-800 text-indigo-500"),
+	}
+	if matchRemote {
+		cb = append(cb, g.Attr("checked"))
+	}
 	return h.Form(
+		// Submitting starts the async streaming scan; the handler HX-Redirects to the
+		// Model files tab. hx-target is only the fallback for a synchronous validation
+		// error (rendered into #scan-results); on success the redirect supersedes it.
 		hx("post", "/library/scan"),
-		hx("target", "#library-content"),
+		hx("target", "#scan-results"),
 		hx("swap", "innerHTML"),
-		hx("indicator", "#scan-spinner"),
 		h.Class("space-y-3"),
 		csrfInput(csrf),
 		h.Label(
 			h.Class("flex items-center gap-2 text-xs text-slate-400"),
-			h.Input(h.Type("checkbox"), h.Name("match_remote"), h.Value("true"),
-				h.Class("rounded border-slate-600 bg-slate-800 text-indigo-500")),
+			h.Input(cb...),
 			g.Text("Match against CivitAI (sends file hashes to civitai.com)"),
 		),
 		btnPrimary(g.Text("Scan for model files")),

@@ -37,6 +37,11 @@ func csrfInline(csrf string) g.Node {
 // selectedDirsList renders the persisted extra scan directories as pre-checked
 // checkboxes (name "scan_dir"), each with a remove control. An empty selection
 // shows a hint. This fragment is swapped in place after add/remove.
+//
+// Once ≥1 directory is selected it also renders the prominent primary "Scan for
+// models" CTA (scanForModelsCTA). Because add/remove both re-render this whole
+// fragment into #selected-dirs, the CTA appears immediately after the first Add
+// (no page reload) and disappears when the last dir is removed.
 func selectedDirsList(dirs []string, csrf string) g.Node {
 	if len(dirs) == 0 {
 		return h.P(h.Class("text-xs text-slate-500"),
@@ -63,7 +68,11 @@ func selectedDirsList(dirs []string, csrf string) g.Node {
 			),
 		))
 	}
-	return h.Div(h.Class("space-y-1"), g.Group(rows))
+	return h.Div(
+		h.Class("space-y-1"),
+		h.Div(h.Class("space-y-1"), g.Group(rows)),
+		scanForModelsCTA(csrf),
+	)
 }
 
 // discoverControls renders the idle install-discovery controls: the "Discover
@@ -277,13 +286,13 @@ func discoverCard(in library.Install, added, scanRunning bool, csrf string) g.No
 			hx("swap", "innerHTML"),
 			h.Class("shrink-0"),
 		}
-		// Add-mid-scan: when a scan is still running, adding an install likely means
-		// the user found what they came for — prompt them to Stop the scan. When no
-		// scan runs, Add just adds silently (no prompt).
-		if scanRunning {
-			addAttrs = append(addAttrs, hx("confirm",
-				"Add this install? (the background scan is still running — you can Stop it after)"))
-		}
+		// Add-on-click with NO confirmation, whether or not a discovery scan is
+		// running: clicking Add silently adds the dir to the selection and the
+		// response re-renders #selected-dirs with the "Scan for models" CTA. The
+		// user moves to the scan phase via that CTA (which stops the crawl), so no
+		// mid-scan "are you sure?" prompt is needed. scanRunning is retained only to
+		// keep the streaming vs. terminal call sites explicit.
+		_ = scanRunning
 		action = civButton("light", "sm", addAttrs, g.Text("Add"))
 	}
 

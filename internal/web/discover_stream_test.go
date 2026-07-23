@@ -227,30 +227,29 @@ func TestDiscoverStopRequiresCSRF(t *testing.T) {
 	}
 }
 
-// TestDiscoverAddPromptsToStopWhileRunning proves an install's Add control carries
-// the "stop the scan?" prompt WHILE a scan is running (the user likely found what
-// they came for), and carries NO prompt in the terminal fragment (Add is silent).
-func TestDiscoverAddPromptsToStopWhileRunning(t *testing.T) {
+// TestDiscoverAddHasNoConfirm proves finding #1: the discovered-install Add
+// control carries NO hx-confirm whether or not a discovery scan is running —
+// clicking Add silently adds the dir to the selection. (Adapted from the old
+// TestDiscoverAddPromptsToStopWhileRunning, which asserted the now-removed
+// mid-scan "stop the scan?" confirm.)
+func TestDiscoverAddHasNoConfirm(t *testing.T) {
 	install := library.Install{Path: "/home/u/ComfyUI", Kind: library.KindComfyUI, Confidence: library.ConfidenceHigh}
 
-	// While scanning: the Add control prompts to stop the still-running scan.
+	// While scanning: the Add control is present and carries no confirm prompt.
 	running := renderString(t, discoverScanning([]library.Install{install}, nil, "csrf"))
 	if !strings.Contains(running, "/library/scan-dirs/add") {
 		t.Fatalf("scanning fragment should render an Add control:\n%s", running)
 	}
-	if !strings.Contains(running, `hx-confirm=`) {
-		t.Errorf("scanning-time Add should carry an hx-confirm prompt:\n%s", running)
-	}
-	if !strings.Contains(running, "the background scan is still running") {
-		t.Errorf("scanning-time Add prompt should mention the running scan:\n%s", running)
+	if strings.Contains(running, "hx-confirm") {
+		t.Errorf("scanning-time Add must NOT carry any hx-confirm (add-on-click, no confirmation):\n%s", running)
 	}
 
-	// Terminal (not running): Add has no stop prompt.
+	// Terminal (not running): Add also has no confirm.
 	terminal := renderString(t, discoverResults([]library.Install{install}, nil, false, nil, "csrf"))
 	if !strings.Contains(terminal, "/library/scan-dirs/add") {
 		t.Fatalf("terminal fragment should render an Add control:\n%s", terminal)
 	}
 	if strings.Contains(terminal, "hx-confirm") {
-		t.Errorf("terminal Add must NOT carry a stop prompt (no scan runs):\n%s", terminal)
+		t.Errorf("terminal Add must NOT carry any hx-confirm:\n%s", terminal)
 	}
 }
