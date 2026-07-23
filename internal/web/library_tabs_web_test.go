@@ -23,15 +23,45 @@ func TestDefaultTabIsInstallDirectories(t *testing.T) {
 	if !strings.Contains(out, `href="/library?tab=sources"`) || !strings.Contains(out, `href="/library?tab=files"`) {
 		t.Errorf("tab strip missing both tab links:\n%s", out)
 	}
-	// The active (sources) tab is the filled one.
-	if !strings.Contains(out, `data-variant="filled" data-size="md" href="/library?tab=sources"`) {
-		t.Errorf("default active tab should be Install directories (filled):\n%s", out)
+	// The active (sources) tab is the accent-underlined one (see the underline-tab
+	// markup; this replaced the old filled-button pin `data-variant="filled" …`).
+	if !strings.Contains(out, `class="lib-tab lib-tab-active" aria-selected="true" aria-current="page">Install directories`) {
+		t.Errorf("default active tab should be Install directories (underlined):\n%s", out)
 	}
 	if !strings.Contains(out, "Discover installs") {
 		t.Error("default tab must render the discovery UI")
 	}
 	if strings.Contains(out, "Scan for model files") {
 		t.Error("default tab must not render the model-scan control")
+	}
+}
+
+// TestLibraryTabStripUnderlineMarkup proves Change 3's structural markup: the tabs
+// are plain <a> links styled as an UNDERLINE tab strip — the active one carries
+// the lib-tab-active class + aria-current="page", the inactive one only lib-tab —
+// and NEITHER uses the @civitai/components button component (no data-civitai-ui=
+// "button" / data-variant chrome on the tabs). Visual correctness is verified in a
+// browser; this locks the class/aria distinction and the absence of button chrome.
+func TestLibraryTabStripUnderlineMarkup(t *testing.T) {
+	out := renderString(t, libraryTabStrip("files"))
+
+	// Both tabs are anchors carrying the base tab class.
+	for _, want := range []string{
+		`<a href="/library?tab=sources" role="tab" class="lib-tab" aria-selected="false">Install directories</a>`,
+		`<a href="/library?tab=files" role="tab" class="lib-tab lib-tab-active" aria-selected="true" aria-current="page">Model files</a>`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("tab strip missing expected underline markup %q:\n%s", want, out)
+		}
+	}
+	// The inactive tab must NOT be marked current.
+	if strings.Count(out, `aria-current="page"`) != 1 {
+		t.Errorf("exactly one tab (the active one) must carry aria-current=\"page\":\n%s", out)
+	}
+	// The tabs must NOT use the civitai button component (that was the button-chrome
+	// look Change 3 removed).
+	if strings.Contains(out, `data-civitai-ui="button"`) {
+		t.Errorf("underline tabs must not render the civitai button component:\n%s", out)
 	}
 }
 

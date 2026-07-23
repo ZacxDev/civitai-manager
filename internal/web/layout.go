@@ -122,23 +122,6 @@ func civButton(variant, size string, attrs []g.Node, children ...g.Node) g.Node 
 	return h.Button(all...)
 }
 
-// civLinkButton renders an anchor styled as a @civitai/components button. The
-// component CSS selects on the attribute (`[data-civitai-ui="button"]`), not the
-// tag, and already sets `text-decoration:none`, so an <a> renders identically to
-// a <button> while keeping real navigation semantics (used for the tab strip,
-// which is server-rendered full-page navigation via ?tab=).
-func civLinkButton(variant, size, href string, attrs []g.Node, children ...g.Node) g.Node {
-	all := []g.Node{
-		dataAttr("civitai-ui", "button"),
-		dataAttr("variant", variant),
-		dataAttr("size", size),
-		h.Href(href),
-	}
-	all = append(all, attrs...)
-	all = append(all, children...)
-	return h.A(all...)
-}
-
 // btnPrimary is the filled primary button used as the submit control in forms.
 func btnPrimary(children ...g.Node) g.Node {
 	return civButton("filled", "md", []g.Node{h.Type("submit")}, children...)
