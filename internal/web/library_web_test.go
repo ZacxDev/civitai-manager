@@ -64,10 +64,18 @@ func TestLibraryAndTrashPagesRender(t *testing.T) {
 		{ID: 2, Path: "/m/b.safetensors", ModelID: intPtr(10), VersionID: intPtr(2), SizeBytes: 2048,
 			Status: store.LocalStatusMatched, CandidateReason: store.CandidateSuperseded, Kind: store.LocalKindModel},
 	}
-	out := renderString(t, libraryPage(buildLibraryView(files), "csrf-tok", true, nil, "dark"))
-	for _, want := range []string{"Library", "Scan selected", "Summary", "Deletion candidates", "superseded", "Reclaimable"} {
+	// Tab B ("Model files") holds the scan control + results; a non-empty selection
+	// avoids the empty state so the Summary/candidates render.
+	out := renderString(t, libraryPage(buildLibraryView(files), "csrf-tok", true, []string{"/data/models"}, "dark", "files", nil))
+	for _, want := range []string{"Library", "Scan for model files", "Summary", "Deletion candidates", "superseded", "Reclaimable"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("library page missing %q", want)
+			t.Errorf("library page (files tab) missing %q", want)
+		}
+	}
+	// Tab B must NOT render discovery UI (that lives in Tab A only).
+	for _, unwanted := range []string{"Discover installs", "/library/discover", "Browse server directories"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("model-files tab must omit discovery UI %q", unwanted)
 		}
 	}
 
@@ -83,14 +91,36 @@ func TestLibraryAndTrashPagesRender(t *testing.T) {
 
 func TestLibraryHandlerRenders(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
+
+	// Default (no ?tab) renders Tab A: the two-tab strip + discovery UI, NOT the
+	// model-scan control.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/library", nil)
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "Scan selected") {
-		t.Error("library page missing Scan selected")
+	body := rec.Body.String()
+	for _, want := range []string{"Install directories", "Model files", "Discover installs"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("default library page missing %q", want)
+		}
+	}
+	if strings.Contains(body, "Scan for model files") {
+		t.Error("default (Install directories) tab must not render the model-scan control")
+	}
+
+	// With a selected dir, Tab B renders the explicit scan control.
+	if err := srv.store.AddScanDir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/library?tab=files", nil))
+	if !strings.Contains(rec.Body.String(), "Scan for model files") {
+		t.Errorf("model-files tab missing 'Scan for model files':\n%s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "Discover installs") {
+		t.Error("model-files tab must not render discovery UI")
 	}
 }
 
@@ -127,18 +157,30 @@ func TestLibraryPostsAreCSRFProtected(t *testing.T) {
 	}
 }
 
-// TestScanFormRendersPathsInput proves finding #2's UI: on a loopback bind the
-// Library page renders the rich extra-directory selector (discovery + browser +
-// selection) so the user can scan beyond model_root, plus the opt-in
-// remote-match checkbox.
+// TestScanFormRendersPathsInput proves finding #2's UI: on a loopback bind Tab A
+// renders the rich extra-directory selector (discovery + manual add + browser)
+// and Tab B renders the model-scan control + opt-in remote-match checkbox.
 func TestScanFormRendersPathsInput(t *testing.T) {
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, nil, "dark"))
+	// Tab A ("Install directories"): discovery + manual add + browser, NO scan control.
+	sources := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, nil, "dark", "sources", nil))
 	for _, want := range []string{
-		"Scan selected", "Extra scan directories", "Discover installs",
-		"/library/discover", "Browse server directories", "/library/browse", "match_remote",
+		"Discover installs", "/library/discover",
+		"Add a directory by path", "/library/scan-dirs/add",
+		"Browse server directories", "/library/browse",
 	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("scan form missing %q", want)
+		if !strings.Contains(sources, want) {
+			t.Errorf("Tab A missing %q", want)
+		}
+	}
+	if strings.Contains(sources, "Scan for model files") {
+		t.Error("Tab A must not render the model-scan control")
+	}
+
+	// Tab B ("Model files") with a selection: scan control + remote-match opt-in.
+	files := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, []string{"/data/x"}, "dark", "files", nil))
+	for _, want := range []string{"Scan for model files", "match_remote"} {
+		if !strings.Contains(files, want) {
+			t.Errorf("Tab B missing %q", want)
 		}
 	}
 }
@@ -146,7 +188,7 @@ func TestScanFormRendersPathsInput(t *testing.T) {
 // TestScanFormRendersPersistedSelection proves the persisted selection pre-fills
 // the form as pre-checked checkboxes.
 func TestScanFormRendersPersistedSelection(t *testing.T) {
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, []string{"/data/loras"}, "dark"))
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, []string{"/data/loras"}, "dark", "sources", nil))
 	for _, want := range []string{`name="scan_dir"`, "/data/loras", "checked"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("persisted selection missing %q in:\n%s", want, out)
@@ -159,17 +201,25 @@ func TestScanFormRendersPersistedSelection(t *testing.T) {
 // controls are not rendered, so a network-exposed server never offers the
 // arbitrary-path control.
 func TestScanFormOmitsPathsInputWhenNotAllowed(t *testing.T) {
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", false, nil, "dark"))
-	if !strings.Contains(out, "Scan selected") {
-		t.Error("scan form should still offer 'Scan selected'")
+	// Tab A on a non-loopback bind: only the gating note, no discovery/browser UI.
+	sources := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", false, nil, "dark", "sources", nil))
+	if !strings.Contains(sources, "disabled when the server is bound to a non-loopback") {
+		t.Errorf("Tab A should show the non-loopback gating note:\n%s", sources)
 	}
 	for _, unwanted := range []string{
-		"scan_paths", "Extra scan directories", "Discover installs",
-		"/library/discover", "Browse server directories", "match_remote",
+		"scan_paths", "Discover installs", "/library/discover",
+		"Browse server directories", "Add a directory by path",
 	} {
-		if strings.Contains(out, unwanted) {
-			t.Errorf("scan form must omit %q when extra paths are disabled", unwanted)
+		if strings.Contains(sources, unwanted) {
+			t.Errorf("Tab A must omit %q when extra paths are disabled", unwanted)
 		}
+	}
+
+	// Tab B still offers a plain model-scan (scans model_root only) with no empty
+	// state, since the user cannot add install dirs on a non-loopback bind.
+	files := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", false, nil, "dark", "files", nil))
+	if !strings.Contains(files, "Scan for model files") {
+		t.Errorf("Tab B should still offer 'Scan for model files' on a non-loopback bind:\n%s", files)
 	}
 }
 

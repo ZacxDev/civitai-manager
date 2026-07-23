@@ -66,36 +66,105 @@ func selectedDirsList(dirs []string, csrf string) g.Node {
 	return h.Div(h.Class("space-y-1"), g.Group(rows))
 }
 
-// discoverScanning renders the in-progress fragment: a spinner, the "found N so
-// far" copy, a Stop button, the installs streamed so far (each with an Add
-// control), and an htmx poller. The element (#discover-poll) polls GET
-// /library/discover/status every second and swaps ITSELF (outerHTML) with the
-// response — so when the crawl settles and status returns the poller-less results
-// fragment, polling stops. The crawl keeps scanning ALL disks in the background
-// until the user Stops it or the tree is exhausted.
+// discoverControls renders the idle install-discovery controls: the "Discover
+// installs" button, a manual path-add input, and the server-side directory
+// browser. They are swapped into the STABLE #discover-results container, so a
+// starting scan cleanly replaces them with the scanning card and a settled scan
+// restores them (see discoverResults). Hiding these while a scan runs is thus a
+// natural consequence of the full innerHTML swap — not a separate toggle.
+func discoverControls(csrf string) g.Node {
+	return h.Div(
+		h.Class("space-y-3"),
+		h.Div(
+			h.Class("flex flex-wrap items-center gap-2"),
+			civButton("filled", "md", []g.Node{
+				h.Type("button"),
+				hx("post", "/library/discover"),
+				hx("target", "#discover-results"),
+				hx("swap", "innerHTML"),
+				// Brief click-guard: the POST returns instantly with the scanning
+				// card (which carries its own spinner), so no indicator is needed.
+				hx("disabled-elt", "this"),
+				csrfInline(csrf),
+			}, g.Text("Discover installs")),
+			h.Span(h.Class("text-xs text-slate-400"),
+				g.Text("Scan all disks for ComfyUI / Automatic1111 installs")),
+		),
+		manualAddInput(csrf),
+		directoryBrowser(csrf),
+	)
+}
+
+// manualAddInput renders a text field to add a scan directory by typing its
+// absolute path directly — a shortcut past the directory browser. It POSTs the
+// path to /library/scan-dirs/add and refreshes the persisted selection list.
+func manualAddInput(csrf string) g.Node {
+	return h.Div(
+		h.Class("space-y-1 border-t border-slate-800 pt-2"),
+		h.Div(h.Class("text-xs font-medium text-slate-400"), g.Text("Add a directory by path")),
+		h.Div(
+			h.Class("flex items-end gap-2"),
+			h.Div(h.Class("flex-1"),
+				textInput("text-input", "manual-add-path", "Path",
+					h.Name("path"),
+					h.Placeholder("/absolute/path/to/models")),
+			),
+			civButton("outline", "sm", []g.Node{
+				h.Type("button"),
+				hx("post", "/library/scan-dirs/add"),
+				hx("include", "#manual-add-path"),
+				hx("vals", fmt.Sprintf(`{"csrf_token":%q}`, csrf)),
+				hx("target", "#selected-dirs"),
+				hx("swap", "innerHTML"),
+			}, g.Text("Add path")),
+		),
+	)
+}
+
+// discoverPoller is the one-shot, re-arming poll element that drives the scanning
+// view to its terminal state. It is the CORE of the re-discover-after-stop fix.
+//
+// It never targets itself. It fires ONCE (hx-trigger="load delay:1s"), GETs
+// /library/discover/status, and swaps the innerHTML of the STABLE
+// #discover-results container. While the crawl runs, each status response carries
+// a FRESH discoverPoller (which re-arms the next one-shot); the terminal fragment
+// carries none, so polling stops. Because every swap fully replaces the stable
+// container's children, there is never a duplicate or detached #discover-poll and
+// no repeating "every 1s" timer is ever bound to a removed node — the exact
+// collision that previously wedged a re-triggered discovery.
+func discoverPoller() g.Node {
+	return h.Div(
+		h.ID("discover-poll"),
+		hx("get", "/library/discover/status"),
+		hx("trigger", "load delay:1s"),
+		hx("target", "#discover-results"),
+		hx("swap", "innerHTML"),
+	)
+}
+
+// discoverScanning renders the in-progress fragment swapped into the STABLE
+// #discover-results container (innerHTML). It is a card with a large PRIMARY
+// "Stop scanning" CTA, a spinner, the "found N so far" copy, and the installs
+// streamed so far INSIDE the card (each with an Add control that prompts to stop
+// the scan), followed by the one-shot re-arming poller. The idle controls
+// (Discover button / manual input / browser) are intentionally absent — the full
+// swap hides them for the duration of the scan.
 func discoverScanning(installs []library.Install, selected []string, csrf string) g.Node {
 	selSet := map[string]bool{}
 	for _, s := range selected {
 		selSet[s] = true
 	}
 	header := h.Div(
-		h.Class("flex items-start justify-between gap-2"),
-		h.Div(
-			h.Class("flex items-center gap-2 text-xs text-slate-400"),
-			spinnerGlyph(),
-			g.Text(fmt.Sprintf(
-				"Scanning all disks for ComfyUI / Automatic1111 installs… found %d so far (large/slow drives can take a while — Stop when you see the one you want)",
-				len(installs))),
-		),
-		discoverStopButton(csrf),
+		h.Class("flex items-center gap-2 text-sm text-slate-300"),
+		spinnerGlyph(),
+		g.Text(fmt.Sprintf(
+			"Scanning all disks for ComfyUI / Automatic1111 installs… found %d so far (large/slow drives can take a while — Stop when you see the one you want)",
+			len(installs))),
 	)
-	children := []g.Node{
-		h.ID("discover-poll"),
-		hx("get", "/library/discover/status"),
-		hx("trigger", "every 1s"),
-		hx("swap", "outerHTML"),
-		h.Class("mt-2 space-y-2"),
+	cardChildren := []g.Node{
+		h.Class("space-y-3 border-indigo-500/50"),
 		header,
+		h.Div(h.Class("flex"), discoverStopButton(csrf)),
 	}
 	if len(installs) > 0 {
 		var cards []g.Node
@@ -103,59 +172,70 @@ func discoverScanning(installs []library.Install, selected []string, csrf string
 			// running=true → each Add control carries the "stop the scan?" prompt.
 			cards = append(cards, discoverCard(in, selSet[in.Path], true, csrf))
 		}
-		children = append(children, h.Div(h.Class("space-y-2"), g.Group(cards)))
+		cardChildren = append(cardChildren, h.Div(h.Class("space-y-2"), g.Group(cards)))
 	}
-	return h.Div(children...)
+	return h.Div(
+		h.Class("mt-2 space-y-2"),
+		card(cardChildren...),
+		discoverPoller(),
+	)
 }
 
-// discoverStopButton renders the Stop control shown while a scan runs. It POSTs
-// /library/discover/stop (CSRF via hx-vals) and swaps the poller element with the
-// server's current status fragment.
+// discoverStopButton renders the large PRIMARY Stop CTA shown while a scan runs.
+// It POSTs /library/discover/stop (CSRF via hx-vals) and swaps the current status
+// fragment into the STABLE #discover-results container (innerHTML) — never the
+// old self-targeting outerHTML swap.
 func discoverStopButton(csrf string) g.Node {
-	return civButton("outline", "sm", []g.Node{
+	return civButton("filled", "lg", []g.Node{
 		h.Type("button"),
 		hx("post", "/library/discover/stop"),
-		hx("target", "#discover-poll"),
-		hx("swap", "outerHTML"),
+		hx("target", "#discover-results"),
+		hx("swap", "innerHTML"),
 		csrfInline(csrf),
-		h.Class("shrink-0"),
-	}, g.Text("Stop"))
+		h.Class("w-full sm:w-auto"),
+	}, g.Text("Stop scanning"))
 }
 
 // discoverResults renders the TERMINAL auto-discovery result (no poller): each
-// install as a card with an Add button, plus a status line. It distinguishes an
-// exhausted crawl ("Scan complete — found N") from a user-stopped or cancelled
-// one ("Scan stopped — found N"). A completed crawl that found nothing renders
-// the plain "no installs" copy.
+// install as a card with an Add button, a status line, and the RESTORED idle
+// controls (so the user can discover again / add a path / browse). It
+// distinguishes an exhausted crawl ("Scan complete — found N") from a
+// user-stopped or cancelled one ("Scan stopped — found N"). A completed crawl
+// that found nothing renders the plain "no installs" copy above the controls.
 func discoverResults(installs []library.Install, selected []string, stopped bool, err error, csrf string) g.Node {
 	selSet := map[string]bool{}
 	for _, s := range selected {
 		selSet[s] = true
 	}
-	// A clean, exhausted crawl that found nothing: the plain no-installs copy.
+	body := []g.Node{h.Class("mt-2 space-y-3")}
+
 	if len(installs) == 0 && !stopped && err == nil {
-		return h.P(h.Class("text-xs text-slate-500 mt-2"),
-			g.Text("No ComfyUI or Automatic1111/Forge installs found in the usual locations."))
+		// A clean, exhausted crawl that found nothing: the plain no-installs copy.
+		body = append(body, h.P(h.Class("text-xs text-slate-500"),
+			g.Text("No ComfyUI or Automatic1111/Forge installs found in the usual locations.")))
+	} else {
+		var cards []g.Node
+		for _, in := range installs {
+			// Terminal fragment: the scan is no longer running, so Add adds silently.
+			cards = append(cards, discoverCard(in, selSet[in.Path], false, csrf))
+		}
+		// "stopped" covers an explicit user Stop AND any other cancellation/error
+		// (e.g. server shutdown); only a clean exhaustion reads "complete".
+		statusText := fmt.Sprintf("Scan complete — found %d", len(installs))
+		statusClass := "text-xs text-emerald-400"
+		if stopped || err != nil {
+			statusText = fmt.Sprintf("Scan stopped — found %d", len(installs))
+			statusClass = "text-xs text-amber-400"
+		}
+		body = append(body, card(
+			h.Class("space-y-2"),
+			h.Div(h.Class("space-y-2"), g.Group(cards)),
+			h.P(h.Class(statusClass), g.Text(statusText)),
+		))
 	}
-	var cards []g.Node
-	for _, in := range installs {
-		// Terminal fragment: the scan is no longer running, so Add adds silently.
-		cards = append(cards, discoverCard(in, selSet[in.Path], false, csrf))
-	}
-	// "stopped" covers an explicit user Stop AND any other cancellation/error (e.g.
-	// server shutdown); only a clean exhaustion reads "complete".
-	statusText := fmt.Sprintf("Scan complete — found %d", len(installs))
-	statusClass := "text-xs text-emerald-400"
-	if stopped || err != nil {
-		statusText = fmt.Sprintf("Scan stopped — found %d", len(installs))
-		statusClass = "text-xs text-amber-400"
-	}
-	nodes := []g.Node{
-		h.Class("mt-2 space-y-2"),
-		g.Group(cards),
-		h.P(h.Class(statusClass), g.Text(statusText)),
-	}
-	return h.Div(nodes...)
+	// Restore the idle controls beneath the results.
+	body = append(body, discoverControls(csrf))
+	return h.Div(body...)
 }
 
 func discoverCard(in library.Install, added, scanRunning bool, csrf string) g.Node {

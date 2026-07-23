@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	"github.com/ZacxDev/civitai-manager/internal/library"
 	"github.com/ZacxDev/civitai-manager/internal/store"
+	g "maragu.dev/gomponents"
 )
 
 // newScanner builds a library.Scanner from the server's configuration, adding
@@ -105,7 +106,21 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			selected = sel
 		}
 	}
-	s.render(w, http.StatusOK, libraryPage(buildLibraryView(files), s.csrf, s.extraPathsAllowed(), selected, s.currentTheme()))
+	// Bootstrap the stable #discover-results container from the live job state so a
+	// reload / tab-switch during a crawl resumes the scanning view (and its
+	// re-arming poller) instead of dropping back to the idle controls.
+	var discoverInitial g.Node
+	if s.extraPathsAllowed() {
+		if started, running, installs, stopped, derr := s.discoverJobState(); started {
+			if running {
+				discoverInitial = discoverScanning(installs, selected, s.csrf)
+			} else {
+				discoverInitial = discoverResults(installs, selected, stopped, derr, s.csrf)
+			}
+		}
+	}
+	tab := r.URL.Query().Get("tab")
+	s.render(w, http.StatusOK, libraryPage(buildLibraryView(files), s.csrf, s.extraPathsAllowed(), selected, s.currentTheme(), tab, discoverInitial))
 }
 
 func (s *Server) handleLibraryScan(w http.ResponseWriter, r *http.Request) {
@@ -129,6 +144,17 @@ func (s *Server) handleLibraryScan(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusOK, errorNote("Invalid scan path: "+err.Error()))
 		return
 	}
+	// The new Tab B model-scan form submits NO scan_dir checkboxes: the dirs to
+	// scan are the persisted selection managed in Tab A. When no checkbox field is
+	// present, fall back to that persisted selection (and do NOT re-persist below,
+	// so an empty submit can never wipe it). The legacy checkbox/textarea UIs still
+	// submit scan_dir and take the persist-what-is-checked path.
+	_, hasCheckboxField := r.Form["scan_dir"]
+	if !hasCheckboxField && s.extraPathsAllowed() {
+		if sel, err := s.store.ListScanDirs(); err == nil {
+			selectedDirs = sel
+		}
+	}
 	extra = unionPaths(extra, selectedDirs)
 
 	// Non-loopback gating: the arbitrary extra-scan-path capability is a local,
@@ -143,10 +169,10 @@ func (s *Server) handleLibraryScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Persist the selection so it survives across scans and pre-fills the form on
-	// the next load. Only the checkbox selection is persisted (the legacy textarea
-	// is a one-shot input).
-	if s.extraPathsAllowed() {
+	// Persist the checkbox selection so it survives across scans and pre-fills the
+	// form on the next load (legacy checkbox UI only). A checkbox-less Tab B scan is
+	// skipped here so it can never overwrite the Tab-A-managed persisted selection.
+	if hasCheckboxField && s.extraPathsAllowed() {
 		if err := s.store.SetScanDirs(selectedDirs); err != nil {
 			s.log.Warn("persist scan dirs", "err", err)
 		}
