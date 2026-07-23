@@ -41,77 +41,144 @@ func buildLibraryView(files []store.LocalFile) libraryView {
 	return v
 }
 
-// libraryPage is the full Library page. allowExtra gates the arbitrary
-// extra-scan-path controls (discovery, the directory browser, and the selected
-// -dirs list): they are rendered only on a loopback bind (see
-// Server.extraPathsAllowed), so a network-exposed server never even offers the
-// remote arbitrary-path walk control. selectedDirs pre-fills the persisted
-// selection.
-func libraryPage(v libraryView, csrf string, allowExtra bool, selectedDirs []string, theme string) g.Node {
+// libraryPage is the full Library page, split into two tabs (finding/selecting
+// install dirs vs. scanning them for model files). allowExtra gates the arbitrary
+// extra-scan-path capability (discovery, the directory browser, manual add, and
+// the persisted selection): it is available only on a loopback bind (see
+// Server.extraPathsAllowed), so a network-exposed server never offers the remote
+// arbitrary-path walk control. selectedDirs pre-fills the persisted selection.
+//
+// activeTab ("sources"|"files"; default "sources") is server-rendered from ?tab=
+// so the active tab is robust across every htmx swap within a panel. Only the
+// active panel is rendered, so its htmx targets exist only while it is shown.
+// discoverInitial is the initial content of the stable #discover-results
+// container (idle controls, or the live scanning/terminal fragment when a crawl
+// is in flight); nil falls back to the idle controls.
+func libraryPage(v libraryView, csrf string, allowExtra bool, selectedDirs []string, theme, activeTab string, discoverInitial g.Node) g.Node {
+	if activeTab != "files" {
+		activeTab = "sources"
+	}
+	var panel g.Node
+	if activeTab == "files" {
+		panel = filesPanel(v, csrf, allowExtra, selectedDirs)
+	} else {
+		panel = sourcesPanel(csrf, allowExtra, selectedDirs, discoverInitial)
+	}
 	return page("Library", theme, csrf,
-		card(
+		h.Div(
 			sectionTitle("Library"),
-			scanForm(csrf, allowExtra, selectedDirs),
+			libraryTabStrip(activeTab),
+		),
+		h.Div(h.ID("tab-panel"), panel),
+	)
+}
+
+// libraryTabStrip renders the two-tab navigation. The active tab is a plain
+// full-page navigation (?tab=…) styled with the civitai button component, so it
+// survives every in-panel htmx interaction (those never re-render the strip).
+func libraryTabStrip(active string) g.Node {
+	return h.Div(
+		g.Attr("role", "tablist"),
+		h.Class("mt-1 mb-4 flex gap-2 border-b border-slate-800 pb-3"),
+		libraryTab("sources", "Install directories", active),
+		libraryTab("files", "Model files", active),
+	)
+}
+
+func libraryTab(id, label, active string) g.Node {
+	variant, selected := "subtle", "false"
+	if id == active {
+		variant, selected = "filled", "true"
+	}
+	return civLinkButton(variant, "md", "/library?tab="+id, []g.Node{
+		g.Attr("role", "tab"),
+		g.Attr("aria-selected", selected),
+	}, g.Text(label))
+}
+
+// sourcesPanel is Tab A ("Install directories"): FINDING/SELECTING scan dirs
+// only — the stable #discover-results container (discovery button + manual add +
+// browser when idle; the live scanning card while a crawl runs) and the persisted
+// #selected-dirs list (add/remove). It renders NO model-file scan UI. On a
+// non-loopback bind the whole capability is disabled, so it shows only the gating
+// note.
+func sourcesPanel(csrf string, allowExtra bool, selectedDirs []string, discoverInitial g.Node) g.Node {
+	if !allowExtra {
+		return card(
+			sectionTitle("Install directories"),
+			h.P(h.Class("text-sm text-slate-400"),
+				g.Text("Directory discovery and selection are disabled when the server is bound to a non-loopback address.")),
+		)
+	}
+	if discoverInitial == nil {
+		discoverInitial = discoverControls(csrf)
+	}
+	return card(
+		sectionTitle("Install directories"),
+		h.P(h.Class("mb-3 text-sm text-slate-400"),
+			g.Text("Find and select the ComfyUI / Automatic1111 install directories to scan. Switch to “Model files” to scan them.")),
+		// The STABLE poll/results container: only its innerHTML is ever swapped, so
+		// the re-arming poller can never orphan a #discover-poll (the re-discover fix).
+		h.Div(h.ID("discover-results"), discoverInitial),
+		h.Div(
+			h.Class("mt-4 space-y-2 border-t border-slate-800 pt-4"),
+			h.Div(h.Class("text-xs font-medium text-slate-300"), g.Text("Selected scan directories")),
+			h.Div(h.ID("selected-dirs"), selectedDirsList(selectedDirs, csrf)),
+		),
+	)
+}
+
+// filesPanel is Tab B ("Model files"): SCANNING the selected dirs for model
+// files — an explicit "Scan for model files" button, the "Match against CivitAI"
+// opt-in, and (after a scan) the Summary / Files-by-model / Deletion-candidate /
+// quarantine results. It renders NO discovery UI. When no install directories
+// have been selected yet (loopback bind), it shows an empty state pointing at Tab
+// A rather than a bare scan button.
+func filesPanel(v libraryView, csrf string, allowExtra bool, selectedDirs []string) g.Node {
+	if allowExtra && len(selectedDirs) == 0 {
+		return card(
+			sectionTitle("Model files"),
+			alert("info", "No install directories selected yet",
+				h.P(h.Class("mt-1 text-sm"),
+					g.Text("Add install directories first (see the “Install directories” tab), then scan them for model files.")),
+			),
+		)
+	}
+	return h.Div(
+		h.Class("space-y-6"),
+		card(
+			sectionTitle("Model files"),
+			modelScanForm(csrf),
 			h.Div(h.ID("scan-spinner"), h.Class("htmx-indicator text-xs text-slate-400 mt-1"), g.Text("Scanning…")),
 		),
 		h.Div(h.ID("library-content"), libraryContent(v, csrf)),
 	)
 }
 
-// scanForm renders the scan controls. When allowExtra is true (loopback bind
-// only) it renders the rich extra-directory selector: the persisted selection as
-// pre-checked checkboxes, an auto-discovery button, a server-side directory
-// browser, and the remote-match opt-in. The selected dirs are unioned with
-// model_root so cross-directory duplicates outside model_root become visible —
-// the same reach as the CLI `scan --path`. The form carries the CSRF token.
+// modelScanForm renders Tab B's model-file scan form: the explicit "Scan for
+// model files" submit and the opt-in "Match against CivitAI" checkbox. It carries
+// NO scan_dir checkboxes — the dirs to scan are the persisted selection managed in
+// Tab A (handleLibraryScan falls back to them when no checkboxes are submitted).
 //
 // The remote-match checkbox is OPT-IN: by default a web scan runs offline (local
 // duplicate/broken analysis only) and does NOT send file SHA256 hashes to
 // CivitAI's by-hash lookup. Ticking it enables CivitAI matching for this scan.
-func scanForm(csrf string, allowExtra bool, selectedDirs []string) g.Node {
-	children := []g.Node{
+func modelScanForm(csrf string) g.Node {
+	return h.Form(
 		hx("post", "/library/scan"),
 		hx("target", "#library-content"),
 		hx("swap", "innerHTML"),
 		hx("indicator", "#scan-spinner"),
-		h.Class("mt-3 space-y-3"),
+		h.Class("space-y-3"),
 		csrfInput(csrf),
-	}
-	if allowExtra {
-		children = append(children,
-			h.Div(
-				h.Class("space-y-2 rounded-md border border-slate-800 bg-slate-900/60 p-3"),
-				h.Div(h.Class("text-xs font-medium text-slate-300"), g.Text("Extra scan directories")),
-				h.Div(h.ID("selected-dirs"), selectedDirsList(selectedDirs, csrf)),
-				h.Div(
-					h.Class("flex flex-wrap items-center gap-2"),
-					civButton("outline", "sm", []g.Node{
-						h.Type("button"),
-						hx("post", "/library/discover"),
-						hx("target", "#discover-results"),
-						hx("swap", "innerHTML"),
-						// Brief click-guard: the POST returns instantly with the
-						// scanning fragment (which carries its own polling spinner),
-						// so no button-level indicator is needed.
-						hx("disabled-elt", "this"),
-						csrfInline(csrf),
-					}, g.Text("Discover installs")),
-				),
-				h.Div(h.ID("discover-results")),
-				directoryBrowser(csrf),
-			),
-			h.Label(
-				h.Class("flex items-center gap-2 text-xs text-slate-400"),
-				h.Input(h.Type("checkbox"), h.Name("match_remote"), h.Value("true"),
-					h.Class("rounded border-slate-600 bg-slate-800 text-indigo-500")),
-				g.Text("Match against CivitAI (sends file hashes to civitai.com)"),
-			),
-		)
-	}
-	children = append(children,
-		btnPrimary(g.Text("Scan selected")),
+		h.Label(
+			h.Class("flex items-center gap-2 text-xs text-slate-400"),
+			h.Input(h.Type("checkbox"), h.Name("match_remote"), h.Value("true"),
+				h.Class("rounded border-slate-600 bg-slate-800 text-indigo-500")),
+			g.Text("Match against CivitAI (sends file hashes to civitai.com)"),
+		),
+		btnPrimary(g.Text("Scan for model files")),
 	)
-	return h.Form(children...)
 }
 
 // libraryContent is the fragment swapped after a scan: totals, per-model
@@ -151,7 +218,7 @@ func stat(label, value string) g.Node {
 
 func libraryModelTable(files []store.LocalFile) g.Node {
 	if len(files) == 0 {
-		return h.P(h.Class("text-sm text-slate-500"), g.Text("No files scanned yet. Click “Scan now”."))
+		return h.P(h.Class("text-sm text-slate-500"), g.Text("No files scanned yet. Click “Scan for model files”."))
 	}
 	groups := groupFilesByModel(files)
 	var rows []g.Node

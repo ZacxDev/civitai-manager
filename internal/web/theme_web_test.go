@@ -257,7 +257,7 @@ func TestNoExternalCDNInShippedHTML(t *testing.T) {
 	pages := map[string]g.Node{
 		"dashboard": dashboardPage(subs, "csrf", "dark"),
 		"search":    searchPage("", nil, "https://civitai.com", "csrf", "light"),
-		"library":   libraryPage(buildLibraryView(nil), "csrf", true, nil, "dark"),
+		"library":   libraryPage(buildLibraryView(nil), "csrf", true, nil, "dark", "sources", nil),
 		"trash":     trashPage(nil, "csrf", "light"),
 		"queue":     queueFragment(items),
 		"events":    eventsFragment(evs),

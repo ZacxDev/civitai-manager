@@ -60,10 +60,15 @@ func get(t *testing.T, srv *Server, path string) *httptest.ResponseRecorder {
 // discoverPollerMarkup is the set of htmx attributes that MUST be present in a
 // scanning fragment for the client to keep polling; their ABSENCE marks a
 // terminal (done) fragment.
+//
+// The poller is a one-shot, re-arming element: it fires once (load delay:1s) and
+// swaps the STABLE #discover-results container's innerHTML — it never targets
+// itself (the re-discover-after-stop fix). While running, each status response
+// carries a fresh poller; the terminal fragment carries none.
 var discoverPollerMarkup = []string{
 	`hx-get="/library/discover/status"`,
-	`hx-trigger="every 1s"`,
-	`hx-swap="outerHTML"`,
+	`hx-trigger="load delay:1s"`,
+	`hx-target="#discover-results"`,
 }
 
 // hasPoller reports whether body is a scanning fragment (still polling).
@@ -146,7 +151,10 @@ func TestDiscoverDedupesAgainstModelRoot(t *testing.T) {
 		t.Fatalf("discover = %d", rec.Code)
 	}
 	body := pollDiscoverUntilDone(t, srv)
-	if strings.Contains(body, "/library/scan-dirs/add") {
+	// The terminal fragment now restores the idle controls (which themselves POST to
+	// /library/scan-dirs/add), so the dedup assertion is that the install's OWN path
+	// — and thus its Add card — is absent from the results.
+	if strings.Contains(body, install) {
 		t.Errorf("install equal to model_root should be de-duped, got:\n%s", body)
 	}
 }
@@ -285,8 +293,8 @@ func TestScanDirAddRemovePersistAndScan(t *testing.T) {
 // fragment, the progress spinner + copy live on that fragment (discoverScanning),
 // NOT as a button-level hx-indicator. The button keeps a brief click-guard.
 func TestDiscoverLoadingIndicatorMarkup(t *testing.T) {
-	// allowExtra=true so the discover control is rendered.
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, nil, "dark"))
+	// allowExtra=true, Tab A (sources) so the discover control is rendered.
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, nil, "dark", "sources", nil))
 	for _, want := range []string{
 		`hx-post="/library/discover"`,
 		`hx-disabled-elt="this"`,
@@ -301,20 +309,26 @@ func TestDiscoverLoadingIndicatorMarkup(t *testing.T) {
 			t.Errorf("library page still has removed button indicator %q", gone)
 		}
 	}
-	// The real progress affordance lives on the scanning fragment: a self-polling
-	// element with the spinner + scanning copy + a Stop button.
+	// The real progress affordance lives on the scanning fragment: the one-shot
+	// re-arming poller (targeting the STABLE #discover-results, never itself) plus
+	// the spinner + scanning copy + a large primary Stop CTA.
 	scan := renderString(t, discoverScanning(nil, nil, "csrf"))
 	for _, want := range []string{
 		`hx-get="/library/discover/status"`,
-		`hx-trigger="every 1s"`,
+		`hx-trigger="load delay:1s"`,
+		`hx-target="#discover-results"`,
 		"Scanning all disks for ComfyUI / Automatic1111 installs",
 		"found 0 so far",
 		`hx-post="/library/discover/stop"`,
-		"Stop",
+		"Stop scanning",
 	} {
 		if !strings.Contains(scan, want) {
 			t.Errorf("scanning fragment missing progress affordance %q", want)
 		}
+	}
+	// The poller must NOT self-target by outerHTML (the bug that wedged re-discovery).
+	if strings.Contains(scan, `hx-swap="outerHTML"`) {
+		t.Errorf("scanning poller must not self-replace via outerHTML:\n%s", scan)
 	}
 }
 
