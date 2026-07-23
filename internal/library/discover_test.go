@@ -2,6 +2,7 @@ package library
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,18 @@ import (
 	"testing"
 	"time"
 )
+
+// nestedInstallPath returns root/d1/d2/.../inst so that the returned leaf sits at
+// exactly `depth` levels below root (depth-1 intermediate dirs + the leaf). It
+// does NOT create anything — the caller lays down the install at the returned path.
+func nestedInstallPath(root string, depth int, leaf string) string {
+	parts := []string{root}
+	for i := 1; i < depth; i++ {
+		parts = append(parts, fmt.Sprintf("d%d", i))
+	}
+	parts = append(parts, leaf)
+	return filepath.Join(parts...)
+}
 
 // mkdirAll is a fatal-on-error helper.
 func mkdirAll(t *testing.T, path string) {
@@ -196,6 +209,87 @@ func TestDiscoverRespectsMaxDepth(t *testing.T) {
 	got = discover(t, context.Background(), root, DiscoverOptions{MaxDepth: 10})
 	if len(got) != 1 {
 		t.Fatalf("MaxDepth=10 should find the deep install, got %+v", got)
+	}
+}
+
+// TestDiscoverFindsDeeplyNestedInstall is the regression guard for the reported
+// miss: a genuine ComfyUI install at depth 4 below the crawl root (mirroring the
+// real $HOME/workspace/fast/comfyui/ComfyUI) MUST be found with the default depth,
+// and MUST NOT be found at the old depth-3 cap — proving the raised default is
+// what fixes the miss.
+func TestDiscoverFindsDeeplyNestedInstall(t *testing.T) {
+	root := t.TempDir()
+	// root/a/b/comfyui/ComfyUI → the "ComfyUI" install dir is at depth 4.
+	comfy := filepath.Join(root, "a", "b", "comfyui", "ComfyUI")
+	makeComfy(t, comfy)
+	want := mustAbs(t, comfy)
+
+	// Old cap (3): the depth-4 install is missed — this is exactly the bug.
+	old := discover(t, context.Background(), root, DiscoverOptions{MaxDepth: 3, gitProbe: stubProbe})
+	for _, in := range old {
+		if in.Path == want {
+			t.Fatalf("MaxDepth=3 (old default) unexpectedly found the depth-4 install %s — regression sub-case is vacuous", want)
+		}
+	}
+	if len(old) != 0 {
+		t.Fatalf("MaxDepth=3 should find no installs in this tree, got %+v", old)
+	}
+
+	// New default (DefaultDiscoverMaxDepth=12): the install is found.
+	got := discover(t, context.Background(), root, DiscoverOptions{gitProbe: stubProbe})
+	if len(got) != 1 || got[0].Path != want {
+		t.Fatalf("default depth should find the depth-4 install %s, got %+v", want, got)
+	}
+	// Guard the intent: the default must actually be generous enough for depth 4.
+	if DefaultDiscoverMaxDepth < 4 {
+		t.Fatalf("DefaultDiscoverMaxDepth=%d is too shallow to reach a depth-4 install", DefaultDiscoverMaxDepth)
+	}
+}
+
+// TestDiscoverDepthCapBackstop proves the depth cap still exists and is honored: an
+// install exactly AT the default cap is found, one just BEYOND it is not. This is
+// the guard that raising the default did not remove the pathological-tree backstop.
+func TestDiscoverDepthCapBackstop(t *testing.T) {
+	// Install exactly at the cap depth → found.
+	within := t.TempDir()
+	atCap := nestedInstallPath(within, DefaultDiscoverMaxDepth, "AtCap")
+	makeComfy(t, atCap)
+	got := discover(t, context.Background(), within, DiscoverOptions{gitProbe: stubProbe})
+	if len(got) != 1 || got[0].Path != mustAbs(t, atCap) {
+		t.Fatalf("install at the cap depth %d (%s) should be found, got %+v", DefaultDiscoverMaxDepth, atCap, got)
+	}
+
+	// Install one level beyond the cap → not found (backstop honored).
+	beyond := t.TempDir()
+	overCap := nestedInstallPath(beyond, DefaultDiscoverMaxDepth+1, "OverCap")
+	makeComfy(t, overCap)
+	got = discover(t, context.Background(), beyond, DiscoverOptions{gitProbe: stubProbe})
+	if len(got) != 0 {
+		t.Fatalf("install one level beyond the cap depth %d (%s) must NOT be found, got %+v",
+			DefaultDiscoverMaxDepth+1, overCap, got)
+	}
+}
+
+// TestDiscoverPrunesInstallUnderPrunedDir confirms the raised depth did not weaken
+// the prune list: an install buried under a pruned directory (node_modules) is
+// skipped even though it is shallow, while a sibling real install is still found.
+func TestDiscoverPrunesInstallUnderPrunedDir(t *testing.T) {
+	root := t.TempDir()
+
+	real := filepath.Join(root, "RealComfy") // depth 1, must be found
+	makeComfy(t, real)
+
+	pruned := filepath.Join(root, "node_modules", "ComfyUI") // under a pruned dir
+	makeComfy(t, pruned)
+
+	got := discover(t, context.Background(), root, DiscoverOptions{gitProbe: stubProbe})
+	if len(got) != 1 || got[0].Path != mustAbs(t, real) {
+		t.Fatalf("expected only the non-pruned install %s, got %+v", real, got)
+	}
+	for _, in := range got {
+		if in.Path == mustAbs(t, pruned) {
+			t.Fatalf("install under node_modules/ must be pruned, but was reported: %s", pruned)
+		}
 	}
 }
 
