@@ -2,8 +2,11 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -113,19 +116,19 @@ func TestScanPollerStructure(t *testing.T) {
 // stopped vs. errored, and the never-started case renders plain content.
 func TestScanResultsMessaging(t *testing.T) {
 	complete := renderString(t, scanResults(buildLibraryView(nil), scanSnapshot{
-		Started: true, Scanned: 5, Matched: 2, Unmatched: 3,
+		Started: true, Scanned: 5, Discovered: 5, Matched: 2, Unmatched: 3,
 	}, "csrf"))
-	// New wording (was "Scan complete — 5 files, 2 matched"): the terminal now shows
-	// the scanned/matched/unmatched breakdown so a low match count reads as normal.
-	if !strings.Contains(complete, "Scan complete — 5 files · 2 matched · 3 unmatched") {
-		t.Errorf("exhausted scan should say 'Scan complete — 5 files · 2 matched · 3 unmatched':\n%s", complete)
+	// The terminal shows the discovered total + matched/unmatched breakdown so a low
+	// match count reads as normal.
+	if !strings.Contains(complete, "Scan complete — 5 discovered · 2 matched · 3 unmatched") {
+		t.Errorf("exhausted scan should say 'Scan complete — 5 discovered · 2 matched · 3 unmatched':\n%s", complete)
 	}
 	stopped := renderString(t, scanResults(buildLibraryView(nil), scanSnapshot{
-		Started: true, Scanned: 3, Matched: 1, Unmatched: 2, Stopped: true,
+		Started: true, Scanned: 3, Discovered: 5, Matched: 1, Unmatched: 2, Stopped: true,
 	}, "csrf"))
-	// New wording (was "Scan stopped — scanned 3 files, matched 1").
-	if !strings.Contains(stopped, "Scan stopped — scanned 3 · matched 1 · unmatched 2") {
-		t.Errorf("user-stopped scan should say 'Scan stopped …' with the breakdown:\n%s", stopped)
+	// A stop mid-scan shows progress against the total it had discovered so far.
+	if !strings.Contains(stopped, "Scan stopped — 3 / 5 discovered · matched 1 · unmatched 2") {
+		t.Errorf("user-stopped scan should say 'Scan stopped …' with N / total discovered:\n%s", stopped)
 	}
 	if strings.Contains(stopped, "Scan complete") {
 		t.Errorf("stopped scan must not claim complete:\n%s", stopped)
@@ -148,13 +151,14 @@ func TestScanResultsMessaging(t *testing.T) {
 
 // blockingScan returns a scanFn seam that signals when entered (started) and
 // blocks until release is closed, then emits emit and returns err.
-func blockingScan(started chan<- struct{}, release <-chan struct{}, emit []library.FileResult, err error) func(context.Context, func(library.FileResult)) error {
-	return func(ctx context.Context, onFile func(library.FileResult)) error {
+func blockingScan(started chan<- struct{}, release <-chan struct{}, emit []library.FileResult, err error) func(context.Context, func(library.FileResult), func(int)) error {
+	return func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
 		select {
 		case started <- struct{}{}:
 		default:
 		}
 		<-release
+		onDiscovered(len(emit))
 		for _, fr := range emit {
 			onFile(fr)
 		}
@@ -193,7 +197,7 @@ func TestScanPostRedirectsAndRunsInBackground(t *testing.T) {
 	// persist, so it is empty here) plus the completion message. The streamed cards
 	// live in the scanning view, exercised by TestScanStatusStreamsGrowingCards.
 	term := pollScanUntilDone(t, srv)
-	for _, want := range []string{"Scan result", "Scan complete — 1 files · 1 matched · 0 unmatched"} {
+	for _, want := range []string{"Scan result", "Scan complete — 1 discovered · 1 matched · 0 unmatched"} {
 		if !strings.Contains(term, want) {
 			t.Errorf("completed scan terminal missing %q:\n%s", want, term)
 		}
@@ -213,7 +217,7 @@ func TestScanStopsDiscovery(t *testing.T) {
 		return nil, ctx.Err()
 	}
 	// A trivially-completing scan seam so the scan itself does not block.
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult)) error { return nil }
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error { return nil }
 
 	if rec := post(t, srv, "/library/discover", url.Values{}, true); rec.Code != http.StatusOK {
 		t.Fatalf("discover = %d", rec.Code)
@@ -253,7 +257,8 @@ func TestScanStatusStreamsGrowingCards(t *testing.T) {
 	}
 	progress := make(chan int)
 	step := make(chan struct{})
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
+		onDiscovered(len(frs)) // walk found all 3 up front
 		for i, fr := range frs {
 			onFile(fr) // appends under scanMu (happens-before the progress send)
 			progress <- i
@@ -274,6 +279,10 @@ func TestScanStatusStreamsGrowingCards(t *testing.T) {
 		if got := countScanCards(body); got != i+1 {
 			t.Fatalf("after %d streamed results, status should show %d cards, got %d:\n%s", i+1, i+1, got, body)
 		}
+		// The streaming progress line shows progress against the discovered total.
+		if want := fmt.Sprintf("%d / 3 discovered", i+1); !strings.Contains(body, want) {
+			t.Errorf("streaming progress after %d results should read %q:\n%s", i+1, want, body)
+		}
 		step <- struct{}{} // let the seam emit the next
 	}
 	// After the last step the seam returns → terminal (no poller).
@@ -281,8 +290,8 @@ func TestScanStatusStreamsGrowingCards(t *testing.T) {
 	if countScanPoll(term) != 0 {
 		t.Errorf("terminal must have no poller:\n%s", term)
 	}
-	if !strings.Contains(term, "Scan complete — 3 files · 2 matched · 1 unmatched") {
-		t.Errorf("terminal should report 3 files / 2 matched / 1 unmatched:\n%s", term)
+	if !strings.Contains(term, "Scan complete — 3 discovered · 2 matched · 1 unmatched") {
+		t.Errorf("terminal should report 3 discovered / 2 matched / 1 unmatched:\n%s", term)
 	}
 }
 
@@ -294,7 +303,7 @@ func TestScanStatusRaceSafe(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
 	const n = 200
 	done := make(chan struct{})
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
 		defer close(done)
 		for i := 0; i < n; i++ {
 			select {
@@ -350,6 +359,40 @@ func (s *Server) mustScanned(t *testing.T) int {
 	return s.scanJobState().Scanned
 }
 
+// TestScanCapturesDiscoveredFromRealScanner proves the end-to-end discovered-count
+// wiring through the PRODUCTION path (scanFn=nil): the real scanner walks a temp
+// tree with K model files and reports the total via OnDiscovered, the scan job
+// records discovered==K, and the terminal renders "K discovered". Offline
+// (match_remote=false) so the scan makes no CivitAI API calls.
+func TestScanCapturesDiscoveredFromRealScanner(t *testing.T) {
+	root := t.TempDir()
+	const k = 3
+	for i := 0; i < k; i++ {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("m%d.safetensors", i)), []byte("weights"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A sidecar/preview must NOT inflate the discovered model-file total.
+	if err := os.WriteFile(filepath.Join(root, "m0.preview.png"), []byte("img"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := newLibraryTestServer(t, root)
+	if err := srv.store.SetSetting(matchRemoteSettingKey, "false"); err != nil {
+		t.Fatal(err)
+	}
+	// scanFn stays nil → startScan builds and runs the real scanner over model_root.
+	if rec := post(t, srv, "/library/scan", url.Values{}, true); rec.Code != http.StatusOK {
+		t.Fatalf("scan = %d", rec.Code)
+	}
+	term := pollScanUntilDone(t, srv)
+	if got := srv.scanJobState().Discovered; got != k {
+		t.Fatalf("discovered total from the real scanner = %d, want %d", got, k)
+	}
+	if want := fmt.Sprintf("Scan complete — %d discovered", k); !strings.Contains(term, want) {
+		t.Errorf("terminal should show %q:\n%s", want, term)
+	}
+}
+
 // --- Stop (finding #3) -------------------------------------------------------
 
 // TestScanStopCancelsAndIsTerminal proves POST /library/scan/stop cancels the
@@ -358,7 +401,7 @@ func (s *Server) mustScanned(t *testing.T) int {
 func TestScanStopCancelsAndIsTerminal(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
 	entered := make(chan struct{})
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
 		onFile(fileResult("a.safetensors", nil))
 		close(entered)
 		<-ctx.Done() // block until Stop cancels the context
@@ -407,7 +450,7 @@ func TestScanStopIsTerminalWhileGoroutineStillRunning(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
 		onFile(fileResult("a.safetensors", nil))
 		close(entered)
 		<-release // deliberately ignores ctx: the goroutine stays running past Stop
@@ -459,7 +502,7 @@ func TestScanIdempotentSingleJob(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
 	var calls int32
 	release := make(chan struct{})
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
 		atomic.AddInt32(&calls, 1)
 		<-release
 		return nil
@@ -490,7 +533,7 @@ func TestScanTabLandingBootstrapsScanningView(t *testing.T) {
 	}
 	release := make(chan struct{})
 	// Emit the card, then keep running so the tab landing observes the scanning view.
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
 		onFile(fileResult("a.safetensors", intp(9)))
 		<-release
 		return nil

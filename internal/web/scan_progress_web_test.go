@@ -22,7 +22,7 @@ func pendingResult(name string) library.FileResult {
 
 // nilScan is a trivially-completing scan seam (the noRemote value the handler
 // computes is recorded on the job regardless of the seam).
-func nilScan(context.Context, func(library.FileResult)) error { return nil }
+func nilScan(context.Context, func(library.FileResult), func(int)) error { return nil }
 
 // --- Change 1: default-on -----------------------------------------------------
 
@@ -139,7 +139,8 @@ func TestScanTransparencyNoteRendered(t *testing.T) {
 // terminal wording shows the full breakdown.
 func TestScanTalliesMatchedUnmatchedPending(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
+		onDiscovered(4)                              // walk found 4 model files
 		onFile(fileResult("a.safetensors", intp(1))) // matched
 		onFile(fileResult("b.safetensors", nil))     // unmatched
 		onFile(fileResult("c.safetensors", nil))     // unmatched
@@ -156,26 +157,37 @@ func TestScanTalliesMatchedUnmatchedPending(t *testing.T) {
 		t.Fatalf("counts scanned=%d matched=%d unmatched=%d pending=%d; want 4/1/2/1",
 			snap.Scanned, snap.Matched, snap.Unmatched, snap.Pending)
 	}
-	if !strings.Contains(term, "Scan complete — 4 files · 1 matched · 2 unmatched · 1 pending") {
-		t.Errorf("terminal should show the full scanned/matched/unmatched/pending breakdown:\n%s", term)
+	if snap.Discovered != 4 {
+		t.Fatalf("job should capture the discovered total from the seam: got %d, want 4", snap.Discovered)
+	}
+	if !strings.Contains(term, "Scan complete — 4 discovered · 1 matched · 2 unmatched · 1 pending") {
+		t.Errorf("terminal should show discovered total + matched/unmatched/pending breakdown:\n%s", term)
 	}
 }
 
-// TestScanScanningRendersCounts proves the in-progress fragment renders all three
-// (four, with pending) counts.
+// TestScanScanningRendersCounts proves the in-progress fragment renders progress
+// against the discovered total ("N / D discovered") plus matched/unmatched/pending.
 func TestScanScanningRendersCounts(t *testing.T) {
 	frag := renderString(t, scanScanning(scanSnapshot{
-		Started: true, Running: true, Scanned: 120, Matched: 40, Unmatched: 78, Pending: 2,
+		Started: true, Running: true, Scanned: 120, Discovered: 454, Matched: 40, Unmatched: 78, Pending: 2,
 	}, "csrf"))
-	if !strings.Contains(frag, "scanned 120 · matched 40 · unmatched 78 · pending 2") {
-		t.Errorf("scanning progress should show scanned/matched/unmatched/pending:\n%s", frag)
+	if !strings.Contains(frag, "120 / 454 discovered · matched 40 · unmatched 78 · pending 2") {
+		t.Errorf("scanning progress should show N / total discovered + matched/unmatched/pending:\n%s", frag)
 	}
 	// With zero pending, the pending term is omitted (kept clean).
 	frag = renderString(t, scanScanning(scanSnapshot{
-		Started: true, Running: true, Scanned: 10, Matched: 4, Unmatched: 6,
+		Started: true, Running: true, Scanned: 10, Discovered: 16, Matched: 4, Unmatched: 6,
 	}, "csrf"))
-	if !strings.Contains(frag, "scanned 10 · matched 4 · unmatched 6") || strings.Contains(frag, "pending") {
+	if !strings.Contains(frag, "10 / 16 discovered · matched 4 · unmatched 6") || strings.Contains(frag, "pending") {
 		t.Errorf("scanning progress should omit the pending term when zero:\n%s", frag)
+	}
+	// Before the walk reports a total (discovered==0, nothing scanned), the line
+	// reads "walking…" rather than "0 / 0 discovered".
+	walking := renderString(t, scanScanning(scanSnapshot{
+		Started: true, Running: true,
+	}, "csrf"))
+	if !strings.Contains(walking, "walking…") {
+		t.Errorf("scanning progress before the walk finishes should read 'walking…':\n%s", walking)
 	}
 }
 
@@ -215,7 +227,7 @@ func TestScanOfflineShowsMatchingOffNote(t *testing.T) {
 	if err := srv.store.SetSetting(matchRemoteSettingKey, "false"); err != nil {
 		t.Fatal(err)
 	}
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
 		onFile(fileResult("a.safetensors", nil))
 		return nil
 	}
@@ -230,7 +242,7 @@ func TestScanOfflineShowsMatchingOffNote(t *testing.T) {
 	if err := srv.store.SetSetting(matchRemoteSettingKey, "true"); err != nil {
 		t.Fatal(err)
 	}
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
 		onFile(fileResult("a.safetensors", intp(2)))
 		return nil
 	}

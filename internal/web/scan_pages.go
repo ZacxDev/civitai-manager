@@ -70,11 +70,23 @@ func scanStopButton(csrf string) g.Node {
 	}, g.Text("Stop scanning"))
 }
 
-// scanProgressText renders the muted running/terminal count line
-// "scanned N · matched M · unmatched U" (with "· pending P" only when any file is
-// pending). unmatched is a normal outcome, so it is a plain count, not alarming.
-func scanProgressText(scanned, matched, unmatched, pending int) string {
-	s := fmt.Sprintf("scanned %d · matched %d · unmatched %d", scanned, matched, unmatched)
+// scanProgressText renders the muted running/terminal count line. Once the walk
+// has reported the discovered total it reads "N / D discovered · matched M ·
+// unmatched U" — progress against the denominator so the user sees how far the
+// scan has to go. Until the total is known (the walk is still finding files) it
+// reads "walking…"; a seam that streams files without reporting a total falls back
+// to a plain "N scanned" count. "· pending P" is appended only when any file is
+// pending. unmatched is a normal outcome, so it is a plain count, not alarming.
+func scanProgressText(scanned, discovered, matched, unmatched, pending int) string {
+	var s string
+	switch {
+	case discovered > 0:
+		s = fmt.Sprintf("%d / %d discovered · matched %d · unmatched %d", scanned, discovered, matched, unmatched)
+	case scanned > 0:
+		s = fmt.Sprintf("%d scanned · matched %d · unmatched %d", scanned, matched, unmatched)
+	default:
+		return "walking… (finding model files)"
+	}
 	if pending > 0 {
 		s += fmt.Sprintf(" · pending %d", pending)
 	}
@@ -100,7 +112,7 @@ func scanScanning(snap scanSnapshot, csrf string) g.Node {
 		h.Class("flex items-center gap-2 text-sm text-slate-300"),
 		spinnerGlyph(),
 		g.Text("Scanning selected directories for model files… "+
-			scanProgressText(snap.Scanned, snap.Matched, snap.Unmatched, snap.Pending)+
+			scanProgressText(snap.Scanned, snap.Discovered, snap.Matched, snap.Unmatched, snap.Pending)+
 			" (Stop any time)"),
 	)
 	cardChildren := []g.Node{
@@ -144,11 +156,17 @@ func scanResults(v libraryView, snap scanSnapshot, csrf string) g.Node {
 		status = h.P(h.Class("text-xs text-amber-400"), g.Text(scanErrorMessage(snap.Err)))
 	case snap.Stopped || snap.Err != nil:
 		status = h.P(h.Class("text-xs text-amber-400"),
-			g.Text("Scan stopped — "+scanProgressText(snap.Scanned, snap.Matched, snap.Unmatched, snap.Pending)))
+			g.Text("Scan stopped — "+scanProgressText(snap.Scanned, snap.Discovered, snap.Matched, snap.Unmatched, snap.Pending)))
 	default:
+		// An exhausted scan processed every discovered file, so discovered == scanned;
+		// fall back to scanned if the seam never reported a total.
+		total := snap.Discovered
+		if total <= 0 {
+			total = snap.Scanned
+		}
 		status = h.P(h.Class("text-xs text-emerald-400"),
-			g.Text(fmt.Sprintf("Scan complete — %d files · %d matched · %d unmatched",
-				snap.Scanned, snap.Matched, snap.Unmatched)+pendingSuffix(snap.Pending)))
+			g.Text(fmt.Sprintf("Scan complete — %d discovered · %d matched · %d unmatched",
+				total, snap.Matched, snap.Unmatched)+pendingSuffix(snap.Pending)))
 	}
 	cardChildren := []g.Node{
 		h.Class("space-y-1"),

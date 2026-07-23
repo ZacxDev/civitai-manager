@@ -103,14 +103,24 @@ func (s *Server) startScan(extra []string, noRemote bool) {
 		s.scanMu.Unlock()
 	}
 
+	// onDiscovered records the total model-file count the walk found (the progress
+	// denominator), reported once before per-file streaming. Guarded by scanMu like
+	// the streamed counters so a concurrent /status poll reads a consistent value.
+	onDiscovered := func(total int) {
+		s.scanMu.Lock()
+		job.discovered = total
+		s.scanMu.Unlock()
+	}
+
 	scan := s.scanFn
 	if scan == nil {
 		// Production path: build the real scanner over the resolved dirs and run its
 		// streaming Scan. local_files persistence + candidate analysis still happen
-		// inside Scan; OnFile only ADDS the incremental view.
+		// inside Scan; OnFile/OnDiscovered only ADD the incremental view.
 		sc := s.newScanner(extra, noRemote)
-		scan = func(ctx context.Context, of func(library.FileResult)) error {
+		scan = func(ctx context.Context, of func(library.FileResult), od func(int)) error {
 			sc.SetOnFile(of)
+			sc.SetOnDiscovered(od)
 			_, err := sc.Scan(ctx)
 			return err
 		}
@@ -118,7 +128,7 @@ func (s *Server) startScan(extra []string, noRemote bool) {
 
 	go func() {
 		defer cancel()
-		err := scan(ctx, onFile)
+		err := scan(ctx, onFile, onDiscovered)
 		s.scanMu.Lock()
 		job.err = err
 		job.running = false
@@ -150,11 +160,11 @@ func (s *Server) stopScan() {
 // header) — the same torn-slice guard the discovery job uses. Arrival order is
 // preserved (the streaming order files were scanned in).
 type scanSnapshot struct {
-	Started, Running                     bool
-	Results                              []library.FileResult
-	Scanned, Matched, Unmatched, Pending int
-	Stopped, NoRemote                    bool
-	Err                                  error
+	Started, Running                                 bool
+	Results                                          []library.FileResult
+	Scanned, Matched, Unmatched, Pending, Discovered int
+	Stopped, NoRemote                                bool
+	Err                                              error
 }
 
 // scanJobState returns a locked snapshot of the current scan job.
@@ -168,16 +178,17 @@ func (s *Server) scanJobState() scanSnapshot {
 	snap := make([]library.FileResult, len(j.results))
 	copy(snap, j.results)
 	return scanSnapshot{
-		Started:   true,
-		Running:   j.running,
-		Results:   snap,
-		Scanned:   j.scanned,
-		Matched:   j.matched,
-		Unmatched: j.unmatched,
-		Pending:   j.pending,
-		Stopped:   j.stopped,
-		NoRemote:  j.noRemote,
-		Err:       j.err,
+		Started:    true,
+		Running:    j.running,
+		Results:    snap,
+		Scanned:    j.scanned,
+		Matched:    j.matched,
+		Unmatched:  j.unmatched,
+		Pending:    j.pending,
+		Discovered: j.discovered,
+		Stopped:    j.stopped,
+		NoRemote:   j.noRemote,
+		Err:        j.err,
 	}
 }
 
