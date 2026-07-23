@@ -1,40 +1,42 @@
 package library
 
 import (
-	"context"
+	"errors"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
-// matcherScanner builds a scanner wired for matcher tests: a fixed hash, no real
-// sleeps, and a small retry budget.
+// matcherScanner builds a scanner wired for matcher unit tests with a fixed hash.
 func matcherScanner(t *testing.T, root string, reader civitai.Reader, noRemote bool, fixedHash string) *Scanner {
 	t.Helper()
 	sc := NewScanner(newTestStore(t), reader, Options{ModelRoot: root, NoRemote: noRemote}, nil)
 	sc.hashFn = func(string) (string, error) { return fixedHash, nil }
-	sc.waitFn = func(context.Context, time.Duration) {} // never actually sleep
-	sc.maxHashRetries = 3
 	return sc
 }
 
-func TestMatcherValidSidecarShortCircuitsAPI(t *testing.T) {
+// resolveLocalMatch is the network-free half of matching (sidecar short-circuit +
+// offline handling); when it cannot settle a file it reports needsRemote so the
+// file's SHA joins the single batch by-hash lookup. These tests pin that split.
+
+func TestResolveLocalMatchValidSidecarShortCircuits(t *testing.T) {
 	root := t.TempDir()
 	model := filepath.Join(root, "m.safetensors")
 	writeFile(t, model, "weights")
 	// Civitai-Helper sidecar: model-version JSON with id (version) + modelId AND
-	// the file's declared SHA256, which must match this file's bytes for the
-	// short-circuit to be trusted.
+	// the file's declared SHA256, which must match this file's bytes.
 	writeFile(t, filepath.Join(root, "m.civitai.info"),
 		`{"id": 555, "modelId": 42, "files": [{"hashes": {"SHA256": "DEADBEEF", "AutoV2": "av2x"}}]}`)
 
 	fr := &fakeReader{}
 	sc := matcherScanner(t, root, fr, false, "deadbeef")
 
-	res := sc.matchFile(context.Background(), model, "deadbeef")
+	res, needsRemote := sc.resolveLocalMatch(model, "deadbeef")
+	if needsRemote {
+		t.Fatal("a hash-verified sidecar must resolve locally, not need the remote batch")
+	}
 	if res.status != store.LocalStatusMatched {
 		t.Fatalf("status = %q, want matched", res.status)
 	}
@@ -44,175 +46,137 @@ func TestMatcherValidSidecarShortCircuitsAPI(t *testing.T) {
 	if res.autov2 != "av2x" {
 		t.Fatalf("autov2 = %q, want av2x enriched from the matching sidecar file", res.autov2)
 	}
-	if fr.calls != 0 {
-		t.Fatalf("API called %d times; a hash-verified sidecar must short-circuit it", fr.calls)
+	if fr.calls != 0 || fr.batchCalls != 0 {
+		t.Fatalf("API called (calls=%d batch=%d); a verified sidecar must short-circuit it", fr.calls, fr.batchCalls)
 	}
 }
 
-// TestMatcherSidecarHashMismatchFallsThrough proves a sidecar whose declared
-// SHA256 does NOT match the file's actual bytes is not trusted: it is ignored and
-// matching falls through to the authoritative by-hash lookup (which here resolves
-// the real ids), so a mislabeled/renamed sidecar can never misclassify the file.
-func TestMatcherSidecarHashMismatchFallsThrough(t *testing.T) {
+// TestResolveLocalMatchSidecarHashMismatchNeedsRemote proves a sidecar whose
+// declared SHA256 does NOT match the file's bytes is not trusted: matching falls
+// through to the authoritative batch by-hash lookup (needsRemote), so a
+// mislabeled/renamed sidecar can never misclassify the file.
+func TestResolveLocalMatchSidecarHashMismatchNeedsRemote(t *testing.T) {
 	root := t.TempDir()
 	model := filepath.Join(root, "m.safetensors")
 	writeFile(t, model, "weights")
-	// Sidecar claims ids 999/88 for a DIFFERENT file (hash "cafef00d"), but this
-	// file actually hashes to "abc".
 	writeFile(t, filepath.Join(root, "m.civitai.info"),
 		`{"id": 999, "modelId": 88, "files": [{"hashes": {"SHA256": "cafef00d"}}]}`)
 
-	fr := &fakeReader{byHash: versionMap("abc", version(10, 100, "abc"))}
-	sc := matcherScanner(t, root, fr, false, "abc")
-
-	res := sc.matchFile(context.Background(), model, "abc")
-	if res.status != store.LocalStatusMatched || fr.calls != 1 {
-		t.Fatalf("mismatched sidecar must fall through to one API call: status=%q calls=%d", res.status, fr.calls)
+	sc := matcherScanner(t, root, &fakeReader{}, false, "abc")
+	res, needsRemote := sc.resolveLocalMatch(model, "abc")
+	if !needsRemote {
+		t.Fatal("mismatched sidecar must fall through to the remote batch")
 	}
-	if res.modelID == nil || *res.modelID != 100 || res.versionID == nil || *res.versionID != 10 {
-		t.Fatalf("ids = %v/%v, want 100/10 from the by-hash path (not the bogus sidecar 88/999)", res.modelID, res.versionID)
+	if res.status != "" {
+		t.Fatalf("a needsRemote result carries no local status yet, got %q", res.status)
 	}
 }
 
-// TestMatcherSidecarNoHashFallsThrough proves a sidecar carrying ids but NO file
-// hash cannot be trusted to adopt those ids: it falls through to by-hash.
-func TestMatcherSidecarNoHashFallsThrough(t *testing.T) {
+// TestResolveLocalMatchSidecarNoHashNeedsRemote proves a sidecar carrying ids but
+// NO file hash cannot be trusted to adopt those ids: it needs the remote batch.
+func TestResolveLocalMatchSidecarNoHashNeedsRemote(t *testing.T) {
 	root := t.TempDir()
 	model := filepath.Join(root, "m.safetensors")
 	writeFile(t, model, "weights")
-	writeFile(t, filepath.Join(root, "m.civitai.info"), `{"id": 555, "modelId": 42}`) // no files/hashes
+	writeFile(t, filepath.Join(root, "m.civitai.info"), `{"id": 555, "modelId": 42}`)
 
-	fr := &fakeReader{byHash: versionMap("abc", version(10, 100, "abc"))}
-	sc := matcherScanner(t, root, fr, false, "abc")
-
-	res := sc.matchFile(context.Background(), model, "abc")
-	if res.status != store.LocalStatusMatched || fr.calls != 1 {
-		t.Fatalf("hashless sidecar must fall through to one API call: status=%q calls=%d", res.status, fr.calls)
-	}
-	if res.modelID == nil || *res.modelID != 100 {
-		t.Fatalf("ids should come from by-hash (100), got %v", res.modelID)
+	sc := matcherScanner(t, root, &fakeReader{}, false, "abc")
+	if _, needsRemote := sc.resolveLocalMatch(model, "abc"); !needsRemote {
+		t.Fatal("hashless sidecar must fall through to the remote batch")
 	}
 }
 
-// TestMatcherSidecarNoHashOfflineUnmatched proves that in --no-remote mode a
-// hashless (unverifiable) sidecar yields unmatched rather than a blind match.
-func TestMatcherSidecarNoHashOfflineUnmatched(t *testing.T) {
+// TestResolveLocalMatchEmptySidecarNeedsRemote: an empty/whitespace sidecar is
+// ignored and falls through to the remote batch.
+func TestResolveLocalMatchEmptySidecarNeedsRemote(t *testing.T) {
 	root := t.TempDir()
 	model := filepath.Join(root, "m.safetensors")
 	writeFile(t, model, "weights")
-	writeFile(t, filepath.Join(root, "m.civitai.info"), `{"id": 555, "modelId": 42}`) // no hash
+	writeFile(t, filepath.Join(root, "m.civitai.info"), "   ")
+
+	sc := matcherScanner(t, root, &fakeReader{}, false, "abc")
+	if _, needsRemote := sc.resolveLocalMatch(model, "abc"); !needsRemote {
+		t.Fatal("empty sidecar must fall through to the remote batch")
+	}
+}
+
+// TestResolveLocalMatchOfflineHashlessSidecarUnmatched proves that in --no-remote
+// mode a hashless (unverifiable) sidecar yields unmatched — never a blind match,
+// never a remote call.
+func TestResolveLocalMatchOfflineHashlessSidecarUnmatched(t *testing.T) {
+	root := t.TempDir()
+	model := filepath.Join(root, "m.safetensors")
+	writeFile(t, model, "weights")
+	writeFile(t, filepath.Join(root, "m.civitai.info"), `{"id": 555, "modelId": 42}`)
 
 	sc := matcherScanner(t, root, &panicReader{}, true, "abc") // NoRemote
-	res := sc.matchFile(context.Background(), model, "abc")
+	res, needsRemote := sc.resolveLocalMatch(model, "abc")
+	if needsRemote {
+		t.Fatal("offline mode must never need the remote batch")
+	}
 	if res.status != store.LocalStatusUnmatched {
 		t.Fatalf("offline hashless sidecar should be unmatched, got %q", res.status)
 	}
 }
 
-func TestMatcherEmptyOrCorruptSidecarFallsThrough(t *testing.T) {
+// TestResolveLocalMatchOfflineNoSidecarUnmatched: offline, no sidecar → unmatched,
+// no remote.
+func TestResolveLocalMatchOfflineNoSidecarUnmatched(t *testing.T) {
 	root := t.TempDir()
 	model := filepath.Join(root, "m.safetensors")
 	writeFile(t, model, "weights")
-	writeFile(t, filepath.Join(root, "m.civitai.info"), "   ") // empty/whitespace guard
 
-	fr := &fakeReader{byHash: versionMap("abc", version(9, 3, "abc"))}
-	sc := matcherScanner(t, root, fr, false, "abc")
-
-	res := sc.matchFile(context.Background(), model, "abc")
-	if res.status != store.LocalStatusMatched || fr.calls != 1 {
-		t.Fatalf("corrupt sidecar should fall through to one API call and match: status=%q calls=%d", res.status, fr.calls)
+	sc := matcherScanner(t, root, &panicReader{}, true, "abc") // NoRemote
+	res, needsRemote := sc.resolveLocalMatch(model, "abc")
+	if needsRemote || res.status != store.LocalStatusUnmatched {
+		t.Fatalf("offline no-sidecar = %q needsRemote=%v, want unmatched/false", res.status, needsRemote)
 	}
 }
 
-func TestMatcherByHashFoundEnriches(t *testing.T) {
-	root := t.TempDir()
-	model := filepath.Join(root, "m.safetensors")
-	writeFile(t, model, "weights")
-
-	fr := &fakeReader{byHash: versionMap("abc", version(10, 100, "abc"))}
-	sc := matcherScanner(t, root, fr, false, "abc")
-
-	res := sc.matchFile(context.Background(), model, "abc")
-	if res.status != store.LocalStatusMatched || *res.modelID != 100 || *res.versionID != 10 {
-		t.Fatalf("expected matched 100/10, got %q %v/%v", res.status, res.modelID, res.versionID)
+// TestBuildHashMatchMapDedupLowestVersionID proves duplicate-hash handling: the
+// endpoint may return MULTIPLE entries for one hash (a hash shared across
+// versions); the map keeps the LOWEST ModelVersionID deterministically, keys
+// case-insensitively, and never panics on the dup key.
+func TestBuildHashMatchMapDedupLowestVersionID(t *testing.T) {
+	matches := []civitai.HashMatch{
+		{ModelVersionID: 20, ModelID: 2, Hash: "AABB"},
+		{ModelVersionID: 10, ModelID: 2, Hash: "aabb"}, // same hash (lower case), lower version
+		{ModelVersionID: 30, ModelID: 3, Hash: "CCDD"},
 	}
-	if res.autov2 != "av2-abc" {
-		t.Fatalf("autov2 = %q, want enriched from the matching file", res.autov2)
+	m := buildHashMatchMap(matches)
+	if len(m) != 2 {
+		t.Fatalf("map size = %d, want 2 (dup hash collapsed)", len(m))
 	}
-}
-
-func TestMatcherNotFoundIsUnmatched(t *testing.T) {
-	root := t.TempDir()
-	model := filepath.Join(root, "m.safetensors")
-	writeFile(t, model, "weights")
-
-	fr := &fakeReader{} // no entries -> ErrNotFound
-	sc := matcherScanner(t, root, fr, false, "abc")
-
-	res := sc.matchFile(context.Background(), model, "abc")
-	if res.status != store.LocalStatusUnmatched {
-		t.Fatalf("status = %q, want unmatched", res.status)
+	if got := m["AABB"].ModelVersionID; got != 10 {
+		t.Errorf("dup hash kept version %d, want the lowest (10)", got)
 	}
-	if res.modelID != nil || res.versionID != nil {
-		t.Fatalf("unmatched must carry no ids")
+	if got := m["CCDD"].ModelVersionID; got != 30 {
+		t.Errorf("CCDD version = %d, want 30", got)
 	}
 }
 
-func TestMatcherRateLimitedBacksOffThenRetries(t *testing.T) {
-	root := t.TempDir()
-	model := filepath.Join(root, "m.safetensors")
-	writeFile(t, model, "weights")
+// TestResolveFromBatch covers the three phase-3 outcomes: a hit is definitive
+// matched (ids from the match, autov2 unset), a miss is definitive unmatched, and
+// a failed batch leaves the file UnmatchedPending (never falsely flagged).
+func TestResolveFromBatch(t *testing.T) {
+	m := buildHashMatchMap([]civitai.HashMatch{{ModelVersionID: 7, ModelID: 3, Hash: "ABC"}})
 
-	// Rate-limited twice, then serves the match.
-	fr := &fakeReader{byHash: versionMap("abc", version(10, 100, "abc")), failN: 2}
-	sc := matcherScanner(t, root, fr, false, "abc")
-
-	res := sc.matchFile(context.Background(), model, "abc")
-	if res.status != store.LocalStatusMatched {
-		t.Fatalf("status = %q, want matched after backoff+retry", res.status)
+	// Hit — lookup is case-insensitive (the SHA is lowercase hex on our side).
+	hit := resolveFromBatch("abc", m, nil)
+	if hit.status != store.LocalStatusMatched || hit.modelID == nil || *hit.modelID != 3 || hit.versionID == nil || *hit.versionID != 7 {
+		t.Fatalf("hit = %+v, want matched 3/7", hit)
 	}
-	if fr.calls != 3 {
-		t.Fatalf("calls = %d, want 3 (2 rate-limited + 1 success)", fr.calls)
+	if hit.autov2 != "" {
+		t.Errorf("batch match must leave autov2 unset, got %q", hit.autov2)
 	}
-}
 
-func TestMatcherPersistentRateLimitLeavesPendingNoFalseFlag(t *testing.T) {
-	root := t.TempDir()
-	model := filepath.Join(root, "m.safetensors")
-	writeFile(t, model, "weights")
-
-	// Always rate-limited (failN exceeds the retry budget).
-	fr := &fakeReader{failN: 100}
-	sc := matcherScanner(t, root, fr, false, "abc")
-
-	res := sc.matchFile(context.Background(), model, "abc")
-	if res.status != store.LocalStatusUnmatchedPending {
-		t.Fatalf("status = %q, want unmatched-pending", res.status)
+	// Miss — definitive unmatched.
+	if miss := resolveFromBatch("zzz", m, nil); miss.status != store.LocalStatusUnmatched {
+		t.Errorf("miss status = %q, want unmatched", miss.status)
 	}
-	// A pending file is never a candidate: a full scan confirms zero candidates.
-	sc2 := NewScanner(sc.store, fr, Options{ModelRoot: root}, nil)
-	sc2.hashFn = func(string) (string, error) { return "abc", nil }
-	sc2.waitFn = func(context.Context, time.Duration) {}
-	sc2.maxHashRetries = 1
-	report, err := sc2.Scan(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(report.Candidates) != 0 {
-		t.Fatalf("pending file must not be flagged, got %d candidates", len(report.Candidates))
-	}
-}
 
-func TestMatcherNoRemoteSkipsAPIEntirely(t *testing.T) {
-	root := t.TempDir()
-	model := filepath.Join(root, "m.safetensors")
-	writeFile(t, model, "weights")
-
-	pr := &panicReader{}
-	sc := matcherScanner(t, root, pr, true, "abc") // NoRemote
-
-	res := sc.matchFile(context.Background(), model, "abc")
-	if res.status != store.LocalStatusUnmatched {
-		t.Fatalf("offline match status = %q, want unmatched", res.status)
+	// Failed batch — pending regardless of map contents.
+	if pend := resolveFromBatch("abc", m, errors.New("boom")); pend.status != store.LocalStatusUnmatchedPending {
+		t.Errorf("failed-batch status = %q, want unmatched-pending", pend.status)
 	}
 }

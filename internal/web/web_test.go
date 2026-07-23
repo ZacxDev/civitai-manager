@@ -111,6 +111,9 @@ func (stubReader) GetModelVersion(context.Context, string) (*civitai.ModelVersio
 func (stubReader) GetModelVersionByHash(context.Context, string) (*civitai.ModelVersionDetail, []byte, error) {
 	return nil, nil, civitai.ErrNotFound
 }
+func (stubReader) GetModelVersionsByHashes(context.Context, []string) ([]civitai.HashMatch, error) {
+	return nil, nil
+}
 func (stubReader) SearchModels(context.Context, url.Values) (*civitai.ModelSearchResult, error) {
 	return &civitai.ModelSearchResult{}, nil
 }

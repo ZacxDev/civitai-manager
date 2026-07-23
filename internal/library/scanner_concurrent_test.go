@@ -14,14 +14,16 @@ import (
 	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
-// syncReader is a THREAD-SAFE civitai.Reader for the concurrent-scan tests: the
-// scan now calls GetModelVersionByHash from multiple worker goroutines at once, so
-// the reader's own bookkeeping (call counter) must be race-free under `go test
-// -race`. The by-hash map is written once at construction and only read
+// syncReader is a THREAD-SAFE civitai.Reader for the concurrent-scan tests. The
+// scan hashes from multiple worker goroutines at once, then resolves matches with
+// ONE batch by-hash call; the reader's bookkeeping must be race-free under `go
+// test -race`. The by-hash map is written once at construction and only read
 // afterwards, so concurrent reads of it are safe.
 type syncReader struct {
-	byHash map[string]*civitai.ModelVersionDetail
-	calls  int64 // atomic
+	byHash      map[string]*civitai.ModelVersionDetail
+	calls       int64 // atomic: GetModelVersionByHash invocations (should stay 0)
+	batchCalls  int64 // atomic: GetModelVersionsByHashes invocations
+	batchHashes int64 // atomic: total hashes sent across all batch calls
 }
 
 func (r *syncReader) GetModelVersionByHash(_ context.Context, hash string) (*civitai.ModelVersionDetail, []byte, error) {
@@ -30,6 +32,18 @@ func (r *syncReader) GetModelVersionByHash(_ context.Context, hash string) (*civ
 		return v, nil, nil
 	}
 	return nil, nil, civitai.ErrNotFound
+}
+
+func (r *syncReader) GetModelVersionsByHashes(_ context.Context, hashes []string) ([]civitai.HashMatch, error) {
+	atomic.AddInt64(&r.batchCalls, 1)
+	atomic.AddInt64(&r.batchHashes, int64(len(hashes)))
+	var out []civitai.HashMatch
+	for _, h := range hashes {
+		if v, ok := r.byHash[strings.ToLower(h)]; ok {
+			out = append(out, civitai.HashMatch{ModelVersionID: v.ID, ModelID: v.ModelID, Hash: strings.ToUpper(h)})
+		}
+	}
+	return out, nil
 }
 
 func (r *syncReader) GetModel(context.Context, string) (*civitai.ModelDetail, []byte, error) {
@@ -143,9 +157,17 @@ func TestConcurrentScanParity(t *testing.T) {
 	if matched != nMatched {
 		t.Errorf("persisted matched rows=%d, want %d", matched, nMatched)
 	}
-	// Every matched file resolved to the reader (its by-hash lookup ran).
-	if got := atomic.LoadInt64(&rd.calls); got < int64(nMatched) {
-		t.Errorf("by-hash calls=%d, want ≥%d (every matched file looked up)", got, nMatched)
+	// The whole library resolved via ONE batch call — NOT one call per file — and
+	// the per-file GET is never touched. All non-sidecar files (every file here)
+	// are sent in that single batch.
+	if got := atomic.LoadInt64(&rd.batchCalls); got != 1 {
+		t.Errorf("batch by-hash calls=%d, want exactly 1 (one batch, not N)", got)
+	}
+	if got := atomic.LoadInt64(&rd.calls); got != 0 {
+		t.Errorf("per-file GetModelVersionByHash calls=%d, want 0 (batch replaced it)", got)
+	}
+	if got := atomic.LoadInt64(&rd.batchHashes); got != int64(total) {
+		t.Errorf("hashes sent in batch=%d, want %d (every file's SHA)", got, total)
 	}
 }
 

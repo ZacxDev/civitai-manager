@@ -28,6 +28,9 @@ func (fakeClient) GetModelVersion(context.Context, string) (*civitai.ModelVersio
 func (fakeClient) GetModelVersionByHash(context.Context, string) (*civitai.ModelVersionDetail, []byte, error) {
 	return nil, nil, civitai.ErrNotFound
 }
+func (fakeClient) GetModelVersionsByHashes(context.Context, []string) ([]civitai.HashMatch, error) {
+	return nil, nil
+}
 func (fakeClient) SearchModels(context.Context, url.Values) (*civitai.ModelSearchResult, error) {
 	return &civitai.ModelSearchResult{}, nil
 }

@@ -58,6 +58,9 @@ func (c *cliFakeClient) GetModelVersion(_ context.Context, _ string) (*civitai.M
 func (c *cliFakeClient) GetModelVersionByHash(_ context.Context, _ string) (*civitai.ModelVersionDetail, []byte, error) {
 	return nil, nil, civitai.ErrNotFound
 }
+func (c *cliFakeClient) GetModelVersionsByHashes(_ context.Context, _ []string) ([]civitai.HashMatch, error) {
+	return nil, nil
+}
 func (c *cliFakeClient) SearchModels(_ context.Context, q url.Values) (*civitai.ModelSearchResult, error) {
 	c.lastSearch = q
 	if c.searchErr != nil {
