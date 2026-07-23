@@ -79,7 +79,11 @@ func countScanPoll(body string) int { return strings.Count(body, `id="scan-poll"
 // targeting the STABLE #scan-results (never self-replacing via outerHTML), and the
 // terminal fragment has none (so htmx stops and no orphan poller remains).
 func TestScanPollerStructure(t *testing.T) {
-	scan := renderString(t, scanScanning([]library.FileResult{fileResult("a.safetensors", nil)}, 1, 0, "csrf"))
+	scan := renderString(t, scanScanning(scanSnapshot{
+		Started: true, Running: true,
+		Results: []library.FileResult{fileResult("a.safetensors", nil)},
+		Scanned: 1, Unmatched: 1,
+	}, "csrf"))
 	if n := countScanPoll(scan); n != 1 {
 		t.Errorf("scanning fragment must have exactly one #scan-poll, got %d:\n%s", n, scan)
 	}
@@ -97,7 +101,9 @@ func TestScanPollerStructure(t *testing.T) {
 		t.Errorf("scan poller must target the stable container, never self-replace via outerHTML:\n%s", scan)
 	}
 
-	term := renderString(t, scanResults(buildLibraryView(nil), 3, 1, true, false, nil, "csrf"))
+	term := renderString(t, scanResults(buildLibraryView(nil), scanSnapshot{
+		Started: true, Scanned: 3, Matched: 1, Unmatched: 2,
+	}, "csrf"))
 	if n := countScanPoll(term); n != 0 {
 		t.Errorf("terminal fragment must have zero #scan-poll, got %d:\n%s", n, term)
 	}
@@ -106,24 +112,33 @@ func TestScanPollerStructure(t *testing.T) {
 // TestScanResultsMessaging proves the terminal render distinguishes complete vs.
 // stopped vs. errored, and the never-started case renders plain content.
 func TestScanResultsMessaging(t *testing.T) {
-	complete := renderString(t, scanResults(buildLibraryView(nil), 5, 2, true, false, nil, "csrf"))
-	if !strings.Contains(complete, "Scan complete — 5 files, 2 matched") {
-		t.Errorf("exhausted scan should say 'Scan complete — 5 files, 2 matched':\n%s", complete)
+	complete := renderString(t, scanResults(buildLibraryView(nil), scanSnapshot{
+		Started: true, Scanned: 5, Matched: 2, Unmatched: 3,
+	}, "csrf"))
+	// New wording (was "Scan complete — 5 files, 2 matched"): the terminal now shows
+	// the scanned/matched/unmatched breakdown so a low match count reads as normal.
+	if !strings.Contains(complete, "Scan complete — 5 files · 2 matched · 3 unmatched") {
+		t.Errorf("exhausted scan should say 'Scan complete — 5 files · 2 matched · 3 unmatched':\n%s", complete)
 	}
-	stopped := renderString(t, scanResults(buildLibraryView(nil), 3, 1, true, true, nil, "csrf"))
-	if !strings.Contains(stopped, "Scan stopped — scanned 3 files, matched 1") {
-		t.Errorf("user-stopped scan should say 'Scan stopped …':\n%s", stopped)
+	stopped := renderString(t, scanResults(buildLibraryView(nil), scanSnapshot{
+		Started: true, Scanned: 3, Matched: 1, Unmatched: 2, Stopped: true,
+	}, "csrf"))
+	// New wording (was "Scan stopped — scanned 3 files, matched 1").
+	if !strings.Contains(stopped, "Scan stopped — scanned 3 · matched 1 · unmatched 2") {
+		t.Errorf("user-stopped scan should say 'Scan stopped …' with the breakdown:\n%s", stopped)
 	}
 	if strings.Contains(stopped, "Scan complete") {
 		t.Errorf("stopped scan must not claim complete:\n%s", stopped)
 	}
 	// Errored (too large) surfaces the friendly message.
-	errored := renderString(t, scanResults(buildLibraryView(nil), 0, 0, true, false, library.ErrScanTooLarge, "csrf"))
+	errored := renderString(t, scanResults(buildLibraryView(nil), scanSnapshot{
+		Started: true, Err: library.ErrScanTooLarge,
+	}, "csrf"))
 	if !strings.Contains(errored, "Scan too large") {
 		t.Errorf("errored scan should surface the friendly message:\n%s", errored)
 	}
 	// Never started → plain library content, no status card.
-	none := renderString(t, scanResults(buildLibraryView(nil), 0, 0, false, false, nil, "csrf"))
+	none := renderString(t, scanResults(buildLibraryView(nil), scanSnapshot{}, "csrf"))
 	if strings.Contains(none, "Scan result") {
 		t.Errorf("never-started terminal must render plain content, no 'Scan result' card:\n%s", none)
 	}
@@ -165,7 +180,7 @@ func TestScanPostRedirectsAndRunsInBackground(t *testing.T) {
 	}
 	<-started // the scan goroutine is running while the request has already returned
 
-	if _, running, _, _, _, _, _ := srv.scanJobState(); !running {
+	if !srv.scanJobState().Running {
 		t.Fatalf("scan job should still be running after the POST returned")
 	}
 	// A status poll during this window keeps polling (scanning fragment).
@@ -178,7 +193,7 @@ func TestScanPostRedirectsAndRunsInBackground(t *testing.T) {
 	// persist, so it is empty here) plus the completion message. The streamed cards
 	// live in the scanning view, exercised by TestScanStatusStreamsGrowingCards.
 	term := pollScanUntilDone(t, srv)
-	for _, want := range []string{"Scan result", "Scan complete — 1 files, 1 matched"} {
+	for _, want := range []string{"Scan result", "Scan complete — 1 files · 1 matched · 0 unmatched"} {
 		if !strings.Contains(term, want) {
 			t.Errorf("completed scan terminal missing %q:\n%s", want, term)
 		}
@@ -266,8 +281,8 @@ func TestScanStatusStreamsGrowingCards(t *testing.T) {
 	if countScanPoll(term) != 0 {
 		t.Errorf("terminal must have no poller:\n%s", term)
 	}
-	if !strings.Contains(term, "Scan complete — 3 files, 2 matched") {
-		t.Errorf("terminal should report 3 files / 2 matched:\n%s", term)
+	if !strings.Contains(term, "Scan complete — 3 files · 2 matched · 1 unmatched") {
+		t.Errorf("terminal should report 3 files / 2 matched / 1 unmatched:\n%s", term)
 	}
 }
 
@@ -332,8 +347,7 @@ func TestScanStatusRaceSafe(t *testing.T) {
 // mustScanned returns the job's scanned counter under the lock.
 func (s *Server) mustScanned(t *testing.T) int {
 	t.Helper()
-	_, _, _, scanned, _, _, _ := s.scanJobState()
-	return scanned
+	return s.scanJobState().Scanned
 }
 
 // --- Stop (finding #3) -------------------------------------------------------

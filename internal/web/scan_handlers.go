@@ -23,10 +23,15 @@ const scanJobBudget = 6 * time.Hour
 // carries no per-form checkbox) reads it, and the Tab-B toggle writes it.
 const matchRemoteSettingKey = "match_remote"
 
-// matchRemoteEnabled reports the persisted opt-in state (default off: a web scan
-// stays offline unless the operator explicitly enabled remote matching).
+// matchRemoteEnabled reports the persisted opt-in state. It defaults ON when the
+// setting is UNSET: a fresh web scan matches against CivitAI by hash so a user's
+// library is actually identified out of the box (the prior default-off silently
+// left almost everything "unmatched"). An operator who explicitly turned it OFF
+// stays off — a persisted "false" is respected. Matching sends file SHA256 hashes
+// to civitai.com; that is surfaced at the scan CTA / Match toggle (see
+// modelScanForm / scanForModelsCTA).
 func (s *Server) matchRemoteEnabled() bool {
-	v, _ := s.store.GetSettingDefault(matchRemoteSettingKey, "false")
+	v, _ := s.store.GetSettingDefault(matchRemoteSettingKey, "true")
 	return v == "true"
 }
 
@@ -71,7 +76,7 @@ func (s *Server) startScan(extra []string, noRemote bool) {
 		base = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(base, scanJobBudget)
-	job := &scanJob{running: true, startedAt: time.Now(), cancel: cancel}
+	job := &scanJob{running: true, startedAt: time.Now(), cancel: cancel, noRemote: noRemote}
 	s.scanJob = job
 
 	// onFile streams each scanned file into the job. The scanner runs a concurrent
@@ -83,8 +88,17 @@ func (s *Server) startScan(extra []string, noRemote bool) {
 		s.scanMu.Lock()
 		job.results = append(job.results, fr)
 		job.scanned++
-		if fr.Status == store.LocalStatusMatched {
+		// Partition each streamed file into matched / pending / unmatched so the
+		// progress reads scanned = matched + unmatched + pending. Anything that is
+		// not a confirmed match or a retryable pending (including broken) counts as
+		// unmatched — a normal, non-error outcome.
+		switch fr.Status {
+		case store.LocalStatusMatched:
 			job.matched++
+		case store.LocalStatusUnmatchedPending:
+			job.pending++
+		default:
+			job.unmatched++
 		}
 		s.scanMu.Unlock()
 	}
@@ -130,21 +144,41 @@ func (s *Server) stopScan() {
 	}
 }
 
-// scanJobState returns a locked snapshot of the current scan job. started is
-// false when no scan has ever been triggered. results is a COPY of the job's
-// slice taken under the lock (never the live, still-appended header) — the same
-// torn-slice guard the discovery job uses. Arrival order is preserved (the
-// streaming order files were scanned in).
-func (s *Server) scanJobState() (started, running bool, results []library.FileResult, scanned, matched int, stopped bool, err error) {
+// scanSnapshot is a locked, self-consistent view of the scan job returned by
+// scanJobState. Started is false when no scan has ever been triggered. Results is
+// a COPY of the job's slice taken under the lock (never the live, still-appended
+// header) — the same torn-slice guard the discovery job uses. Arrival order is
+// preserved (the streaming order files were scanned in).
+type scanSnapshot struct {
+	Started, Running                     bool
+	Results                              []library.FileResult
+	Scanned, Matched, Unmatched, Pending int
+	Stopped, NoRemote                    bool
+	Err                                  error
+}
+
+// scanJobState returns a locked snapshot of the current scan job.
+func (s *Server) scanJobState() scanSnapshot {
 	s.scanMu.Lock()
 	defer s.scanMu.Unlock()
 	j := s.scanJob
 	if j == nil {
-		return false, false, nil, 0, 0, false, nil
+		return scanSnapshot{}
 	}
 	snap := make([]library.FileResult, len(j.results))
 	copy(snap, j.results)
-	return true, j.running, snap, j.scanned, j.matched, j.stopped, j.err
+	return scanSnapshot{
+		Started:   true,
+		Running:   j.running,
+		Results:   snap,
+		Scanned:   j.scanned,
+		Matched:   j.matched,
+		Unmatched: j.unmatched,
+		Pending:   j.pending,
+		Stopped:   j.stopped,
+		NoRemote:  j.noRemote,
+		Err:       j.err,
+	}
 }
 
 // renderScanStatus renders the current scan-job state into the STABLE
@@ -154,9 +188,9 @@ func (s *Server) scanJobState() (started, running bool, results []library.FileRe
 // from the completed local_files, WITHOUT the poller) so htmx stops polling.
 // Shared by the status poll and the Stop handler.
 func (s *Server) renderScanStatus(w http.ResponseWriter) {
-	started, running, results, scanned, matched, stopped, err := s.scanJobState()
-	if started && running {
-		s.render(w, http.StatusOK, scanScanning(results, scanned, matched, s.csrf))
+	snap := s.scanJobState()
+	if snap.Started && snap.Running {
+		s.render(w, http.StatusOK, scanScanning(snap, s.csrf))
 		return
 	}
 	// Terminal (or never-started): rebuild the authoritative Model-files view from
@@ -167,7 +201,7 @@ func (s *Server) renderScanStatus(w http.ResponseWriter) {
 		s.renderError(w, "reload library", ferr)
 		return
 	}
-	s.render(w, http.StatusOK, scanResults(buildLibraryView(files), scanned, matched, started, stopped, err, s.csrf))
+	s.render(w, http.StatusOK, scanResults(buildLibraryView(files), snap, s.csrf))
 }
 
 // handleScanStatus is polled by the scanning fragment. GET (no state change, so
