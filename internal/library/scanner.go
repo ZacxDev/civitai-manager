@@ -7,10 +7,21 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/ZacxDev/civitai-manager/internal/store"
 )
+
+// scanWorkerCap bounds the concurrent per-file processing pool. Hashing is
+// disk-bound and the CivitAI by-hash lookup is network-bound, so overlapping
+// them across a handful of workers hides API latency behind parallel SSD reads
+// and cuts wall-clock several-fold on a real library. The cap is 8: beyond that,
+// parallel multi-GB hashing thrashes the disk and the extra API concurrency buys
+// little (the store serializes writes at MaxOpenConns(1)), so min(NumCPU, 8) is
+// the sweet spot — mirroring the discovery walker's bounded pool (discoverWorkerCap).
+const scanWorkerCap = 8
 
 // ErrScanTooLarge is returned when a scan walks more model-extension files than
 // the configured Options.MaxFiles budget. It aborts the walk BEFORE any hashing
@@ -152,32 +163,93 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanReport, error) {
 	// flags are cleared only immediately before analyze() re-derives them (see
 	// below) — so a failed scan leaves the previous candidate state intact.
 
+	// Pre-build the seen-set from the full model-file inventory (known up front):
+	// pruneMissingModels only needs "which paths were walked", so building it here
+	// is equivalent to the old per-file insertion and needs no locking during the
+	// concurrent pass below.
 	seenPaths := make(map[string]bool, len(wr.modelFiles))
 	for _, path := range wr.modelFiles {
-		if ctx.Err() != nil {
-			return report, ctx.Err()
-		}
 		seenPaths[path] = true
-		lf, err := s.processModelFile(ctx, path, wr.modelRoots[path], report)
-		if err != nil {
-			s.log.Warn("scan: file failed", "path", path, "err", err)
-			continue
+	}
+
+	// Process the model files with a BOUNDED CONCURRENT worker pool (was a
+	// sequential loop). See scanWorkerCap for the cap rationale.
+	numWorkers := runtime.NumCPU()
+	if numWorkers > scanWorkerCap {
+		numWorkers = scanWorkerCap
+	}
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
+	// The feeder hands paths to the workers and selects on ctx.Done so a cancelled
+	// scan stops dispatching promptly and never blocks on an undrained channel.
+	pathCh := make(chan string)
+	go func() {
+		defer close(pathCh)
+		for _, path := range wr.modelFiles {
+			select {
+			case pathCh <- path:
+			case <-ctx.Done():
+				return
+			}
 		}
-		// STREAM the per-file result AFTER the row is persisted (mirrors how the
-		// discovery collector calls OnInstall). Scan runs single-goroutine, so this
-		// is never concurrent; the web layer serializes appends under its own mutex.
-		if s.opts.OnFile != nil {
-			s.opts.OnFile(FileResult{
-				Path:       lf.Path,
-				Name:       filepath.Base(lf.Path),
-				SizeBytes:  lf.SizeBytes,
-				SHA256:     lf.SHA256,
-				Status:     lf.Status,
-				ModelID:    lf.ModelID,
-				VersionID:  lf.VersionID,
-				HasPreview: hasPreviewSibling(path, s.opts.Extensions),
-			})
-		}
+	}()
+
+	// reportMu guards the ScanReport counter merge. Each worker accumulates LOCAL
+	// tallies and folds them in ONCE on exit, so the per-file hot path takes no
+	// lock. OnFile fires OUTSIDE reportMu (and any other scanner lock), so the web
+	// layer's onFile — which appends under its own scanMu — cannot invert lock
+	// order; concurrent OnFile invocation from multiple workers is safe because
+	// that appender is itself mutex-guarded.
+	var reportMu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var local scanTally
+			for path := range pathCh {
+				// ctx-cancellable per worker: abort BEFORE hashing the next file so a
+				// Stop/shutdown drains promptly (a hung hash mid-Stop still lets the
+				// other workers exit). matchFile also honours ctx internally.
+				if ctx.Err() != nil {
+					continue
+				}
+				lf, stats, err := s.processModelFile(ctx, path, wr.modelRoots[path])
+				if err != nil {
+					s.log.Warn("scan: file failed", "path", path, "err", err)
+					continue
+				}
+				local.add(stats)
+				// STREAM the per-file result AFTER the row is persisted (mirrors how
+				// the discovery collector calls OnInstall). This now fires from
+				// MULTIPLE worker goroutines concurrently; see the reportMu note above
+				// on why the web appender is safe under concurrency.
+				if s.opts.OnFile != nil {
+					s.opts.OnFile(FileResult{
+						Path:       lf.Path,
+						Name:       filepath.Base(lf.Path),
+						SizeBytes:  lf.SizeBytes,
+						SHA256:     lf.SHA256,
+						Status:     lf.Status,
+						ModelID:    lf.ModelID,
+						VersionID:  lf.VersionID,
+						HasPreview: hasPreviewSibling(path, s.opts.Extensions),
+					})
+				}
+			}
+			reportMu.Lock()
+			local.mergeInto(report)
+			reportMu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	// A cancelled scan returns partial results with the ctx error, mirroring the
+	// old sequential early-return (prune/analyze are skipped on abort).
+	if err := ctx.Err(); err != nil {
+		return report, err
 	}
 	report.FilesScanned = len(wr.modelFiles)
 
@@ -226,40 +298,85 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanReport, error) {
 	return report, nil
 }
 
+// fileStats reports what one processed file contributes to the ScanReport
+// counters. processModelFile returns it (instead of mutating a shared *ScanReport)
+// so a concurrent worker can tally into its own LOCAL accumulator without any
+// lock on the per-file hot path.
+type fileStats struct {
+	hashed bool   // hashFn was invoked (a real (re)hash)
+	reused bool   // served from the incremental cache (no hash, no API call)
+	status string // final match status → the matched/pending/unmatched counters
+}
+
+// scanTally is one worker's LOCAL counter accumulation, folded into the shared
+// ScanReport exactly once (under reportMu) when the worker exits — so the shared
+// report is never touched on the concurrent per-file path.
+type scanTally struct {
+	hashed, reused, matched, pending, unmatched int
+}
+
+func (t *scanTally) add(st fileStats) {
+	if st.reused {
+		t.reused++
+	} else if st.hashed {
+		t.hashed++
+	}
+	switch st.status {
+	case store.LocalStatusMatched:
+		t.matched++
+	case store.LocalStatusUnmatchedPending:
+		t.pending++
+	default:
+		t.unmatched++
+	}
+}
+
+func (t *scanTally) mergeInto(r *ScanReport) {
+	r.Hashed += t.hashed
+	r.Reused += t.reused
+	r.Matched += t.matched
+	r.Pending += t.pending
+	r.Unmatched += t.unmatched
+}
+
 // processModelFile hashes (or reuses the cached hash of) a single model file,
-// matches it, and upserts its index row. The incremental cache is the key
+// matches it, and upserts its index row, returning the persisted row plus a
+// fileStats describing its counter contribution. The incremental cache is the key
 // optimization: a file whose size AND mtime match its stored row skips the
 // expensive re-hash and re-uses the stored match, so a re-scan of a multi-GB
 // library is fast and makes no API calls.
-func (s *Scanner) processModelFile(ctx context.Context, path, scanRoot string, report *ScanReport) (store.LocalFile, error) {
+//
+// It touches only the store (safe under concurrency: MaxOpenConns(1)+WAL
+// serializes writes at the driver, and the Store holds no shared in-memory state)
+// — it mutates NO shared report, so it is safe to call from many workers at once.
+func (s *Scanner) processModelFile(ctx context.Context, path, scanRoot string) (store.LocalFile, fileStats, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
-		return store.LocalFile{}, err
+		return store.LocalFile{}, fileStats{}, err
 	}
 	cached, err := s.store.GetLocalFileByPath(path)
 	if err != nil {
-		return store.LocalFile{}, err
+		return store.LocalFile{}, fileStats{}, err
 	}
 
 	var (
 		sha    string
 		result matchResult
-		reused bool
+		stats  fileStats
 	)
 	if s.cacheHit(cached, fi) {
 		// Size + mtime unchanged and the cached row is in a settled state:
 		// reuse the stored hash AND match (no re-hash, no API call).
 		sha = cached.SHA256
 		result = matchResult{status: cached.Status, modelID: cached.ModelID, versionID: cached.VersionID, autov2: cached.AutoV2}
-		reused = true
-		report.Reused++
+		stats.reused = true
 	} else {
 		sum, herr := s.hashFn(path)
 		if herr != nil {
-			return store.LocalFile{}, herr
+			return store.LocalFile{}, fileStats{}, herr
 		}
 		sha = sum
-		report.Hashed++
+		stats.hashed = true
 		if cached != nil && cached.SHA256 == sha {
 			// The bytes are unchanged (only mtime/size metadata differed): keep the
 			// cached match instead of re-hitting the API.
@@ -286,19 +403,10 @@ func (s *Scanner) processModelFile(ctx context.Context, path, scanRoot string, r
 		ScanRoot:  scanRoot,
 	}
 	if err := s.store.UpsertLocalFile(lf); err != nil {
-		return store.LocalFile{}, err
+		return store.LocalFile{}, fileStats{}, err
 	}
-
-	switch result.status {
-	case store.LocalStatusMatched:
-		report.Matched++
-	case store.LocalStatusUnmatchedPending:
-		report.Pending++
-	default:
-		report.Unmatched++
-	}
-	_ = reused
-	return lf, nil
+	stats.status = result.status
+	return lf, stats, nil
 }
 
 // SetOnFile installs (or clears, with nil) the per-file streaming callback after

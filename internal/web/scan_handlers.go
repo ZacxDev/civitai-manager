@@ -74,10 +74,11 @@ func (s *Server) startScan(extra []string, noRemote bool) {
 	job := &scanJob{running: true, startedAt: time.Now(), cancel: cancel}
 	s.scanJob = job
 
-	// onFile streams each scanned file into the job. In production it is called
-	// from the scanner's single scanning goroutine; a test seam may call it from
-	// its own goroutine. Either way it takes the mutex: job.results is read
-	// concurrently by /status.
+	// onFile streams each scanned file into the job. The scanner runs a concurrent
+	// worker pool, so in production this is called from MULTIPLE scanning goroutines
+	// at once (a test seam may also call it from its own goroutine). Either way it
+	// takes the mutex: job.results is appended by concurrent callers and read
+	// concurrently by /status, so scanMu is what makes both safe.
 	onFile := func(fr library.FileResult) {
 		s.scanMu.Lock()
 		job.results = append(job.results, fr)

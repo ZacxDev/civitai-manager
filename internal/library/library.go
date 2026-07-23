@@ -89,10 +89,12 @@ type Options struct {
 	// scanned (after its index row is upserted, BEFORE the cross-file
 	// duplicate/superseded analysis runs). It mirrors DiscoverOptions.OnInstall:
 	// the web layer appends each result into a background job so a /status poll
-	// shows the growing list. It is invoked from Scan's single scanning goroutine
-	// — never concurrently — so the callback needs no internal synchronization of
-	// its own beyond whatever it does with the value. It does NOT replace the
-	// ScanReport/local_files persistence; it is an additional, incremental view.
+	// shows the growing list. Since the scan processes files with a bounded
+	// concurrent worker pool, OnFile is invoked from MULTIPLE worker goroutines
+	// CONCURRENTLY (and always OUTSIDE any scanner-internal lock), so the callback
+	// MUST be safe to call concurrently — the web layer's appender guards itself
+	// with its own mutex. It does NOT replace the ScanReport/local_files
+	// persistence; it is an additional, incremental view.
 	OnFile func(FileResult)
 }
 

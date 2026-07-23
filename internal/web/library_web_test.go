@@ -259,11 +259,41 @@ func TestScanFormOmitsPathsInputWhenNotAllowed(t *testing.T) {
 		}
 	}
 
-	// Tab B still offers a plain model-scan (scans model_root only) with no empty
-	// state, since the user cannot add install dirs on a non-loopback bind.
+	// Tab B is now gated on ≥1 ADDED install dir REGARDLESS of the bind: with no
+	// selected dirs a non-loopback bind shows the empty state, NOT a bare scan
+	// button (Change 2 — model_root alone no longer triggers the scan affordance).
 	files := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", false, nil, "dark", "files", nil, false, nil))
-	if !strings.Contains(files, "Scan for model files") {
-		t.Errorf("Tab B should still offer 'Scan for model files' on a non-loopback bind:\n%s", files)
+	if !strings.Contains(files, "Add install directories first") {
+		t.Errorf("Tab B with no dirs on a non-loopback bind should show the empty state:\n%s", files)
+	}
+	if strings.Contains(files, "Scan for model files") {
+		t.Errorf("Tab B with no dirs must not render a scan button on a non-loopback bind:\n%s", files)
+	}
+}
+
+// TestFilesTabGatedOnAddedDir proves Change 2's core gating in BOTH directions
+// and BOTH binds: Tab B shows the empty state (no scan button) with zero selected
+// dirs, and the scan button/form appears only once ≥1 dir is added — regardless of
+// the loopback/non-loopback bind (allowExtra) or model_root contents.
+func TestFilesTabGatedOnAddedDir(t *testing.T) {
+	for _, allowExtra := range []bool{true, false} {
+		// Zero dirs → empty state, no scan button.
+		empty := renderString(t, libraryPage(buildLibraryView(nil), "csrf", allowExtra, nil, "dark", "files", nil, false, nil))
+		if !strings.Contains(empty, "Add install directories first") {
+			t.Errorf("allowExtra=%v: 0 dirs should show empty state:\n%s", allowExtra, empty)
+		}
+		if strings.Contains(empty, "Scan for model files") {
+			t.Errorf("allowExtra=%v: 0 dirs must not render a scan button", allowExtra)
+		}
+
+		// ≥1 dir → the scan form/button is present, empty state gone.
+		withDir := renderString(t, libraryPage(buildLibraryView(nil), "csrf", allowExtra, []string{"/some/install/dir"}, "dark", "files", nil, false, nil))
+		if !strings.Contains(withDir, "Scan for model files") {
+			t.Errorf("allowExtra=%v: ≥1 dir should render the scan button:\n%s", allowExtra, withDir)
+		}
+		if strings.Contains(withDir, "Add install directories first") {
+			t.Errorf("allowExtra=%v: ≥1 dir must not show the empty state", allowExtra)
+		}
 	}
 }
 

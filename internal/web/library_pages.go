@@ -73,27 +73,43 @@ func libraryPage(v libraryView, csrf string, allowExtra bool, selectedDirs []str
 	)
 }
 
-// libraryTabStrip renders the two-tab navigation. The active tab is a plain
-// full-page navigation (?tab=…) styled with the civitai button component, so it
-// survives every in-panel htmx interaction (those never re-render the strip).
+// libraryTabStrip renders the two-tab navigation as an UNDERLINE tab strip (not
+// buttons): a horizontal row of plain text links where the active tab carries an
+// accent-colored underline and inactive tabs are muted. The tabs stay real
+// full-page navigation links (?tab=…) — only the styling changed — so the strip
+// survives every in-panel htmx interaction (those never re-render it). The tab
+// styling lives in the vendored app.css (.lib-tab* classes), themed via the
+// --civitai-* tokens so it works in both light and dark with no CDN.
 func libraryTabStrip(active string) g.Node {
 	return h.Div(
 		g.Attr("role", "tablist"),
-		h.Class("mt-1 mb-4 flex gap-2 border-b border-slate-800 pb-3"),
+		h.Class("lib-tabs mt-1 mb-4 flex gap-6"),
 		libraryTab("sources", "Install directories", active),
 		libraryTab("files", "Model files", active),
 	)
 }
 
 func libraryTab(id, label, active string) g.Node {
-	variant, selected := "subtle", "false"
-	if id == active {
-		variant, selected = "filled", "true"
-	}
-	return civLinkButton(variant, "md", "/library?tab="+id, []g.Node{
+	attrs := []g.Node{
+		h.Href("/library?tab=" + id),
 		g.Attr("role", "tab"),
-		g.Attr("aria-selected", selected),
-	}, g.Text(label))
+	}
+	if id == active {
+		attrs = append(attrs,
+			h.Class("lib-tab lib-tab-active"),
+			g.Attr("aria-selected", "true"),
+			// aria-current="page" marks the active tab as the current page for AT,
+			// on top of the visual accent-underline distinction.
+			g.Attr("aria-current", "page"),
+		)
+	} else {
+		attrs = append(attrs,
+			h.Class("lib-tab"),
+			g.Attr("aria-selected", "false"),
+		)
+	}
+	attrs = append(attrs, g.Text(label))
+	return h.A(attrs...)
 }
 
 // sourcesPanel is Tab A ("Install directories"): FINDING/SELECTING scan dirs
@@ -139,7 +155,13 @@ func sourcesPanel(csrf string, allowExtra bool, selectedDirs []string, discoverI
 // flight); nil falls back to the idle library content. matchRemote pre-checks the
 // persisted "Match against CivitAI" toggle.
 func filesPanel(v libraryView, csrf string, allowExtra bool, selectedDirs []string, matchRemote bool, scanInitial g.Node) g.Node {
-	if allowExtra && len(selectedDirs) == 0 {
+	// Gate EVERY scan affordance on ≥1 ADDED install directory: until the persisted
+	// selection has at least one entry, Tab B shows an empty state pointing at Tab A
+	// and renders NO scan button/form — regardless of the loopback/non-loopback bind
+	// AND regardless of model_root contents. Trade-off (intended): a model_root that
+	// already holds auto-downloaded files is not scannable until the user adds a scan
+	// directory in Tab A. This mirrors Tab A's own CTA gating (scanForModelsCTA).
+	if len(selectedDirs) == 0 {
 		return card(
 			sectionTitle("Model files"),
 			alert("info", "No install directories selected yet",

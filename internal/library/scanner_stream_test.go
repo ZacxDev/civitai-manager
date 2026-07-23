@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/ZacxDev/civitai-manager/internal/store"
@@ -22,10 +23,19 @@ func TestScanStreamsOnFile(t *testing.T) {
 	// A sibling preview for c only, so exactly one streamed result flags HasPreview.
 	writeFile(t, filepath.Join(root, "c.preview.png"), "img")
 
+	// OnFile now fires from MULTIPLE worker goroutines concurrently (the scan is a
+	// bounded worker pool), so the appender MUST guard itself — mirroring the web
+	// layer's scanMu. (Previously this append was unsynchronized, relying on the old
+	// single-goroutine sequential scan; that reliance is what changed.)
+	var mu sync.Mutex
 	var got []FileResult
 	sc := NewScanner(newTestStore(t), nil, Options{
 		ModelRoot: root, NoRemote: true,
-		OnFile: func(fr FileResult) { got = append(got, fr) },
+		OnFile: func(fr FileResult) {
+			mu.Lock()
+			got = append(got, fr)
+			mu.Unlock()
+		},
 	}, nil)
 	// Deterministic per-path hash so the streamed SHA256 is assertable.
 	sc.hashFn = func(p string) (string, error) { return "hash-" + filepath.Base(p), nil }

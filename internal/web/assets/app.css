@@ -27,3 +27,34 @@ input[type="checkbox"],
 input[type="radio"] {
   accent-color: var(--civitai-color-primary);
 }
+
+/*
+ * Library underline tab strip (.lib-tab*) — see libraryTabStrip in
+ * library_pages.go. Plain text links with an accent underline on the active tab,
+ * muted inactive tabs, and a subtle hover. All colors resolve from --civitai-*
+ * tokens so the strip is correct in both light and dark (data-theme) with no CDN.
+ * Kept unlayered so it wins over the app (Tailwind) layer without touching any
+ * @civitai/components rule.
+ */
+.lib-tabs {
+  border-bottom: 1px solid var(--civitai-color-border);
+}
+.lib-tab {
+  display: inline-block;
+  padding: 0.5rem 0.125rem;
+  margin-bottom: -1px; /* overlap the strip's 1px border so the active underline sits on it */
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  color: var(--civitai-color-text-dimmed);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.lib-tab:hover {
+  color: var(--civitai-color-text);
+}
+.lib-tab-active {
+  color: var(--civitai-color-primary);
+  border-bottom-color: var(--civitai-color-primary);
+}
