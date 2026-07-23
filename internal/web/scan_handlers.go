@@ -184,12 +184,23 @@ func (s *Server) scanJobState() scanSnapshot {
 // renderScanStatus renders the current scan-job state into the STABLE
 // #scan-results container: while running, the scanning fragment (WITH the
 // poller, Stop button, progress, and the result cards streamed so far); once
-// settled, the terminal Model-files view (Summary / Files / Candidates built
-// from the completed local_files, WITHOUT the poller) so htmx stops polling.
+// settled OR stopped, the terminal Model-files view (Summary / Files / Candidates
+// built from the completed local_files, WITHOUT the poller) so htmx stops polling.
 // Shared by the status poll and the Stop handler.
+//
+// The !Stopped guard is the CLIENT-SIDE stop fix: stopScan cancels the scan's
+// context but the worker goroutine only settles (running=false) once cancellation
+// propagates — which, for a scan mid-way through hashing a multi-GB file, can be
+// many seconds. Keying the "still scanning" branch off Running alone meant the
+// Stop response (and every poll in that window) re-rendered the scanning fragment
+// WITH a fresh #scan-poll, so the poller kept the scanning view alive and Stop
+// looked like it did nothing. stopScan sets Stopped synchronously under scanMu, so
+// keying off it here makes the Stop response — and any in-flight poll that reads
+// the snapshot afterwards — deterministically render the poller-less terminal
+// fragment: the view swaps to "Scan stopped" and polling halts at once.
 func (s *Server) renderScanStatus(w http.ResponseWriter) {
 	snap := s.scanJobState()
-	if snap.Started && snap.Running {
+	if snap.Started && snap.Running && !snap.Stopped {
 		s.render(w, http.StatusOK, scanScanning(snap, s.csrf))
 		return
 	}

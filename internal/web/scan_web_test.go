@@ -392,6 +392,67 @@ func TestScanStopCancelsAndIsTerminal(t *testing.T) {
 	}
 }
 
+// TestScanStopIsTerminalWhileGoroutineStillRunning is the client-side stop-bug
+// regression. stopScan cancels the scan's context but the worker goroutine only
+// settles (running=false) once cancellation propagates — for a scan mid-way
+// through hashing a multi-GB file that can be many seconds. In that window the OLD
+// render (keyed off Running alone) re-emitted the scanning fragment WITH a fresh
+// #scan-poll, so the poller kept the scanning view alive and Stop looked dead.
+//
+// A seam that blocks on a channel it never releases on ctx-cancel keeps
+// running=true past Stop, reproducing that window. The fix keys the terminal
+// branch off the synchronously-set Stopped flag, so BOTH the Stop response and any
+// status poll in the window are the terminal, poller-less "Scan stopped" fragment.
+func TestScanStopIsTerminalWhileGoroutineStillRunning(t *testing.T) {
+	srv := newLibraryTestServer(t, t.TempDir())
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult)) error {
+		onFile(fileResult("a.safetensors", nil))
+		close(entered)
+		<-release // deliberately ignores ctx: the goroutine stays running past Stop
+		return nil
+	}
+
+	if rec := post(t, srv, "/library/scan", url.Values{}, true); rec.Code != http.StatusOK {
+		t.Fatalf("scan = %d", rec.Code)
+	}
+	<-entered
+
+	// The Stop response itself must be the terminal (poller-less) fragment even
+	// though the job goroutine is still running.
+	rec := post(t, srv, "/library/scan/stop", url.Values{}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stop = %d", rec.Code)
+	}
+	if !srv.scanJobState().Running {
+		t.Fatal("test precondition: the scan goroutine should still be running (blocked on release)")
+	}
+	stopBody := rec.Body.String()
+	if n := countScanPoll(stopBody); n != 0 {
+		t.Errorf("stop response must carry NO #scan-poll while still running, got %d:\n%s", n, stopBody)
+	}
+	if !strings.Contains(stopBody, "Scan stopped") {
+		t.Errorf("stop response must show 'Scan stopped':\n%s", stopBody)
+	}
+	if strings.Contains(stopBody, `hx-trigger="load delay:1s"`) {
+		t.Errorf("stop response must not re-arm a load-delay poll trigger:\n%s", stopBody)
+	}
+
+	// A status poll in the SAME window (goroutine still running) must ALSO be
+	// terminal — no race where a stale in-flight poll re-shows the scanning view.
+	statusBody := get(t, srv, "/library/scan/status").Body.String()
+	if n := countScanPoll(statusBody); n != 0 {
+		t.Errorf("status poll after stop must carry NO #scan-poll while running, got %d:\n%s", n, statusBody)
+	}
+	if !strings.Contains(statusBody, "Scan stopped") {
+		t.Errorf("status poll after stop must show 'Scan stopped':\n%s", statusBody)
+	}
+
+	close(release)
+	pollScanUntilDone(t, srv)
+}
+
 // TestScanIdempotentSingleJob proves a second POST while a scan is running starts
 // NO second goroutine: the scan seam is entered exactly once.
 func TestScanIdempotentSingleJob(t *testing.T) {
