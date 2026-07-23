@@ -53,7 +53,11 @@ type Install struct {
 // DiscoverOptions bounds and configures a discovery crawl.
 type DiscoverOptions struct {
 	// MaxDepth caps how deep below each crawl root the walk descends (default
-	// DefaultDiscoverMaxDepth). It bounds the arbitrary-path walk.
+	// DefaultDiscoverMaxDepth). It is a deep-pathological-tree backstop only, NOT a
+	// primary safety bound — the walk is really bounded by the prune list, the
+	// system-dir blocklist, no-symlink-descent, and user-Stop / the wall-clock
+	// backstop (see DefaultDiscoverMaxDepth). Keep it generous; too tight a cap
+	// silently hides deeply-nested installs.
 	MaxDepth int
 	// Budget is the wall-clock deadline applied to the crawl when the passed-in
 	// context has no deadline of its own (default DefaultDiscoverBudget).
@@ -83,12 +87,25 @@ type DiscoverOptions struct {
 }
 
 const (
-	// DefaultDiscoverMaxDepth bounds a discovery walk's depth below each root. It
-	// is deliberately shallow: genuine installs live at or near the top of $HOME
-	// (or under /opt), and a deep general walk of a large $HOME is the dominant
-	// cost. Known locations ($HOME/ComfyUI, $HOME/stable-diffusion-webui,
-	// $HOME/workspace/*, /opt/*) all sit within this depth.
-	DefaultDiscoverMaxDepth = 3
+	// DefaultDiscoverMaxDepth is a GENEROUS, deep-pathological-tree backstop on a
+	// discovery walk's depth below each root — NOT a primary safety bound. The real
+	// bounds on the crawl are the prune list (discoveryPruneDirs), the system-dir
+	// blocklist (isSystemPath/CheckScanRoot), the no-symlink-descent rule (so symlink
+	// loops can never make the walk infinite), and user-Stop / the wall-clock backstop.
+	//
+	// A shallow cap (the old value was 3) silently HID genuine installs nested more
+	// than a few levels below $HOME — e.g. a real ComfyUI at
+	// $HOME/workspace/fast/comfyui/ComfyUI is at depth 4 and was never reached. Since
+	// v0.1.10 the crawl is streaming, effectively unbounded (a multi-hour backstop),
+	// and user-Stoppable, so a tight depth cap no longer serves the purpose it was
+	// introduced for (bounding a 6s timed crawl) and only causes misses.
+	//
+	// 12 is chosen as a large finite ceiling: it comfortably exceeds any realistic
+	// install nesting (measured real trees bottomed out around depth 6) while still
+	// preventing an unbounded descent into a degenerate but NON-symlinked very deep
+	// real tree. Depth no longer materially affects crawl time (it only matters under
+	// a fixed budget), so raising it does not slow discovery.
+	DefaultDiscoverMaxDepth = 12
 	// DefaultDiscoverBudget bounds a discovery crawl's wall-clock time. Now that
 	// the budget is HARD-enforced (the crawl returns at the deadline even if a
 	// worker is blocked in a ReadDir syscall) it can be snappy.
@@ -645,11 +662,12 @@ func listModelDirs(models string) []string {
 	return out
 }
 
-// defaultDiscoverRoots returns the general-walk roots: $HOME and /opt. Known
-// install locations ($HOME/ComfyUI, $HOME/stable-diffusion-webui,
-// $HOME/workspace/*, /opt/*) all fall within DefaultDiscoverMaxDepth of these
-// roots, so the bounded concurrent walk finds them without a separate probe
-// list; dedupeRoots collapses any overlap.
+// defaultDiscoverRoots returns the general-walk roots: $HOME and /opt. Install
+// locations — both the well-known ones ($HOME/ComfyUI, $HOME/stable-diffusion-webui,
+// /opt/*) and deeply-nested real ones ($HOME/workspace/fast/comfyui/ComfyUI) — are
+// found by the bounded concurrent walk without a separate probe list; the generous
+// depth backstop (DefaultDiscoverMaxDepth) keeps even deep trees in reach, and
+// dedupeRoots collapses any overlap.
 func defaultDiscoverRoots() []string {
 	var roots []string
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
