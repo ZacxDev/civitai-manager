@@ -22,7 +22,7 @@ func pendingResult(name string) library.FileResult {
 
 // nilScan is a trivially-completing scan seam (the noRemote value the handler
 // computes is recorded on the job regardless of the seam).
-func nilScan(context.Context, func(library.FileResult), func(int)) error { return nil }
+func nilScan(context.Context, func(library.FileResult), func(int), func(int)) error { return nil }
 
 // --- Change 1: default-on -----------------------------------------------------
 
@@ -139,7 +139,7 @@ func TestScanTransparencyNoteRendered(t *testing.T) {
 // terminal wording shows the full breakdown.
 func TestScanTalliesMatchedUnmatchedPending(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int), onHashed func(int)) error {
 		onDiscovered(4)                              // walk found 4 model files
 		onFile(fileResult("a.safetensors", intp(1))) // matched
 		onFile(fileResult("b.safetensors", nil))     // unmatched
@@ -227,7 +227,7 @@ func TestScanOfflineShowsMatchingOffNote(t *testing.T) {
 	if err := srv.store.SetSetting(matchRemoteSettingKey, "false"); err != nil {
 		t.Fatal(err)
 	}
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int), onHashed func(int)) error {
 		onFile(fileResult("a.safetensors", nil))
 		return nil
 	}
@@ -242,7 +242,7 @@ func TestScanOfflineShowsMatchingOffNote(t *testing.T) {
 	if err := srv.store.SetSetting(matchRemoteSettingKey, "true"); err != nil {
 		t.Fatal(err)
 	}
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int), onHashed func(int)) error {
 		onFile(fileResult("a.safetensors", intp(2)))
 		return nil
 	}

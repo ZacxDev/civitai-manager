@@ -406,6 +406,13 @@ func (s *Scanner) hashAndPrepare(ctx context.Context, modelFiles []string, model
 					continue
 				}
 				prepared[j.i] = pf
+				// Phase-1 progress: report this file as hashed (increment-style, +1)
+				// so the web layer can show a moving "Hashing… N / total" line during
+				// the slow hash pass — before phase 3 streams any card. Fires from
+				// concurrent workers, so the callback must be concurrency-safe.
+				if s.opts.OnHashed != nil {
+					s.opts.OnHashed(1)
+				}
 			}
 		}()
 	}
@@ -475,6 +482,13 @@ func (s *Scanner) SetOnFile(fn func(FileResult)) { s.opts.OnFile = fn }
 // record a scan's discovered denominator without threading OnDiscovered through
 // NewScanner's every call site.
 func (s *Scanner) SetOnDiscovered(fn func(total int)) { s.opts.OnDiscovered = fn }
+
+// SetOnHashed installs (or clears, with nil) the phase-1 hashing-progress callback
+// after construction — the OnHashed twin of SetOnFile/SetOnDiscovered. The web
+// layer uses it to accumulate a "hashed" counter so the scanning view shows a
+// moving numerator during the hash pass, without threading OnHashed through every
+// NewScanner call site.
+func (s *Scanner) SetOnHashed(fn func(hashed int)) { s.opts.OnHashed = fn }
 
 // hasPreviewSibling reports whether a ".preview.png" image sits next to the
 // model file (the Civitai-Helper preview convention: the model path with its

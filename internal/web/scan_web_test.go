@@ -151,8 +151,8 @@ func TestScanResultsMessaging(t *testing.T) {
 
 // blockingScan returns a scanFn seam that signals when entered (started) and
 // blocks until release is closed, then emits emit and returns err.
-func blockingScan(started chan<- struct{}, release <-chan struct{}, emit []library.FileResult, err error) func(context.Context, func(library.FileResult), func(int)) error {
-	return func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
+func blockingScan(started chan<- struct{}, release <-chan struct{}, emit []library.FileResult, err error) func(context.Context, func(library.FileResult), func(int), func(int)) error {
+	return func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int), onHashed func(int)) error {
 		select {
 		case started <- struct{}{}:
 		default:
@@ -217,7 +217,7 @@ func TestScanStopsDiscovery(t *testing.T) {
 		return nil, ctx.Err()
 	}
 	// A trivially-completing scan seam so the scan itself does not block.
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error { return nil }
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int), onHashed func(int)) error { return nil }
 
 	if rec := post(t, srv, "/library/discover", url.Values{}, true); rec.Code != http.StatusOK {
 		t.Fatalf("discover = %d", rec.Code)
@@ -257,7 +257,7 @@ func TestScanStatusStreamsGrowingCards(t *testing.T) {
 	}
 	progress := make(chan int)
 	step := make(chan struct{})
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int), onHashed func(int)) error {
 		onDiscovered(len(frs)) // walk found all 3 up front
 		for i, fr := range frs {
 			onFile(fr) // appends under scanMu (happens-before the progress send)
@@ -303,7 +303,7 @@ func TestScanStatusRaceSafe(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
 	const n = 200
 	done := make(chan struct{})
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int), onHashed func(int)) error {
 		defer close(done)
 		for i := 0; i < n; i++ {
 			select {
@@ -401,7 +401,7 @@ func TestScanCapturesDiscoveredFromRealScanner(t *testing.T) {
 func TestScanStopCancelsAndIsTerminal(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
 	entered := make(chan struct{})
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int), onHashed func(int)) error {
 		onFile(fileResult("a.safetensors", nil))
 		close(entered)
 		<-ctx.Done() // block until Stop cancels the context
@@ -450,7 +450,7 @@ func TestScanStopIsTerminalWhileGoroutineStillRunning(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int), onHashed func(int)) error {
 		onFile(fileResult("a.safetensors", nil))
 		close(entered)
 		<-release // deliberately ignores ctx: the goroutine stays running past Stop
@@ -502,7 +502,7 @@ func TestScanIdempotentSingleJob(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
 	var calls int32
 	release := make(chan struct{})
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int), onHashed func(int)) error {
 		atomic.AddInt32(&calls, 1)
 		<-release
 		return nil
@@ -533,7 +533,7 @@ func TestScanTabLandingBootstrapsScanningView(t *testing.T) {
 	}
 	release := make(chan struct{})
 	// Emit the card, then keep running so the tab landing observes the scanning view.
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int), onHashed func(int)) error {
 		onFile(fileResult("a.safetensors", intp(9)))
 		<-release
 		return nil

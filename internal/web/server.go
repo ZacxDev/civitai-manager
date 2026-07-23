@@ -88,8 +88,11 @@ type Server struct {
 	// without hashing a real tree. It reports the terminal error (nil, deadline,
 	// cancel, too-large). onDiscovered mirrors the scanner's OnDiscovered seam: the
 	// scan reports the total model-file count found by the walk (the progress
-	// denominator) once, before per-file streaming.
-	scanFn func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(total int)) error
+	// denominator) once, before per-file streaming. onHashed mirrors the scanner's
+	// OnHashed seam: it fires once per file (increment-style, +1) during the phase-1
+	// hash pass so the scanning view can show a moving "Hashing… N / total" line
+	// before any card streams.
+	scanFn func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(total int), onHashed func(hashed int)) error
 	// scanMu guards scanJob. One model-scan job runs at a time (idempotent start,
 	// mirroring discovery).
 	scanMu sync.Mutex
@@ -126,6 +129,12 @@ type scanJob struct {
 	// walk completes — before per-file streaming. 0 until the walk finishes, so the
 	// scanning view shows "walking…" until it is known, then "N / discovered".
 	discovered int
+	// hashed accumulates the phase-1 hashing-progress increments from the scanner's
+	// OnHashed seam (bumped +1 per file as it finishes hashing, BEFORE any card
+	// streams). It is the numerator for the "Hashing… N / discovered" line the
+	// scanning view shows during the otherwise-silent hash+batch phase, so the user
+	// sees movement instead of a frozen "0 / total". Read/written only under scanMu.
+	hashed int
 	// noRemote records whether this scan ran with CivitAI matching DISABLED, so
 	// the progress/terminal fragment can tell the user that near-zero matches are
 	// expected (matching is off) rather than a broken scan.

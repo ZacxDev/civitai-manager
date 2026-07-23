@@ -106,6 +106,20 @@ type Options struct {
 	// Mirrors OnFile as an injectable streaming seam; a cancelled/failed walk
 	// returns before it fires.
 	OnDiscovered func(total int)
+	// OnHashed, when non-nil, is invoked once per model file as it FINISHES phase 1
+	// (the concurrent hash+local-resolve pass), with the per-call increment (always
+	// 1 — a single file just completed). It is the phase-1 progress signal: on a
+	// large first scan the hash pass reads TBs off disk before any per-file card can
+	// stream (matching is one batch call AFTER every file is hashed), so without this
+	// the web progress line sits frozen at "0 / total" for the whole hash+batch. The
+	// web layer ACCUMULATES these increments (hashed += n) to show a moving
+	// "Hashing… N / total" numerator during that otherwise-silent phase. Like OnFile
+	// it fires from MULTIPLE worker goroutines CONCURRENTLY and OUTSIDE any
+	// scanner-internal lock, so the callback MUST be safe to call concurrently (the
+	// web layer guards its counter with scanMu). Every OnHashed fires BEFORE any
+	// OnFile for the same run: phase 1 fully completes (wg.Wait) before phase 3
+	// streams cards. A nil callback is a no-op (the default/CLI path).
+	OnHashed func(hashed int)
 }
 
 // FileResult is the per-file outcome streamed via Options.OnFile as a scan walks
