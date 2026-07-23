@@ -102,6 +102,17 @@ type Options struct {
 	// with its own mutex. It does NOT replace the ScanReport/local_files
 	// persistence; it is an additional, incremental view.
 	OnFile func(FileResult)
+	// OnDiscovered, when non-nil, is invoked EXACTLY ONCE — right after the
+	// directory walk completes, before any per-file streaming begins — with the
+	// TOTAL number of model-weight files the walk found (len(walkResult.modelFiles),
+	// which the completed report also reports as FilesScanned). It is the
+	// denominator for progress: the web layer shows "N / total discovered" so the
+	// user sees how far a scan has to go. On a large library the WALK itself takes
+	// time (finding the files across TBs of directories), so the total only becomes
+	// known once the walk finishes — until then the web layer shows "walking…".
+	// Mirrors OnFile as an injectable streaming seam; a cancelled/failed walk
+	// returns before it fires.
+	OnDiscovered func(total int)
 }
 
 // FileResult is the per-file outcome streamed via Options.OnFile as a scan walks

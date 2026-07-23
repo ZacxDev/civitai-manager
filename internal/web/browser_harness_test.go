@@ -93,7 +93,11 @@ func TestBrowserHarness(t *testing.T) {
 		{Path: "/opt/ComfyUI/models/checkpoints/mystery-merge.ckpt", Name: "mystery-merge.ckpt", SizeBytes: 5368709120, SHA256: "ccc", Status: "unmatched"},
 		{Path: "/opt/ComfyUI/models/vae/broken.safetensors", Name: "broken.safetensors", SizeBytes: 320, SHA256: "ddd", Status: "broken"},
 	}
-	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult)) error {
+	srv.scanFn = func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(int)) error {
+		// Report the discovered total up front (mirrors the real scanner reporting it
+		// right after the walk) so the streaming progress line shows "N / total
+		// discovered" and the terminal shows "total discovered".
+		onDiscovered(len(scanFiles))
 		for _, fr := range scanFiles {
 			select {
 			case <-ctx.Done():

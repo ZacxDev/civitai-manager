@@ -86,8 +86,10 @@ type Server struct {
 	// library.Scanner from the resolved dirs and runs Scan with the OnFile stream;
 	// tests inject a seam to emit FileResults over time (deterministic streaming)
 	// without hashing a real tree. It reports the terminal error (nil, deadline,
-	// cancel, too-large).
-	scanFn func(ctx context.Context, onFile func(library.FileResult)) error
+	// cancel, too-large). onDiscovered mirrors the scanner's OnDiscovered seam: the
+	// scan reports the total model-file count found by the walk (the progress
+	// denominator) once, before per-file streaming.
+	scanFn func(ctx context.Context, onFile func(library.FileResult), onDiscovered func(total int)) error
 	// scanMu guards scanJob. One model-scan job runs at a time (idempotent start,
 	// mirroring discovery).
 	scanMu sync.Mutex
@@ -119,6 +121,11 @@ type scanJob struct {
 	matched   int
 	unmatched int
 	pending   int
+	// discovered is the TOTAL model-file count the walk found (the progress
+	// denominator), set once from the scanner's OnDiscovered seam right after the
+	// walk completes — before per-file streaming. 0 until the walk finishes, so the
+	// scanning view shows "walking…" until it is known, then "N / discovered".
+	discovered int
 	// noRemote records whether this scan ran with CivitAI matching DISABLED, so
 	// the progress/terminal fragment can tell the user that near-zero matches are
 	// expected (matching is off) rather than a broken scan.
