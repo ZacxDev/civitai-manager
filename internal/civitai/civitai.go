@@ -40,6 +40,7 @@ type (
 	CreatorSearchResult = sdk.CreatorSearchResult
 	ImageSearchResult   = sdk.ImageSearchResult
 	ImageItem           = sdk.ImageItem
+	ImageStats          = sdk.ImageStats
 	ImageMeta           = sdk.ImageMeta
 	ImageResource       = sdk.ImageResource
 	MetaState           = sdk.MetaState

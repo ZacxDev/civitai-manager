@@ -25,11 +25,20 @@ type fakeReader struct {
 	modelRaw []byte
 	version  *civitai.ModelVersionDetail
 	verRaw   []byte
-	// searchHits counts SearchImages calls. The model page must never touch the
-	// slow /api/v1/images endpoint, so this must stay 0 (regression guard for the
-	// perf bug). SearchImages additionally returns an error to prove the page does
-	// not depend on it.
+	// searchHits counts SearchImages calls. The model page RENDER must never touch
+	// the slow /api/v1/images endpoint, so it must stay 0 on the page path
+	// (regression guard for the perf bug). By default SearchImages returns an error
+	// to prove the page does not depend on it; the lazy community-feed handler is
+	// exercised separately by setting communityImages/communityErr below.
 	searchHits *int32
+	// communityImages, when non-nil, is returned by SearchImages (as the feed
+	// result) instead of the default error. An empty (non-nil) slice models the
+	// "no community images" outcome. communityErr, when set, is returned instead.
+	communityImages []civitai.ImageItem
+	communityErr    error
+	// lastImageQuery, when non-nil, captures the url.Values of the most recent
+	// SearchImages call so tests can assert the community query params.
+	lastImageQuery *url.Values
 }
 
 func (f fakeReader) GetModel(context.Context, string) (*civitai.ModelDetail, []byte, error) {
@@ -50,9 +59,18 @@ func (f fakeReader) SearchModels(context.Context, url.Values) (*civitai.ModelSea
 func (f fakeReader) SearchCreators(context.Context, url.Values) (*civitai.CreatorSearchResult, error) {
 	return &civitai.CreatorSearchResult{}, nil
 }
-func (f fakeReader) SearchImages(context.Context, url.Values) (*civitai.ImageSearchResult, error) {
+func (f fakeReader) SearchImages(_ context.Context, q url.Values) (*civitai.ImageSearchResult, error) {
 	if f.searchHits != nil {
 		atomic.AddInt32(f.searchHits, 1)
+	}
+	if f.lastImageQuery != nil {
+		*f.lastImageQuery = q
+	}
+	if f.communityErr != nil {
+		return nil, f.communityErr
+	}
+	if f.communityImages != nil {
+		return &civitai.ImageSearchResult{Items: f.communityImages}, nil
 	}
 	return nil, errors.New("SearchImages must not be called from the model page path")
 }

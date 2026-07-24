@@ -184,6 +184,42 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, modelDetailPage(view, s.csrf, s.currentTheme()))
 }
 
+// handleModelCommunity backs the LAZY-loaded community feed at the bottom of the
+// model page: recent-popular civitai images that use the selected model version.
+// It is a GET fragment (no state change, no CSRF) that makes ONE bounded outbound
+// SearchImages proxy call — the same egress posture as /models — and NEVER breaks
+// the page: on error or empty results it renders a small muted note. It is fetched
+// out-of-band (not inline during page render) because that SearchImages call is
+// slow (20s+, frequently timing out); see loadModelView.
+func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
+	versionID := strings.TrimSpace(r.URL.Query().Get("versionId"))
+	mode := s.nsfwMode()
+	if versionID == "" || versionID == "0" {
+		s.render(w, http.StatusOK, communityFeedNote("No community images yet."))
+		return
+	}
+
+	q := url.Values{}
+	q.Set("modelVersionId", versionID)
+	q.Set("sort", "Most Reactions")
+	q.Set("period", "Month")
+	q.Set("limit", "12")
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	res, err := s.reader.SearchImages(ctx, q)
+	if err != nil {
+		s.log.Warn("community feed fetch failed", "versionId", versionID, "err", err)
+		s.render(w, http.StatusOK, communityFeedNote("Couldn't load community images."))
+		return
+	}
+	if res == nil || len(res.Items) == 0 {
+		s.render(w, http.StatusOK, communityFeedNote("No community images yet."))
+		return
+	}
+	s.render(w, http.StatusOK, s.communityFeedFragment(res.Items, mode))
+}
+
 // nsfwMode returns the persisted global NSFW display mode (default blur).
 func (s *Server) nsfwMode() string {
 	v, err := s.store.GetSettingDefault(nsfwSettingKey, NSFWBlur)
