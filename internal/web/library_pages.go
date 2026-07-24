@@ -236,6 +236,7 @@ func modelScanForm(csrf string, matchRemote bool) g.Node {
 func libraryContent(v libraryView, csrf string) g.Node {
 	return h.Div(
 		h.Class("space-y-6"),
+		summaryBanner(v),
 		card(
 			sectionTitle("Summary"),
 			h.Div(
@@ -251,11 +252,119 @@ func libraryContent(v libraryView, csrf string) g.Node {
 			libraryModelTable(v.Files),
 		),
 		card(
+			h.ID("deletion-candidates"),
 			sectionTitle("Deletion candidates"),
 			candidatesTable(v.Candidates, csrf),
 			h.Div(h.ID("quarantine-preview"), h.Class("mt-3")),
 		),
 	)
+}
+
+// librarySummary is the post-scan roll-up the next-steps banner renders.
+type librarySummary struct {
+	ModelsIdentified int   // distinct matched model ids
+	Unmatched        int   // model files not identified on CivitAI
+	Duplicates       int   // redundant copies (duplicate + superseded candidates)
+	DuplicateBytes   int64 // reclaimable bytes from those redundant copies
+	Broken           int   // broken sidecars/partials
+}
+
+// summarizeLibrary derives the banner roll-up from a libraryView: distinct
+// identified models, unidentified files, redundant (duplicate/superseded)
+// copies + their reclaimable bytes, and broken files.
+func summarizeLibrary(v libraryView) librarySummary {
+	var s librarySummary
+	models := map[int]bool{}
+	for _, f := range v.Files {
+		if f.ModelID != nil {
+			models[*f.ModelID] = true
+		} else {
+			s.Unmatched++
+		}
+	}
+	s.ModelsIdentified = len(models)
+	for _, c := range v.Candidates {
+		switch c.CandidateReason {
+		case store.CandidateBroken:
+			s.Broken++
+		case store.CandidateDuplicate, store.CandidateSuperseded:
+			s.Duplicates++
+			s.DuplicateBytes += c.SizeBytes
+		}
+	}
+	return s
+}
+
+// summaryBanner is the "what to do next" banner at the top of the Model-files
+// results: an at-a-glance roll-up plus a clear primary action. When there are
+// duplicates/broken files it offers a primary "Review & quarantine…" CTA (which
+// scrolls to the candidates section) and a secondary link; when the library is
+// clean it reassures instead. Theme-aware, civitai-styled.
+func summaryBanner(v libraryView) g.Node {
+	s := summarizeLibrary(v)
+
+	// Clean state: nothing to act on — reassure rather than nag.
+	if s.Duplicates == 0 && s.Broken == 0 {
+		return alert("success", "Your library is clean",
+			h.P(h.Class("mt-1 text-sm"),
+				g.Text(fmt.Sprintf("No duplicates or broken files found — %d models identified · %d unmatched.",
+					s.ModelsIdentified, s.Unmatched))),
+		)
+	}
+
+	// Actionable roll-up: dot-separated counts.
+	pieces := []g.Node{
+		bannerStat(strconv.Itoa(s.ModelsIdentified), "models identified"),
+	}
+	if s.Duplicates > 0 {
+		pieces = append(pieces, bannerSep(),
+			bannerStat(strconv.Itoa(s.Duplicates),
+				fmt.Sprintf("duplicates (reclaim %s)", humanBytes(s.DuplicateBytes))))
+	}
+	pieces = append(pieces, bannerSep(), bannerStat(strconv.Itoa(s.Unmatched), "unmatched"))
+	if s.Broken > 0 {
+		pieces = append(pieces, bannerSep(), bannerStat(strconv.Itoa(s.Broken), "broken"))
+	}
+
+	primaryLabel := "Review & quarantine duplicates"
+	if s.Duplicates == 0 {
+		primaryLabel = "Review broken files"
+	}
+
+	return card(
+		h.Class("border-indigo-500/40"),
+		h.Div(
+			h.Class("flex flex-wrap items-center justify-between gap-4"),
+			h.Div(
+				h.Class("flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-200"),
+				g.Group(pieces),
+			),
+			h.Div(
+				h.Class("flex items-center gap-3"),
+				civButton("filled", "md", []g.Node{
+					h.Type("button"),
+					g.Attr("onclick",
+						"var e=document.getElementById('deletion-candidates');if(e){e.scrollIntoView({behavior:'smooth'});}"),
+				}, g.Text(primaryLabel)),
+				h.A(h.Href("#deletion-candidates"),
+					h.Class("text-sm text-indigo-300 hover:text-indigo-200 underline"),
+					g.Text("See deletion candidates")),
+			),
+		),
+	)
+}
+
+// bannerStat renders one "<value> <label>" chunk of the summary count line.
+func bannerStat(value, label string) g.Node {
+	return h.Span(
+		h.Span(h.Class("font-semibold text-slate-100"), g.Text(value+" ")),
+		h.Span(h.Class("text-slate-400"), g.Text(label)),
+	)
+}
+
+// bannerSep is the muted dot separator between banner count chunks.
+func bannerSep() g.Node {
+	return h.Span(h.Class("text-slate-600"), g.Text("·"))
 }
 
 // File-size magnitude thresholds for the color-coded Size cell (see sizeClass).
