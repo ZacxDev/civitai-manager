@@ -151,6 +151,51 @@ const (
 // IsCandidate reports whether the file is flagged for quarantine.
 func (lf LocalFile) IsCandidate() bool { return lf.CandidateReason != "" }
 
+// Workflow is a row of the workflows table: a locally-curated ComfyUI workflow.
+type Workflow struct {
+	ID   int64
+	Name string
+	// Format is the workflow shape: WorkflowFormatAPI (flat {id:{class_type,inputs}},
+	// the only runnable form) or WorkflowFormatUI (the editor nodes/links graph).
+	Format string
+	// Graph is the workflow JSON exactly as stored.
+	Graph string
+	// Source is how it entered the library: WorkflowSourceImported,
+	// WorkflowSourceExtractedPNG, or WorkflowSourceAuthored.
+	Source string
+	// ModelID / VersionID are the optional civitai linkage (same nullable-integer
+	// convention as LocalFile). A workflow can only be golden when VersionID is set.
+	ModelID   *int
+	VersionID *int
+	BaseModel string
+	// IsGolden marks this as the designated recommended workflow for its version.
+	// The partial unique index ux_workflows_golden enforces at most one per version.
+	IsGolden bool
+	// Resources is the extracted list of referenced model filenames (from loader
+	// nodes' inputs), stored as a JSON array in the TEXT column. Nil/empty when none
+	// were extracted (e.g. a ui-format workflow).
+	Resources []string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// Workflow formats.
+const (
+	WorkflowFormatAPI = "api"
+	WorkflowFormatUI  = "ui"
+)
+
+// Workflow sources.
+const (
+	WorkflowSourceImported     = "imported"
+	WorkflowSourceExtractedPNG = "extracted-png"
+	WorkflowSourceAuthored     = "authored"
+)
+
+// Runnable reports whether the workflow can be submitted to ComfyUI (only
+// api-format graphs are accepted by ComfyUI's /prompt endpoint).
+func (w Workflow) Runnable() bool { return w.Format == WorkflowFormatAPI }
+
 func itoa(i int) string {
 	// small local helper to avoid importing strconv in the hot Label path
 	if i == 0 {
