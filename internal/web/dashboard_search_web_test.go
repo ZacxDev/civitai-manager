@@ -109,7 +109,7 @@ func TestModelCardNSFWModes(t *testing.T) {
 	it := civitai.ModelListItem{ID: 5, Name: "Card Model", Type: "LORA"}
 
 	t.Run("show renders nsfw plain", func(t *testing.T) {
-		out := renderString(t, modelCard(it, images, NSFWShow))
+		out := renderString(t, modelCard(it, images, nil, NSFWShow, "test-csrf"))
 		if !strings.Contains(out, nsfwURL) {
 			t.Error("show mode should render the NSFW image url")
 		}
@@ -122,7 +122,7 @@ func TestModelCardNSFWModes(t *testing.T) {
 	})
 
 	t.Run("blur renders nsfw blurred", func(t *testing.T) {
-		out := renderString(t, modelCard(it, images, NSFWBlur))
+		out := renderString(t, modelCard(it, images, nil, NSFWBlur, "test-csrf"))
 		if !strings.Contains(out, nsfwURL) {
 			t.Error("blur mode still renders the url (behind a reveal overlay)")
 		}
@@ -138,7 +138,7 @@ func TestModelCardNSFWModes(t *testing.T) {
 	})
 
 	t.Run("hide omits nsfw url server-side", func(t *testing.T) {
-		out := renderString(t, modelCard(it, images, NSFWHide))
+		out := renderString(t, modelCard(it, images, nil, NSFWHide, "test-csrf"))
 		if strings.Contains(out, nsfwURL) {
 			t.Error("hide mode MUST omit the NSFW image url server-side")
 		}

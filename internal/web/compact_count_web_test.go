@@ -39,7 +39,7 @@ func TestSearchCardRendersCompactCounts(t *testing.T) {
 		{ID: 1, Name: "Cool LoRA", Type: "LORA",
 			Stats: civitai.ModelStats{DownloadCount: 12_345, ThumbsUpCount: 6_789}},
 	}}
-	out := renderString(t, searchResults(res, NSFWBlur, ""))
+	out := renderString(t, searchResults(res, nil, NSFWBlur, "test-csrf", ""))
 	if !strings.Contains(out, "12.3K downloads") {
 		t.Errorf("search card should show compact downloads (12.3K), got:\n%s", out)
 	}

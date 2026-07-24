@@ -103,6 +103,9 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	isHX := r.Header.Get("HX-Request") == "true"
 	mode := s.nsfwMode()
 	nsfw := s.nsfwSearchFlag()
+	// Per-render model-subscription map (ONE ListSubscriptions query, not per card)
+	// so each result card's subscribe control reflects real subscribed state.
+	subs := s.modelSubscriptions()
 
 	if query == "" {
 		// Empty query → the recent-popular default feed (cached per NSFW flag),
@@ -110,10 +113,10 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		// falls back to the "Enter a query…" hint.
 		res, heading := s.popularModels(r.Context(), nsfw)
 		if isHX {
-			s.render(w, http.StatusOK, searchResults(res, mode, heading))
+			s.render(w, http.StatusOK, searchResults(res, subs, mode, s.csrf, heading))
 			return
 		}
-		s.render(w, http.StatusOK, searchPage("", res, s.csrf, s.currentTheme(), mode, heading))
+		s.render(w, http.StatusOK, searchPage("", res, subs, s.csrf, s.currentTheme(), mode, heading))
 		return
 	}
 
@@ -134,14 +137,14 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			s.render(w, http.StatusOK, errorNote("Search failed: "+err.Error()))
 			return
 		}
-		s.render(w, http.StatusOK, searchPage(query, nil, s.csrf, s.currentTheme(), mode, ""))
+		s.render(w, http.StatusOK, searchPage(query, nil, subs, s.csrf, s.currentTheme(), mode, ""))
 		return
 	}
 	if isHX {
-		s.render(w, http.StatusOK, searchResults(res, mode, ""))
+		s.render(w, http.StatusOK, searchResults(res, subs, mode, s.csrf, ""))
 		return
 	}
-	s.render(w, http.StatusOK, searchPage(query, res, s.csrf, s.currentTheme(), mode, ""))
+	s.render(w, http.StatusOK, searchPage(query, res, subs, s.csrf, s.currentTheme(), mode, ""))
 }
 
 // handleSubscribeSearch backs the dashboard's integrated civitai search: it
@@ -151,8 +154,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSubscribeSearch(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	mode := s.nsfwMode()
+	// One ListSubscriptions query per render (not per card) → correct subscribe
+	// state on each result card.
+	subs := s.modelSubscriptions()
 	if query == "" {
-		s.render(w, http.StatusOK, subscribeSearchResults(nil, mode, s.csrf))
+		s.render(w, http.StatusOK, subscribeSearchResults(nil, subs, mode, s.csrf))
 		return
 	}
 	q := url.Values{}
@@ -167,7 +173,7 @@ func (s *Server) handleSubscribeSearch(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusOK, errorNote("Search failed: "+err.Error()))
 		return
 	}
-	s.render(w, http.StatusOK, subscribeSearchResults(res, mode, s.csrf))
+	s.render(w, http.StatusOK, subscribeSearchResults(res, subs, mode, s.csrf))
 }
 
 // popularModels returns the "recent popular" model feed (Most Downloaded, this
@@ -380,7 +386,10 @@ func (s *Server) handleCreator(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusBadGateway, page("@"+username, s.currentTheme(), s.csrf, s.nsfwMode(), errorNote("Could not load creator: "+err.Error())))
 		return
 	}
-	s.render(w, http.StatusOK, creatorPage(username, res, s.csrf, s.currentTheme(), s.nsfwMode()))
+	// One ListSubscriptions query per render → each model card reflects real
+	// subscribe state (the creator-subscribe button in the header is separate).
+	subs := s.modelSubscriptions()
+	s.render(w, http.StatusOK, creatorPage(username, res, subs, s.csrf, s.currentTheme(), s.nsfwMode()))
 }
 
 func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {

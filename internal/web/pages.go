@@ -144,7 +144,7 @@ func subscribeSearchBox(csrf string) g.Node {
 
 // subscribeSearchResults renders the dashboard subscribe-search result grid:
 // image model cards, each with a one-click auto-download Subscribe button.
-func subscribeSearchResults(res *civitai.ModelSearchResult, mode, csrf string) g.Node {
+func subscribeSearchResults(res *civitai.ModelSearchResult, subs map[int]*store.Subscription, mode, csrf string) g.Node {
 	if res == nil {
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("Search to find models to subscribe to."))
 	}
@@ -155,10 +155,7 @@ func subscribeSearchResults(res *civitai.ModelSearchResult, mode, csrf string) g
 	return h.Div(
 		h.Class("grid gap-4 sm:grid-cols-2 lg:grid-cols-3"),
 		g.Map(res.Items, func(it civitai.ModelListItem) g.Node {
-			return modelCardWith(it, images[it.ID], mode,
-				h.Div(h.Class("mt-1"),
-					subscribeInline("model", strconv.Itoa(it.ID), "Subscribe", csrf)),
-			)
+			return modelCardWith(it, images[it.ID], subs, mode, csrf)
 		}),
 	)
 }
@@ -487,7 +484,7 @@ func progressBar(it store.QueueItem) g.Node {
 // mode is the app's NSFW display mode (hide|blur|show), threaded to the showcase
 // carousels on each card. heading, when set, labels the result grid (e.g.
 // "Popular this month" for the empty-query default feed).
-func searchPage(query string, res *civitai.ModelSearchResult, csrf, theme, mode, heading string) g.Node {
+func searchPage(query string, res *civitai.ModelSearchResult, subs map[int]*store.Subscription, csrf, theme, mode, heading string) g.Node {
 	return page("Search", theme, csrf, mode,
 		card(
 			sectionTitle("Search models"),
@@ -506,7 +503,7 @@ func searchPage(query string, res *civitai.ModelSearchResult, csrf, theme, mode,
 				btnPrimary(g.Text("Search")),
 			),
 		),
-		h.Div(h.ID("search-results"), searchResults(res, mode, heading)),
+		h.Div(h.ID("search-results"), searchResults(res, subs, mode, csrf, heading)),
 		// Showcase carousels reuse the shared lightbox + interaction scripts.
 		lightboxOverlay(),
 		modelPageScript(),
@@ -517,7 +514,7 @@ func searchPage(query string, res *civitai.ModelSearchResult, csrf, theme, mode,
 // searchResults renders the result grid fragment (used by htmx swaps too). mode
 // is the NSFW display mode; heading optionally labels the grid. Showcase images
 // are parsed MANAGER-SIDE from res.Raw (the typed items carry none).
-func searchResults(res *civitai.ModelSearchResult, mode, heading string) g.Node {
+func searchResults(res *civitai.ModelSearchResult, subs map[int]*store.Subscription, mode, csrf, heading string) g.Node {
 	if res == nil {
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("Enter a query to search CivitAI."))
 	}
@@ -528,7 +525,7 @@ func searchResults(res *civitai.ModelSearchResult, mode, heading string) g.Node 
 	grid := h.Div(
 		h.Class("grid gap-4 sm:grid-cols-2 lg:grid-cols-3"),
 		g.Map(res.Items, func(it civitai.ModelListItem) g.Node {
-			return modelCard(it, images[it.ID], mode)
+			return modelCard(it, images[it.ID], subs, mode, csrf)
 		}),
 	)
 	if heading == "" {
@@ -538,15 +535,17 @@ func searchResults(res *civitai.ModelSearchResult, mode, heading string) g.Node 
 }
 
 // modelCard is a search result card: a showcase-image carousel (NSFW-mode
-// respecting) above the name/creator/stats.
-func modelCard(it civitai.ModelListItem, images []galleryImage, mode string) g.Node {
-	return modelCardWith(it, images, mode)
+// respecting) above the name/creator/stats, with a per-card subscribe control.
+func modelCard(it civitai.ModelListItem, images []galleryImage, subs map[int]*store.Subscription, mode, csrf string) g.Node {
+	return modelCardWith(it, images, subs, mode, csrf)
 }
 
-// modelCardWith renders the search card and appends any extra nodes (e.g. a
-// one-click Subscribe control) to the card body, so search-page cards and the
-// dashboard subscribe cards share one layout.
-func modelCardWith(it civitai.ModelListItem, images []galleryImage, mode string, extra ...g.Node) g.Node {
+// modelCardWith renders the search card with a per-card subscribe control at the
+// bottom, so search-page cards and the dashboard subscribe cards share one layout.
+// The control reflects real state from the per-render subs map (subs[it.ID] nil →
+// collapsed "Subscribe"); the map is built ONCE per render (one ListSubscriptions
+// query), never per card.
+func modelCardWith(it civitai.ModelListItem, images []galleryImage, subs map[int]*store.Subscription, mode, csrf string) g.Node {
 	creator := ""
 	if it.Creator != nil {
 		creator = it.Creator.Username
@@ -569,13 +568,15 @@ func modelCardWith(it civitai.ModelListItem, images []galleryImage, mode string,
 			h.Class("text-xs text-slate-500"),
 			g.Text(fmt.Sprintf("%s downloads · %s likes", compactCount(it.Stats.DownloadCount), compactCount(it.Stats.ThumbsUpCount))),
 		),
+		h.Div(h.Class("mt-1"), subscribeControl(it.ID, subs[it.ID], csrf)),
 	}
-	children = append(children, extra...)
 	return card(children...)
 }
 
-// creatorPage renders a creator's models with a subscribe-to-creator button.
-func creatorPage(username string, res *civitai.ModelSearchResult, csrf, theme, mode string) g.Node {
+// creatorPage renders a creator's models with a subscribe-to-creator button. subs
+// is the per-render model-subscription map used by each result card's subscribe
+// control (built once by the handler, not per card).
+func creatorPage(username string, res *civitai.ModelSearchResult, subs map[int]*store.Subscription, csrf, theme, mode string) g.Node {
 	return page("@"+username, theme, csrf, mode,
 		card(
 			h.Div(
@@ -586,7 +587,7 @@ func creatorPage(username string, res *civitai.ModelSearchResult, csrf, theme, m
 		),
 		card(
 			sectionTitle("Models"),
-			searchResults(res, mode, ""),
+			searchResults(res, subs, mode, csrf, ""),
 		),
 		lightboxOverlay(),
 		modelPageScript(),
