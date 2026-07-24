@@ -266,6 +266,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /search", s.handleSearch)
 	mux.HandleFunc("GET /models/{id}", s.handleModel)
 	mux.HandleFunc("GET /models/{id}/community", s.handleModelCommunity)
+	mux.HandleFunc("POST /models/{id}/subscribe", s.handleModelSubscribe)
+	mux.HandleFunc("POST /models/{id}/unsubscribe", s.handleModelUnsubscribe)
 	mux.HandleFunc("GET /creators/{username}", s.handleCreator)
 
 	mux.HandleFunc("POST /settings/nsfw", s.handleSetNSFWDisplay)

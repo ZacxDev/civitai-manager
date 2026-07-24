@@ -68,9 +68,10 @@ func TestHandleModelCardEnrichesAndCaches(t *testing.T) {
 	for _, want := range []string{
 		"Great Model",  // name (not "#id")
 		"LORA", "SDXL", // type + base model details
-		"cm-carousel",                     // the carousel
-		"safe.jpeg",                       // showcase images rendered
-		"Versions", "Local files", "Size", // key details
+		"cm-carousel", // the carousel
+		"safe.jpeg",   // showcase images rendered
+		"Versions in your library", "Total size", // version breakdown
+		"Subscribe", // subscribe toggle
 		"/models/7", // link to the model page
 	} {
 		if !strings.Contains(body, want) {
@@ -98,13 +99,13 @@ func TestHandleModelCardEnrichesAndCaches(t *testing.T) {
 // panic) when the creator is nil.
 func TestMatchedCardAuthorLink(t *testing.T) {
 	withCreator := matchedModelCardView{ModelID: 7, Name: "Great Model", Creator: "carol"}
-	out := renderString(t, matchedModelCard(withCreator))
+	out := renderString(t, matchedModelCard(withCreator, "csrf"))
 	if !strings.Contains(out, `href="/creators/carol"`) || !strings.Contains(out, "@carol") {
 		t.Errorf("card with a creator should link @carol to /creators/carol:\n%s", out)
 	}
 
 	noCreator := matchedModelCardView{ModelID: 8, Name: "Anon Model"}
-	out = renderString(t, matchedModelCard(noCreator))
+	out = renderString(t, matchedModelCard(noCreator, "csrf"))
 	if strings.Contains(out, "/creators/") {
 		t.Errorf("card without a creator should render no author link:\n%s", out)
 	}
@@ -114,11 +115,11 @@ func TestMatchedCardAuthorLink(t *testing.T) {
 // the creator username from a non-nil Creator and leaves it empty otherwise.
 func TestBuildMatchedCardViewResolvesCreator(t *testing.T) {
 	m := &civitai.ModelDetail{ID: 7, Name: "M", Creator: &civitai.Creator{Username: "carol"}}
-	if v := buildMatchedModelCardView(7, m, nil, nil, NSFWBlur); v.Creator != "carol" {
+	if v := buildMatchedModelCardView(7, m, nil, nil, NSFWBlur, nil); v.Creator != "carol" {
 		t.Errorf("Creator = %q, want carol", v.Creator)
 	}
 	m2 := &civitai.ModelDetail{ID: 8, Name: "M"}
-	if v := buildMatchedModelCardView(8, m2, nil, nil, NSFWBlur); v.Creator != "" {
+	if v := buildMatchedModelCardView(8, m2, nil, nil, NSFWBlur, nil); v.Creator != "" {
 		t.Errorf("Creator = %q, want empty for nil creator", v.Creator)
 	}
 }

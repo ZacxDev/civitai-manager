@@ -368,6 +368,63 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	s.renderSubsWithError(w, "")
 }
 
+// handleModelSubscribe is the matched-card one-click subscribe: it creates an
+// AUTO-DOWNLOAD model subscription (consistent with the rest of the app) and
+// returns the updated subscribe toggle so the card flips to the subscribed state
+// without a full reload. It is SEPARATE from the dashboard's POST /subscribe →
+// subscriptionsTable flow. CSRF-protected. An already-subscribed model is a no-op
+// (still returns the subscribed toggle).
+func (s *Server) handleModelSubscribe(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id <= 0 {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	_, subErr := s.sub.SubscribeModel(ctx, id, poller.SubscribeOptions{
+		AutoDownload: true,
+		PollInterval: s.cfg.DefaultPollInterval,
+	})
+	if subErr != nil && !errors.Is(subErr, poller.ErrAlreadySubscribed) {
+		s.log.Warn("model subscribe", "model", id, "err", subErr)
+	}
+	// Re-render from the persisted state so the toggle reflects reality (subscribed
+	// on success/already-subscribed; unchanged if the subscribe genuinely failed).
+	s.render(w, http.StatusOK, subscribeToggle(id, s.modelSubscription(id), s.csrf))
+}
+
+// handleModelUnsubscribe removes the matched-card model subscription and returns
+// the updated (now-unsubscribed) toggle. It looks up the model's subscription id
+// and deletes it. CSRF-protected.
+func (s *Server) handleModelUnsubscribe(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id <= 0 {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	if sub := s.modelSubscription(id); sub != nil {
+		if derr := s.store.DeleteSubscription(sub.ID); derr != nil && !errors.Is(derr, store.ErrNotFound) {
+			s.log.Warn("model unsubscribe", "model", id, "err", derr)
+		}
+	}
+	s.render(w, http.StatusOK, subscribeToggle(id, s.modelSubscription(id), s.csrf))
+}
+
 func (s *Server) handleFlags(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {

@@ -54,8 +54,26 @@ func (s *Server) handleModelCard(w http.ResponseWriter, r *http.Request) {
 			modelCardError(id, len(group), total, "Details unavailable (offline or not found)."))
 		return
 	}
-	view := buildMatchedModelCardView(id, m, raw, group, s.nsfwMode())
-	s.render(w, http.StatusOK, matchedModelCard(view))
+	view := buildMatchedModelCardView(id, m, raw, group, s.nsfwMode(), s.modelSubscription(id))
+	s.render(w, http.StatusOK, matchedModelCard(view, s.csrf))
+}
+
+// modelSubscription returns the user's model-kind subscription for the given
+// model id, or nil when not subscribed. It reads the local subscriptions table —
+// no civitai API call — so the matched card can render the correct subscribe/
+// unsubscribe state offline.
+func (s *Server) modelSubscription(id int) *store.Subscription {
+	subs, err := s.store.ListSubscriptions()
+	if err != nil {
+		return nil
+	}
+	for i := range subs {
+		sub := subs[i]
+		if sub.Kind == store.KindModel && sub.ModelID != nil && *sub.ModelID == id {
+			return &sub
+		}
+	}
+	return nil
 }
 
 // cachedModelDetail resolves a model's detail through the model_cache: a fresh
