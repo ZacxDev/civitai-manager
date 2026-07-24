@@ -201,10 +201,16 @@ func sourcesPanel(csrf string, allowExtra bool, selectedDirs []string, discoverI
 // quarantine results. It renders NO discovery UI. When no install directories
 // have been selected yet (loopback bind), it shows an empty state pointing at Tab
 // A rather than a bare scan button.
-// scanInitial is the initial content of the STABLE #scan-results container (the
-// idle library content, or the live scanning/terminal fragment when a scan is in
-// flight); nil falls back to the idle library content. matchRemote pre-checks the
-// persisted "Match against CivitAI" toggle.
+// scanInitial is the initial content of the STABLE #scan-results container. It is
+// the WHOLE swapped body: for the idle/terminal states it is the scan FORM CARD
+// followed by the library/results content; for the running state it is the live
+// scanning fragment ALONE (no form — progress is the main content). nil falls back
+// to the idle body (form card + idle library content). matchRemote pre-checks the
+// persisted "Match against CivitAI" toggle on the form.
+//
+// The scan form lives INSIDE #scan-results (not in filesPanel's always-on area) so
+// that each /library/scan/status poll swap naturally hides the form while a scan
+// runs and restores it when the scan settles — see filesTabBody / scanScanning.
 func filesPanel(v libraryView, csrf string, allowExtra bool, selectedDirs []string, matchRemote bool, scanInitial g.Node) g.Node {
 	// Gate EVERY scan affordance on ≥1 ADDED install directory: until the persisted
 	// selection has at least one entry, Tab B shows an empty state pointing at Tab A
@@ -222,18 +228,37 @@ func filesPanel(v libraryView, csrf string, allowExtra bool, selectedDirs []stri
 		)
 	}
 	if scanInitial == nil {
-		scanInitial = libraryContent(v, csrf)
+		// Idle (never scanned): the scan form card above the idle library content.
+		scanInitial = filesTabBody(libraryContent(v, csrf), csrf, matchRemote)
 	}
+	// The STABLE poll/results container is now the ONLY always-on element: only its
+	// innerHTML is ever swapped, so the re-arming scan poller can never orphan a
+	// #scan-poll (mirrors #discover-results). It bootstraps from the live scan job on
+	// reload and holds the scan form (idle/terminal) or the progress fragment
+	// (running).
+	return h.Div(h.ID("scan-results"), scanInitial)
+}
+
+// modelScanFormCard is the "Model files" scan form wrapped in its titled card. It
+// is the part of the #scan-results body that appears in the IDLE and TERMINAL
+// states and is ABSENT while a scan runs, so swapping #scan-results between those
+// states shows/hides the form automatically.
+func modelScanFormCard(csrf string, matchRemote bool) g.Node {
+	return card(
+		sectionTitle("Model files"),
+		modelScanForm(csrf, matchRemote),
+	)
+}
+
+// filesTabBody is the innerHTML of #scan-results for the IDLE and TERMINAL states:
+// the scan form card ABOVE the given results body (idle library content, or the
+// terminal scanResults view). The RUNNING state does NOT use this — it swaps in
+// scanScanning alone (no form) so the live progress is the main content.
+func filesTabBody(body g.Node, csrf string, matchRemote bool) g.Node {
 	return h.Div(
 		h.Class("space-y-6"),
-		card(
-			sectionTitle("Model files"),
-			modelScanForm(csrf, matchRemote),
-		),
-		// The STABLE poll/results container: only its innerHTML is ever swapped, so
-		// the re-arming scan poller can never orphan a #scan-poll (mirrors
-		// #discover-results). It bootstraps from the live scan job on reload.
-		h.Div(h.ID("scan-results"), scanInitial),
+		modelScanFormCard(csrf, matchRemote),
+		body,
 	)
 }
 

@@ -229,18 +229,21 @@ func (s *Server) scanJobState() scanSnapshot {
 func (s *Server) renderScanStatus(w http.ResponseWriter) {
 	snap := s.scanJobState()
 	if snap.Started && snap.Running && !snap.Stopped {
+		// Running: the progress fragment ALONE is swapped into #scan-results — no scan
+		// form, so the live progress is the main content while the scan is in flight.
 		s.render(w, http.StatusOK, scanScanning(snap, s.csrf))
 		return
 	}
 	// Terminal (or never-started): rebuild the authoritative Model-files view from
 	// local_files. A never-started job renders the plain library content, which
-	// also halts any stray poller.
+	// also halts any stray poller. The scan form card is prepended (filesTabBody) so
+	// this terminal swap RESTORES the form that the running fragment hid.
 	files, ferr := s.store.ListLocalFiles()
 	if ferr != nil {
 		s.renderError(w, "reload library", ferr)
 		return
 	}
-	s.render(w, http.StatusOK, scanResults(buildLibraryView(files), snap, s.csrf))
+	s.render(w, http.StatusOK, filesTabBody(scanResults(buildLibraryView(files), snap, s.csrf), s.csrf, s.matchRemoteEnabled()))
 }
 
 // handleScanStatus is polled by the scanning fragment. GET (no state change, so

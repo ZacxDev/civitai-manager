@@ -210,9 +210,12 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 	var scanInitial g.Node
 	if snap := s.scanJobState(); snap.Started {
 		if snap.Running {
+			// Running: the live progress fragment ALONE fills #scan-results — the scan
+			// form is hidden while a scan is in flight.
 			scanInitial = scanScanning(snap, s.csrf)
 		} else {
-			scanInitial = scanResults(buildLibraryView(files), snap, s.csrf)
+			// Terminal: the scan form card above the completed results (form restored).
+			scanInitial = filesTabBody(scanResults(buildLibraryView(files), snap, s.csrf), s.csrf, s.matchRemoteEnabled())
 		}
 	}
 	tab := r.URL.Query().Get("tab")
