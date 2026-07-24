@@ -23,8 +23,18 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load subscriptions", err)
 		return
 	}
-	s.render(w, http.StatusOK, dashboardPage(subs, s.csrf, s.currentTheme()))
+	files, err := s.store.ListLocalFiles()
+	if err != nil {
+		s.renderError(w, "load local files", err)
+		return
+	}
+	suggestions := librarySubscribeSuggestions(files, subs, subscribeSuggestionLimit)
+	s.render(w, http.StatusOK, dashboardPage(subs, suggestions, s.csrf, s.currentTheme()))
 }
+
+// subscribeSuggestionLimit caps how many library-derived subscribe suggestions
+// the dashboard shows.
+const subscribeSuggestionLimit = 12
 
 // themeSettingKey persists the UI light/dark choice.
 const themeSettingKey = "theme"
@@ -65,13 +75,18 @@ func (s *Server) handleSetTheme(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	isHX := r.Header.Get("HX-Request") == "true"
+	mode := s.nsfwMode()
 
 	if query == "" {
+		// Empty query → the recent-popular default feed (cached), with a heading.
+		// If that fetch fails, res stays nil and searchResults falls back to the
+		// "Enter a query…" hint.
+		res, heading := s.popularModels(r.Context())
 		if isHX {
-			s.render(w, http.StatusOK, searchResults(nil, s.cfg.BaseURL))
+			s.render(w, http.StatusOK, searchResults(res, mode, heading))
 			return
 		}
-		s.render(w, http.StatusOK, searchPage("", nil, s.cfg.BaseURL, s.csrf, s.currentTheme()))
+		s.render(w, http.StatusOK, searchPage("", res, s.csrf, s.currentTheme(), mode, heading))
 		return
 	}
 
@@ -86,14 +101,70 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			s.render(w, http.StatusOK, errorNote("Search failed: "+err.Error()))
 			return
 		}
-		s.render(w, http.StatusOK, searchPage(query, nil, s.cfg.BaseURL, s.csrf, s.currentTheme()))
+		s.render(w, http.StatusOK, searchPage(query, nil, s.csrf, s.currentTheme(), mode, ""))
 		return
 	}
 	if isHX {
-		s.render(w, http.StatusOK, searchResults(res, s.cfg.BaseURL))
+		s.render(w, http.StatusOK, searchResults(res, mode, ""))
 		return
 	}
-	s.render(w, http.StatusOK, searchPage(query, res, s.cfg.BaseURL, s.csrf, s.currentTheme()))
+	s.render(w, http.StatusOK, searchPage(query, res, s.csrf, s.currentTheme(), mode, ""))
+}
+
+// handleSubscribeSearch backs the dashboard's integrated civitai search: it
+// searches models and renders subscribe-enabled result cards (each with a
+// one-click, auto-download Subscribe button) into the dashboard results
+// container. GET-only; the Subscribe action itself is a CSRF-protected POST.
+func (s *Server) handleSubscribeSearch(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	mode := s.nsfwMode()
+	if query == "" {
+		s.render(w, http.StatusOK, subscribeSearchResults(nil, mode, s.csrf))
+		return
+	}
+	q := url.Values{}
+	q.Set("query", query)
+	q.Set("limit", searchLimit)
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	res, err := s.reader.SearchModels(ctx, q)
+	if err != nil {
+		s.render(w, http.StatusOK, errorNote("Search failed: "+err.Error()))
+		return
+	}
+	s.render(w, http.StatusOK, subscribeSearchResults(res, mode, s.csrf))
+}
+
+// popularModels returns the "recent popular" model feed (Most Downloaded, this
+// Month) used as the empty-query search default, served from a ~10 min in-process
+// TTL cache so repeated dashboard/search loads do not hit civitai.com. On success
+// it returns the feed plus a heading; on any fetch error it returns (nil, "") so
+// the caller falls back to the "Enter a query…" hint.
+func (s *Server) popularModels(parent context.Context) (*civitai.ModelSearchResult, string) {
+	s.popularMu.Lock()
+	if s.popularVal != nil && time.Now().Before(s.popularExp) {
+		v := s.popularVal
+		s.popularMu.Unlock()
+		return v, "Popular this month"
+	}
+	s.popularMu.Unlock()
+
+	q := url.Values{}
+	q.Set("sort", "Most Downloaded")
+	q.Set("period", "Month")
+	q.Set("limit", "24")
+	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
+	defer cancel()
+	res, err := s.reader.SearchModels(ctx, q)
+	if err != nil {
+		s.log.Warn("popular models fetch failed", "err", err)
+		return nil, ""
+	}
+	s.popularMu.Lock()
+	s.popularVal = res
+	s.popularExp = time.Now().Add(popularTTL)
+	s.popularMu.Unlock()
+	return res, "Popular this month"
 }
 
 func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
@@ -211,7 +282,7 @@ func (s *Server) handleCreator(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusBadGateway, page("@"+username, s.currentTheme(), s.csrf, errorNote("Could not load creator: "+err.Error())))
 		return
 	}
-	s.render(w, http.StatusOK, creatorPage(username, res, s.csrf, s.currentTheme()))
+	s.render(w, http.StatusOK, creatorPage(username, res, s.csrf, s.currentTheme(), s.nsfwMode()))
 }
 
 func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {

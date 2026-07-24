@@ -21,7 +21,7 @@ func TestCivitaiContractMarkup(t *testing.T) {
 	}
 
 	// Dashboard exercises button (Subscribe), card, badge (flags), text-input.
-	dash := renderString(t, dashboardPage(subs, "csrf", "dark"))
+	dash := renderString(t, dashboardPage(subs, nil, "csrf", "dark"))
 	for name, want := range map[string]string{
 		"button ui":          `data-civitai-ui="button"`,
 		"button variant":     `data-variant="filled"`,
@@ -170,7 +170,7 @@ func TestVendored012DesignSystemFixes(t *testing.T) {
 func TestThemeToggleRendersAndPersists(t *testing.T) {
 	subs := []store.Subscription{}
 
-	dark := renderString(t, dashboardPage(subs, "csrf", "dark"))
+	dark := renderString(t, dashboardPage(subs, nil, "csrf", "dark"))
 	if !strings.Contains(dark, `<html lang="en" data-theme="dark"`) {
 		t.Errorf("dark page missing <html data-theme=\"dark\">")
 	}
@@ -179,7 +179,7 @@ func TestThemeToggleRendersAndPersists(t *testing.T) {
 		t.Errorf("dark page missing the light-theme toggle control")
 	}
 
-	light := renderString(t, dashboardPage(subs, "csrf", "light"))
+	light := renderString(t, dashboardPage(subs, nil, "csrf", "light"))
 	if !strings.Contains(light, `data-theme="light"`) {
 		t.Errorf("light page missing data-theme=\"light\"")
 	}
@@ -255,8 +255,8 @@ func TestNoExternalCDNInShippedHTML(t *testing.T) {
 	evs := []store.Event{{ID: 1, TS: time.Now(), Level: store.LevelInfo, Kind: "x", Message: "hi"}}
 
 	pages := map[string]g.Node{
-		"dashboard": dashboardPage(subs, "csrf", "dark"),
-		"search":    searchPage("", nil, "https://civitai.com", "csrf", "light"),
+		"dashboard": dashboardPage(subs, nil, "csrf", "dark"),
+		"search":    searchPage("", nil, "csrf", "light", NSFWBlur, ""),
 		"library":   libraryPage(buildLibraryView(nil), "csrf", true, nil, "dark", "sources", nil, false, nil),
 		"trash":     trashPage(nil, "csrf", "light"),
 		"queue":     queueFragment(items),

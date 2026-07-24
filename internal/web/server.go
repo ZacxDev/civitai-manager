@@ -99,7 +99,19 @@ type Server struct {
 	// scanJob is the current (or most recent) background model-scan job, or nil
 	// before the first scan is triggered.
 	scanJob *scanJob
+
+	// popularMu guards the in-process TTL cache of the "recent popular" feed shown
+	// as the empty-query search default. The feed is a single global list (no
+	// query key), so one cached value suffices; it is refreshed on expiry so every
+	// dashboard/search load does not hit civitai.com.
+	popularMu  sync.Mutex
+	popularVal *civitai.ModelSearchResult
+	popularExp time.Time
 }
+
+// popularTTL bounds how long the cached popular-models feed is served before a
+// refresh fetch.
+const popularTTL = 10 * time.Minute
 
 // scanJob is the in-memory state of a single background streaming model-file
 // scan. All fields are read/written only under Server.scanMu.
@@ -259,6 +271,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/theme", s.handleSetTheme)
 
 	mux.HandleFunc("POST /subscribe", s.handleSubscribe)
+	mux.HandleFunc("GET /subscribe/search", s.handleSubscribeSearch)
 	mux.HandleFunc("POST /subscriptions/{id}/flags", s.handleFlags)
 	mux.HandleFunc("POST /subscriptions/{id}/delete", s.handleDelete)
 
