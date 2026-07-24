@@ -16,6 +16,7 @@ import (
 type matchedModelCardView struct {
 	ModelID    int
 	Name       string
+	Creator    string // civitai creator username ("" when unknown), linked to /creators/{username}
 	Type       string
 	BaseModel  string
 	Versions   int
@@ -39,6 +40,9 @@ func buildMatchedModelCardView(id int, m *civitai.ModelDetail, raw []byte, files
 	if m != nil {
 		v.Name = m.Name
 		v.Type = m.Type
+		if m.Creator != nil {
+			v.Creator = m.Creator.Username
+		}
 		v.Versions = len(m.ModelVersions)
 		if len(m.ModelVersions) > 0 {
 			v.BaseModel = m.ModelVersions[0].BaseModel
@@ -104,6 +108,11 @@ func matchedModelCard(v matchedModelCardView) g.Node {
 					h.Class("text-base font-semibold text-indigo-300 hover:text-indigo-200"),
 					g.Text(name),
 				),
+				g.If(v.Creator != "", h.A(
+					h.Href("/creators/"+v.Creator),
+					h.Class("mt-0.5 block text-xs text-slate-400 hover:text-slate-200"),
+					g.Text("@"+v.Creator),
+				)),
 				h.Div(
 					h.Class("mt-1 flex flex-wrap items-center gap-1.5"),
 					g.If(v.Type != "", badge(v.Type, "indigo")),

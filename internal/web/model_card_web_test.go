@@ -93,6 +93,36 @@ func TestHandleModelCardEnrichesAndCaches(t *testing.T) {
 	}
 }
 
+// TestMatchedCardAuthorLink proves the matched card renders an @username link to
+// the creator page when the model has a creator, and renders no author link (no
+// panic) when the creator is nil.
+func TestMatchedCardAuthorLink(t *testing.T) {
+	withCreator := matchedModelCardView{ModelID: 7, Name: "Great Model", Creator: "carol"}
+	out := renderString(t, matchedModelCard(withCreator))
+	if !strings.Contains(out, `href="/creators/carol"`) || !strings.Contains(out, "@carol") {
+		t.Errorf("card with a creator should link @carol to /creators/carol:\n%s", out)
+	}
+
+	noCreator := matchedModelCardView{ModelID: 8, Name: "Anon Model"}
+	out = renderString(t, matchedModelCard(noCreator))
+	if strings.Contains(out, "/creators/") {
+		t.Errorf("card without a creator should render no author link:\n%s", out)
+	}
+}
+
+// TestBuildMatchedCardViewResolvesCreator proves buildMatchedModelCardView pulls
+// the creator username from a non-nil Creator and leaves it empty otherwise.
+func TestBuildMatchedCardViewResolvesCreator(t *testing.T) {
+	m := &civitai.ModelDetail{ID: 7, Name: "M", Creator: &civitai.Creator{Username: "carol"}}
+	if v := buildMatchedModelCardView(7, m, nil, nil, NSFWBlur); v.Creator != "carol" {
+		t.Errorf("Creator = %q, want carol", v.Creator)
+	}
+	m2 := &civitai.ModelDetail{ID: 8, Name: "M"}
+	if v := buildMatchedModelCardView(8, m2, nil, nil, NSFWBlur); v.Creator != "" {
+		t.Errorf("Creator = %q, want empty for nil creator", v.Creator)
+	}
+}
+
 // TestModelCardCarouselRespectsNSFW proves the carousel honors the persisted
 // display mode: blur obscures the NSFW image behind click-to-reveal, hide omits
 // it, show reveals it — never re-flagging or exposing NSFW.
