@@ -214,4 +214,14 @@ func TestCommunityFeedEmptyAndError(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(body, "No community images yet.") {
 		t.Errorf("missing versionId should render the empty note, got %d:\n%s", code, body)
 	}
+
+	// Non-numeric versionId → empty note, and NO upstream call (the guard rejects
+	// it before spending a round trip): communityErr would fire if SearchImages ran.
+	reader = newModelReader(t)
+	reader.communityErr = errors.New("should-not-be-called")
+	srv = newModelServer(t, reader)
+	code, body = communityReq(t, srv, "/models/7/community?versionId=abc")
+	if code != http.StatusOK || !strings.Contains(body, "No community images yet.") {
+		t.Errorf("non-numeric versionId should render the empty note without fetching, got %d:\n%s", code, body)
+	}
 }

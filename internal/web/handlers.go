@@ -194,7 +194,9 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
 	versionID := strings.TrimSpace(r.URL.Query().Get("versionId"))
 	mode := s.nsfwMode()
-	if versionID == "" || versionID == "0" {
+	// Validate versionId is a positive integer before spending an upstream round
+	// trip on it (a malformed value would only earn a rejection from civitai).
+	if vid, err := strconv.Atoi(versionID); err != nil || vid <= 0 {
 		s.render(w, http.StatusOK, communityFeedNote("No community images yet."))
 		return
 	}

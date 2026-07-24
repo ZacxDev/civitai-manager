@@ -293,7 +293,10 @@ func modelDetailPage(v modelDetailView, csrf, theme string) g.Node {
 		h.Div(
 			h.ID("community-feed"),
 			hx("get", fmt.Sprintf("/models/%d/community?versionId=%d", m.ID, v.SelectedVersionID)),
-			hx("trigger", "load"),
+			// "revealed" (fires when scrolled into view) not "load": the feed sits at
+			// the bottom of the page, so this avoids an outbound civitai Images API
+			// call on every model-page view when the user never scrolls to it.
+			hx("trigger", "revealed"),
 			hx("swap", "innerHTML"),
 			g.Text("Loading community images…"),
 		),

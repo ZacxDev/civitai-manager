@@ -54,8 +54,8 @@ func TestModelPageEmitsLazyCommunityContainer(t *testing.T) {
 	if !strings.Contains(body, `hx-get="/models/7/community?versionId=11"`) {
 		t.Errorf("community container should target the selected version:\n%s", body)
 	}
-	if !strings.Contains(body, `hx-trigger="load"`) {
-		t.Error("community container should lazy-load on trigger=load")
+	if !strings.Contains(body, `hx-trigger="revealed"`) {
+		t.Error("community container should lazy-load when scrolled into view (trigger=revealed)")
 	}
 
 	// Selecting an older version reloads the feed for THAT version.
