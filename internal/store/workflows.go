@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -15,21 +17,25 @@ import (
 var ErrGoldenNeedsVersion = errors.New("cannot set golden without an attached version")
 
 const workflowCols = `id, name, format, graph, source, model_id, version_id,
-	base_model, is_golden, resources, created_at, updated_at`
+	base_model, is_golden, resources, source_path, size_bytes, mtime,
+	created_at, updated_at`
 
 func scanWorkflow(sc scanner) (Workflow, error) {
 	var (
-		wf        Workflow
-		modelID   sql.NullInt64
-		versionID sql.NullInt64
-		baseModel sql.NullString
-		isGolden  int
-		resources sql.NullString
-		createdAt string
-		updatedAt string
+		wf         Workflow
+		modelID    sql.NullInt64
+		versionID  sql.NullInt64
+		baseModel  sql.NullString
+		isGolden   int
+		resources  sql.NullString
+		sourcePath sql.NullString
+		mtime      sql.NullString
+		createdAt  string
+		updatedAt  string
 	)
 	if err := sc.Scan(&wf.ID, &wf.Name, &wf.Format, &wf.Graph, &wf.Source,
 		&modelID, &versionID, &baseModel, &isGolden, &resources,
+		&sourcePath, &wf.SizeBytes, &mtime,
 		&createdAt, &updatedAt); err != nil {
 		return Workflow{}, err
 	}
@@ -49,6 +55,12 @@ func scanWorkflow(sc scanner) (Workflow, error) {
 		var list []string
 		if err := json.Unmarshal([]byte(resources.String), &list); err == nil {
 			wf.Resources = list
+		}
+	}
+	wf.SourcePath = sourcePath.String
+	if mtime.Valid {
+		if t := parseTimeNano(mtime.String); !t.IsZero() {
+			wf.Mtime = &t
 		}
 	}
 	wf.CreatedAt = parseTime(createdAt)
@@ -82,16 +94,149 @@ func (s *Store) InsertWorkflow(ctx context.Context, wf *Workflow) (int64, error)
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO workflows
 			(name, format, graph, source, model_id, version_id, base_model,
-			 is_golden, resources, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 is_golden, resources, source_path, size_bytes, mtime, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		wf.Name, wf.Format, wf.Graph, wf.Source,
 		nullInt(wf.ModelID), nullInt(wf.VersionID), nullStr(wf.BaseModel),
 		boolToInt(wf.IsGolden), marshalResources(wf.Resources),
+		nullStr(wf.SourcePath), wf.SizeBytes, nullTimeNanoStr(wf.Mtime),
 		formatTime(wf.CreatedAt), formatTime(wf.UpdatedAt))
 	if err != nil {
 		return 0, fmt.Errorf("insert workflow: %w", err)
 	}
 	return res.LastInsertId()
+}
+
+// UpsertWorkflowByPath records (or updates) a SCANNED workflow keyed by its
+// absolute source_path. On a re-scan (ON CONFLICT(source_path)) it refreshes the
+// parsed graph and the incremental-cache fields but DELIBERATELY PRESERVES the
+// user's curation: the name is not overwritten once set, a manual model/version
+// attachment survives (COALESCE keeps the existing id over the freshly auto-linked
+// one), and is_golden is never touched. It reports whether an existing row was
+// updated (updated=true) vs. a fresh row inserted.
+func (s *Store) UpsertWorkflowByPath(ctx context.Context, wf *Workflow) (id int64, updated bool, err error) {
+	if wf.SourcePath == "" {
+		return 0, false, errors.New("UpsertWorkflowByPath: empty source_path")
+	}
+	now := time.Now().UTC()
+	if wf.CreatedAt.IsZero() {
+		wf.CreatedAt = now
+	}
+	if wf.UpdatedAt.IsZero() {
+		wf.UpdatedAt = now
+	}
+	// Detect insert-vs-update up front so we can report it (RowsAffected is 1 for
+	// both an insert and an ON CONFLICT update under SQLite, so it cannot tell them
+	// apart). This read + write pair runs against the single-conn WAL store.
+	var existing int64
+	err = s.db.QueryRowContext(ctx,
+		`SELECT id FROM workflows WHERE source_path = ?`, wf.SourcePath).Scan(&existing)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		updated = false
+	case err != nil:
+		return 0, false, err
+	default:
+		updated = true
+	}
+
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO workflows
+			(name, format, graph, source, model_id, version_id, base_model,
+			 is_golden, resources, source_path, size_bytes, mtime, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(source_path) WHERE source_path IS NOT NULL DO UPDATE SET
+			-- Keep a user-set name; only adopt the derived filename on the first insert.
+			name = CASE WHEN workflows.name = '' THEN excluded.name ELSE workflows.name END,
+			format = excluded.format,
+			graph = excluded.graph,
+			-- Never clobber a manual attach (or a golden's linkage) with a re-scan's
+			-- auto-link: keep the existing id when present.
+			model_id = COALESCE(workflows.model_id, excluded.model_id),
+			version_id = COALESCE(workflows.version_id, excluded.version_id),
+			resources = excluded.resources,
+			size_bytes = excluded.size_bytes,
+			mtime = excluded.mtime,
+			updated_at = excluded.updated_at`,
+		wf.Name, wf.Format, wf.Graph, wf.Source,
+		nullInt(wf.ModelID), nullInt(wf.VersionID), nullStr(wf.BaseModel),
+		boolToInt(wf.IsGolden), marshalResources(wf.Resources),
+		nullStr(wf.SourcePath), wf.SizeBytes, nullTimeNanoStr(wf.Mtime),
+		formatTime(wf.CreatedAt), formatTime(wf.UpdatedAt))
+	if err != nil {
+		return 0, false, fmt.Errorf("upsert workflow by path: %w", err)
+	}
+	if !updated {
+		id, err = res.LastInsertId()
+		return id, false, err
+	}
+	return existing, true, nil
+}
+
+// GetWorkflowByPath fetches one scanned workflow by its absolute source_path, or
+// (nil, nil) if none is recorded (mirrors GetLocalFileByPath).
+func (s *Store) GetWorkflowByPath(ctx context.Context, path string) (*Workflow, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+workflowCols+` FROM workflows WHERE source_path = ?`, path)
+	wf, err := scanWorkflow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &wf, nil
+}
+
+// FindVersionByFileName resolves a referenced model FILENAME (a bare basename,
+// e.g. "sdxl.safetensors") to a civitai (model_id, version_id) by matching it
+// case-insensitively against the basenames of matched local_files. It powers the
+// workflow scanner's auto-link. It returns the first match (ordered by path for
+// determinism); ok=false when nothing matches or the basename is blank.
+//
+// The candidate set is narrowed in SQL to matched files whose path ends in the
+// basename (a LIKE on '%'||sep||name), then filtered by an exact case-insensitive
+// filepath.Base compare in Go so "foo.safetensors" cannot spuriously match
+// "myfoo.safetensors".
+func (s *Store) FindVersionByFileName(ctx context.Context, basename string) (modelID, versionID *int, ok bool, err error) {
+	basename = strings.TrimSpace(basename)
+	if basename == "" {
+		return nil, nil, false, nil
+	}
+	// Match either "<dir>/<basename>" or a bare "<basename>" path. LIKE is
+	// case-insensitive for ASCII in SQLite; the exact Go compare below is the real
+	// gate, this only narrows the candidate rows.
+	like := "%" + string(filepath.Separator) + basename
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT model_id, version_id, path FROM local_files
+		WHERE model_id IS NOT NULL AND (path LIKE ? OR path = ?)
+		ORDER BY path`, like, basename)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	defer rows.Close()
+	lowWant := strings.ToLower(basename)
+	for rows.Next() {
+		var (
+			mID, vID sql.NullInt64
+			path     string
+		)
+		if err := rows.Scan(&mID, &vID, &path); err != nil {
+			return nil, nil, false, err
+		}
+		if strings.ToLower(filepath.Base(path)) != lowWant {
+			continue
+		}
+		if mID.Valid {
+			v := int(mID.Int64)
+			modelID = &v
+		}
+		if vID.Valid {
+			v := int(vID.Int64)
+			versionID = &v
+		}
+		return modelID, versionID, true, nil
+	}
+	return nil, nil, false, rows.Err()
 }
 
 // GetWorkflow fetches one workflow by id, or ErrNotFound.
