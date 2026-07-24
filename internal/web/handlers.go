@@ -17,6 +17,25 @@ import (
 
 const searchLimit = "24"
 
+// nsfwSearchFlag maps the persisted NSFW display mode to the civitai
+// `/api/v1/models` `nsfw` boolean query param: blur/show want the NSFW models
+// AND their showcase images to come through (the client carousel then blurs or
+// shows per mode), while hide wants SFW-only results server-side. Returns true
+// for blur/show, false for hide.
+func (s *Server) nsfwSearchFlag() bool { return s.nsfwMode() != NSFWHide }
+
+// setNSFWParam sets the `nsfw` query param civitai's model search honors:
+// nsfw=true includes NSFW models with their images, nsfw=false restricts to SFW.
+// Setting it explicitly (rather than omitting) keeps the popular default and the
+// keyword search consistent and makes the data-egress behavior obvious.
+func setNSFWParam(q url.Values, nsfw bool) {
+	if nsfw {
+		q.Set("nsfw", "true")
+	} else {
+		q.Set("nsfw", "false")
+	}
+}
+
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	subs, err := s.store.ListSubscriptions()
 	if err != nil {
@@ -76,12 +95,13 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	isHX := r.Header.Get("HX-Request") == "true"
 	mode := s.nsfwMode()
+	nsfw := s.nsfwSearchFlag()
 
 	if query == "" {
-		// Empty query → the recent-popular default feed (cached), with a heading.
-		// If that fetch fails, res stays nil and searchResults falls back to the
-		// "Enter a query…" hint.
-		res, heading := s.popularModels(r.Context())
+		// Empty query → the recent-popular default feed (cached per NSFW flag),
+		// with a heading. If that fetch fails, res stays nil and searchResults
+		// falls back to the "Enter a query…" hint.
+		res, heading := s.popularModels(r.Context(), nsfw)
 		if isHX {
 			s.render(w, http.StatusOK, searchResults(res, mode, heading))
 			return
@@ -96,6 +116,9 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Keyword search returns the most popular matches first (the empty-query
 	// "popular this month" default already sorts Most Downloaded).
 	q.Set("sort", "Most Downloaded")
+	// Tie the nsfw param to the display mode so NSFW models return WITH their
+	// showcase images (blur/show) or are excluded (hide) — see setNSFWParam.
+	setNSFWParam(q, nsfw)
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	res, err := s.reader.SearchModels(ctx, q)
@@ -128,6 +151,8 @@ func (s *Server) handleSubscribeSearch(w http.ResponseWriter, r *http.Request) {
 	q := url.Values{}
 	q.Set("query", query)
 	q.Set("limit", searchLimit)
+	// Same NSFW-image behavior as the main search (see setNSFWParam).
+	setNSFWParam(q, s.nsfwSearchFlag())
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	res, err := s.reader.SearchModels(ctx, q)
@@ -143,10 +168,9 @@ func (s *Server) handleSubscribeSearch(w http.ResponseWriter, r *http.Request) {
 // TTL cache so repeated dashboard/search loads do not hit civitai.com. On success
 // it returns the feed plus a heading; on any fetch error it returns (nil, "") so
 // the caller falls back to the "Enter a query…" hint.
-func (s *Server) popularModels(parent context.Context) (*civitai.ModelSearchResult, string) {
+func (s *Server) popularModels(parent context.Context, nsfw bool) (*civitai.ModelSearchResult, string) {
 	s.popularMu.Lock()
-	if s.popularVal != nil && time.Now().Before(s.popularExp) {
-		v := s.popularVal
+	if v := s.popularVal[nsfw]; v != nil && time.Now().Before(s.popularExp[nsfw]) {
 		s.popularMu.Unlock()
 		return v, "Popular this month"
 	}
@@ -156,6 +180,10 @@ func (s *Server) popularModels(parent context.Context) (*civitai.ModelSearchResu
 	q.Set("sort", "Most Downloaded")
 	q.Set("period", "Month")
 	q.Set("limit", "24")
+	// Include NSFW models + their showcase images unless the user is in hide mode
+	// (see setNSFWParam) — without this, NSFW models return with images withheld
+	// and their cards show "No showcase images".
+	setNSFWParam(q, nsfw)
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
 	res, err := s.reader.SearchModels(ctx, q)
@@ -164,8 +192,8 @@ func (s *Server) popularModels(parent context.Context) (*civitai.ModelSearchResu
 		return nil, ""
 	}
 	s.popularMu.Lock()
-	s.popularVal = res
-	s.popularExp = time.Now().Add(popularTTL)
+	s.popularVal[nsfw] = res
+	s.popularExp[nsfw] = time.Now().Add(popularTTL)
 	s.popularMu.Unlock()
 	return res, "Popular this month"
 }

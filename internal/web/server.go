@@ -101,12 +101,13 @@ type Server struct {
 	scanJob *scanJob
 
 	// popularMu guards the in-process TTL cache of the "recent popular" feed shown
-	// as the empty-query search default. The feed is a single global list (no
-	// query key), so one cached value suffices; it is refreshed on expiry so every
+	// as the empty-query search default. The feed is keyed by the NSFW flag
+	// (true=include NSFW+images, false=SFW-only) so a mode flip never serves the
+	// other flag's cached list; each flag's entry is refreshed on expiry so every
 	// dashboard/search load does not hit civitai.com.
 	popularMu  sync.Mutex
-	popularVal *civitai.ModelSearchResult
-	popularExp time.Time
+	popularVal map[bool]*civitai.ModelSearchResult
+	popularExp map[bool]time.Time
 }
 
 // popularTTL bounds how long the cached popular-models feed is served before a
@@ -198,7 +199,11 @@ func NewServer(st *store.Store, reader civitai.Reader, sub Subscriber, cfg Confi
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	}
-	return &Server{store: st, reader: reader, sub: sub, cfg: cfg, log: log, csrf: newCSRFToken()}
+	return &Server{
+		store: st, reader: reader, sub: sub, cfg: cfg, log: log, csrf: newCSRFToken(),
+		popularVal: map[bool]*civitai.ModelSearchResult{},
+		popularExp: map[bool]time.Time{},
+	}
 }
 
 // extraPathsAllowed reports whether the arbitrary extra-scan-path capability is
