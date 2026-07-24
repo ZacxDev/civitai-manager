@@ -82,3 +82,28 @@ input[type="radio"] {
   color: var(--civitai-color-error);
   font-weight: 600;
 }
+
+/*
+ * Click-to-sort table headers (.cm-sortable-table th[data-sortable]) — see
+ * sortableTh + librarySortScript in library_pages.go. The direction glyph is
+ * driven purely by the header's aria-sort state (kept the single source of truth
+ * for both AT and the visual indicator), so the small inline sort script only
+ * has to toggle aria-sort. Unlayered so it wins over the app (Tailwind) layer.
+ */
+th[data-sortable] {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+th[data-sortable] .cm-sort-ind::after {
+  content: " \2195"; /* ↕ neutral */
+  color: var(--civitai-color-text-dimmed);
+}
+th[data-sortable][aria-sort="ascending"] .cm-sort-ind::after {
+  content: " \25B2"; /* ▲ */
+  color: var(--civitai-color-primary);
+}
+th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
+  content: " \25BC"; /* ▼ */
+  color: var(--civitai-color-primary);
+}

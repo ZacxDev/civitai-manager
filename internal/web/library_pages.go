@@ -328,14 +328,78 @@ func libraryModelTable(files []store.LocalFile) g.Node {
 	return h.Div(
 		h.Class("overflow-x-auto"),
 		h.Table(
-			h.Class("min-w-full text-sm"),
+			h.Class("cm-sortable-table min-w-full text-sm"),
 			h.THead(h.Tr(
 				h.Class("text-left text-slate-400 border-b border-slate-800"),
-				th("Model"), th("Version"), th("Status"), th("Size"), th("Path"),
+				sortableTh("Model"), sortableTh("Version"), sortableTh("Status"),
+				sortableTh("Size"), sortableTh("Path"),
 			)),
 			h.TBody(g.Group(rows)),
 		),
+		librarySortScript(),
 	)
+}
+
+// sortableTh renders a click-to-sort table header: keyboard-operable (Enter or
+// Space), announced to AT via aria-sort (the single source of truth the CSS
+// indicator glyph also reads), and marked data-sortable so the inline sort
+// script can find it. The size column carries data-sort-value on its cells, so
+// that column sorts numerically by bytes (see librarySortScript).
+func sortableTh(label string) g.Node {
+	return h.Th(
+		h.Class("px-3 py-2 font-medium"),
+		dataFlag("sortable"),
+		g.Attr("role", "columnheader"),
+		g.Attr("aria-sort", "none"),
+		g.Attr("tabindex", "0"),
+		g.Attr("onclick", "cmSortTable(this)"),
+		g.Attr("onkeydown", "if(event.key==='Enter'||event.key===' '){event.preventDefault();cmSortTable(this);}"),
+		h.Span(g.Text(label)),
+		h.Span(dataFlag("sort-ind-cell"), h.Class("cm-sort-ind")),
+	)
+}
+
+// librarySortScript is the small, self-contained (vendored, no CDN) client-side
+// column sorter. Clicking (or Enter/Space on) a data-sortable header sorts the
+// loaded tbody rows in-browser and toggles asc/desc, updating aria-sort on the
+// headers (which also drives the CSS direction glyph). A cell carrying
+// data-sort-value is compared NUMERICALLY (so Size sorts by raw bytes, not the
+// humanized string); otherwise a case-insensitive text compare is used. The
+// function is (re)defined idempotently so it survives every htmx swap of the
+// results fragment; it attaches no duplicate listeners (headers use inline
+// onclick).
+func librarySortScript() g.Node {
+	const js = `
+function cmSortTable(th){
+  var table = th.closest('table');
+  if(!table){ return; }
+  var headers = Array.prototype.slice.call(table.querySelectorAll('th[data-sortable]'));
+  var idx = headers.indexOf(th);
+  if(idx < 0){ return; }
+  var dir = th.getAttribute('aria-sort') === 'ascending' ? 'descending' : 'ascending';
+  headers.forEach(function(h){ h.setAttribute('aria-sort', 'none'); });
+  th.setAttribute('aria-sort', dir);
+  var tbody = table.tBodies[0];
+  if(!tbody){ return; }
+  var mult = dir === 'ascending' ? 1 : -1;
+  var rows = Array.prototype.slice.call(tbody.rows);
+  rows.sort(function(a, b){
+    var ca = a.cells[idx], cb = b.cells[idx];
+    if(ca && cb && ca.hasAttribute('data-sort-value') && cb.hasAttribute('data-sort-value')){
+      var na = parseFloat(ca.getAttribute('data-sort-value')) || 0;
+      var nb = parseFloat(cb.getAttribute('data-sort-value')) || 0;
+      return (na - nb) * mult;
+    }
+    var ta = ca ? ca.textContent.trim().toLowerCase() : '';
+    var tb = cb ? cb.textContent.trim().toLowerCase() : '';
+    if(ta < tb){ return -1 * mult; }
+    if(ta > tb){ return 1 * mult; }
+    return 0;
+  });
+  rows.forEach(function(r){ tbody.appendChild(r); });
+}
+`
+	return h.Script(g.Raw(js))
 }
 
 // candidatesTable renders flagged candidates with per-row + bulk quarantine
