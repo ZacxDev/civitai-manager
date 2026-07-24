@@ -46,6 +46,15 @@ type Install struct {
 	// ModelDirs are the immediate model subdirectories under the install's
 	// models/ folder (e.g. checkpoints, loras, Stable-diffusion, Lora, vae).
 	ModelDirs []string
+	// WorkflowDirs are the EXISTING directories under a ComfyUI install that hold
+	// saved workflow .json files (the current "user/default/workflows" layout and
+	// the legacy top-level "workflows"). Only dirs that exist on disk are listed;
+	// empty for a non-ComfyUI install or one with no workflows dir. Discovery
+	// records these paths but never descends into them (an install stays a leaf).
+	WorkflowDirs []string
+	// OutputDir is the ComfyUI "output" directory (generated images with embedded
+	// workflow metadata) when it exists, else empty.
+	OutputDir string
 	// Git is the repo state when a .git entry exists, else nil.
 	Git *GitState
 }
@@ -609,6 +618,9 @@ func buildInstall(ctx context.Context, dir, kind string, modelDirs []string, git
 		abs = filepath.Clean(dir)
 	}
 	in := Install{Path: abs, Kind: kind, ModelDirs: modelDirs, Confidence: ConfidenceLow}
+	if kind == KindComfyUI {
+		in.WorkflowDirs, in.OutputDir = comfyDerivedDirs(abs)
+	}
 	if dirExists(filepath.Join(dir, ".git")) {
 		in.Git = gitProbe(ctx, dir)
 		if in.Git == nil {
@@ -633,6 +645,46 @@ func detectComfyUI(dir string) (string, []string, bool) {
 		return "", nil, false
 	}
 	return KindComfyUI, listModelDirs(models), true
+}
+
+// comfyDerivedDirs returns the EXISTING workflow directories and the output
+// directory for a ComfyUI install rooted at dir. Workflow candidates are the
+// current "user/default/workflows" layout and the legacy top-level "workflows";
+// only dirs present on disk are returned, absolute-joined under dir.
+func comfyDerivedDirs(dir string) (workflowDirs []string, outputDir string) {
+	for _, rel := range [][]string{
+		{"user", "default", "workflows"},
+		{"workflows"},
+	} {
+		p := filepath.Join(append([]string{dir}, rel...)...)
+		if dirExists(p) {
+			workflowDirs = append(workflowDirs, p)
+		}
+	}
+	if out := filepath.Join(dir, "output"); dirExists(out) {
+		outputDir = out
+	}
+	return workflowDirs, outputDir
+}
+
+// WorkflowScanDirs collects the existing workflow directories across a set of
+// discovered installs, de-duplicated and sorted for deterministic output. It is
+// the set of directories the workflow scanner should walk for saved *.json
+// graphs. Installs with no workflow dir contribute nothing.
+func WorkflowScanDirs(installs []Install) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, in := range installs {
+		for _, d := range in.WorkflowDirs {
+			if d == "" || seen[d] {
+				continue
+			}
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // detectA1111: webui.py or launch.py + models/Stable-diffusion + models/Lora.
