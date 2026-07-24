@@ -175,6 +175,14 @@ type Workflow struct {
 	// nodes' inputs), stored as a JSON array in the TEXT column. Nil/empty when none
 	// were extracted (e.g. a ui-format workflow).
 	Resources []string
+	// SourcePath is the absolute on-disk path a SCANNED workflow was found at (the
+	// upsert key for re-scans); empty for imported / PNG-extracted / authored rows.
+	SourcePath string
+	// SizeBytes / Mtime are the incremental-scan cache fields (mirror LocalFile): a
+	// re-scan skips re-parsing a workflow whose size AND mtime are unchanged. Zero /
+	// nil for non-scanned rows.
+	SizeBytes int64
+	Mtime     *time.Time
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -190,6 +198,7 @@ const (
 	WorkflowSourceImported     = "imported"
 	WorkflowSourceExtractedPNG = "extracted-png"
 	WorkflowSourceAuthored     = "authored"
+	WorkflowSourceScanned      = "scanned"
 )
 
 // Runnable reports whether the workflow can be submitted to ComfyUI (only

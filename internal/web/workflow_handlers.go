@@ -20,18 +20,16 @@ import (
 // comfy.maxPNGBytes.
 const maxWorkflowUpload = 64 << 20
 
-// handleWorkflows renders the Workflows library page. A ?flash=/&level= query
-// (set by the POST-redirect-GET handlers below) surfaces an import/action result.
+// handleWorkflows redirects the legacy standalone /workflows page to the Workflows
+// Library tab (the workflow UI moved into /library). Any ?flash=/&level= query is
+// carried through so a POST-redirect-GET that still targets /workflows lands on the
+// tab with its flash intact.
 func (s *Server) handleWorkflows(w http.ResponseWriter, r *http.Request) {
-	wfs, err := s.store.ListWorkflows(r.Context())
-	if err != nil {
-		s.renderError(w, "load workflows", err)
-		return
+	target := "/library?tab=workflows"
+	if q := r.URL.RawQuery; q != "" {
+		target += "&" + q
 	}
-	flash := r.URL.Query().Get("flash")
-	level := r.URL.Query().Get("level")
-	s.render(w, http.StatusOK, workflowsPage(wfs, s.csrf, s.currentTheme(), s.nsfwMode(),
-		level, flash, s.extraPathsAllowed()))
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 // handleWorkflowDetail renders one workflow with its pretty-printed (escaped)
@@ -277,10 +275,11 @@ func (s *Server) handleWorkflowGolden(w http.ResponseWriter, r *http.Request) {
 
 // --- helpers ---
 
-// redirectWorkflows POST-redirect-GETs back to the workflow library with a flash.
+// redirectWorkflows POST-redirect-GETs back to the Workflows Library tab with a
+// flash.
 func (s *Server) redirectWorkflows(w http.ResponseWriter, r *http.Request, msg, level string) {
-	q := url.Values{"flash": {msg}, "level": {level}}
-	http.Redirect(w, r, "/workflows?"+q.Encode(), http.StatusSeeOther)
+	q := url.Values{"tab": {"workflows"}, "flash": {msg}, "level": {level}}
+	http.Redirect(w, r, "/library?"+q.Encode(), http.StatusSeeOther)
 }
 
 // redirectWorkflowDetail POST-redirect-GETs back to a workflow detail page. (The

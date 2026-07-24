@@ -137,14 +137,15 @@ func buildLibraryView(files []store.LocalFile) libraryView {
 // discoverInitial is the initial content of the stable #discover-results
 // container (idle controls, or the live scanning/terminal fragment when a crawl
 // is in flight); nil falls back to the idle controls.
-func libraryPage(v libraryView, csrf string, allowExtra bool, selectedDirs []string, theme, activeTab string, discoverInitial g.Node, matchRemote bool, scanInitial g.Node, nsfwMode string) g.Node {
-	if activeTab != "files" {
-		activeTab = "sources"
-	}
+func libraryPage(v libraryView, csrf string, allowExtra bool, selectedDirs []string, theme, activeTab string, discoverInitial g.Node, matchRemote bool, scanInitial g.Node, nsfwMode string, lw libraryWorkflowsView) g.Node {
 	var panel g.Node
-	if activeTab == "files" {
+	switch activeTab {
+	case "files":
 		panel = filesPanel(v, csrf, allowExtra, selectedDirs, matchRemote, scanInitial)
-	} else {
+	case "workflows":
+		panel = workflowsPanel(lw.Workflows, csrf, allowExtra, lw.FlashLevel, lw.Flash, lw.ScanInitial)
+	default:
+		activeTab = "sources"
 		panel = sourcesPanel(csrf, allowExtra, selectedDirs, discoverInitial)
 	}
 	return page("Library", theme, csrf, nsfwMode,
@@ -169,6 +170,7 @@ func libraryTabStrip(active string) g.Node {
 		h.Class("lib-tabs mt-1 mb-4 flex gap-6"),
 		libraryTab("sources", "Install directories", active),
 		libraryTab("files", "Model files", active),
+		libraryTab("workflows", "Workflows", active),
 	)
 }
 

@@ -285,7 +285,25 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 	if tab == "" && len(selected) > 0 && len(files) > 0 {
 		tab = "files"
 	}
-	s.render(w, http.StatusOK, libraryPage(buildLibraryView(files), s.csrf, s.extraPathsAllowed(), selected, s.currentTheme(), tab, discoverInitial, s.matchRemoteEnabled(), scanInitial, s.nsfwMode()))
+	// Workflows tab data: the stored workflows, an optional flash carried by the
+	// POST-redirect-GET handlers, and a bootstrap of the stable
+	// #workflow-scan-results container from the live workflow-scan job (so a reload
+	// mid-scan resumes the scanning view + poller).
+	lw := libraryWorkflowsView{
+		Flash:      r.URL.Query().Get("flash"),
+		FlashLevel: r.URL.Query().Get("level"),
+	}
+	if wfs, werr := s.store.ListWorkflows(r.Context()); werr == nil {
+		lw.Workflows = wfs
+		if snap := s.workflowScanJobState(); snap.Started {
+			if snap.Running {
+				lw.ScanInitial = workflowScanScanning(snap, s.csrf)
+			} else {
+				lw.ScanInitial = workflowScanTerminal(wfs, snap, s.csrf, s.extraPathsAllowed())
+			}
+		}
+	}
+	s.render(w, http.StatusOK, libraryPage(buildLibraryView(files), s.csrf, s.extraPathsAllowed(), selected, s.currentTheme(), tab, discoverInitial, s.matchRemoteEnabled(), scanInitial, s.nsfwMode(), lw))
 }
 
 func (s *Server) handleLibraryScan(w http.ResponseWriter, r *http.Request) {

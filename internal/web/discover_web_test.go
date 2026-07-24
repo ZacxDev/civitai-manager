@@ -303,7 +303,7 @@ func TestScanDirAddRemovePersistAndScan(t *testing.T) {
 // NOT as a button-level hx-indicator. The button keeps a brief click-guard.
 func TestDiscoverLoadingIndicatorMarkup(t *testing.T) {
 	// allowExtra=true, Tab A (sources) so the discover control is rendered.
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, nil, "dark", "sources", nil, false, nil, NSFWBlur))
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", true, nil, "dark", "sources", nil, false, nil, NSFWBlur, libraryWorkflowsView{}))
 	for _, want := range []string{
 		`hx-post="/library/discover"`,
 		`hx-disabled-elt="this"`,

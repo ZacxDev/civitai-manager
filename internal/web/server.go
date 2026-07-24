@@ -100,6 +100,17 @@ type Server struct {
 	// before the first scan is triggered.
 	scanJob *scanJob
 
+	// workflowScanFn performs the streaming workflow scan. Nil (production)
+	// resolves the ComfyUI workflow dirs (discovery + persisted scan_dirs) and runs
+	// a library.WorkflowScanner; tests inject a seam to stream WorkflowResults over
+	// time without touching the FS. It reports the terminal report + error.
+	workflowScanFn func(ctx context.Context, onWorkflow func(library.WorkflowResult)) (*library.WorkflowScanReport, error)
+	// workflowScanMu guards workflowScanJob. One workflow-scan job runs at a time.
+	workflowScanMu sync.Mutex
+	// workflowScanJob is the current (or most recent) background workflow-scan job,
+	// or nil before the first workflow scan is triggered.
+	workflowScanJob *workflowScanJob
+
 	// popularMu guards the in-process TTL cache of the "recent popular" feed shown
 	// as the empty-query search default. The feed is keyed by the NSFW flag
 	// (true=include NSFW+images, false=SFW-only) so a mode flip never serves the
@@ -304,6 +315,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /library/quarantine", s.handleQuarantine)
 	mux.HandleFunc("GET /trash", s.handleTrash)
 	mux.HandleFunc("POST /trash/{id}/restore", s.handleRestore)
+
+	mux.HandleFunc("POST /library/workflow-scan", s.handleWorkflowScan)
+	mux.HandleFunc("GET /library/workflow-scan/status", s.handleWorkflowScanStatus)
+	mux.HandleFunc("POST /library/workflow-scan/stop", s.handleWorkflowScanStop)
 
 	mux.HandleFunc("GET /workflows", s.handleWorkflows)
 	mux.HandleFunc("GET /workflows/{id}", s.handleWorkflowDetail)
