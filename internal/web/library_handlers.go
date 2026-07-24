@@ -36,12 +36,14 @@ func (s *Server) handleModelCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The model's local files (for the file count + total size on the card).
+	// The model's local files (for the file count + total size on the card). The
+	// indexed by-model lookup avoids a full local_files scan per lazy card; the
+	// model-kind filter is still applied in Go (it can't be pushed cheaply).
 	var group []store.LocalFile
 	var total int64
-	if files, ferr := s.store.ListLocalFiles(); ferr == nil {
+	if files, ferr := s.store.ListLocalFilesByModel(id); ferr == nil {
 		for _, f := range files {
-			if f.Kind == store.LocalKindModel && f.ModelID != nil && *f.ModelID == id {
+			if f.Kind == store.LocalKindModel {
 				group = append(group, f)
 				total += f.SizeBytes
 			}
@@ -62,14 +64,13 @@ func (s *Server) handleModelCard(w http.ResponseWriter, r *http.Request) {
 // given model (from the local-files table, model-kind rows). No civitai call —
 // used to badge owned versions on the model page.
 func (s *Server) localVersionIDs(modelID int) map[int]bool {
-	files, err := s.store.ListLocalFiles()
+	files, err := s.store.ListLocalFilesByModel(modelID)
 	if err != nil {
 		return nil
 	}
 	out := map[int]bool{}
 	for _, f := range files {
-		if f.Kind == store.LocalKindModel && f.ModelID != nil && *f.ModelID == modelID &&
-			f.VersionID != nil {
+		if f.Kind == store.LocalKindModel && f.VersionID != nil {
 			out[*f.VersionID] = true
 		}
 	}
@@ -81,17 +82,16 @@ func (s *Server) localVersionIDs(modelID int) map[int]bool {
 // no civitai API call — so the matched card can render the correct subscribe/
 // unsubscribe state offline.
 func (s *Server) modelSubscription(id int) *store.Subscription {
-	subs, err := s.store.ListSubscriptions()
+	sub, err := s.store.FindModelSubscription(id)
 	if err != nil {
+		// ErrNotFound (no subscription) and any other error alike degrade to "not
+		// subscribed" — the card renders the Subscribe state offline/on error.
+		if !errors.Is(err, store.ErrNotFound) {
+			s.log.Debug("model subscription lookup", "model", id, "err", err)
+		}
 		return nil
 	}
-	for i := range subs {
-		sub := subs[i]
-		if sub.Kind == store.KindModel && sub.ModelID != nil && *sub.ModelID == id {
-			return &sub
-		}
-	}
-	return nil
+	return sub
 }
 
 // cachedModelDetail resolves a model's detail through the model_cache: a fresh
