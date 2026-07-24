@@ -3,7 +3,8 @@
 _Point-in-time snapshot. Verify against `git log`/live code before acting._
 
 ## Current state
-- **Latest release: v0.1.27** (`main` @ `958ecb9`). 9 releases this session (v0.1.19 → v0.1.27).
+- **Latest release: v0.1.28** (`main` @ `4e7711c`). 10 releases this session (v0.1.19 → v0.1.28).
+- **ComfyUI integration is now IN FLIGHT** — see `claudedocs/COMFYUI-INTEGRATION-DESIGN.md` (research-grounded proposal + agreed slicing). **Slice A shipped in v0.1.28.** Next: Slice B (see Open threads).
 - Local `main` is clean. **`export GOPRIVATE=github.com/civitai/*`** before any `go build`/`vet`/`test` (private `github.com/civitai/cli` SDK dep) — otherwise the build fails on sumdb verification. See repo `CLAUDE.md` (read it first).
 - **Standing release authorization:** the user granted (2026-07-24) blanket OK to push+tag+release WITHOUT per-release approval — still run the full gate + `/audit-pr` + live-verify first, then ship and report. (Recorded in auto-memory `civitai-manager-release-authorization`.)
 
@@ -16,6 +17,7 @@ _Point-in-time snapshot. Verify against `git log`/live code before acting._
 - **v0.1.25** — perf pass: indexed per-model lookups (`ListLocalFilesByModel` + `FindModelSubscription`) replacing full-table scans on the Model files tab.
 - **v0.1.26** — subscribe UX: inline **options + confirm + feedback** control (`/models/{id}/subscribe-options|subscribe-control`); suggestion titles cache-first + lazy (`/models/{id}/title`); **search NSFW-param fix** (images were withheld — `nsfw=true` under blur/show, `false` under hide; popular cache re-keyed per flag); compact K/M counts; audit-fix: subscribe FAILURE now shows feedback.
 - **v0.1.27** — subscribe control reflects real subscribed/not state on the model page + search/creator cards (one `ListSubscriptions` per render; no per-card scan).
+- **v0.1.28** — **ComfyUI Slice A: Workflow Library** (pure-Go, no execution). New `workflows` table (migration `0008`, `is_golden` singleton per version via partial unique index) + store CRUD (`internal/store/workflows.go`); new **`internal/comfy`** package — untrusted PNG `tEXt` metadata extraction (`prompt`→API-format graph, `workflow`→UI-format; `parameters`→A1111 rejected) + api/ui format detection + loader-node resource extraction, all bounded/defensive (64 MiB cap before alloc); new **Workflows nav tab** (`internal/web/workflow_{handlers,pages}.go`) — import via paste-JSON or PNG upload, list/detail/attach/set-golden, CSRF + loopback-gated imports, multipart temp-file cleanup. Run button greyed (execution = Slice B). Audit verdict safe-to-merge; the one 🟡 (multipart temp-file leak, leaked pre-CSRF) fixed + empirically re-verified.
 
 ## Cross-repo (user ships CivitAI code)
 - `civitai/civitai` (prod) + `civitai/cli` (private SDK) work landed in the batch-by-hash era (see git). The SDK already exposes `SearchModels`/`SearchImages`/`SearchCreators`/`GetModel`/`GetModelVersion(sByHashes)` — no SDK change was needed for any v0.1.2x feature. `civitai/cli` branch protection has a `pins-vs-published` required check the USER resolves.
@@ -28,9 +30,10 @@ subagent (COMMIT IN SMALL COMPILABLE INCREMENTS) → **real gate with GOPRIVATE*
 - **No real browser** (MCP Playwright broken; chromium not installed). HTTP-level reproduction verifies the server response, not the DOM/JS — state that caveat when reporting.
 
 ## Open threads / next steps
-1. **F2 — loopback-gate the outbound-proxy GETs** (`/models`, `/search`, `/creators`, `/subscribe/search`, `/models/{id}/community`, `/models/{id}/title`, popular default). Only matters on a non-loopback `--addr`; SSRF-shaped but low-severity (fixed civitai.com host, integer ids). Decide gate-all vs accept-and-document. The lone tracked follow-up.
-2. **Deferred/minor:** `compactCount` `999_999 → "1000K"` (intended edge); the recurring `h.StyleAttr is deprecated` warnings (cosmetic; whole codebase uses it); CI Node-20→24 actions-bump warning on releases.
+1. **ComfyUI Slice B — local ComfyUI client + run + UI→API converter** (the big next capability; design in `claudedocs/COMFYUI-INTEGRATION-DESIGN.md`). Build `internal/comfy` HTTP+WS client (`Submit /prompt`, `Watch` ws → done on `executing`w/`node==null`+matching `prompt_id`, `Results /history`+`/view`, `ObjectInfo /object_info`); add `comfy_url` (default `http://127.0.0.1:8188`) + secret `comfy_token` config; a **run streaming-job** reusing the scan/discover race-safe pattern (Stop = `POST /interrupt`) + result gallery; **pre-flight** workflow resources vs `/object_info` + local library; and the **UI→API converter** (needs live `/object_info` — upgrades stored ui-format workflows to runnable). **User HAS a local ComfyUI on this machine/LAN → live-verify real `/prompt` runs against it** (ask for the URL). Separate `*http.Client` (NOT the civitai SDK download client — its SSRF guard blocks loopback). Then **Slice C** = remote CivitAI Comfy Cloud (Orchestration `POST /v2/consumer/workflows`, `whatif` Buzz estimate, CustomComfy — verify body field names against live schema first; highest uncertainty, last).
+2. **F2 — loopback-gate the outbound-proxy GETs** (`/models`, `/search`, `/creators`, `/subscribe/search`, `/models/{id}/community`, `/models/{id}/title`, popular default). Only matters on a non-loopback `--addr`; SSRF-shaped but low-severity (fixed civitai.com host, integer ids). Decide gate-all vs accept-and-document. Lower priority than ComfyUI.
+3. **Deferred/minor:** `compactCount` `999_999 → "1000K"` (intended edge); the recurring `h.StyleAttr is deprecated` warnings (cosmetic; whole codebase uses it); CI Node-20→24 actions-bump warning on releases.
 
 ## Cleanup pending
-- **Dogfood server is running unattended** — v0.1.27 build on `:8972` against the real DB (`~/.config/civitai-manager/civitai-manager.db`). Stop it when done.
-- Session **scratchpad** has `serveN.log` + a `dogfood/cm` binary — clear when convenient.
+- **Dogfood server is running unattended** — v0.1.28 build on `:8972` against the real DB (`~/.config/civitai-manager/civitai-manager.db`); the `0008` migration ran on it (adds an empty `workflows` table — additive/harmless). Stop it when done. Rebuilt/restarted after the v0.1.28 merge per the dogfood pattern.
+- Session **scratchpad** has a `dogfood/cm` binary — clear when convenient.
