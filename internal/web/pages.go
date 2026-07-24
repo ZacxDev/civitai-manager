@@ -545,7 +545,7 @@ func modelCardWith(it civitai.ModelListItem, images []galleryImage, mode string,
 		),
 		h.Div(
 			h.Class("text-xs text-slate-500"),
-			g.Text(fmt.Sprintf("%d downloads · %d likes", it.Stats.DownloadCount, it.Stats.ThumbsUpCount)),
+			g.Text(fmt.Sprintf("%s downloads · %s likes", compactCount(it.Stats.DownloadCount), compactCount(it.Stats.ThumbsUpCount))),
 		),
 	}
 	children = append(children, extra...)

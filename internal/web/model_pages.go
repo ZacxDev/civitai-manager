@@ -327,9 +327,9 @@ func modelHeaderCard(m *civitai.ModelDetail, images []galleryImage, mode, creato
 				),
 				h.Div(
 					h.Class("mt-2 flex flex-wrap gap-4 text-xs text-slate-400"),
-					statInline("Downloads", strconv.Itoa(m.Stats.DownloadCount)),
-					statInline("Likes", strconv.Itoa(m.Stats.ThumbsUpCount)),
-					statInline("Comments", strconv.Itoa(m.Stats.CommentCount)),
+					statInline("Downloads", compactCount(m.Stats.DownloadCount)),
+					statInline("Likes", compactCount(m.Stats.ThumbsUpCount)),
+					statInline("Comments", compactCount(m.Stats.CommentCount)),
 				),
 			),
 			subscribeInline("model", strconv.Itoa(m.ID), "Subscribe", csrf),

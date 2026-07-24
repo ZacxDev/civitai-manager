@@ -2,7 +2,6 @@ package web
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
@@ -128,7 +127,7 @@ func (s *Server) communityImageTile(it civitai.ImageItem, mode string) g.Node {
 	children = append(children, h.Div(
 		h.Class("pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-center justify-between gap-2 bg-slate-950/70 px-2 py-1 text-xs text-slate-200"),
 		h.Span(h.Class("truncate"), g.Text("@"+it.Username)),
-		h.Span(h.Class("shrink-0"), g.Text("♥ "+strconv.Itoa(imageReactionCount(it.Stats)))),
+		h.Span(h.Class("shrink-0"), g.Text("♥ "+compactCount(imageReactionCount(it.Stats)))),
 	))
 	return h.Div(children...)
 }

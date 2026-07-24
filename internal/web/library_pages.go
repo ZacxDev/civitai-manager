@@ -47,6 +47,38 @@ func humanCount(n int) string {
 	return string(out)
 }
 
+// compactCount renders a count in a compact, human-friendly form for the stat
+// lines that show download/like/comment/reaction totals: values below 1000 stay
+// as-is, then 1_000 -> "1K", 1_234 -> "1.2K", 3_400_000 -> "3.4M",
+// 1_500_000_000 -> "1.5B". One decimal place, with a trailing ".0" trimmed so
+// round thousands read as "1K" not "1.0K". Negatives (which shouldn't occur)
+// render as-is.
+func compactCount(n int) string {
+	if n < 0 {
+		return strconv.Itoa(n)
+	}
+	switch {
+	case n < 1_000:
+		return strconv.Itoa(n)
+	case n < 1_000_000:
+		return compactUnit(n, 1_000, "K")
+	case n < 1_000_000_000:
+		return compactUnit(n, 1_000_000, "M")
+	default:
+		return compactUnit(n, 1_000_000_000, "B")
+	}
+}
+
+// compactUnit formats n/div to one decimal place and appends suffix, trimming a
+// trailing ".0" (so 1000/1000 -> "1K", 1234/1000 -> "1.2K").
+func compactUnit(n, div int, suffix string) string {
+	s := strconv.FormatFloat(float64(n)/float64(div), 'f', 1, 64)
+	if len(s) >= 2 && s[len(s)-2:] == ".0" {
+		s = s[:len(s)-2]
+	}
+	return s + suffix
+}
+
 // renderCapNote renders the "Showing first N of M — capped …" truncation
 // indicator for a results section that rendered fewer rows/cards (shown) than
 // its true total (total). It returns nil when nothing was capped (shown >= total),
