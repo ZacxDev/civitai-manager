@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -512,6 +513,54 @@ func nsfwControl(mode string, modelID int, csrf string) g.Node {
 // lightbox. Generation metadata is stashed in a hidden node (keyed by the
 // caller-supplied metaID, which must be unique across the page so multiple
 // galleries/carousels don't collide) the lightbox shows.
+// thumbnailWidth is the pixel width requested for grid/carousel showcase tiles.
+// The full-resolution original is kept for the click-to-zoom lightbox, so only
+// the (many, small) grid tiles pay the reduced-bandwidth path.
+const thumbnailWidth = 450
+
+// tileThumbWidth is the width to request for one tile: the thumbnail target,
+// capped to the image's own width so we never upscale a small original.
+func tileThumbWidth(im galleryImage) int {
+	if im.Width > 0 && im.Width < thumbnailWidth {
+		return im.Width
+	}
+	return thumbnailWidth
+}
+
+// civitaiThumbURL rewrites an image.civitai.com URL to request an optimized,
+// downscaled rendition. The civitai image CDN encodes transform params as a path
+// segment between the image UUID and the filename
+// (…/<bucket>/<uuid>/anim=false,width=450,optimized=true/<file>); this inserts
+// that segment, or replaces an existing transform segment. Non-civitai hosts and
+// unparseable/oddly-shaped URLs are returned unchanged — so this doubles as a
+// host allowlist for the transform. width<=0 returns the URL unchanged.
+func civitaiThumbURL(rawURL string, width int) string {
+	if width <= 0 {
+		return rawURL
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host != "image.civitai.com" {
+		return rawURL
+	}
+	segs := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(segs) < 3 {
+		return rawURL // not the expected /<bucket>/<uuid>/<file> shape — don't touch
+	}
+	params := fmt.Sprintf("anim=false,width=%d,optimized=true", width)
+	if len(segs) >= 4 && strings.Contains(segs[2], "=") {
+		// An existing transform segment sits between the uuid and the filename.
+		segs[2] = params
+	} else {
+		// No transform segment yet — insert one before the filename.
+		newSegs := make([]string, 0, len(segs)+1)
+		newSegs = append(newSegs, segs[0], segs[1], params)
+		segs = append(newSegs, segs[2:]...)
+	}
+	// Rebuild without url.String() re-encoding (which would percent-escape the
+	// commas/equals in the params segment); civitai image URLs carry no query.
+	return u.Scheme + "://" + u.Host + "/" + strings.Join(segs, "/")
+}
+
 func galleryTile(im galleryImage, metaID string, blur bool) g.Node {
 	imgClass := "h-full w-full cursor-zoom-in object-cover transition"
 	if blur {
@@ -519,7 +568,7 @@ func galleryTile(im galleryImage, metaID string, blur bool) g.Node {
 	}
 
 	img := h.Img(
-		h.Src(im.URL),
+		h.Src(civitaiThumbURL(im.URL, tileThumbWidth(im))),
 		h.Alt("showcase image"),
 		h.Loading("lazy"),
 		g.Attr("data-full", im.URL),
