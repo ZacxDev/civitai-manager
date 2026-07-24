@@ -103,8 +103,22 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
 - **Run `/audit-pr` before merging** web-endpoint, concurrency, quarantine/
   filesystem, DB-migration, or security PRs. It surfaced a real bug on nearly every
   such PR this session.
-- **Browser-verify client-side htmx bugs.** MCP Playwright is broken on this NixOS
-  host — fall back to system chromium via `executablePath`. Never silently skip the
-  browser check for an interaction bug.
+- **Verify htmx/interaction changes at the HTTP level — real browsers are
+  unavailable here** (MCP Playwright is broken on this NixOS host AND system
+  chromium is NOT installed, so `executablePath` doesn't work either). What works:
+  a button's `hx-vals`/form IS the exact request it issues, so `curl` that request
+  against the running dogfood binary and assert the returned fragment — this
+  reproduces the click's server-side effect without a browser. For
+  **state-mutating** actions (subscribe/unsubscribe, quarantine, downloads) do NOT
+  exercise them against the user's real DB
+  (`~/.config/civitai-manager/civitai-manager.db`) — that creates real
+  subscriptions/downloads. Spin up a **throwaway temp DB** (start the binary once to
+  run migrations, seed the needed rows via a tiny in-module `cmd/` seeder using the
+  `store` package, then verify), and delete the seeder + temp DB afterward. The
+  **dogfood serve pattern**: a `serve` instance runs against the real DB on a
+  loopback port (e.g. `:8972`) for live verification + user dogfooding — rebuild and
+  restart it after each merge. Honest caveat: HTTP-level reproduction verifies the
+  server response, not the actual browser DOM/JS dispatch — say so when reporting,
+  and never silently skip interaction verification.
 - **Parallel subagents on this repo:** pass `isolation: "worktree"` so their edits
   can't collide in the shared working tree.
