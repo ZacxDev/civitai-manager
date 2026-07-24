@@ -264,15 +264,13 @@ func TestSubscribeSearchRendersSubscribeCards(t *testing.T) {
 	if !strings.Contains(out, "Popular Model") {
 		t.Error("subscribe search should render the result card")
 	}
-	// A one-click Subscribe control with auto_download=true + CSRF posting /subscribe.
-	if !strings.Contains(out, `hx-post="/subscribe"`) {
-		t.Error("subscribe card missing the /subscribe POST")
+	// The card now renders the shared 3-step subscribe control: a Subscribe button
+	// that opens the options panel for that model (id 77) via GET.
+	if !strings.Contains(out, `hx-get="/models/77/subscribe-options"`) {
+		t.Error("subscribe card should use the shared subscribe control (options panel)")
 	}
-	if !strings.Contains(out, `name="auto_download"`) || !strings.Contains(out, `value="true"`) {
-		t.Error("subscribe card must set auto_download=true")
-	}
-	if !strings.Contains(out, srv.csrf) {
-		t.Error("subscribe card must carry the CSRF token")
+	if !strings.Contains(out, `id="subscribe-control-77"`) {
+		t.Error("subscribe card should carry the stable subscribe-control container")
 	}
 	// It carried the typed query (not the popular params).
 	reader.mu.Lock()

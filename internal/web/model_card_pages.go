@@ -394,42 +394,133 @@ func availableVersionRows(modelID int, avs []availableVersion) []g.Node {
 	return rows
 }
 
-// subscribeToggle renders the model's subscribe/unsubscribe control. When not
-// subscribed it POSTs /models/{id}/subscribe (one-click, auto-download ON); when
-// subscribed it POSTs /models/{id}/unsubscribe. The button targets ITSELF and
-// swaps outerHTML, so the two handlers return an updated subscribeToggle and the
-// card reflects the new state without a full reload. Both carry the CSRF token.
-// The wrapping span with a stable id is the swap target.
-func subscribeToggle(modelID int, sub *store.Subscription, csrf string) g.Node {
-	id := fmt.Sprintf("subscribe-toggle-%d", modelID)
+// subscribeControlID is the stable container id every state of the reusable
+// model-subscribe control shares, so each htmx fragment can outerHTML-swap the
+// whole control by targeting #subscribe-control-{id}.
+func subscribeControlID(modelID int) string {
+	return fmt.Sprintf("subscribe-control-%d", modelID)
+}
+
+// subscribeControl renders the reusable 3-state model-subscribe control in its
+// CURRENT state: the subscribed feedback (with an Unsubscribe button) when the
+// model is subscribed, otherwise the collapsed "Subscribe" button that opens the
+// options panel. All three states (collapsed / options / subscribed) share the
+// #subscribe-control-{id} container and swap it via outerHTML, so the flow is:
+// Subscribe → options (auto-download vs notify-only + Confirm/Cancel) →
+// subscribed feedback → Unsubscribe → collapsed. Used for MODEL subscribes on
+// the matched card, search cards, suggestions, and the model page.
+func subscribeControl(modelID int, sub *store.Subscription, csrf string) g.Node {
 	if sub != nil {
-		return h.Span(h.ID(id),
-			civButton("subtle", "sm",
-				[]g.Node{
-					h.Type("button"),
-					hx("post", fmt.Sprintf("/models/%d/unsubscribe", modelID)),
-					hx("vals", fmt.Sprintf(`{"csrf_token":%q}`, csrf)),
-					hx("target", "#"+id),
-					hx("swap", "outerHTML"),
-					g.Attr("aria-label", "Unsubscribe from this model"),
-				},
-				g.Text("Subscribed ✓ · Unsubscribe"),
-			),
+		return subscribeControlSubscribed(modelID, sub, csrf, "")
+	}
+	return subscribeControlCollapsed(modelID, csrf, "")
+}
+
+// subscribeToggle is the matched-card entry point (kept for its callers); it
+// renders the shared subscribe control.
+func subscribeToggle(modelID int, sub *store.Subscription, csrf string) g.Node {
+	return subscribeControl(modelID, sub, csrf)
+}
+
+// subscribeControlCollapsed is state 1: the "Subscribe" button that GETs the
+// options panel into the shared container. note, when non-empty, appends a small
+// status line (e.g. "Unsubscribed") beneath it.
+func subscribeControlCollapsed(modelID int, csrf, note string) g.Node {
+	id := subscribeControlID(modelID)
+	btn := civButton("outline", "sm",
+		[]g.Node{
+			h.Type("button"),
+			hx("get", fmt.Sprintf("/models/%d/subscribe-options", modelID)),
+			hx("target", "#"+id),
+			hx("swap", "outerHTML"),
+			g.Attr("aria-label", "Subscribe to this model"),
+		},
+		g.Text("Subscribe"),
+	)
+	return h.Div(h.ID(id), h.Class("flex flex-col items-start gap-1"), btn, subscribeNote(note))
+}
+
+// subscribeOptionsPanel is state 2: a form (carrying the shared container id) with
+// the Auto-download (default) vs Notify-only radio group, a "Subscribe to <name>?"
+// heading, a Confirm submit (POST /models/{id}/subscribe, CSRF via the hidden
+// field) and a Cancel (GET /models/{id}/subscribe-control → back to collapsed).
+func subscribeOptionsPanel(modelID int, name, csrf string) g.Node {
+	id := subscribeControlID(modelID)
+	radio := func(value, label string, checked bool) g.Node {
+		attrs := []g.Node{
+			h.Type("radio"), h.Name("mode"), h.Value(value),
+			h.Class("text-indigo-500"),
+		}
+		if checked {
+			attrs = append(attrs, g.Attr("checked"))
+		}
+		return h.Label(
+			h.Class("flex items-center gap-1.5 text-sm text-slate-300"),
+			h.Input(attrs...),
+			g.Text(label),
 		)
 	}
-	return h.Span(h.ID(id),
-		civButton("outline", "sm",
-			[]g.Node{
+	return h.Form(
+		h.ID(id),
+		h.Class("flex flex-col gap-2 rounded-md border border-slate-700 bg-slate-900/40 p-3"),
+		hx("post", fmt.Sprintf("/models/%d/subscribe", modelID)),
+		hx("target", "#"+id),
+		hx("swap", "outerHTML"),
+		csrfInput(csrf),
+		// name is untrusted civitai data — g.Text auto-escapes it.
+		h.P(h.Class("text-sm font-medium text-slate-200"), g.Text("Subscribe to "+name+"?")),
+		h.Div(h.Class("flex flex-col gap-1"),
+			radio("auto_download", "Auto-download", true),
+			radio("notify_only", "Notify only", false),
+		),
+		h.Div(h.Class("flex items-center gap-2"),
+			civButton("filled", "sm", []g.Node{h.Type("submit")}, g.Text("Confirm")),
+			civButton("subtle", "sm", []g.Node{
 				h.Type("button"),
-				hx("post", fmt.Sprintf("/models/%d/subscribe", modelID)),
-				hx("vals", fmt.Sprintf(`{"csrf_token":%q}`, csrf)),
+				hx("get", fmt.Sprintf("/models/%d/subscribe-control", modelID)),
 				hx("target", "#"+id),
 				hx("swap", "outerHTML"),
-				g.Attr("aria-label", "Subscribe to this model"),
-			},
-			g.Text("Subscribe"),
+			}, g.Text("Cancel")),
 		),
 	)
+}
+
+// subscribeControlSubscribed is state 3: the "Subscribed ✓ · <mode>" feedback with
+// an Unsubscribe button (POST /models/{id}/unsubscribe, CSRF via hx-vals). note,
+// when non-empty, appends a status line.
+func subscribeControlSubscribed(modelID int, sub *store.Subscription, csrf, note string) g.Node {
+	id := subscribeControlID(modelID)
+	mode := "auto-download"
+	if sub != nil && sub.NotifyOnly {
+		mode = "notify only"
+	}
+	unsub := civButton("subtle", "sm",
+		[]g.Node{
+			h.Type("button"),
+			hx("post", fmt.Sprintf("/models/%d/unsubscribe", modelID)),
+			hx("vals", fmt.Sprintf(`{"csrf_token":%q}`, csrf)),
+			hx("target", "#"+id),
+			hx("swap", "outerHTML"),
+			g.Attr("aria-label", "Unsubscribe from this model"),
+		},
+		g.Text("Unsubscribe"),
+	)
+	return h.Div(h.ID(id), h.Class("flex flex-col items-start gap-1"),
+		h.Div(h.Class("flex items-center gap-2"),
+			h.Span(h.Class("text-sm font-medium text-green-500"), g.Text("Subscribed ✓ · "+mode)),
+			unsub,
+		),
+		subscribeNote(note),
+	)
+}
+
+// subscribeNote renders a small status line for the subscribe control (or nothing
+// when msg is empty).
+func subscribeNote(msg string) g.Node {
+	if msg == "" {
+		return nil
+	}
+	return h.Span(h.Class("text-xs text-slate-500"), g.Text(msg))
 }
 
 // modelCardError renders a graceful fallback card when the model detail could

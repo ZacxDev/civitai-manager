@@ -427,12 +427,41 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	s.renderSubsWithError(w, "")
 }
 
-// handleModelSubscribe is the matched-card one-click subscribe: it creates an
-// AUTO-DOWNLOAD model subscription (consistent with the rest of the app) and
-// returns the updated subscribe toggle so the card flips to the subscribed state
-// without a full reload. It is SEPARATE from the dashboard's POST /subscribe →
-// subscriptionsTable flow. CSRF-protected. An already-subscribed model is a no-op
-// (still returns the subscribed toggle).
+// handleModelSubscribeOptions (GET) renders the subscribe options panel (state 2
+// of the shared control): the auto-download vs notify-only choice + Confirm/Cancel.
+// The heading resolves the model name from the local model_cache only (zero
+// civitai calls), falling back to "this model" on a cache miss. Read-only; no CSRF.
+func (s *Server) handleModelSubscribeOptions(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id <= 0 {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	name := "this model"
+	if ent, _ := s.store.GetModelCache(id); ent != nil && ent.Name != "" {
+		name = ent.Name
+	}
+	s.render(w, http.StatusOK, subscribeOptionsPanel(id, name, s.csrf))
+}
+
+// handleModelSubscribeControl (GET) re-renders the shared subscribe control in its
+// current persisted state (collapsed when not subscribed, subscribed feedback when
+// subscribed). It backs the options panel's Cancel action. Read-only; no CSRF.
+func (s *Server) handleModelSubscribeControl(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id <= 0 {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	s.render(w, http.StatusOK, subscribeControl(id, s.modelSubscription(id), s.csrf))
+}
+
+// handleModelSubscribe creates a MODEL subscription honoring the options panel's
+// choice (auto-download by default, or notify-only when mode=notify_only /
+// notify_only=true) and returns the shared control's subscribed-feedback fragment.
+// It is SEPARATE from the dashboard's POST /subscribe → subscriptionsTable flow.
+// CSRF-protected. An already-subscribed model is idempotent (still returns the
+// subscribed feedback).
 func (s *Server) handleModelSubscribe(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil || id <= 0 {
@@ -446,23 +475,27 @@ func (s *Server) handleModelSubscribe(w http.ResponseWriter, r *http.Request) {
 	if !s.verifyCSRF(w, r) {
 		return
 	}
+	// The options panel sends the choice as a radio (mode=auto_download|notify_only);
+	// an explicit notify_only=true is also honored.
+	notifyOnly := checkboxVal(r, "notify_only") || r.FormValue("mode") == "notify_only"
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	_, subErr := s.sub.SubscribeModel(ctx, id, poller.SubscribeOptions{
-		AutoDownload: true,
+		AutoDownload: !notifyOnly,
+		NotifyOnly:   notifyOnly,
 		PollInterval: s.cfg.DefaultPollInterval,
 	})
 	if subErr != nil && !errors.Is(subErr, poller.ErrAlreadySubscribed) {
 		s.log.Warn("model subscribe", "model", id, "err", subErr)
 	}
-	// Re-render from the persisted state so the toggle reflects reality (subscribed
-	// on success/already-subscribed; unchanged if the subscribe genuinely failed).
-	s.render(w, http.StatusOK, subscribeToggle(id, s.modelSubscription(id), s.csrf))
+	// Re-render from the persisted state so the control reflects reality (subscribed
+	// on success/already-subscribed; collapsed if the subscribe genuinely failed).
+	s.render(w, http.StatusOK, subscribeControl(id, s.modelSubscription(id), s.csrf))
 }
 
-// handleModelUnsubscribe removes the matched-card model subscription and returns
-// the updated (now-unsubscribed) toggle. It looks up the model's subscription id
-// and deletes it. CSRF-protected.
+// handleModelUnsubscribe removes the model subscription and returns the collapsed
+// subscribe control with an "Unsubscribed" note. It looks up the model's
+// subscription id and deletes it. CSRF-protected.
 func (s *Server) handleModelUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil || id <= 0 {
@@ -481,7 +514,7 @@ func (s *Server) handleModelUnsubscribe(w http.ResponseWriter, r *http.Request) 
 			s.log.Warn("model unsubscribe", "model", id, "err", derr)
 		}
 	}
-	s.render(w, http.StatusOK, subscribeToggle(id, s.modelSubscription(id), s.csrf))
+	s.render(w, http.StatusOK, subscribeControlCollapsed(id, s.csrf, "Unsubscribed"))
 }
 
 func (s *Server) handleFlags(w http.ResponseWriter, r *http.Request) {

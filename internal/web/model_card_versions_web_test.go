@@ -132,7 +132,7 @@ func (s storeSubscriber) SubscribeModel(_ context.Context, modelID int, opts pol
 	}
 	return s.st.CreateSubscription(store.Subscription{
 		Kind: store.KindModel, ModelID: &modelID,
-		AutoDownload: opts.AutoDownload, PollIntervalSecs: 3600,
+		AutoDownload: opts.AutoDownload, NotifyOnly: opts.NotifyOnly, PollIntervalSecs: 3600,
 	})
 }
 func (s storeSubscriber) SubscribeCreator(context.Context, string, poller.SubscribeOptions) (int64, error) {
@@ -217,13 +217,17 @@ func TestModelSubscribeToggleHandlers(t *testing.T) {
 		t.Errorf("subscribed toggle should post to unsubscribe:\n%s", rec.Body.String())
 	}
 
-	// Unsubscribe: deletes it and returns the SUBSCRIBE toggle.
+	// Unsubscribe: deletes it and returns the collapsed subscribe control (which
+	// opens the options panel) with an "Unsubscribed" note.
 	rec = post(t, srv, "/models/7/unsubscribe", url.Values{}, true)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unsubscribe = %d", rec.Code)
 	}
-	if strings.Contains(rec.Body.String(), "Unsubscribe") {
-		t.Errorf("unsubscribe response should return the subscribe toggle:\n%s", rec.Body.String())
+	if body := rec.Body.String(); strings.Contains(body, `hx-post="/models/7/unsubscribe"`) {
+		t.Errorf("unsubscribe response should return the collapsed subscribe control:\n%s", body)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `hx-get="/models/7/subscribe-options"`) || !strings.Contains(body, "Unsubscribed") {
+		t.Errorf("unsubscribe response should show the collapsed control + Unsubscribed note:\n%s", body)
 	}
 	if srv.modelSubscription(7) != nil {
 		t.Error("unsubscribe must delete the subscription")

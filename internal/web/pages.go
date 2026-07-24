@@ -594,19 +594,35 @@ func creatorPage(username string, res *civitai.ModelSearchResult, csrf, theme, m
 	)
 }
 
-// subscribeInline is a small POST-to-/subscribe form button used on detail pages.
+// subscribeInline renders the subscribe affordance used on search cards,
+// suggestions, and the model/creator pages. For MODEL subscribes it renders the
+// shared 3-step subscribe control (Subscribe → options → confirm → feedback). For
+// CREATOR subscribes it keeps the one-click POST /subscribe form, adding a
+// "Subscribed ✓" success note shown after a successful request.
 func subscribeInline(kind, value, label, csrf string) g.Node {
-	field := "model"
 	if kind == "creator" {
-		field = "creator"
+		return subscribeCreatorInline(value, label, csrf)
 	}
+	id, _ := strconv.Atoi(value)
+	return subscribeControl(id, nil, csrf)
+}
+
+// subscribeCreatorInline is the one-click creator subscribe: POST /subscribe with
+// auto-download on, plus a success note revealed via htmx's after-request event
+// (no extra endpoint, minimal change from the prior one-click behavior).
+func subscribeCreatorInline(username, label, csrf string) g.Node {
 	return h.Form(
 		hx("post", "/subscribe"),
 		hx("swap", "none"),
+		g.Attr("hx-on::after-request",
+			"if(event.detail.successful){this.querySelector('[data-sub-note]').classList.remove('hidden');}"),
+		h.Class("flex items-center gap-2"),
 		csrfInput(csrf),
-		h.Input(h.Type("hidden"), h.Name(field), h.Value(value)),
+		h.Input(h.Type("hidden"), h.Name("creator"), h.Value(username)),
 		h.Input(h.Type("hidden"), h.Name("auto_download"), h.Value("true")),
 		btnPrimary(g.Text(label)),
+		h.Span(g.Attr("data-sub-note", ""), h.Class("hidden text-sm font-medium text-green-500"),
+			g.Text("Subscribed ✓")),
 	)
 }
 
