@@ -93,6 +93,69 @@ func TestCandidateQueriesAndClear(t *testing.T) {
 	}
 }
 
+func TestListLocalFilesByModel(t *testing.T) {
+	st := newTestStore(t)
+	seed := func(path string, modelID *int, kind string) {
+		lf := LocalFile{Path: path, SHA256: "h", ModelID: modelID,
+			Status: LocalStatusMatched, Kind: kind}
+		if err := st.UpsertLocalFile(lf); err != nil {
+			t.Fatalf("seed %s: %v", path, err)
+		}
+	}
+	seed("/m7/a.safetensors", intp(7), LocalKindModel)
+	seed("/m7/b.safetensors", intp(7), LocalKindModel)
+	seed("/m8/c.safetensors", intp(8), LocalKindModel)
+	seed("/unmatched.safetensors", nil, LocalKindModel) // nil model id
+	seed("/m7/aux.part", intp(7), LocalKindSidecar)     // model 7 but non-model kind
+
+	// Only model 7's rows come back — never model 8's nor the nil-model row.
+	got, err := st.ListLocalFilesByModel(7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("model 7 rows = %d, want 3 (2 model + 1 sidecar): %+v", len(got), got)
+	}
+	for _, f := range got {
+		if f.ModelID == nil || *f.ModelID != 7 {
+			t.Fatalf("row is not model 7: %+v", f)
+		}
+	}
+
+	// A non-matching model returns empty (not an error).
+	none, err := st.ListLocalFilesByModel(999)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("model 999 should have no rows, got %d", len(none))
+	}
+
+	// Equivalence: the indexed result must equal ListLocalFiles()-then-filter, and
+	// must be strictly fewer rows than the full unfiltered list (other models exist).
+	all, err := st.ListLocalFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wantFiltered []LocalFile
+	for _, f := range all {
+		if f.ModelID != nil && *f.ModelID == 7 {
+			wantFiltered = append(wantFiltered, f)
+		}
+	}
+	if len(got) != len(wantFiltered) {
+		t.Fatalf("indexed count %d != filtered-full count %d", len(got), len(wantFiltered))
+	}
+	for i := range got {
+		if got[i].Path != wantFiltered[i].Path {
+			t.Fatalf("row %d path mismatch: %q vs %q", i, got[i].Path, wantFiltered[i].Path)
+		}
+	}
+	if len(got) >= len(all) {
+		t.Fatalf("indexed lookup (%d) should return fewer rows than full list (%d)", len(got), len(all))
+	}
+}
+
 func TestActiveDownloadForDest(t *testing.T) {
 	st := newTestStore(t)
 	dest := "/models/dl.safetensors"

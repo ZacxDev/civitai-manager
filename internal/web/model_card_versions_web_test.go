@@ -108,12 +108,12 @@ func TestVersionBreakdownRendersSection(t *testing.T) {
 	out := renderString(t, matchedModelCard(view, "csrf"))
 
 	for _, want := range []string{
-		"Update available: v3 →",              // prominent indicator
-		`href="/models/7?version=30"`,         // links to the in-app page at the latest version
-		"Versions in your library (1)",        // expandable local-versions details
-		"<details", "<summary",                // the expandable containers
-		"Available versions (3)",              // expandable available-versions details
-		"in library",                          // owned-version marker
+		"Update available: v3 →",       // prominent indicator
+		`href="/models/7?version=30"`,  // links to the in-app page at the latest version
+		"Versions in your library (1)", // expandable local-versions details
+		"<details", "<summary",         // the expandable containers
+		"Available versions (3)",                 // expandable available-versions details
+		"in library",                             // owned-version marker
 		"newer →", `href="/models/7?version=20"`, // a newer available version is linked
 	} {
 		if !strings.Contains(out, want) {
@@ -149,6 +149,45 @@ func newSubscribeServer(t *testing.T) *Server {
 	return NewServer(st, stubReader{}, storeSubscriber{st}, Config{
 		BaseURL: "https://civitai.com", DefaultPollInterval: time.Hour, Addr: "127.0.0.1:8787",
 	}, nil)
+}
+
+// TestModelSubscriptionLookup proves modelSubscription resolves via the indexed
+// FindModelSubscription: nil when there is no subscription (the ErrNotFound path)
+// and the persisted subscription when one exists, unaffected by an unrelated
+// creator subscription (no model id) also present in the table.
+func TestModelSubscriptionLookup(t *testing.T) {
+	srv := newSubscribeServer(t)
+
+	// No subscription yet → ErrNotFound → nil (never an error/log).
+	if got := srv.modelSubscription(7); got != nil {
+		t.Fatalf("unsubscribed model should resolve nil, got %+v", got)
+	}
+
+	// A creator subscription (model_id NULL) must not be mistaken for a model sub.
+	if _, err := srv.store.CreateSubscription(store.Subscription{
+		Kind: store.KindCreator, Username: "someone", PollIntervalSecs: 3600,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := srv.modelSubscription(7); got != nil {
+		t.Fatalf("creator sub must not resolve as model 7 sub, got %+v", got)
+	}
+
+	// Subscribe model 7 → the lookup returns exactly that subscription.
+	mid := 7
+	if _, err := srv.store.CreateSubscription(store.Subscription{
+		Kind: store.KindModel, ModelID: &mid, PollIntervalSecs: 3600,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := srv.modelSubscription(7)
+	if got == nil || got.Kind != store.KindModel || got.ModelID == nil || *got.ModelID != 7 {
+		t.Fatalf("subscribed model 7 should resolve its sub, got %+v", got)
+	}
+	// A different model id is still unsubscribed.
+	if other := srv.modelSubscription(8); other != nil {
+		t.Fatalf("model 8 has no sub, got %+v", other)
+	}
 }
 
 // TestModelSubscribeToggleHandlers proves the matched-card subscribe/unsubscribe
