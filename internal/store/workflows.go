@@ -215,6 +215,11 @@ func (s *Store) FindVersionByFileName(ctx context.Context, basename string) (mod
 	}
 	defer rows.Close()
 	lowWant := strings.ToLower(basename)
+	// Collect the DISTINCT versions this basename resolves to. If the same file
+	// name ships with two different models (e.g. a generic "vae.safetensors"),
+	// auto-linking to whichever sorts first would confidently attach the WRONG
+	// model — so we only link when the match is unambiguous (exactly one version).
+	seen := map[string]bool{}
 	for rows.Next() {
 		var (
 			mID, vID sql.NullInt64
@@ -226,6 +231,15 @@ func (s *Store) FindVersionByFileName(ctx context.Context, basename string) (mod
 		if strings.ToLower(filepath.Base(path)) != lowWant {
 			continue
 		}
+		key := fmt.Sprintf("%v/%v", mID, vID)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if len(seen) > 1 {
+			// Ambiguous: more than one distinct version. Do not guess.
+			return nil, nil, false, rows.Err()
+		}
 		if mID.Valid {
 			v := int(mID.Int64)
 			modelID = &v
@@ -234,9 +248,11 @@ func (s *Store) FindVersionByFileName(ctx context.Context, basename string) (mod
 			v := int(vID.Int64)
 			versionID = &v
 		}
-		return modelID, versionID, true, nil
 	}
-	return nil, nil, false, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, nil, false, err
+	}
+	return modelID, versionID, len(seen) == 1, nil
 }
 
 // GetWorkflow fetches one workflow by id, or ErrNotFound.

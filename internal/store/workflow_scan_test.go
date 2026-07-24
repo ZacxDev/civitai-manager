@@ -223,4 +223,19 @@ func TestFindVersionByFileName(t *testing.T) {
 	if _, _, ok, _ := st.FindVersionByFileName(ctx, "  "); ok {
 		t.Error("blank basename should not match")
 	}
+
+	// Ambiguous: the same filename shipped by TWO different models must NOT
+	// auto-link (guessing would confidently attach the wrong version).
+	seed("/a/comfy/models/checkpoints/vae.safetensors", 30, 40)
+	seed("/b/auto/models/VAE/vae.safetensors", 31, 41)
+	if m, v, ok, _ := st.FindVersionByFileName(ctx, "vae.safetensors"); ok {
+		t.Errorf("ambiguous basename must not link, got m=%v v=%v", m, v)
+	}
+
+	// The SAME version under two paths is NOT ambiguous — still links.
+	seed("/x/dup.safetensors", 50, 60)
+	seed("/y/dup.safetensors", 50, 60)
+	if _, v, ok, _ := st.FindVersionByFileName(ctx, "dup.safetensors"); !ok || v == nil || *v != 60 {
+		t.Errorf("same-version duplicate should link, ok=%v v=%v", ok, v)
+	}
 }

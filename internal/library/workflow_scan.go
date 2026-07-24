@@ -166,12 +166,16 @@ func (ws *WorkflowScanner) process(ctx context.Context, path string, opts Workfl
 		return // too large to be a workflow graph — skip defensively
 	}
 
-	// Incremental cache: an unchanged file (same path/size/mtime) needs no re-parse.
+	// Incremental cache: an unchanged file (same path/size/mtime) needs no re-parse
+	// — but ONLY once it has been linked. An unchanged-yet-unlinked workflow is
+	// re-processed every scan so that a model installed AFTER the first scan gets
+	// picked up (the file is byte-identical, so a pure size/mtime cache would leave
+	// it unlinked forever). Re-parsing the handful of still-unlinked graphs is cheap.
 	cached, err := ws.store.GetWorkflowByPath(ctx, path)
 	if err != nil {
 		ws.log.Warn("workflow scan: cache lookup failed", "path", path, "err", err)
 	}
-	if workflowCacheHit(cached, fi) {
+	if workflowCacheHit(cached, fi) && cached.VersionID != nil {
 		report.Unchanged++
 		if opts.OnWorkflow != nil {
 			opts.OnWorkflow(WorkflowResult{

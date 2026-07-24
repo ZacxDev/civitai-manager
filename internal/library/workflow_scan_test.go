@@ -110,9 +110,12 @@ func TestScanWorkflowsSkipsNonWorkflow(t *testing.T) {
 func TestScanWorkflowsRescanUnchanged(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
+	// Seed the referenced model so the workflow LINKS on the first scan — only a
+	// linked, unchanged row is a terminal cache hit (see the re-link test below).
+	seedMatchedFile(t, st, "/models/checkpoints/base.safetensors", 100, 200)
 	dir := t.TempDir()
 	p := filepath.Join(dir, "flow.json")
-	writeFile(t, p, `{"nodes":[]}`)
+	writeFile(t, p, `{"nodes":[{"type":"CheckpointLoaderSimple","widgets_values":["base.safetensors"]}]}`)
 	// Pin a fixed mtime so the cache key is stable across the two scans.
 	fixed := mustStatMtime(t, p)
 
@@ -133,6 +136,47 @@ func TestScanWorkflowsRescanUnchanged(t *testing.T) {
 	all, _ := st.ListWorkflows(ctx)
 	if len(all) != 1 {
 		t.Errorf("re-scan duplicated the row: %d", len(all))
+	}
+}
+
+// A workflow scanned BEFORE its model is installed must link on a later re-scan,
+// even though the .json is byte-identical (a pure size/mtime cache would leave it
+// unlinked forever). Guards the audit 🟡 "stale auto-link on cache hit".
+func TestScanWorkflowsRelinksWhenModelAppears(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "flow.json")
+	writeFile(t, p, `{"nodes":[{"type":"CheckpointLoaderSimple","widgets_values":["late.safetensors"]}]}`)
+	fixed := mustStatMtime(t, p)
+
+	ws := NewWorkflowScanner(st, nil)
+	// Scan 1: model absent → stored but unlinked.
+	if _, err := ws.ScanWorkflows(ctx, []string{dir}, WorkflowScanOptions{}); err != nil {
+		t.Fatalf("scan1: %v", err)
+	}
+	wf, _ := st.GetWorkflowByPath(ctx, p)
+	if wf == nil || wf.VersionID != nil {
+		t.Fatalf("scan1 should leave workflow unlinked, got %+v", wf)
+	}
+
+	// The model is installed now; the .json is untouched (same mtime).
+	seedMatchedFile(t, st, "/models/checkpoints/late.safetensors", 300, 400)
+	_ = os.Chtimes(p, fixed, fixed)
+
+	rep, err := ws.ScanWorkflows(ctx, []string{dir}, WorkflowScanOptions{})
+	if err != nil {
+		t.Fatalf("scan2: %v", err)
+	}
+	if rep.Linked != 1 {
+		t.Errorf("re-scan report = %+v, want Linked=1", rep)
+	}
+	wf, _ = st.GetWorkflowByPath(ctx, p)
+	if wf == nil || wf.VersionID == nil || *wf.VersionID != 400 {
+		t.Errorf("workflow did not re-link: %+v", wf)
+	}
+	if all, _ := st.ListWorkflows(ctx); len(all) != 1 {
+		t.Errorf("re-link duplicated the row: %d", len(all))
 	}
 }
 
