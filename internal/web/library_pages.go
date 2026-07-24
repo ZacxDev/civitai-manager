@@ -234,8 +234,10 @@ func modelScanForm(csrf string, matchRemote bool) g.Node {
 // libraryContent is the fragment swapped after a scan: totals, per-model
 // grouping, and the deletion-candidate table.
 func libraryContent(v libraryView, csrf string) g.Node {
+	matched, unmatched := splitMatchedUnmatched(v.Files)
 	return h.Div(
 		h.Class("space-y-6"),
+		summaryBanner(v),
 		card(
 			sectionTitle("Summary"),
 			h.Div(
@@ -246,16 +248,253 @@ func libraryContent(v libraryView, csrf string) g.Node {
 				stat("Reclaimable", humanBytes(v.Reclaimable)),
 			),
 		),
+		// MATCHED MODELS FIRST — enriched, lazy-loaded cards.
+		matchedModelsSection(matched),
+		// Unmatched / other files in a clearly-separated secondary section.
+		otherFilesSection(unmatched),
 		card(
-			sectionTitle("Files by model"),
-			libraryModelTable(v.Files),
-		),
-		card(
+			h.ID("deletion-candidates"),
 			sectionTitle("Deletion candidates"),
 			candidatesTable(v.Candidates, csrf),
 			h.Div(h.ID("quarantine-preview"), h.Class("mt-3")),
 		),
+		// The shared lightbox + interaction scripts the model-card carousels reuse.
+		// Included once here (the results fragment) so a lazy-loaded card's tiles can
+		// open the lightbox and the prev/next buttons work. Offline/vendored only.
+		lightboxOverlay(),
+		modelPageScript(),
+		libraryCarouselScript(),
 	)
+}
+
+// matchedModelsSection renders the identified models at the TOP of the results
+// as enriched, lazy-loaded cards (one per model), ordered by total local size
+// descending so the biggest reclaimable footprints lead. Each card renders
+// immediately as a placeholder and lazy-loads its name + carousel + details.
+func matchedModelsSection(groups []fileGroup) g.Node {
+	if len(groups) == 0 {
+		return card(
+			sectionTitle("Matched models"),
+			h.P(h.Class("text-sm text-slate-500"),
+				g.Text("No models identified yet. Enable “Match against CivitAI” and scan to identify your library.")),
+		)
+	}
+	var cards []g.Node
+	for _, gr := range groups {
+		cards = append(cards, modelCardLazy(gr))
+	}
+	return card(
+		sectionTitle(fmt.Sprintf("Matched models (%d)", len(groups))),
+		h.Div(h.Class("grid gap-4 md:grid-cols-2"), g.Group(cards)),
+	)
+}
+
+// otherFilesSection renders the unmatched (unidentified) files as a secondary,
+// sortable table below the matched model cards. When everything matched it shows
+// a reassuring note instead.
+func otherFilesSection(unmatched []store.LocalFile) g.Node {
+	if len(unmatched) == 0 {
+		return card(
+			sectionTitle("Other files"),
+			h.P(h.Class("text-sm text-slate-500"), g.Text("Every scanned file was identified on CivitAI.")),
+		)
+	}
+	return card(
+		sectionTitle(fmt.Sprintf("Other files (%d unmatched)", len(unmatched))),
+		libraryModelTable(unmatched),
+	)
+}
+
+// splitMatchedUnmatched partitions scanned model files into matched-model groups
+// (files carrying a CivitAI model id, grouped by model, ordered by total size
+// desc) and the flat list of unmatched files.
+func splitMatchedUnmatched(files []store.LocalFile) (matched []fileGroup, unmatched []store.LocalFile) {
+	byID := map[int]*fileGroup{}
+	var order []int
+	for _, f := range files {
+		if f.ModelID == nil {
+			unmatched = append(unmatched, f)
+			continue
+		}
+		id := *f.ModelID
+		gr, ok := byID[id]
+		if !ok {
+			gr = &fileGroup{modelID: id}
+			byID[id] = gr
+			order = append(order, id)
+		}
+		gr.files = append(gr.files, f)
+	}
+	matched = make([]fileGroup, 0, len(order))
+	for _, id := range order {
+		matched = append(matched, *byID[id])
+	}
+	// Biggest total footprint first; ties broken by model id for determinism.
+	sort.Slice(matched, func(a, b int) bool {
+		sa, sb := groupBytes(matched[a]), groupBytes(matched[b])
+		if sa != sb {
+			return sa > sb
+		}
+		return matched[a].modelID < matched[b].modelID
+	})
+	return matched, unmatched
+}
+
+// groupBytes sums a group's file sizes.
+func groupBytes(gr fileGroup) int64 {
+	var total int64
+	for _, f := range gr.files {
+		total += f.SizeBytes
+	}
+	return total
+}
+
+// librarySummary is the post-scan roll-up the next-steps banner renders.
+type librarySummary struct {
+	ModelsIdentified int   // distinct matched model ids
+	Unmatched        int   // model files not identified on CivitAI
+	Duplicates       int   // redundant copies (duplicate + superseded candidates)
+	DuplicateBytes   int64 // reclaimable bytes from those redundant copies
+	Broken           int   // broken sidecars/partials
+}
+
+// summarizeLibrary derives the banner roll-up from a libraryView: distinct
+// identified models, unidentified files, redundant (duplicate/superseded)
+// copies + their reclaimable bytes, and broken files.
+func summarizeLibrary(v libraryView) librarySummary {
+	var s librarySummary
+	models := map[int]bool{}
+	for _, f := range v.Files {
+		if f.ModelID != nil {
+			models[*f.ModelID] = true
+		} else {
+			s.Unmatched++
+		}
+	}
+	s.ModelsIdentified = len(models)
+	for _, c := range v.Candidates {
+		switch c.CandidateReason {
+		case store.CandidateBroken:
+			s.Broken++
+		case store.CandidateDuplicate, store.CandidateSuperseded:
+			s.Duplicates++
+			s.DuplicateBytes += c.SizeBytes
+		}
+	}
+	return s
+}
+
+// summaryBanner is the "what to do next" banner at the top of the Model-files
+// results: an at-a-glance roll-up plus a clear primary action. When there are
+// duplicates/broken files it offers a primary "Review & quarantine…" CTA (which
+// scrolls to the candidates section) and a secondary link; when the library is
+// clean it reassures instead. Theme-aware, civitai-styled.
+func summaryBanner(v libraryView) g.Node {
+	s := summarizeLibrary(v)
+
+	// Clean state: nothing to act on — reassure rather than nag.
+	if s.Duplicates == 0 && s.Broken == 0 {
+		return alert("success", "Your library is clean",
+			h.P(h.Class("mt-1 text-sm"),
+				g.Text(fmt.Sprintf("No duplicates or broken files found — %d models identified · %d unmatched.",
+					s.ModelsIdentified, s.Unmatched))),
+		)
+	}
+
+	// Actionable roll-up: dot-separated counts.
+	pieces := []g.Node{
+		bannerStat(strconv.Itoa(s.ModelsIdentified), "models identified"),
+	}
+	if s.Duplicates > 0 {
+		pieces = append(pieces, bannerSep(),
+			bannerStat(strconv.Itoa(s.Duplicates),
+				fmt.Sprintf("duplicates (reclaim %s)", humanBytes(s.DuplicateBytes))))
+	}
+	pieces = append(pieces, bannerSep(), bannerStat(strconv.Itoa(s.Unmatched), "unmatched"))
+	if s.Broken > 0 {
+		pieces = append(pieces, bannerSep(), bannerStat(strconv.Itoa(s.Broken), "broken"))
+	}
+
+	primaryLabel := "Review & quarantine duplicates"
+	if s.Duplicates == 0 {
+		primaryLabel = "Review broken files"
+	}
+
+	return card(
+		h.Class("border-indigo-500/40"),
+		h.Div(
+			h.Class("flex flex-wrap items-center justify-between gap-4"),
+			h.Div(
+				h.Class("flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-200"),
+				g.Group(pieces),
+			),
+			h.Div(
+				h.Class("flex items-center gap-3"),
+				civButton("filled", "md", []g.Node{
+					h.Type("button"),
+					g.Attr("onclick",
+						"var e=document.getElementById('deletion-candidates');if(e){e.scrollIntoView({behavior:'smooth'});}"),
+				}, g.Text(primaryLabel)),
+				h.A(h.Href("#deletion-candidates"),
+					h.Class("text-sm text-indigo-300 hover:text-indigo-200 underline"),
+					g.Text("See deletion candidates")),
+			),
+		),
+	)
+}
+
+// bannerStat renders one "<value> <label>" chunk of the summary count line.
+func bannerStat(value, label string) g.Node {
+	return h.Span(
+		h.Span(h.Class("font-semibold text-slate-100"), g.Text(value+" ")),
+		h.Span(h.Class("text-slate-400"), g.Text(label)),
+	)
+}
+
+// bannerSep is the muted dot separator between banner count chunks.
+func bannerSep() g.Node {
+	return h.Span(h.Class("text-slate-600"), g.Text("·"))
+}
+
+// File-size magnitude thresholds for the color-coded Size cell (see sizeClass).
+// Documented tiers: <500MB muted, 500MB–2GB yellow, 2–6GB orange, >6GB red.
+const (
+	sizeTierMedium int64 = 500 * 1024 * 1024      // 500 MB
+	sizeTierLarge  int64 = 2 * 1024 * 1024 * 1024 // 2 GB
+	sizeTierHuge   int64 = 6 * 1024 * 1024 * 1024 // 6 GB
+)
+
+// sizeClass maps a byte size to its magnitude tier CSS class (defined in
+// app.css, theme-aware via --civitai-* tokens): so a multi-GB checkpoint reads
+// red at a glance and a small LoRA reads muted.
+func sizeClass(b int64) string {
+	switch {
+	case b >= sizeTierHuge:
+		return "cm-size-huge"
+	case b >= sizeTierLarge:
+		return "cm-size-large"
+	case b >= sizeTierMedium:
+		return "cm-size-medium"
+	default:
+		return "cm-size-small"
+	}
+}
+
+// sizeCell renders a table Size cell: the humanized size colored by magnitude
+// (sizeClass) and carrying the RAW byte count in data-sort-value so the
+// client-side column sorter orders by bytes, not the humanized string.
+func sizeCell(b int64) g.Node {
+	return h.Td(
+		h.Class("px-3 py-2 "+sizeClass(b)),
+		dataAttr("sort-value", strconv.FormatInt(b, 10)),
+		g.Text(humanBytes(b)),
+	)
+}
+
+// sizeText renders a non-table size label colored by magnitude (used on the
+// streamed scan-result cards, which are not tables).
+func sizeText(b int64) g.Node {
+	return h.Span(h.Class("shrink-0 text-xs "+sizeClass(b)), g.Text(humanBytes(b)))
 }
 
 func stat(label, value string) g.Node {
@@ -279,7 +518,7 @@ func libraryModelTable(files []store.LocalFile) g.Node {
 				h.Td(h.Class("px-3 py-2 text-slate-400"), g.Text(modelLabel(f.ModelID))),
 				h.Td(h.Class("px-3 py-2 text-slate-400"), g.Text(versionLabel(f.VersionID))),
 				h.Td(h.Class("px-3 py-2"), statusBadge(f)),
-				h.Td(h.Class("px-3 py-2 text-slate-400"), g.Text(humanBytes(f.SizeBytes))),
+				sizeCell(f.SizeBytes),
 				h.Td(h.Class("px-3 py-2 text-slate-300 truncate max-w-lg"), g.Text(f.Path)),
 			))
 		}
@@ -287,14 +526,78 @@ func libraryModelTable(files []store.LocalFile) g.Node {
 	return h.Div(
 		h.Class("overflow-x-auto"),
 		h.Table(
-			h.Class("min-w-full text-sm"),
+			h.Class("cm-sortable-table min-w-full text-sm"),
 			h.THead(h.Tr(
 				h.Class("text-left text-slate-400 border-b border-slate-800"),
-				th("Model"), th("Version"), th("Status"), th("Size"), th("Path"),
+				sortableTh("Model"), sortableTh("Version"), sortableTh("Status"),
+				sortableTh("Size"), sortableTh("Path"),
 			)),
 			h.TBody(g.Group(rows)),
 		),
+		librarySortScript(),
 	)
+}
+
+// sortableTh renders a click-to-sort table header: keyboard-operable (Enter or
+// Space), announced to AT via aria-sort (the single source of truth the CSS
+// indicator glyph also reads), and marked data-sortable so the inline sort
+// script can find it. The size column carries data-sort-value on its cells, so
+// that column sorts numerically by bytes (see librarySortScript).
+func sortableTh(label string) g.Node {
+	return h.Th(
+		h.Class("px-3 py-2 font-medium"),
+		dataFlag("sortable"),
+		g.Attr("role", "columnheader"),
+		g.Attr("aria-sort", "none"),
+		g.Attr("tabindex", "0"),
+		g.Attr("onclick", "cmSortTable(this)"),
+		g.Attr("onkeydown", "if(event.key==='Enter'||event.key===' '){event.preventDefault();cmSortTable(this);}"),
+		h.Span(g.Text(label)),
+		h.Span(dataFlag("sort-ind-cell"), h.Class("cm-sort-ind")),
+	)
+}
+
+// librarySortScript is the small, self-contained (vendored, no CDN) client-side
+// column sorter. Clicking (or Enter/Space on) a data-sortable header sorts the
+// loaded tbody rows in-browser and toggles asc/desc, updating aria-sort on the
+// headers (which also drives the CSS direction glyph). A cell carrying
+// data-sort-value is compared NUMERICALLY (so Size sorts by raw bytes, not the
+// humanized string); otherwise a case-insensitive text compare is used. The
+// function is (re)defined idempotently so it survives every htmx swap of the
+// results fragment; it attaches no duplicate listeners (headers use inline
+// onclick).
+func librarySortScript() g.Node {
+	const js = `
+function cmSortTable(th){
+  var table = th.closest('table');
+  if(!table){ return; }
+  var headers = Array.prototype.slice.call(table.querySelectorAll('th[data-sortable]'));
+  var idx = headers.indexOf(th);
+  if(idx < 0){ return; }
+  var dir = th.getAttribute('aria-sort') === 'ascending' ? 'descending' : 'ascending';
+  headers.forEach(function(h){ h.setAttribute('aria-sort', 'none'); });
+  th.setAttribute('aria-sort', dir);
+  var tbody = table.tBodies[0];
+  if(!tbody){ return; }
+  var mult = dir === 'ascending' ? 1 : -1;
+  var rows = Array.prototype.slice.call(tbody.rows);
+  rows.sort(function(a, b){
+    var ca = a.cells[idx], cb = b.cells[idx];
+    if(ca && cb && ca.hasAttribute('data-sort-value') && cb.hasAttribute('data-sort-value')){
+      var na = parseFloat(ca.getAttribute('data-sort-value')) || 0;
+      var nb = parseFloat(cb.getAttribute('data-sort-value')) || 0;
+      return (na - nb) * mult;
+    }
+    var ta = ca ? ca.textContent.trim().toLowerCase() : '';
+    var tb = cb ? cb.textContent.trim().toLowerCase() : '';
+    if(ta < tb){ return -1 * mult; }
+    if(ta > tb){ return 1 * mult; }
+    return 0;
+  });
+  rows.forEach(function(r){ tbody.appendChild(r); });
+}
+`
+	return h.Script(g.Raw(js))
 }
 
 // candidatesTable renders flagged candidates with per-row + bulk quarantine
@@ -313,7 +616,7 @@ func candidatesTable(cands []store.LocalFile, csrf string) g.Node {
 					h.Class("rounded border-slate-600 bg-slate-800 text-indigo-500")),
 			),
 			h.Td(h.Class("px-3 py-2"), candidateBadge(c.CandidateReason)),
-			h.Td(h.Class("px-3 py-2 text-slate-400"), g.Text(humanBytes(c.SizeBytes))),
+			sizeCell(c.SizeBytes),
 			h.Td(h.Class("px-3 py-2 text-slate-300 truncate max-w-md"), g.Text(c.Path)),
 			h.Td(h.Class("px-3 py-2 text-right"),
 				civButton("subtle", "sm", []g.Node{

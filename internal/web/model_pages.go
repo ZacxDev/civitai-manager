@@ -385,7 +385,7 @@ func modelGalleryCard(images []galleryImage, mode string, modelID int, csrf stri
 			continue // hide mode omits NSFW images entirely
 		}
 		blur := nsfw && mode == NSFWBlur
-		tiles = append(tiles, galleryTile(im, i, blur))
+		tiles = append(tiles, galleryTile(im, fmt.Sprintf("cm-meta-%d", i), blur))
 		shown++
 	}
 
@@ -441,9 +441,10 @@ func nsfwControl(mode string, modelID int, csrf string) g.Node {
 
 // galleryTile renders one showcase image. When blur is true the image is shown
 // blurred behind a click-to-reveal overlay; otherwise clicking opens the
-// lightbox. Generation metadata is stashed in a hidden node the lightbox shows.
-func galleryTile(im galleryImage, idx int, blur bool) g.Node {
-	metaID := fmt.Sprintf("cm-meta-%d", idx)
+// lightbox. Generation metadata is stashed in a hidden node (keyed by the
+// caller-supplied metaID, which must be unique across the page so multiple
+// galleries/carousels don't collide) the lightbox shows.
+func galleryTile(im galleryImage, metaID string, blur bool) g.Node {
 	imgClass := "h-full w-full cursor-zoom-in object-cover transition"
 	if blur {
 		imgClass += " blur-xl"

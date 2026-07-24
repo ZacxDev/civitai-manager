@@ -147,7 +147,8 @@ func TestWalkFindsModelFilesRecursivelyAndSkipsTrashAndHidden(t *testing.T) {
 	writeFile(t, filepath.Join(root, "a.safetensors"), "a")
 	writeFile(t, filepath.Join(root, "sub", "b.ckpt"), "b")
 	writeFile(t, filepath.Join(root, "sub", "notes.txt"), "ignore me")
-	writeFile(t, filepath.Join(root, "c.png"), "img")                       // preview bucket, not a model
+	writeFile(t, filepath.Join(root, "c.preview.png"), "img")               // preview bucket (Civitai-Helper convention)
+	writeFile(t, filepath.Join(root, "bare.png"), "img")                    // bare png: NOT a preview, dropped
 	writeFile(t, filepath.Join(root, "d.safetensors.part"), "p")            // partial
 	writeFile(t, filepath.Join(root, "e.civitai.info"), "{}")               // sidecar
 	writeFile(t, filepath.Join(root, ".trash", "old.safetensors"), "trash") // must be skipped
@@ -170,6 +171,12 @@ func TestWalkFindsModelFilesRecursivelyAndSkipsTrashAndHidden(t *testing.T) {
 	if len(wr.parts) != 1 || len(wr.infos) != 1 || len(wr.previews) != 1 {
 		t.Errorf("sidecar collection: parts=%d infos=%d previews=%d, want 1/1/1",
 			len(wr.parts), len(wr.infos), len(wr.previews))
+	}
+	// A bare .png must never enter the preview bucket (the false-positive fix).
+	for _, p := range wr.previews {
+		if strings.HasSuffix(p, "bare.png") {
+			t.Errorf("bare .png must not be collected as a preview: %s", p)
+		}
 	}
 }
 

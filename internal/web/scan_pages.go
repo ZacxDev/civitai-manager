@@ -255,7 +255,7 @@ func scanResultCard(fr library.FileResult) g.Node {
 			h.Div(h.Class("truncate text-xs text-slate-400"), g.Text(fr.Name)),
 			h.Div(h.Class("flex flex-wrap items-center gap-1"), g.Group(meta)),
 		),
-		h.Span(h.Class("shrink-0 text-xs text-slate-400"), g.Text(humanBytes(fr.SizeBytes))),
+		sizeText(fr.SizeBytes),
 	)
 }
 

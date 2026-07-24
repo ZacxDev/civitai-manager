@@ -266,6 +266,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /fragments/queue", s.handleQueueFragment)
 
 	mux.HandleFunc("GET /library", s.handleLibrary)
+	mux.HandleFunc("GET /library/model-card/{id}", s.handleModelCard)
 	mux.HandleFunc("POST /library/scan", s.handleLibraryScan)
 	mux.HandleFunc("GET /library/scan/status", s.handleScanStatus)
 	mux.HandleFunc("POST /library/scan/stop", s.handleScanStop)

@@ -135,7 +135,11 @@ func classify(wr *walkResult, abs string, exts map[string]bool, root string) {
 		wr.parts = append(wr.parts, abs)
 	case strings.HasSuffix(lower, sidecarInfo):
 		wr.infos = append(wr.infos, abs)
-	case strings.HasSuffix(lower, sidecarPreview), strings.HasSuffix(lower, sidecarPNG):
+	case strings.HasSuffix(lower, sidecarPreview):
+		// ONLY the Civitai-Helper "<base>.preview.png" convention counts as a model
+		// preview. A bare ".png" (node screenshot, example image, workflow input in a
+		// ComfyUI tree) is NOT a preview and is dropped here, so it can never be
+		// flagged an "orphan broken" preview (the 45k-false-positive flood fix).
 		wr.previews = append(wr.previews, abs)
 	default:
 		if exts[strings.ToLower(filepath.Ext(abs))] {

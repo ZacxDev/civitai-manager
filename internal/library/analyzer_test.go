@@ -196,10 +196,87 @@ func TestAnalyzerBroken(t *testing.T) {
 	}
 }
 
+// TestAnalyzerBrokenScopedToModelDirs is the regression guard for the 45k
+// false-"broken" flood: a bare screenshot/example PNG, and any .part/.info/.png
+// in a directory with NO model files, must NEVER be flagged broken. Only a
+// .preview.png orphan / abandoned .part / empty .info that sits in a directory
+// actually holding model files is a real broken candidate.
+func TestAnalyzerBrokenScopedToModelDirs(t *testing.T) {
+	root := t.TempDir()
+
+	// (a) A ComfyUI node screenshot in a dir with no model nearby → NOT broken.
+	writeFile(t, filepath.Join(root, "custom_nodes", "x", "screenshot.png"), "img")
+	// (b) A model with a valid sibling .preview.png → NOT broken (real preview).
+	writeFile(t, filepath.Join(root, "loras", "foo.safetensors"), "weights")
+	writeFile(t, filepath.Join(root, "loras", "foo.preview.png"), "img")
+	// (c) A .preview.png orphan (no same-base model) in a model dir → BROKEN.
+	writeFile(t, filepath.Join(root, "loras", "ghost.preview.png"), "img")
+	// (d) An abandoned partial in a model dir → BROKEN.
+	writeFile(t, filepath.Join(root, "loras", "bar.safetensors.part"), "partial")
+	// An empty .civitai.info in a model dir → BROKEN.
+	writeFile(t, filepath.Join(root, "loras", "stale.civitai.info"), "  \n ")
+	// (e) A bare PNG and an abandoned .part in dirs with NO model files → NOT broken.
+	writeFile(t, filepath.Join(root, "docs", "pic.png"), "img")
+	writeFile(t, filepath.Join(root, "tmp", "leftover.part"), "partial")
+	// An empty .civitai.info in a model-less dir → NOT broken (out of scope).
+	writeFile(t, filepath.Join(root, "docs", "orphan.civitai.info"), "  ")
+
+	fr := &fakeReader{} // model files resolve unmatched (fine; not candidates)
+	sc := NewScanner(newTestStore(t), fr, Options{ModelRoot: root}, nil)
+	sc.hashFn = func(string) (string, error) { return "x", nil }
+	report, err := sc.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := reasonByPath(report.Candidates)
+	// The three real broken candidates, all inside the model-bearing loras/ dir.
+	for _, want := range []string{"ghost.preview.png", "bar.safetensors.part", "stale.civitai.info"} {
+		if got[want] != store.CandidateBroken {
+			t.Errorf("%s should be broken, got %q", want, got[want])
+		}
+	}
+	// Nothing else may be flagged — especially not the bare PNGs.
+	for _, notBroken := range []string{"screenshot.png", "foo.preview.png", "pic.png", "leftover.part", "orphan.civitai.info"} {
+		if _, flagged := got[notBroken]; flagged {
+			t.Errorf("%s must NOT be flagged broken (false positive)", notBroken)
+		}
+	}
+	if report.Broken != 3 {
+		t.Fatalf("broken count = %d, want 3 (flood regression guard)", report.Broken)
+	}
+}
+
+// TestAnalyzerBrokenIgnoresBarePNG isolates the core of the flood: a directory
+// full of bare .png files (no model file at all) produces ZERO broken candidates.
+func TestAnalyzerBrokenIgnoresBarePNG(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "ComfyUI", "custom_nodes", "some_pack", "examples")
+	for _, n := range []string{"example.png", "screenshot1.png", "workflow_input.png", "node_preview.png"} {
+		writeFile(t, filepath.Join(dir, n), "img")
+	}
+	sc := NewScanner(newTestStore(t), &fakeReader{}, Options{ModelRoot: root}, nil)
+	sc.hashFn = func(string) (string, error) { return "x", nil }
+	report, err := sc.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Broken != 0 {
+		t.Fatalf("bare PNGs with no model files must never be broken; got %d", report.Broken)
+	}
+	if len(report.Candidates) != 0 {
+		t.Fatalf("no candidates expected, got %d", len(report.Candidates))
+	}
+}
+
 func TestAnalyzerActivePartNotBroken(t *testing.T) {
 	root := t.TempDir()
 	dest := filepath.Join(root, "downloading.safetensors")
 	writeFile(t, dest+".part", "in progress")
+	// A real model file makes root a model directory, so the .part is in scope for
+	// broken detection and is spared ONLY because of the active download row below
+	// (not merely because the directory holds no models).
+	writeFile(t, filepath.Join(root, "present.safetensors"), "weights")
 
 	st := newTestStore(t)
 	// An in-flight download row targeting dest keeps the .part from being broken.
