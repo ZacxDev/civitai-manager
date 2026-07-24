@@ -93,6 +93,9 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := url.Values{}
 	q.Set("query", query)
 	q.Set("limit", searchLimit)
+	// Keyword search returns the most popular matches first (the empty-query
+	// "popular this month" default already sorts Most Downloaded).
+	q.Set("sort", "Most Downloaded")
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	res, err := s.reader.SearchModels(ctx, q)
