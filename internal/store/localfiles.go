@@ -121,6 +121,16 @@ func (s *Store) ListLocalFiles() ([]LocalFile, error) {
 	return s.queryLocalFiles(`SELECT ` + localFileCols + ` FROM local_files ORDER BY path`)
 }
 
+// ListLocalFilesByModel returns the indexed files for a single model id, ordered
+// by path. It hits idx_local_files_model (a partial index on non-null model_id)
+// instead of scanning the whole table — the per-model hot path on the library's
+// matched cards. The returned rows are the SAME shape as ListLocalFiles; callers
+// still apply any kind filter (e.g. LocalKindModel) in Go.
+func (s *Store) ListLocalFilesByModel(modelID int) ([]LocalFile, error) {
+	return s.queryLocalFiles(`SELECT `+localFileCols+`
+		FROM local_files WHERE model_id = ? ORDER BY path`, modelID)
+}
+
 // ListCandidates returns flagged deletion candidates, optionally filtered to a
 // single reason (empty = all candidates), ordered by path.
 func (s *Store) ListCandidates(reason string) ([]LocalFile, error) {
