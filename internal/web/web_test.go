@@ -33,7 +33,7 @@ func TestPagesRenderWithoutPanic(t *testing.T) {
 	}
 
 	t.Run("dashboard", func(t *testing.T) {
-		out := renderString(t, dashboardPage(subs, nil, "test-csrf", "dark"))
+		out := renderString(t, dashboardPage(subs, nil, "test-csrf", "dark", NSFWBlur))
 		for _, want := range []string{"Subscriptions", "Add a subscription", "Download queue", "Activity", "/assets/civitai-theme.css", "/assets/civitai-components.css", "/assets/app.css", "/assets/htmx.min.js", "alice"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("dashboard missing %q", want)

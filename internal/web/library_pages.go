@@ -105,7 +105,7 @@ func buildLibraryView(files []store.LocalFile) libraryView {
 // discoverInitial is the initial content of the stable #discover-results
 // container (idle controls, or the live scanning/terminal fragment when a crawl
 // is in flight); nil falls back to the idle controls.
-func libraryPage(v libraryView, csrf string, allowExtra bool, selectedDirs []string, theme, activeTab string, discoverInitial g.Node, matchRemote bool, scanInitial g.Node) g.Node {
+func libraryPage(v libraryView, csrf string, allowExtra bool, selectedDirs []string, theme, activeTab string, discoverInitial g.Node, matchRemote bool, scanInitial g.Node, nsfwMode string) g.Node {
 	if activeTab != "files" {
 		activeTab = "sources"
 	}
@@ -115,7 +115,7 @@ func libraryPage(v libraryView, csrf string, allowExtra bool, selectedDirs []str
 	} else {
 		panel = sourcesPanel(csrf, allowExtra, selectedDirs, discoverInitial)
 	}
-	return page("Library", theme, csrf,
+	return page("Library", theme, csrf, nsfwMode,
 		h.Div(
 			sectionTitle("Library"),
 			libraryTabStrip(activeTab),
@@ -902,8 +902,8 @@ func quarantinePreview(plan *library.QuarantinePlan, ids []int64, csrf string) g
 }
 
 // trashPage lists quarantine batches with restore controls.
-func trashPage(batches []batchView, csrf, theme string) g.Node {
-	return page("Trash", theme, csrf,
+func trashPage(batches []batchView, csrf, theme, nsfwMode string) g.Node {
+	return page("Trash", theme, csrf, nsfwMode,
 		card(
 			sectionTitle("Quarantine trash"),
 			h.Div(h.ID("trash-content"), trashTable(batches, csrf)),

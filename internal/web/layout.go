@@ -26,7 +26,7 @@ func dataFlag(name string) g.Node { return g.Attr("data-" + name) }
 // app.css for the cascade rationale). `theme` ("light"|"dark") is reflected onto
 // <html data-theme> so every --civitai-* token re-resolves; `csrf` powers the
 // persisted theme toggle in the nav.
-func page(title, theme, csrf string, body ...g.Node) g.Node {
+func page(title, theme, csrf, nsfwMode string, body ...g.Node) g.Node {
 	if theme != "light" {
 		theme = "dark"
 	}
@@ -50,7 +50,7 @@ func page(title, theme, csrf string, body ...g.Node) g.Node {
 		),
 		h.Body(
 			h.Class("min-h-screen bg-slate-950 text-slate-100 antialiased"),
-			navbar(theme, csrf),
+			navbar(theme, csrf, nsfwMode),
 			h.Main(
 				h.Class("mx-auto max-w-6xl px-4 py-6 space-y-6"),
 				g.Group(body),
@@ -59,7 +59,7 @@ func page(title, theme, csrf string, body ...g.Node) g.Node {
 	)
 }
 
-func navbar(theme, csrf string) g.Node {
+func navbar(theme, csrf, nsfwMode string) g.Node {
 	return h.Nav(
 		h.Class("border-b border-slate-800 bg-slate-900"),
 		h.Div(
@@ -69,8 +69,40 @@ func navbar(theme, csrf string) g.Node {
 			navLink("/search", "Search"),
 			navLink("/library", "Library"),
 			navLink("/trash", "Trash"),
-			h.Div(h.Class("ml-auto"), themeToggle(theme, csrf)),
+			h.Div(h.Class("ml-auto flex items-center gap-2"),
+				nsfwToggle(nsfwMode, csrf),
+				themeToggle(theme, csrf),
+			),
 		),
+	)
+}
+
+// nsfwToggle renders the global NSFW display control as a 3-state cycling button
+// (matching the themeToggle idiom): the label shows the CURRENT mode and one
+// click advances the cycle Hide → Blur → Show → Hide. It POSTs the NEXT mode
+// (with the CSRF token) to /settings/nsfw; the handler persists it and replies
+// HX-Refresh so the current page re-renders under the new mode (galleries then
+// hide/blur/show accordingly). hx-swap="none" — the refresh does the re-render.
+func nsfwToggle(mode, csrf string) g.Node {
+	mode = normalizeNSFWMode(mode)
+	var next, label string
+	switch mode {
+	case NSFWHide:
+		next, label = NSFWBlur, "NSFW: Hide"
+	case NSFWShow:
+		next, label = NSFWHide, "NSFW: Show"
+	default: // blur (the safe default)
+		next, label = NSFWShow, "NSFW: Blur"
+	}
+	return civButton("outline", "sm",
+		[]g.Node{
+			h.Type("button"),
+			hx("post", "/settings/nsfw"),
+			hx("vals", fmt.Sprintf(`{"mode":%q,"csrf_token":%q}`, next, csrf)),
+			hx("swap", "none"),
+			g.Attr("aria-label", "Cycle NSFW display (currently "+mode+", click for "+next+")"),
+		},
+		g.Text(label),
 	)
 }
 

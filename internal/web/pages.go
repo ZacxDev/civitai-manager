@@ -62,8 +62,8 @@ func librarySubscribeSuggestions(files []store.LocalFile, subs []store.Subscript
 // dashboardPage is the full dashboard: add-a-subscription (integrated civitai
 // search + library-derived suggestions + a demoted manual form), subscriptions,
 // activity feed, and queue.
-func dashboardPage(subs []store.Subscription, suggestions []suggestion, csrf, theme string) g.Node {
-	return page("Dashboard", theme, csrf,
+func dashboardPage(subs []store.Subscription, suggestions []suggestion, csrf, theme, nsfwMode string) g.Node {
+	return page("Dashboard", theme, csrf, nsfwMode,
 		card(
 			sectionTitle("Add a subscription"),
 			// Primary: search civitai and subscribe with one click.
@@ -466,7 +466,7 @@ func progressBar(it store.QueueItem) g.Node {
 // carousels on each card. heading, when set, labels the result grid (e.g.
 // "Popular this month" for the empty-query default feed).
 func searchPage(query string, res *civitai.ModelSearchResult, csrf, theme, mode, heading string) g.Node {
-	return page("Search", theme, csrf,
+	return page("Search", theme, csrf, mode,
 		card(
 			sectionTitle("Search models"),
 			h.Form(
@@ -554,7 +554,7 @@ func modelCardWith(it civitai.ModelListItem, images []galleryImage, mode string,
 
 // creatorPage renders a creator's models with a subscribe-to-creator button.
 func creatorPage(username string, res *civitai.ModelSearchResult, csrf, theme, mode string) g.Node {
-	return page("@"+username, theme, csrf,
+	return page("@"+username, theme, csrf, mode,
 		card(
 			h.Div(
 				h.Class("flex items-center justify-between"),

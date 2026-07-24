@@ -281,7 +281,7 @@ func modelDetailPage(v modelDetailView, csrf, theme string) g.Node {
 	}
 	mode := normalizeNSFWMode(v.NSFWMode)
 
-	return page(m.Name, theme, csrf,
+	return page(m.Name, theme, csrf, mode,
 		modelHeaderCard(m, v.Images, mode, creator, csrf),
 		g.If(strings.TrimSpace(v.Description) != "", modelDescriptionCard(v.Description)),
 		g.If(len(m.Tags) > 0, modelTagsCard(m.Tags)),
@@ -334,7 +334,6 @@ func modelHeaderCard(m *civitai.ModelDetail, images []galleryImage, mode, creato
 		h.Div(
 			h.Class("mt-4 mb-2 flex flex-wrap items-center justify-between gap-2"),
 			h.H2(h.Class("text-sm font-semibold text-slate-300"), g.Text("Showcase images")),
-			nsfwControl(mode, m.ID, csrf),
 		),
 		modelCardCarousel(m.ID, images, mode),
 	)
@@ -467,34 +466,6 @@ func fileList(files []civitai.ModelVersionFile) g.Node {
 		))
 	}
 	return h.Ul(h.Class("space-y-1"), g.Group(rows))
-}
-
-// nsfwControl renders the persisted global NSFW display toggle (hide/blur/show).
-// Each option POSTs the new mode (persisting it) and reloads the page so the
-// gallery re-renders under the new mode.
-func nsfwControl(mode string, modelID int, csrf string) g.Node {
-	opt := func(value, label string) g.Node {
-		cls := "cursor-pointer rounded-md px-2 py-1 text-xs bg-slate-800 text-slate-400 hover:bg-slate-700"
-		if mode == value {
-			cls = "cursor-pointer rounded-md px-2 py-1 text-xs bg-indigo-700 text-indigo-100"
-		}
-		return h.Button(
-			h.Type("button"),
-			hx("post", "/settings/nsfw"),
-			hx("vals", fmt.Sprintf(`{"mode":%q,"model_id":"%d","csrf_token":%q}`, value, modelID, csrf)),
-			hx("target", "body"),
-			hx("swap", "outerHTML"),
-			h.Class(cls),
-			g.Text(label),
-		)
-	}
-	return h.Div(
-		h.Class("flex items-center gap-1"),
-		h.Span(h.Class("text-xs text-slate-500"), g.Text("NSFW:")),
-		opt(NSFWHide, "Hide"),
-		opt(NSFWBlur, "Blur"),
-		opt(NSFWShow, "Show"),
-	)
 }
 
 // galleryTile renders one showcase image. When blur is true the image is shown

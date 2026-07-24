@@ -316,17 +316,19 @@ func TestModelGalleryLightboxAndMetadata(t *testing.T) {
 
 func TestNSFWSettingPersistsViaEndpoint(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
-	// Toggle via the endpoint (CSRF required).
-	rec := post(t, srv, "/settings/nsfw", url.Values{"mode": {"show"}, "model_id": {"7"}}, true)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("set nsfw = %d", rec.Code)
+	// Toggle via the endpoint (CSRF required). The navbar toggle POSTs only the
+	// next mode + csrf; the handler persists it and replies HX-Refresh so whatever
+	// page is showing re-renders under the new mode.
+	rec := post(t, srv, "/settings/nsfw", url.Values{"mode": {"show"}}, true)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("set nsfw = %d, want 204", rec.Code)
 	}
-	// The setting persisted and the re-rendered page reflects show mode.
+	if rec.Header().Get("HX-Refresh") != "true" {
+		t.Errorf("set nsfw must reply HX-Refresh: true, got %q", rec.Header().Get("HX-Refresh"))
+	}
+	// The setting persisted.
 	if v, _ := srv.store.GetSettingDefault(nsfwSettingKey, NSFWBlur); v != NSFWShow {
 		t.Fatalf("nsfw setting = %q, want show", v)
-	}
-	if strings.Contains(rec.Body.String(), `data-blurred="1"`) {
-		t.Error("after switching to show, the re-rendered page must not blur")
 	}
 
 	// Without CSRF → 403.

@@ -236,7 +236,7 @@ func TestPopularDefaultAndCache(t *testing.T) {
 // --- D. Dashboard structure + subscribe search ---
 
 func TestDashboardManualFormDemotedAndSearchBox(t *testing.T) {
-	out := renderString(t, dashboardPage(nil, nil, "test-csrf", "dark"))
+	out := renderString(t, dashboardPage(nil, nil, "test-csrf", "dark", NSFWBlur))
 	for _, want := range []string{
 		"<details",                   // manual form is demoted into a details
 		"Add by model id / URL",      // the summary label
@@ -340,7 +340,7 @@ func TestDashboardRendersSuggestions(t *testing.T) {
 		{ModelID: 42, FileCount: 2, TotalBytes: 1500},
 		{ModelID: 7, FileCount: 1, TotalBytes: 500},
 	}
-	out := renderString(t, dashboardPage(nil, suggestions, "test-csrf", "dark"))
+	out := renderString(t, dashboardPage(nil, suggestions, "test-csrf", "dark", NSFWBlur))
 	if !strings.Contains(out, "Subscribe suggestions from your library") {
 		t.Error("suggestions section heading missing")
 	}
@@ -356,7 +356,7 @@ func TestDashboardRendersSuggestions(t *testing.T) {
 }
 
 func TestDashboardHidesEmptySuggestions(t *testing.T) {
-	out := renderString(t, dashboardPage(nil, nil, "test-csrf", "dark"))
+	out := renderString(t, dashboardPage(nil, nil, "test-csrf", "dark", NSFWBlur))
 	if strings.Contains(out, "Subscribe suggestions from your library") {
 		t.Error("suggestions section should be hidden when there are none")
 	}

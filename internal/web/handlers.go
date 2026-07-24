@@ -29,7 +29,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	suggestions := librarySubscribeSuggestions(files, subs, subscribeSuggestionLimit)
-	s.render(w, http.StatusOK, dashboardPage(subs, suggestions, s.csrf, s.currentTheme()))
+	s.render(w, http.StatusOK, dashboardPage(subs, suggestions, s.csrf, s.currentTheme(), s.nsfwMode()))
 }
 
 // subscribeSuggestionLimit caps how many library-derived subscribe suggestions
@@ -178,7 +178,7 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 		if view.Model == nil && errors.Is(view.loadErr, civitai.ErrNotFound) {
 			status = http.StatusNotFound
 		}
-		s.render(w, status, page("Not found", s.currentTheme(), s.csrf, errNode))
+		s.render(w, status, page("Not found", s.currentTheme(), s.csrf, s.nsfwMode(), errNode))
 		return
 	}
 	s.render(w, http.StatusOK, modelDetailPage(view, s.csrf, s.currentTheme()))
@@ -281,8 +281,12 @@ func (s *Server) loadModelView(parent context.Context, id, versionParam string) 
 	return view, nil
 }
 
-// handleSetNSFWDisplay persists the global NSFW display mode and re-renders the
-// model page (target body) so the gallery reflects the new mode immediately.
+// handleSetNSFWDisplay persists the global NSFW display mode (set from the
+// navbar's 3-state cycling toggle) and asks htmx to refresh so the CURRENT page
+// re-renders under the new mode — whichever page it is (its galleries then
+// hide/blur/show accordingly). This mirrors the theme toggle's HX-Refresh
+// pattern, so the one control works everywhere rather than only on the model
+// page. CSRF-protected like every other state-changing POST.
 func (s *Server) handleSetNSFWDisplay(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
@@ -296,18 +300,8 @@ func (s *Server) handleSetNSFWDisplay(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "save nsfw setting", err)
 		return
 	}
-	modelID := strings.TrimSpace(r.FormValue("model_id"))
-	if modelID == "" {
-		// No model context: just acknowledge (the setting is persisted).
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	view, errNode := s.loadModelView(r.Context(), modelID, r.FormValue("version"))
-	if errNode != nil {
-		s.render(w, http.StatusOK, page("Not found", s.currentTheme(), s.csrf, errNode))
-		return
-	}
-	s.render(w, http.StatusOK, modelDetailPage(view, s.csrf, s.currentTheme()))
+	w.Header().Set("HX-Refresh", "true")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleCreator(w http.ResponseWriter, r *http.Request) {
@@ -320,7 +314,7 @@ func (s *Server) handleCreator(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	res, err := s.reader.SearchModels(ctx, q)
 	if err != nil {
-		s.render(w, http.StatusBadGateway, page("@"+username, s.currentTheme(), s.csrf, errorNote("Could not load creator: "+err.Error())))
+		s.render(w, http.StatusBadGateway, page("@"+username, s.currentTheme(), s.csrf, s.nsfwMode(), errorNote("Could not load creator: "+err.Error())))
 		return
 	}
 	s.render(w, http.StatusOK, creatorPage(username, res, s.csrf, s.currentTheme(), s.nsfwMode()))
