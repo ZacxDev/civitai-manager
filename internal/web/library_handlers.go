@@ -94,6 +94,28 @@ func (s *Server) modelSubscription(id int) *store.Subscription {
 	return sub
 }
 
+// modelSubscriptions returns a map of model id → the user's model-kind
+// subscription, built from ONE ListSubscriptions query. A search/grid render uses
+// it to reflect per-card subscribe state WITHOUT a per-card DB lookup (the recent
+// perf pass removed exactly such per-card scans). Returns a non-nil (possibly
+// empty) map; on error it logs and returns an empty map, so every card degrades to
+// the collapsed Subscribe state rather than erroring.
+func (s *Server) modelSubscriptions() map[int]*store.Subscription {
+	out := map[int]*store.Subscription{}
+	subs, err := s.store.ListSubscriptions()
+	if err != nil {
+		s.log.Debug("list subscriptions for cards", "err", err)
+		return out
+	}
+	for i := range subs {
+		sub := subs[i] // fresh copy per iteration so &sub is not a shared loop var
+		if sub.Kind == store.KindModel && sub.ModelID != nil {
+			out[*sub.ModelID] = &sub
+		}
+	}
+	return out
+}
+
 // cachedModelDetail resolves a model's detail through the model_cache: a fresh
 // cached snapshot (within modelCacheTTL) is decoded and returned WITHOUT any
 // network call; otherwise GetModel is called and the result cached. On a fetch

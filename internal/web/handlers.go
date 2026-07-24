@@ -236,11 +236,15 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Mark which of this model's versions the user already has locally, so the
-	// version list can badge them (mirrors handleModelCard's local-file gather).
+	// version list can badge them (mirrors handleModelCard's local-file gather),
+	// and resolve the model's subscription (one indexed lookup, no civitai call) so
+	// the header renders the correct subscribe/unsubscribe state.
+	var sub *store.Subscription
 	if mid, cerr := strconv.Atoi(id); cerr == nil {
 		view.LocalVersionIDs = s.localVersionIDs(mid)
+		sub = s.modelSubscription(mid)
 	}
-	s.render(w, http.StatusOK, modelDetailPage(view, s.csrf, s.currentTheme()))
+	s.render(w, http.StatusOK, modelDetailPage(view, sub, s.csrf, s.currentTheme()))
 }
 
 // handleModelCommunity backs the LAZY-loaded community feed at the bottom of the

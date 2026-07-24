@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
+	"github.com/ZacxDev/civitai-manager/internal/store"
 	g "maragu.dev/gomponents"
 	h "maragu.dev/gomponents/html"
 )
@@ -276,7 +276,7 @@ func parsePublishedAt(raw []byte) string {
 // modelDetailPage renders the rich model detail page: header + stats, sanitized
 // description, tags, a version selector with per-version detail, and a showcase
 // image gallery with NSFW handling + a lightbox.
-func modelDetailPage(v modelDetailView, csrf, theme string) g.Node {
+func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme string) g.Node {
 	m := v.Model
 	creator := ""
 	if m.Creator != nil {
@@ -285,7 +285,7 @@ func modelDetailPage(v modelDetailView, csrf, theme string) g.Node {
 	mode := normalizeNSFWMode(v.NSFWMode)
 
 	return page(m.Name, theme, csrf, mode,
-		modelHeaderCard(m, v.Images, mode, creator, csrf),
+		modelHeaderCard(m, v.Images, mode, creator, csrf, sub),
 		g.If(strings.TrimSpace(v.Description) != "", modelDescriptionCard(v.Description)),
 		g.If(len(m.Tags) > 0, modelTagsCard(m.Tags)),
 		modelVersionsCard(v),
@@ -312,7 +312,7 @@ func modelDetailPage(v modelDetailView, csrf, theme string) g.Node {
 // Subscribe affordance, AND the showcase carousel (moved into the header) with
 // the persisted NSFW display-mode control. The carousel tiles route through
 // galleryTile → the thumbnail helper + NSFW handling and share the page lightbox.
-func modelHeaderCard(m *civitai.ModelDetail, images []galleryImage, mode, creator, csrf string) g.Node {
+func modelHeaderCard(m *civitai.ModelDetail, images []galleryImage, mode, creator, csrf string, sub *store.Subscription) g.Node {
 	return card(
 		h.Div(
 			h.Class("flex flex-wrap items-start justify-between gap-4"),
@@ -332,7 +332,9 @@ func modelHeaderCard(m *civitai.ModelDetail, images []galleryImage, mode, creato
 					statInline("Comments", compactCount(m.Stats.CommentCount)),
 				),
 			),
-			subscribeInline("model", strconv.Itoa(m.ID), "Subscribe", csrf),
+			// Reflect the real subscription state: subscribed → "Subscribed ✓ /
+			// Unsubscribe", not-subscribed → collapsed "Subscribe" (sub is nil).
+			subscribeControl(m.ID, sub, csrf),
 		),
 		h.Div(
 			h.Class("mt-4 mb-2 flex flex-wrap items-center justify-between gap-2"),
