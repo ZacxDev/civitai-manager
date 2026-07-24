@@ -96,6 +96,126 @@ func ExtractResources(apiGraph json.RawMessage) ([]string, error) {
 	return out, nil
 }
 
+// uiNode is one node of a ui-format (editor "Save") graph: a class type and the
+// flat widget-value list the editor persists. widgets_values is heterogeneous
+// (strings, numbers, nested arrays), so each entry is kept as a RawMessage and
+// only the string ones are inspected.
+type uiNode struct {
+	Type          string            `json:"type"`
+	WidgetsValues []json.RawMessage `json:"widgets_values"`
+}
+
+// uiGraph is the ui-format top-level shape we care about: the nodes array.
+type uiGraph struct {
+	Nodes []uiNode `json:"nodes"`
+}
+
+// ExtractResourcesAny extracts referenced model filenames from a graph of either
+// format: the api path reuses ExtractResources (loader-node inputs); the ui path
+// is a heuristic — it scans EVERY node's widgets_values string entries and keeps
+// those ending in a model extension. Both dedup with first-seen order preserved.
+// An unrecognized format returns (nil, ErrUnknownFormat).
+func ExtractResourcesAny(format string, graph json.RawMessage) ([]string, error) {
+	switch format {
+	case FormatAPI:
+		return ExtractResources(graph)
+	case FormatUI:
+		return extractResourcesUI(graph)
+	default:
+		return nil, ErrUnknownFormat
+	}
+}
+
+// extractResourcesUI scans all nodes' widgets_values for model-filename strings.
+// It is deliberately permissive: an unparseable graph or odd widget shapes yield
+// whatever could be recovered, never an error (advisory pre-flight aid).
+func extractResourcesUI(graph json.RawMessage) ([]string, error) {
+	var g uiGraph
+	if err := json.Unmarshal(graph, &g); err != nil {
+		return nil, nil
+	}
+	var (
+		out  []string
+		seen = map[string]bool{}
+	)
+	for _, n := range g.Nodes {
+		for _, raw := range n.WidgetsValues {
+			var s string
+			if err := json.Unmarshal(raw, &s); err != nil {
+				continue // not a string widget (number, array, object)
+			}
+			if !hasModelExtension(s) || seen[s] {
+				continue
+			}
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// PrimaryCheckpoint returns the primary checkpoint filename a graph loads, used to
+// pick the version a scanned workflow auto-links to. For api graphs it is the
+// ckpt_name input of the first CheckpointLoaderSimple/CheckpointLoader node; for
+// ui graphs it is the first model-extension string in the widgets_values of a node
+// whose type contains "Checkpoint". ok is false when no checkpoint is found.
+func PrimaryCheckpoint(format string, graph json.RawMessage) (string, bool) {
+	switch format {
+	case FormatAPI:
+		return primaryCheckpointAPI(graph)
+	case FormatUI:
+		return primaryCheckpointUI(graph)
+	default:
+		return "", false
+	}
+}
+
+func primaryCheckpointAPI(graph json.RawMessage) (string, bool) {
+	var nodes map[string]apiNode
+	if err := json.Unmarshal(graph, &nodes); err != nil {
+		return "", false
+	}
+	for _, n := range nodes {
+		if n.ClassType != "CheckpointLoaderSimple" && n.ClassType != "CheckpointLoader" {
+			continue
+		}
+		raw, ok := n.Inputs["ckpt_name"]
+		if !ok {
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			continue
+		}
+		if strings.TrimSpace(s) != "" {
+			return s, true
+		}
+	}
+	return "", false
+}
+
+func primaryCheckpointUI(graph json.RawMessage) (string, bool) {
+	var g uiGraph
+	if err := json.Unmarshal(graph, &g); err != nil {
+		return "", false
+	}
+	for _, n := range g.Nodes {
+		if !strings.Contains(n.Type, "Checkpoint") {
+			continue
+		}
+		for _, raw := range n.WidgetsValues {
+			var s string
+			if err := json.Unmarshal(raw, &s); err != nil {
+				continue
+			}
+			if hasModelExtension(s) {
+				return s, true
+			}
+		}
+	}
+	return "", false
+}
+
 // knownLoaders is the explicit loader class set. Any other class_type containing
 // "Loader" is also treated as a loader (custom nodes, model-specific loaders).
 var knownLoaders = map[string]bool{
