@@ -11,11 +11,6 @@ require (
 	modernc.org/sqlite v1.34.4
 )
 
-// TEMPORARY: point pkg/civitai at the local feat/batch-by-hash worktree so the
-// scanner can depend on GetModelVersionsByHashes (batch by-hash) before it is
-// version is available, DELETE this replace and bump the require above to that
-// version — no code change is needed (the import path is unchanged).
-
 require (
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
