@@ -258,6 +258,47 @@ func libraryContent(v libraryView, csrf string) g.Node {
 	)
 }
 
+// File-size magnitude thresholds for the color-coded Size cell (see sizeClass).
+// Documented tiers: <500MB muted, 500MB–2GB yellow, 2–6GB orange, >6GB red.
+const (
+	sizeTierMedium int64 = 500 * 1024 * 1024      // 500 MB
+	sizeTierLarge  int64 = 2 * 1024 * 1024 * 1024 // 2 GB
+	sizeTierHuge   int64 = 6 * 1024 * 1024 * 1024 // 6 GB
+)
+
+// sizeClass maps a byte size to its magnitude tier CSS class (defined in
+// app.css, theme-aware via --civitai-* tokens): so a multi-GB checkpoint reads
+// red at a glance and a small LoRA reads muted.
+func sizeClass(b int64) string {
+	switch {
+	case b >= sizeTierHuge:
+		return "cm-size-huge"
+	case b >= sizeTierLarge:
+		return "cm-size-large"
+	case b >= sizeTierMedium:
+		return "cm-size-medium"
+	default:
+		return "cm-size-small"
+	}
+}
+
+// sizeCell renders a table Size cell: the humanized size colored by magnitude
+// (sizeClass) and carrying the RAW byte count in data-sort-value so the
+// client-side column sorter orders by bytes, not the humanized string.
+func sizeCell(b int64) g.Node {
+	return h.Td(
+		h.Class("px-3 py-2 "+sizeClass(b)),
+		dataAttr("sort-value", strconv.FormatInt(b, 10)),
+		g.Text(humanBytes(b)),
+	)
+}
+
+// sizeText renders a non-table size label colored by magnitude (used on the
+// streamed scan-result cards, which are not tables).
+func sizeText(b int64) g.Node {
+	return h.Span(h.Class("shrink-0 text-xs "+sizeClass(b)), g.Text(humanBytes(b)))
+}
+
 func stat(label, value string) g.Node {
 	return h.Div(
 		h.Class("rounded-md border border-slate-800 bg-slate-900 p-3"),
@@ -279,7 +320,7 @@ func libraryModelTable(files []store.LocalFile) g.Node {
 				h.Td(h.Class("px-3 py-2 text-slate-400"), g.Text(modelLabel(f.ModelID))),
 				h.Td(h.Class("px-3 py-2 text-slate-400"), g.Text(versionLabel(f.VersionID))),
 				h.Td(h.Class("px-3 py-2"), statusBadge(f)),
-				h.Td(h.Class("px-3 py-2 text-slate-400"), g.Text(humanBytes(f.SizeBytes))),
+				sizeCell(f.SizeBytes),
 				h.Td(h.Class("px-3 py-2 text-slate-300 truncate max-w-lg"), g.Text(f.Path)),
 			))
 		}
@@ -313,7 +354,7 @@ func candidatesTable(cands []store.LocalFile, csrf string) g.Node {
 					h.Class("rounded border-slate-600 bg-slate-800 text-indigo-500")),
 			),
 			h.Td(h.Class("px-3 py-2"), candidateBadge(c.CandidateReason)),
-			h.Td(h.Class("px-3 py-2 text-slate-400"), g.Text(humanBytes(c.SizeBytes))),
+			sizeCell(c.SizeBytes),
 			h.Td(h.Class("px-3 py-2 text-slate-300 truncate max-w-md"), g.Text(c.Path)),
 			h.Td(h.Class("px-3 py-2 text-right"),
 				civButton("subtle", "sm", []g.Node{

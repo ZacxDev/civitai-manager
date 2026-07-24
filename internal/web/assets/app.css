@@ -58,3 +58,27 @@ input[type="radio"] {
   color: var(--civitai-color-primary);
   border-bottom-color: var(--civitai-color-primary);
 }
+
+/*
+ * File-size magnitude tiers (.cm-size-*) — see sizeCell/sizeClass in
+ * library_pages.go. The Size cell is color-coded by magnitude so large files
+ * stand out at a glance. Thresholds: <500MB muted, 500MB–2GB yellow, 2–6GB
+ * orange, >6GB red. Three tiers resolve from --civitai-* semantic tokens so they
+ * are correct in both light and dark (data-theme); the orange mid-tier has no
+ * design-system token, so it uses a fixed, legible orange. Kept unlayered so it
+ * wins over the app (Tailwind) layer without touching any @civitai/components rule.
+ */
+.cm-size-small {
+  color: var(--civitai-color-text-dimmed);
+}
+.cm-size-medium {
+  color: var(--civitai-color-warning);
+}
+.cm-size-large {
+  color: #fb923c;
+  font-weight: 500;
+}
+.cm-size-huge {
+  color: var(--civitai-color-error);
+  font-weight: 600;
+}
