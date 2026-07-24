@@ -11,6 +11,57 @@ import (
 	h "maragu.dev/gomponents/html"
 )
 
+// Render caps for the post-scan results view. A pathological library (tens of
+// thousands of unmatched files, or a broken-detection flood) would otherwise
+// build a DOM large enough to crash the browser tab — this already happened once
+// (~45k rows). These caps are a RENDER-LAYER limit ONLY: all M files remain
+// counted in the summary/totals and in each section's heading; only the number
+// of rows/cards actually emitted is bounded. There is deliberately NO "show all"
+// escape hatch — an escape hatch reintroduces the crash. When a section caps, it
+// renders a "Showing first N of M …" note (renderCapNote).
+const (
+	maxRenderedMatchedCards  = 200 // model cards in matchedModelsSection
+	maxRenderedUnmatchedRows = 500 // rows in the "Other files" table
+	maxRenderedCandidateRows = 500 // rows in the deletion-candidates table
+)
+
+// humanCount formats a non-negative integer with thousands separators
+// (e.g. 4312 -> "4,312") for the truncation notes. Small self-contained helper —
+// no dependency (this package deliberately avoids pulling in golang.org/x/text).
+func humanCount(n int) string {
+	s := strconv.Itoa(n)
+	neg := false
+	if n < 0 {
+		neg, s = true, s[1:]
+	}
+	var out []byte
+	for i := 0; i < len(s); i++ {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, s[i])
+	}
+	if neg {
+		return "-" + string(out)
+	}
+	return string(out)
+}
+
+// renderCapNote renders the "Showing first N of M — capped …" truncation
+// indicator for a results section that rendered fewer rows/cards (shown) than
+// its true total (total). It returns nil when nothing was capped (shown >= total),
+// which gomponents renders as nothing. The muted text-sm text-slate-500 styling
+// matches the notes already used in these sections (theme-aware via the shared
+// classes).
+func renderCapNote(shown, total int) g.Node {
+	if shown >= total {
+		return nil
+	}
+	return h.P(h.Class("mt-3 text-sm text-slate-500"),
+		g.Text(fmt.Sprintf("Showing first %s of %s — capped to keep the page responsive.",
+			humanCount(shown), humanCount(total))))
+}
+
 // spinnerGlyph is a small CSS-animated spinner used inside an htmx-indicator so
 // a running request reads as active progress, not a hang.
 func spinnerGlyph() g.Node {
@@ -279,13 +330,22 @@ func matchedModelsSection(groups []fileGroup) g.Node {
 				g.Text("No models identified yet. Enable “Match against CivitAI” and scan to identify your library.")),
 		)
 	}
+	total := len(groups)
+	// Cap the rendered cards. groups is already sorted biggest-footprint-first
+	// (splitMatchedUnmatched), so the cap keeps the most important models; do NOT
+	// change that sort. The heading below shows the TRUE total, not the capped N.
+	shown := groups
+	if total > maxRenderedMatchedCards {
+		shown = groups[:maxRenderedMatchedCards]
+	}
 	var cards []g.Node
-	for _, gr := range groups {
+	for _, gr := range shown {
 		cards = append(cards, modelCardLazy(gr))
 	}
 	return card(
-		sectionTitle(fmt.Sprintf("Matched models (%d)", len(groups))),
+		sectionTitle(fmt.Sprintf("Matched models (%d)", total)),
 		h.Div(h.Class("grid gap-4 md:grid-cols-2"), g.Group(cards)),
+		renderCapNote(len(shown), total),
 	)
 }
 
@@ -509,10 +569,19 @@ func libraryModelTable(files []store.LocalFile) g.Node {
 	if len(files) == 0 {
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("No files scanned yet. Click “Scan for model files”."))
 	}
+	total := len(files)
 	groups := groupFilesByModel(files)
+	// Cap the rendered rows to keep the DOM bounded (see maxRenderedUnmatchedRows).
+	// The section heading (otherFilesSection) still shows the true total M — only
+	// the emitted rows are limited. Client-side column sort (librarySortScript)
+	// only reorders the rows that were actually rendered; on a capped view it sorts
+	// the rendered subset, which is acceptable for a firm crash-prevention cap.
 	var rows []g.Node
 	for _, gr := range groups {
 		for _, f := range gr.files {
+			if len(rows) >= maxRenderedUnmatchedRows {
+				break
+			}
 			rows = append(rows, h.Tr(
 				h.Class("border-b border-slate-800/60"),
 				h.Td(h.Class("px-3 py-2 text-slate-400"), g.Text(modelLabel(f.ModelID))),
@@ -521,6 +590,9 @@ func libraryModelTable(files []store.LocalFile) g.Node {
 				sizeCell(f.SizeBytes),
 				h.Td(h.Class("px-3 py-2 text-slate-300 truncate max-w-lg"), g.Text(f.Path)),
 			))
+		}
+		if len(rows) >= maxRenderedUnmatchedRows {
+			break
 		}
 	}
 	return h.Div(
@@ -535,6 +607,7 @@ func libraryModelTable(files []store.LocalFile) g.Node {
 			h.TBody(g.Group(rows)),
 		),
 		librarySortScript(),
+		renderCapNote(len(rows), total),
 	)
 }
 
@@ -606,8 +679,15 @@ func candidatesTable(cands []store.LocalFile, csrf string) g.Node {
 	if len(cands) == 0 {
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("No deletion candidates."))
 	}
+	total := len(cands)
+	// Cap the rendered rows (see maxRenderedCandidateRows). All M candidates remain
+	// counted in the summary/totals; only the emitted rows are limited.
+	shown := cands
+	if total > maxRenderedCandidateRows {
+		shown = cands[:maxRenderedCandidateRows]
+	}
 	var rows []g.Node
-	for _, c := range cands {
+	for _, c := range shown {
 		id := strconv.FormatInt(c.ID, 10)
 		rows = append(rows, h.Tr(
 			h.Class("border-b border-slate-800/60"),
@@ -647,6 +727,7 @@ func candidatesTable(cands []store.LocalFile, csrf string) g.Node {
 				h.TBody(g.Group(rows)),
 			),
 		),
+		renderCapNote(len(shown), total),
 		h.Div(
 			h.Class("mt-3"),
 			civButton("light", "md", []g.Node{
