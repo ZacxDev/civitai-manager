@@ -93,6 +93,35 @@ func scanProgressText(scanned, discovered, matched, unmatched, pending int) stri
 	return s
 }
 
+// scanningPhaseText renders the running progress line for the 3-phase scan so the
+// user sees MOVEMENT throughout, not a frozen "0 / total" during the slow phase-1
+// hash pass. The batch-match rework made scanning three phases — (1) hash EVERY
+// file concurrently, (2) one by-hash batch lookup, (3) stream all per-file cards —
+// so per-file cards (and thus `scanned`) only start after the whole tree is hashed
+// and matched. This picks the wording by phase:
+//   - walk not finished (discovered==0): "walking…" (finding files).
+//   - phase 3 (scanned>0): the existing "N / D discovered · matched M · unmatched
+//     U [· pending P]" as cards stream in.
+//   - phase 2 (all hashed, no card yet): "Matching… (D files hashed)" — the batch
+//     by-hash lookup is in flight.
+//   - phase 1 (hashing): "Hashing files… N / D discovered" (hashed / discovered) —
+//     the moving numerator that fixes the frozen-progress regression.
+func scanningPhaseText(hashed, scanned, discovered, matched, unmatched, pending int) string {
+	switch {
+	case discovered <= 0:
+		return "walking… (finding model files)"
+	case scanned > 0:
+		// Phase 3: per-file cards are streaming — show the full match breakdown.
+		return scanProgressText(scanned, discovered, matched, unmatched, pending)
+	case hashed >= discovered:
+		// Phase 2: every file is hashed; the single batch by-hash lookup is running.
+		return fmt.Sprintf("Matching… (%d files hashed)", discovered)
+	default:
+		// Phase 1: hashing the tree — the moving numerator during the slow disk pass.
+		return fmt.Sprintf("Hashing files… %d / %d discovered", hashed, discovered)
+	}
+}
+
 // matchingOffNote is the muted advisory shown while (and after) a scan that ran
 // with CivitAI matching DISABLED, so a user who sees near-zero matches knows WHY
 // (matching is off) and how to fix it — rather than assuming the scan is broken.
@@ -112,7 +141,7 @@ func scanScanning(snap scanSnapshot, csrf string) g.Node {
 		h.Class("flex items-center gap-2 text-sm text-slate-300"),
 		spinnerGlyph(),
 		g.Text("Scanning selected directories for model files… "+
-			scanProgressText(snap.Scanned, snap.Discovered, snap.Matched, snap.Unmatched, snap.Pending)+
+			scanningPhaseText(snap.Hashed, snap.Scanned, snap.Discovered, snap.Matched, snap.Unmatched, snap.Pending)+
 			" (Stop any time)"),
 	)
 	cardChildren := []g.Node{

@@ -3,11 +3,9 @@ package library
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	"github.com/ZacxDev/civitai-manager/internal/hashutil"
@@ -22,20 +20,21 @@ type matchResult struct {
 	autov2    string
 }
 
-// matchFile resolves a model file to its CivitAI version. It prefers a valid
-// local .civitai.info sidecar (Civitai-Helper compatible) to avoid an API call;
-// otherwise it queries by hash, backing off and retrying on rate-limit/transient
-// errors. A definitive "not found" is recorded unmatched (never a deletion
-// candidate); an unresolved transient failure is recorded unmatched-pending so
-// nothing is ever falsely flagged.
-func (s *Scanner) matchFile(ctx context.Context, path, sha string) matchResult {
+// resolveLocalMatch resolves a model file WITHOUT any network call. It prefers a
+// valid local .civitai.info sidecar (Civitai-Helper compatible), then falls back
+// to offline handling; when neither settles the file it reports needsRemote so
+// the caller collects the file's SHA for the single batch by-hash lookup.
+//
+// It replaces the per-file matchFile's steps 1-2 (sidecar short-circuit + offline
+// guard); step 3 — the by-hash network call — is no longer per-file: the whole
+// library is resolved in one (chunked) POST via Scanner.batchMatch.
+func (s *Scanner) resolveLocalMatch(path, sha string) (result matchResult, needsRemote bool) {
 	// 1. Civitai-Helper sidecar short-circuit — but only when the sidecar's own
 	// declared file hash matches THIS file's bytes. A sidecar whose declared
 	// SHA256 does not match the file (a mislabeled/renamed/tampered sidecar), or
 	// one that carries no file hash at all, is untrustworthy for adopting a
 	// model/version id: we fall through to the authoritative by-hash lookup
-	// (offline: recorded unmatched) rather than misclassify — and potentially
-	// quarantine — the wrong file.
+	// (offline: recorded unmatched) rather than misclassify the wrong file.
 	if info, ok := parseInfoSidecar(sidecarInfoPath(path, s.opts.Extensions)); ok {
 		if av2, verified := info.verifyHash(sha); verified {
 			return matchResult{
@@ -43,62 +42,91 @@ func (s *Scanner) matchFile(ctx context.Context, path, sha string) matchResult {
 				modelID:   ptrIfPos(info.modelID),
 				versionID: ptrIfPos(info.versionID),
 				autov2:    av2,
-			}
+			}, false
 		}
 	}
 
 	// 2. Offline mode: no API calls. Without a sidecar we cannot confirm a match.
 	if s.opts.NoRemote || s.reader == nil {
-		return matchResult{status: store.LocalStatusUnmatched}
+		return matchResult{status: store.LocalStatusUnmatched}, false
 	}
 
-	// 3. By-hash lookup governed by the Scanner's SHARED match limiter: a small
-	// in-flight concurrency cap plus a pool-wide 429 cooldown, so the worker pool
-	// paces CivitAI as ONE client instead of bursting up to 8 simultaneous
-	// requests and backing off per worker. Only this network call takes a permit;
-	// the sidecar short-circuit and NoRemote paths above never touch the limiter.
-	for attempt := 0; attempt <= s.maxHashRetries; attempt++ {
-		if ctx.Err() != nil {
-			return matchResult{status: store.LocalStatusUnmatchedPending}
-		}
-		// Respect the shared cooldown BEFORE taking a permit, so a cooling pool
-		// holds no in-flight slots idle. A ctx cancel during cooldown aborts
-		// promptly (waitCooldown selects on ctx.Done via waitFn).
-		if !s.matchLimiter.waitCooldown(ctx, s.waitFn, s.nowFn) {
-			return matchResult{status: store.LocalStatusUnmatchedPending}
-		}
-		if !s.matchLimiter.acquire(ctx) {
-			return matchResult{status: store.LocalStatusUnmatchedPending}
-		}
-		vd, _, err := s.reader.GetModelVersionByHash(ctx, sha)
-		s.matchLimiter.release()
-		if err == nil {
-			// A call got through: release the shared cooldown so the pool resumes
-			// full pace and the 429 escalation resets.
-			s.matchLimiter.onSuccess()
-			return matchResult{
-				status:    store.LocalStatusMatched,
-				modelID:   ptrIfPos(vd.ModelID),
-				versionID: ptrIfPos(vd.ID),
-				autov2:    autoV2ForHash(vd, sha),
-			}
-		}
-		if errors.Is(err, civitai.ErrNotFound) {
-			// Definitive: this file is not on CivitAI. Recorded, surfaced, and
-			// NEVER treated as a deletion candidate.
-			return matchResult{status: store.LocalStatusUnmatched}
-		}
-		// Rate-limited or transient network error: escalate the SHARED cooldown so
-		// the WHOLE pool slows before its next by-hash call, not just this worker.
-		// Anything that is not a clean 404 is treated as transient so we never
-		// falsely flag on an ambiguous failure. The next attempt (and every other
-		// worker) waits on the cooldown at the top of the loop.
-		s.matchLimiter.onRateLimited(s.nowFn)
-		s.log.Warn("by-hash lookup failed; pool backing off",
-			"path", path, "attempt", attempt+1, "err", err)
+	// 3. Needs the authoritative remote lookup — done in one BATCH, not per file.
+	return matchResult{}, true
+}
+
+// batchMatch resolves every needsRemote prepared file in ONE call:
+// reader.GetModelVersionsByHashes (which chunks to <=10k hashes per request and
+// merges). It returns a hash->match map for phase-3 resolution, plus any error.
+//
+// This is the batch replacement for the retired per-file by-hash GET loop and
+// its shared 429-cooldown limiter: with a handful of POSTs instead of N GETs,
+// pacing/cooldown is unnecessary — the SDK's own bounded retry/backoff handles a
+// transient failure, and on a genuine failure the whole batch returns an error so
+// the affected files are marked UnmatchedPending (never falsely flagged). A nil
+// map with a nil error means "no remote lookup needed" (offline / nothing to
+// resolve). ctx cancellation aborts promptly (the SDK honors ctx).
+func (s *Scanner) batchMatch(ctx context.Context, prepared []*preparedFile) (map[string]civitai.HashMatch, error) {
+	if s.opts.NoRemote || s.reader == nil {
+		return nil, nil
 	}
-	// Still failing after retries: leave it pending, do not flag anything.
-	return matchResult{status: store.LocalStatusUnmatchedPending}
+	var shas []string
+	for _, pf := range prepared {
+		if pf != nil && pf.needsRemote {
+			shas = append(shas, pf.sha)
+		}
+	}
+	if len(shas) == 0 {
+		return nil, nil
+	}
+	matches, err := s.reader.GetModelVersionsByHashes(ctx, shas)
+	if err != nil {
+		s.log.Warn("batch by-hash lookup failed; affected files left pending",
+			"hashes", len(shas), "err", err)
+		return nil, err
+	}
+	return buildHashMatchMap(matches), nil
+}
+
+// resolveFromBatch turns a needsRemote file's SHA into its final match result,
+// reading the prefetched batch map. A non-nil batchErr (the batch call failed
+// after the SDK's own retries) leaves the file UnmatchedPending so nothing is
+// ever falsely flagged; a hit is definitive matched; a miss is definitive
+// unmatched (the batch replacement for the old ErrNotFound branch).
+func resolveFromBatch(sha string, m map[string]civitai.HashMatch, batchErr error) matchResult {
+	if batchErr != nil {
+		return matchResult{status: store.LocalStatusUnmatchedPending}
+	}
+	if hm, ok := m[strings.ToUpper(strings.TrimSpace(sha))]; ok {
+		return matchResult{
+			status:    store.LocalStatusMatched,
+			modelID:   ptrIfPos(hm.ModelID),
+			versionID: ptrIfPos(hm.ModelVersionID),
+			// AutoV2 is enrichment-only and NOT returned by the batch endpoint; it
+			// is left unset for batch-matched files (the app already has the file's
+			// SHA256 and never reconstructs AutoV2 from it).
+		}
+	}
+	return matchResult{status: store.LocalStatusUnmatched}
+}
+
+// buildHashMatchMap indexes batch results by UPPER-cased hash for O(1) lookup.
+//
+// The endpoint may return MORE THAN ONE entry for a single hash (a hash shared
+// across model versions). To stay deterministic regardless of response order we
+// keep the entry with the LOWEST ModelVersionID; duplicate keys never panic.
+func buildHashMatchMap(matches []civitai.HashMatch) map[string]civitai.HashMatch {
+	m := make(map[string]civitai.HashMatch, len(matches))
+	for _, hm := range matches {
+		key := strings.ToUpper(strings.TrimSpace(hm.Hash))
+		if key == "" {
+			continue
+		}
+		if cur, ok := m[key]; !ok || hm.ModelVersionID < cur.ModelVersionID {
+			m[key] = hm
+		}
+	}
+	return m
 }
 
 // sidecarInfoPath returns the Civitai-Helper .civitai.info path for a model file
@@ -176,32 +204,6 @@ func parseInfoSidecar(infoPath string) (sidecarData, bool) {
 		}
 	}
 	return out, true
-}
-
-// autoV2ForHash returns the AutoV2 hash of whichever version file matches sha,
-// so a matched file can record its AutoV2 without a local recomputation.
-func autoV2ForHash(vd *civitai.ModelVersionDetail, sha string) string {
-	if vd == nil {
-		return ""
-	}
-	for _, f := range vd.Files {
-		if hashutil.Equal(f.Hashes.SHA256, sha) {
-			return f.Hashes.AutoV2
-		}
-	}
-	return ""
-}
-
-// nextBackoff escalates a transient-error backoff: 0 -> 2m, then doubling up to
-// a 30m ceiling. It mirrors the poller's rate-limit policy.
-func nextBackoff(cur time.Duration) time.Duration {
-	if cur == 0 {
-		return 2 * time.Minute
-	}
-	if cur < 30*time.Minute {
-		return cur * 2
-	}
-	return cur
 }
 
 func ptrIfPos(v int) *int {

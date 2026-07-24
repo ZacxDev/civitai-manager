@@ -58,6 +58,10 @@ func (f *fakeReader) GetModelVersionByHash(_ context.Context, _ string) (*civita
 	return nil, nil, civitai.ErrNotFound
 }
 
+func (f *fakeReader) GetModelVersionsByHashes(_ context.Context, _ []string) ([]civitai.HashMatch, error) {
+	return nil, nil
+}
+
 func (f *fakeReader) SearchModels(_ context.Context, _ url.Values) (*civitai.ModelSearchResult, error) {
 	if f.searchErr != nil {
 		return nil, f.searchErr

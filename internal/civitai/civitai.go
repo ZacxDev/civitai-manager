@@ -46,6 +46,10 @@ type (
 	Metadata            = sdk.Metadata
 	Creator             = sdk.Creator
 	FileHashes          = sdk.FileHashes
+	// HashMatch is one entry of the batch by-hash response: the model version
+	// (and its parent model) a file hash resolves to. The library scanner uses
+	// it to resolve a whole library of local files in one (chunked) request.
+	HashMatch = sdk.HashMatch
 )
 
 // Re-export the image meta-state constants so the web UI classifies an image's
@@ -68,6 +72,12 @@ type Reader interface {
 	// (SHA256, AutoV2, …). The library scanner uses it to match local files to
 	// their CivitAI version without knowing the model/version id up front.
 	GetModelVersionByHash(ctx context.Context, hash string) (*ModelVersionDetail, []byte, error)
+	// GetModelVersionsByHashes resolves a batch of file hashes to their model
+	// versions in one (internally chunked, <=10k/request) POST — the batch
+	// replacement for N sequential GetModelVersionByHash calls the library
+	// scanner used to make. Misses are simply absent from the result; a hash
+	// shared across versions may appear more than once.
+	GetModelVersionsByHashes(ctx context.Context, hashes []string) ([]HashMatch, error)
 	SearchModels(ctx context.Context, q url.Values) (*ModelSearchResult, error)
 	SearchCreators(ctx context.Context, q url.Values) (*CreatorSearchResult, error)
 	SearchImages(ctx context.Context, q url.Values) (*ImageSearchResult, error)

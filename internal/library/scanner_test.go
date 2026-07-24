@@ -24,7 +24,12 @@ type fakeReader struct {
 	failN int
 	// alwaysErr, when set, is returned for every by-hash call.
 	alwaysErr error
-	calls     int
+	calls     int // GetModelVersionByHash invocations
+	// batchCalls counts GetModelVersionsByHashes invocations (the batch seam):
+	// the scanner must call it once — or ceil(N/10k) times — NOT once per file.
+	batchCalls int
+	// batchHashes records the total number of hashes sent across all batch calls.
+	batchHashes int
 }
 
 func (f *fakeReader) GetModelVersionByHash(_ context.Context, hash string) (*civitai.ModelVersionDetail, []byte, error) {
@@ -40,6 +45,34 @@ func (f *fakeReader) GetModelVersionByHash(_ context.Context, hash string) (*civ
 		return v, nil, nil
 	}
 	return nil, nil, civitai.ErrNotFound
+}
+
+// GetModelVersionsByHashes is the batch by-hash the scanner now uses. It mirrors
+// the same byHash map GetModelVersionByHash serves, so a test that seeds byHash
+// exercises the batch match path with identical match/miss outcomes. failN /
+// alwaysErr fail the WHOLE batch (which leaves those files pending), matching the
+// SDK's fail-the-chunk contract.
+func (f *fakeReader) GetModelVersionsByHashes(_ context.Context, hashes []string) ([]civitai.HashMatch, error) {
+	f.batchCalls++
+	f.batchHashes += len(hashes)
+	if f.failN > 0 {
+		f.failN--
+		return nil, civitai.ErrRateLimited
+	}
+	if f.alwaysErr != nil {
+		return nil, f.alwaysErr
+	}
+	var out []civitai.HashMatch
+	for _, h := range hashes {
+		if v, ok := f.byHash[strings.ToLower(h)]; ok {
+			out = append(out, civitai.HashMatch{
+				ModelVersionID: v.ID,
+				ModelID:        v.ModelID,
+				Hash:           strings.ToUpper(h),
+			})
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeReader) GetModel(context.Context, string) (*civitai.ModelDetail, []byte, error) {
@@ -63,6 +96,10 @@ func (f *fakeReader) SearchImages(context.Context, url.Values) (*civitai.ImageSe
 type panicReader struct{ fakeReader }
 
 func (p *panicReader) GetModelVersionByHash(context.Context, string) (*civitai.ModelVersionDetail, []byte, error) {
+	panic("reader must not be called")
+}
+
+func (p *panicReader) GetModelVersionsByHashes(context.Context, []string) ([]civitai.HashMatch, error) {
 	panic("reader must not be called")
 }
 

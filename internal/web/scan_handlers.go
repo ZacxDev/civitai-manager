@@ -112,15 +112,27 @@ func (s *Server) startScan(extra []string, noRemote bool) {
 		s.scanMu.Unlock()
 	}
 
+	// onHashed accumulates the phase-1 hashing-progress increments (+1 per file as it
+	// finishes hashing, fired from MULTIPLE scanning goroutines at once — hence the
+	// mutex, exactly like onFile). It bumps job.hashed so a /status poll during the
+	// slow hash pass shows a moving "Hashing… N / discovered" numerator instead of a
+	// frozen "0 / total" until the first card streams in phase 3.
+	onHashed := func(n int) {
+		s.scanMu.Lock()
+		job.hashed += n
+		s.scanMu.Unlock()
+	}
+
 	scan := s.scanFn
 	if scan == nil {
 		// Production path: build the real scanner over the resolved dirs and run its
 		// streaming Scan. local_files persistence + candidate analysis still happen
-		// inside Scan; OnFile/OnDiscovered only ADD the incremental view.
+		// inside Scan; OnFile/OnDiscovered/OnHashed only ADD the incremental view.
 		sc := s.newScanner(extra, noRemote)
-		scan = func(ctx context.Context, of func(library.FileResult), od func(int)) error {
+		scan = func(ctx context.Context, of func(library.FileResult), od func(int), oh func(int)) error {
 			sc.SetOnFile(of)
 			sc.SetOnDiscovered(od)
+			sc.SetOnHashed(oh)
 			_, err := sc.Scan(ctx)
 			return err
 		}
@@ -128,7 +140,7 @@ func (s *Server) startScan(extra []string, noRemote bool) {
 
 	go func() {
 		defer cancel()
-		err := scan(ctx, onFile, onDiscovered)
+		err := scan(ctx, onFile, onDiscovered, onHashed)
 		s.scanMu.Lock()
 		job.err = err
 		job.running = false
@@ -163,8 +175,12 @@ type scanSnapshot struct {
 	Started, Running                                 bool
 	Results                                          []library.FileResult
 	Scanned, Matched, Unmatched, Pending, Discovered int
-	Stopped, NoRemote                                bool
-	Err                                              error
+	// Hashed is the phase-1 progress numerator (files hashed so far), accumulated
+	// from the scanner's OnHashed seam. It drives the "Hashing… N / D" scanning line
+	// during the hash pass, before any card streams (Scanned still 0).
+	Hashed            int
+	Stopped, NoRemote bool
+	Err               error
 }
 
 // scanJobState returns a locked snapshot of the current scan job.
@@ -186,6 +202,7 @@ func (s *Server) scanJobState() scanSnapshot {
 		Unmatched:  j.unmatched,
 		Pending:    j.pending,
 		Discovered: j.discovered,
+		Hashed:     j.hashed,
 		Stopped:    j.stopped,
 		NoRemote:   j.noRemote,
 		Err:        j.err,

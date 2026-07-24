@@ -3,13 +3,18 @@ module github.com/ZacxDev/civitai-manager
 go 1.25.0
 
 require (
-	github.com/civitai/cli v0.1.80-0.20260721045135-4405553fed27
+	github.com/civitai/cli v0.1.82-0.20260724032407-d217cf7a4774
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/spf13/cobra v1.8.1
 	gopkg.in/yaml.v3 v3.0.1
 	maragu.dev/gomponents v1.3.0
 	modernc.org/sqlite v1.34.4
 )
+
+// TEMPORARY: point pkg/civitai at the local feat/batch-by-hash worktree so the
+// scanner can depend on GetModelVersionsByHashes (batch by-hash) before it is
+// version is available, DELETE this replace and bump the require above to that
+// version — no code change is needed (the import path is unchanged).
 
 require (
 	github.com/aymerick/douceur v0.2.0 // indirect
