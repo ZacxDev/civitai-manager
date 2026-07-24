@@ -181,6 +181,11 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 		s.render(w, status, page("Not found", s.currentTheme(), s.csrf, s.nsfwMode(), errNode))
 		return
 	}
+	// Mark which of this model's versions the user already has locally, so the
+	// version list can badge them (mirrors handleModelCard's local-file gather).
+	if mid, cerr := strconv.Atoi(id); cerr == nil {
+		view.LocalVersionIDs = s.localVersionIDs(mid)
+	}
 	s.render(w, http.StatusOK, modelDetailPage(view, s.csrf, s.currentTheme()))
 }
 

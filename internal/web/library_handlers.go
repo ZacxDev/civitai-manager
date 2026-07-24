@@ -58,6 +58,24 @@ func (s *Server) handleModelCard(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, matchedModelCard(view, s.csrf))
 }
 
+// localVersionIDs returns the set of version ids the user has locally for the
+// given model (from the local-files table, model-kind rows). No civitai call —
+// used to badge owned versions on the model page.
+func (s *Server) localVersionIDs(modelID int) map[int]bool {
+	files, err := s.store.ListLocalFiles()
+	if err != nil {
+		return nil
+	}
+	out := map[int]bool{}
+	for _, f := range files {
+		if f.Kind == store.LocalKindModel && f.ModelID != nil && *f.ModelID == modelID &&
+			f.VersionID != nil {
+			out[*f.VersionID] = true
+		}
+	}
+	return out
+}
+
 // modelSubscription returns the user's model-kind subscription for the given
 // model id, or nil when not subscribed. It reads the local subscriptions table —
 // no civitai API call — so the matched card can render the correct subscribe/

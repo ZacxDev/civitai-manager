@@ -244,6 +244,9 @@ type modelDetailView struct {
 	PublishedAt       string
 	Images            []galleryImage
 	NSFWMode          string
+	// LocalVersionIDs is the set of this model's version ids the user has locally
+	// (derived from local files), used to badge owned versions in the version list.
+	LocalVersionIDs map[int]bool
 	// loadErr carries the model-load failure (used only to classify the HTTP
 	// status: a not-found model → 404, anything else → 502).
 	loadErr error
@@ -388,7 +391,10 @@ func modelVersionsCard(v modelDetailView) g.Node {
 			h.Class(cls),
 			h.Div(h.Class("flex items-center justify-between gap-2"),
 				h.Span(g.Text(ver.Name)),
-				g.If(ver.BaseModel != "", badge(ver.BaseModel, "blue")),
+				h.Span(h.Class("flex shrink-0 items-center gap-1.5"),
+					g.If(v.LocalVersionIDs[ver.ID], badge("in your library", "green")),
+					g.If(ver.BaseModel != "", badge(ver.BaseModel, "blue")),
+				),
 			),
 		))
 	}

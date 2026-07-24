@@ -338,6 +338,38 @@ func TestNSFWSettingPersistsViaEndpoint(t *testing.T) {
 	}
 }
 
+// TestModelPageBadgesOwnedVersions proves the version list marks the versions the
+// user has locally with an "in your library" badge, and only those.
+func TestModelPageBadgesOwnedVersions(t *testing.T) {
+	srv := newModelServer(t, newModelReader(t))
+	// The model has versions 11 (v2) and 10 (v1); the user owns only version 11.
+	if err := srv.store.UpsertLocalFile(store.LocalFile{
+		Path: "/m/great-v2.safetensors", ModelID: intPtr(7), VersionID: intPtr(11),
+		SizeBytes: 1024, Status: store.LocalStatusMatched, Kind: store.LocalKindModel,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := getModelPage(t, srv, "/models/7")
+
+	if !strings.Contains(body, "in your library") {
+		t.Error("owned version should carry the 'in your library' badge")
+	}
+	// Exactly one version is owned, so exactly one badge.
+	if n := strings.Count(body, "in your library"); n != 1 {
+		t.Errorf("expected exactly one owned-version badge, got %d", n)
+	}
+}
+
+// TestModelPageNoBadgeWhenNoLocalVersions proves versions the user does not own
+// carry no library badge.
+func TestModelPageNoBadgeWhenNoLocalVersions(t *testing.T) {
+	srv := newModelServer(t, newModelReader(t))
+	body := getModelPage(t, srv, "/models/7")
+	if strings.Contains(body, "in your library") {
+		t.Error("no local files → no version should be badged")
+	}
+}
+
 // TestModelPageNeverCallsSearchImages is the regression guard for the perf bug:
 // the default model page must source its gallery from inline images and NEVER
 // hit the slow /api/v1/images (SearchImages) endpoint. The fake's SearchImages
