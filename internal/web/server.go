@@ -305,6 +305,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /trash", s.handleTrash)
 	mux.HandleFunc("POST /trash/{id}/restore", s.handleRestore)
 
+	mux.HandleFunc("GET /workflows", s.handleWorkflows)
+	mux.HandleFunc("GET /workflows/{id}", s.handleWorkflowDetail)
+	mux.HandleFunc("POST /workflows/import", s.handleWorkflowImport)
+	mux.HandleFunc("POST /workflows/import-png", s.handleWorkflowImportPNG)
+	mux.HandleFunc("POST /workflows/{id}/delete", s.handleWorkflowDelete)
+	mux.HandleFunc("POST /workflows/{id}/attach", s.handleWorkflowAttach)
+	mux.HandleFunc("POST /workflows/{id}/golden", s.handleWorkflowGolden)
+
 	return logRequests(s.log, mux)
 }
 
