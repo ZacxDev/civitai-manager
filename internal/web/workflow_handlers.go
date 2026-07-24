@@ -116,6 +116,14 @@ func (s *Server) handleWorkflowImportPNG(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "bad or oversized upload", http.StatusBadRequest)
 		return
 	}
+	// ParseMultipartForm spills parts over its memory limit to temp files that
+	// Go's http server never cleans up on its own; remove them when we're done
+	// (also covers the early CSRF/gate/error returns below).
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
 	if !s.verifyCSRF(w, r) {
 		return
 	}
