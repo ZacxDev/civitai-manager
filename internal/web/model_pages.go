@@ -110,6 +110,74 @@ func parseNSFWLevel(raw json.RawMessage) int {
 	return n
 }
 
+// searchImageCap bounds how many showcase images a single search card renders.
+const searchImageCap = 8
+
+// rawSearchImage mirrors one modelVersions[].images[] object in a SearchModels
+// response. It captures the media Type ("image"/"video") so videos can be
+// excluded — the search cards render <img> tiles, which cannot play a video.
+type rawSearchImage struct {
+	URL       string          `json:"url"`
+	NSFWLevel json.RawMessage `json:"nsfwLevel"`
+	Type      string          `json:"type"`
+	Width     int             `json:"width"`
+	Height    int             `json:"height"`
+	Meta      json.RawMessage `json:"meta"`
+}
+
+// parseSearchImages extracts, per model id, the FIRST version's inline showcase
+// images from a SearchModels raw response body (the SDK's typed ModelListItem
+// carries no images, but they are present in res.Raw). Videos are excluded (the
+// card renders <img> tiles) and each model's list is capped at searchImageCap.
+// This is a MANAGER-SIDE parse of data already fetched — it makes no extra API
+// call. Returns a non-nil (possibly empty) map; a model with no usable images is
+// simply absent from it.
+func parseSearchImages(raw []byte) map[int][]galleryImage {
+	out := map[int][]galleryImage{}
+	if len(raw) == 0 {
+		return out
+	}
+	var body struct {
+		Items []struct {
+			ID            int `json:"id"`
+			ModelVersions []struct {
+				Images []rawSearchImage `json:"images"`
+			} `json:"modelVersions"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return out
+	}
+	for _, it := range body.Items {
+		if len(it.ModelVersions) == 0 {
+			continue
+		}
+		var imgs []galleryImage
+		for _, ri := range it.ModelVersions[0].Images {
+			if strings.TrimSpace(ri.URL) == "" {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(ri.Type), "video") {
+				continue // an <img> tile cannot render a video
+			}
+			imgs = append(imgs, galleryImage{
+				URL:       ri.URL,
+				NSFWLevel: parseNSFWLevel(ri.NSFWLevel),
+				Width:     ri.Width,
+				Height:    ri.Height,
+				Meta:      ri.Meta,
+			})
+			if len(imgs) >= searchImageCap {
+				break
+			}
+		}
+		if len(imgs) > 0 {
+			out[it.ID] = imgs
+		}
+	}
+	return out
+}
+
 // parseVersionImages sources the showcase gallery from inline image data already
 // fetched with the model — NEVER a separate /api/v1/images call. It prefers the
 // selected version's own raw JSON (GetModelVersion) top-level images[]; when that

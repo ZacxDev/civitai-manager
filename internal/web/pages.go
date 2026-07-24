@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 
@@ -11,13 +12,79 @@ import (
 	h "maragu.dev/gomponents/html"
 )
 
-// dashboardPage is the full dashboard: subscriptions, activity feed, and queue.
-func dashboardPage(subs []store.Subscription, csrf, theme string) g.Node {
+// librarySubscribeSuggestions derives subscribe suggestions from the local
+// library: it groups MATCHED local files (non-nil ModelID) by model id, sums
+// their bytes, drops any model already subscribed to, and returns the rest
+// ordered by total local bytes desc (model id asc as a stable tiebreak), capped
+// to limit (<=0 means no cap). Pure — no civitai API calls.
+func librarySubscribeSuggestions(files []store.LocalFile, subs []store.Subscription, limit int) []suggestion {
+	subscribed := make(map[int]bool)
+	for _, s := range subs {
+		if s.Kind == store.KindModel && s.ModelID != nil {
+			subscribed[*s.ModelID] = true
+		}
+	}
+	byModel := make(map[int]*suggestion)
+	var order []int // first-seen order, to keep the sort deterministic
+	for _, f := range files {
+		if f.ModelID == nil {
+			continue // unmatched file — no model to suggest
+		}
+		id := *f.ModelID
+		if subscribed[id] {
+			continue
+		}
+		sg := byModel[id]
+		if sg == nil {
+			sg = &suggestion{ModelID: id}
+			byModel[id] = sg
+			order = append(order, id)
+		}
+		sg.FileCount++
+		sg.TotalBytes += f.SizeBytes
+	}
+	out := make([]suggestion, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byModel[id])
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].TotalBytes != out[j].TotalBytes {
+			return out[i].TotalBytes > out[j].TotalBytes
+		}
+		return out[i].ModelID < out[j].ModelID
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// dashboardPage is the full dashboard: add-a-subscription (integrated civitai
+// search + library-derived suggestions + a demoted manual form), subscriptions,
+// activity feed, and queue.
+func dashboardPage(subs []store.Subscription, suggestions []suggestion, csrf, theme string) g.Node {
 	return page("Dashboard", theme, csrf,
 		card(
 			sectionTitle("Add a subscription"),
-			subscribeForm(csrf),
+			// Primary: search civitai and subscribe with one click.
+			subscribeSearchBox(csrf),
+			// Secondary: the manual model-id/URL form, demoted into a collapsed
+			// <details> so it stays functional but out of the way.
+			h.Details(
+				h.Class("mt-5"),
+				h.Summary(
+					h.Class("cursor-pointer select-none text-sm text-slate-400 hover:text-slate-200"),
+					g.Text("Add by model id / URL"),
+				),
+				h.Div(h.Class("mt-3"), subscribeForm(csrf)),
+			),
 		),
+		g.If(len(suggestions) > 0, card(
+			sectionTitle("Subscribe suggestions from your library"),
+			h.P(h.Class("mb-3 text-sm text-slate-400"),
+				g.Text("Models you have local files for but are not subscribed to.")),
+			suggestionsList(suggestions, csrf),
+		)),
 		card(
 			sectionTitle("Subscriptions"),
 			subscriptionsTable(subs, "", csrf),
@@ -45,6 +112,86 @@ func dashboardPage(subs []store.Subscription, csrf, theme string) g.Node {
 				),
 			),
 		),
+		// The subscribe search cards carry showcase carousels → share the lightbox.
+		lightboxOverlay(),
+		modelPageScript(),
+		libraryCarouselScript(),
+	)
+}
+
+// subscribeSearchBox renders the dashboard's integrated civitai search: a query
+// box that GETs /subscribe/search and swaps subscribe-enabled result cards into
+// its results container.
+func subscribeSearchBox(csrf string) g.Node {
+	return h.Div(
+		h.Form(
+			h.Class("flex items-end gap-3"),
+			hx("get", "/subscribe/search"),
+			hx("target", "#subscribe-results"),
+			hx("swap", "innerHTML"),
+			hx("trigger", "submit"),
+			h.Div(
+				h.Class("flex-1"),
+				textInput("text-input", "subscribe-q", "Search civitai to subscribe",
+					h.Type("text"), h.Name("q"),
+					h.Placeholder("Search by name, tag, …")),
+			),
+			btnPrimary(g.Text("Search")),
+		),
+		h.Div(h.ID("subscribe-results"), h.Class("mt-4")),
+	)
+}
+
+// subscribeSearchResults renders the dashboard subscribe-search result grid:
+// image model cards, each with a one-click auto-download Subscribe button.
+func subscribeSearchResults(res *civitai.ModelSearchResult, mode, csrf string) g.Node {
+	if res == nil {
+		return h.P(h.Class("text-sm text-slate-500"), g.Text("Search to find models to subscribe to."))
+	}
+	if len(res.Items) == 0 {
+		return h.P(h.Class("text-sm text-slate-500"), g.Text("No results."))
+	}
+	images := parseSearchImages(res.Raw)
+	return h.Div(
+		h.Class("grid gap-4 sm:grid-cols-2 lg:grid-cols-3"),
+		g.Map(res.Items, func(it civitai.ModelListItem) g.Node {
+			return modelCardWith(it, images[it.ID], mode,
+				h.Div(h.Class("mt-1"),
+					subscribeInline("model", strconv.Itoa(it.ID), "Subscribe", csrf)),
+			)
+		}),
+	)
+}
+
+// suggestion is one library-derived subscribe suggestion: a matched model id the
+// user has local files for (but is not subscribed to), with its aggregate local
+// footprint.
+type suggestion struct {
+	ModelID    int
+	FileCount  int
+	TotalBytes int64
+}
+
+// suggestionsList renders the library-derived subscribe suggestions, each with a
+// one-click auto-download Subscribe button.
+func suggestionsList(suggestions []suggestion, csrf string) g.Node {
+	return h.Div(
+		h.Class("grid gap-3 sm:grid-cols-2 lg:grid-cols-3"),
+		g.Map(suggestions, func(sg suggestion) g.Node {
+			return card(
+				h.Class("flex items-center justify-between gap-3"),
+				h.Div(
+					h.A(
+						h.Href("/models/"+strconv.Itoa(sg.ModelID)),
+						h.Class("font-medium text-indigo-300 hover:text-indigo-200"),
+						g.Text("Model #"+strconv.Itoa(sg.ModelID)),
+					),
+					h.Div(h.Class("text-xs text-slate-500"),
+						g.Text(fmt.Sprintf("%d file(s) · %s", sg.FileCount, humanBytes(sg.TotalBytes)))),
+				),
+				subscribeInline("model", strconv.Itoa(sg.ModelID), "Subscribe", csrf),
+			)
+		}),
 	)
 }
 
@@ -315,7 +462,10 @@ func progressBar(it store.QueueItem) g.Node {
 }
 
 // searchPage renders the model search page. results may be nil (initial load).
-func searchPage(query string, res *civitai.ModelSearchResult, baseURL, csrf, theme string) g.Node {
+// mode is the app's NSFW display mode (hide|blur|show), threaded to the showcase
+// carousels on each card. heading, when set, labels the result grid (e.g.
+// "Popular this month" for the empty-query default feed).
+func searchPage(query string, res *civitai.ModelSearchResult, csrf, theme, mode, heading string) g.Node {
 	return page("Search", theme, csrf,
 		card(
 			sectionTitle("Search models"),
@@ -334,33 +484,54 @@ func searchPage(query string, res *civitai.ModelSearchResult, baseURL, csrf, the
 				btnPrimary(g.Text("Search")),
 			),
 		),
-		h.Div(h.ID("search-results"), searchResults(res, baseURL)),
+		h.Div(h.ID("search-results"), searchResults(res, mode, heading)),
+		// Showcase carousels reuse the shared lightbox + interaction scripts.
+		lightboxOverlay(),
+		modelPageScript(),
+		libraryCarouselScript(),
 	)
 }
 
-// searchResults renders the result grid fragment (used by htmx swaps too).
-func searchResults(res *civitai.ModelSearchResult, baseURL string) g.Node {
+// searchResults renders the result grid fragment (used by htmx swaps too). mode
+// is the NSFW display mode; heading optionally labels the grid. Showcase images
+// are parsed MANAGER-SIDE from res.Raw (the typed items carry none).
+func searchResults(res *civitai.ModelSearchResult, mode, heading string) g.Node {
 	if res == nil {
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("Enter a query to search CivitAI."))
 	}
 	if len(res.Items) == 0 {
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("No results."))
 	}
-	return h.Div(
+	images := parseSearchImages(res.Raw)
+	grid := h.Div(
 		h.Class("grid gap-4 sm:grid-cols-2 lg:grid-cols-3"),
 		g.Map(res.Items, func(it civitai.ModelListItem) g.Node {
-			return modelCard(it)
+			return modelCard(it, images[it.ID], mode)
 		}),
 	)
+	if heading == "" {
+		return grid
+	}
+	return h.Div(sectionTitle(heading), grid)
 }
 
-func modelCard(it civitai.ModelListItem) g.Node {
+// modelCard is a search result card: a showcase-image carousel (NSFW-mode
+// respecting) above the name/creator/stats.
+func modelCard(it civitai.ModelListItem, images []galleryImage, mode string) g.Node {
+	return modelCardWith(it, images, mode)
+}
+
+// modelCardWith renders the search card and appends any extra nodes (e.g. a
+// one-click Subscribe control) to the card body, so search-page cards and the
+// dashboard subscribe cards share one layout.
+func modelCardWith(it civitai.ModelListItem, images []galleryImage, mode string, extra ...g.Node) g.Node {
 	creator := ""
 	if it.Creator != nil {
 		creator = it.Creator.Username
 	}
-	return card(
+	children := []g.Node{
 		h.Class("flex flex-col gap-2"),
+		modelCardCarousel(it.ID, images, mode),
 		h.A(
 			h.Href("/models/"+strconv.Itoa(it.ID)),
 			h.Class("font-medium text-indigo-400 hover:underline"),
@@ -376,11 +547,13 @@ func modelCard(it civitai.ModelListItem) g.Node {
 			h.Class("text-xs text-slate-500"),
 			g.Text(fmt.Sprintf("%d downloads · %d likes", it.Stats.DownloadCount, it.Stats.ThumbsUpCount)),
 		),
-	)
+	}
+	children = append(children, extra...)
+	return card(children...)
 }
 
 // creatorPage renders a creator's models with a subscribe-to-creator button.
-func creatorPage(username string, res *civitai.ModelSearchResult, csrf, theme string) g.Node {
+func creatorPage(username string, res *civitai.ModelSearchResult, csrf, theme, mode string) g.Node {
 	return page("@"+username, theme, csrf,
 		card(
 			h.Div(
@@ -391,8 +564,11 @@ func creatorPage(username string, res *civitai.ModelSearchResult, csrf, theme st
 		),
 		card(
 			sectionTitle("Models"),
-			searchResults(res, ""),
+			searchResults(res, mode, ""),
 		),
+		lightboxOverlay(),
+		modelPageScript(),
+		libraryCarouselScript(),
 	)
 }
 
