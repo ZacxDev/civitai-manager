@@ -219,6 +219,14 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	tab := r.URL.Query().Get("tab")
+	// Default to the "Model files" tab once the library is actually set up: at least
+	// one install dir is selected AND a scan has produced local files. Without that
+	// setup (no dirs or nothing scanned yet) the Sources tab is the right landing
+	// spot. An EXPLICIT ?tab=… (e.g. ?tab=sources) always wins — only the empty
+	// default is overridden here.
+	if tab == "" && len(selected) > 0 && len(files) > 0 {
+		tab = "files"
+	}
 	s.render(w, http.StatusOK, libraryPage(buildLibraryView(files), s.csrf, s.extraPathsAllowed(), selected, s.currentTheme(), tab, discoverInitial, s.matchRemoteEnabled(), scanInitial))
 }
 

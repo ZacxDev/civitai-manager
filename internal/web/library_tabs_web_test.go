@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/civitai-manager/internal/library"
+	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
 // countPoller reports how many #discover-poll elements a fragment contains. The
@@ -34,6 +35,71 @@ func TestDefaultTabIsInstallDirectories(t *testing.T) {
 	if strings.Contains(out, "Scan for model files") {
 		t.Error("default tab must not render the model-scan control")
 	}
+}
+
+// TestLibraryDefaultsToFilesTabWhenSetUp proves handleLibrary's default-tab
+// logic: with ≥1 selected install dir AND scanned local files present and NO
+// explicit ?tab, the Model-files panel is active; with no dirs OR no files the
+// Sources panel is active; an explicit ?tab=sources always wins.
+func TestLibraryDefaultsToFilesTabWhenSetUp(t *testing.T) {
+	filesActive := `class="lib-tab lib-tab-active" aria-selected="true" aria-current="page">Model files`
+	sourcesActive := `class="lib-tab lib-tab-active" aria-selected="true" aria-current="page">Install directories`
+
+	seedDir := func(srv *Server) string {
+		t.Helper()
+		dir := t.TempDir()
+		if err := srv.store.SetScanDirs([]string{dir}); err != nil {
+			t.Fatalf("set scan dirs: %v", err)
+		}
+		return dir
+	}
+	seedFile := func(srv *Server) {
+		t.Helper()
+		if err := srv.store.UpsertLocalFile(store.LocalFile{
+			Path: "/m/great.safetensors", ModelID: intPtr(7), VersionID: intPtr(11),
+			SizeBytes: 1024, Status: store.LocalStatusMatched, Kind: store.LocalKindModel,
+		}); err != nil {
+			t.Fatalf("upsert local file: %v", err)
+		}
+	}
+
+	t.Run("dirs + files, no tab → files active", func(t *testing.T) {
+		srv := newLibraryTestServer(t, t.TempDir())
+		seedDir(srv)
+		seedFile(srv)
+		body := get(t, srv, "/library").Body.String()
+		if !strings.Contains(body, filesActive) {
+			t.Errorf("expected Model-files tab active by default when set up:\n%s", body)
+		}
+	})
+
+	t.Run("dirs + files, explicit ?tab=sources → sources active", func(t *testing.T) {
+		srv := newLibraryTestServer(t, t.TempDir())
+		seedDir(srv)
+		seedFile(srv)
+		body := get(t, srv, "/library?tab=sources").Body.String()
+		if !strings.Contains(body, sourcesActive) {
+			t.Errorf("explicit ?tab=sources must win over the files default:\n%s", body)
+		}
+	})
+
+	t.Run("dirs but no files → sources active", func(t *testing.T) {
+		srv := newLibraryTestServer(t, t.TempDir())
+		seedDir(srv)
+		body := get(t, srv, "/library").Body.String()
+		if !strings.Contains(body, sourcesActive) {
+			t.Errorf("no scanned files → Sources tab should be active:\n%s", body)
+		}
+	})
+
+	t.Run("files but no dirs → sources active", func(t *testing.T) {
+		srv := newLibraryTestServer(t, t.TempDir())
+		seedFile(srv)
+		body := get(t, srv, "/library").Body.String()
+		if !strings.Contains(body, sourcesActive) {
+			t.Errorf("no selected dirs → Sources tab should be active:\n%s", body)
+		}
+	})
 }
 
 // TestLibraryTabStripUnderlineMarkup proves Change 3's structural markup: the tabs
