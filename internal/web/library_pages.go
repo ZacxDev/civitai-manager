@@ -234,6 +234,7 @@ func modelScanForm(csrf string, matchRemote bool) g.Node {
 // libraryContent is the fragment swapped after a scan: totals, per-model
 // grouping, and the deletion-candidate table.
 func libraryContent(v libraryView, csrf string) g.Node {
+	matched, unmatched := splitMatchedUnmatched(v.Files)
 	return h.Div(
 		h.Class("space-y-6"),
 		summaryBanner(v),
@@ -247,17 +248,105 @@ func libraryContent(v libraryView, csrf string) g.Node {
 				stat("Reclaimable", humanBytes(v.Reclaimable)),
 			),
 		),
-		card(
-			sectionTitle("Files by model"),
-			libraryModelTable(v.Files),
-		),
+		// MATCHED MODELS FIRST — enriched, lazy-loaded cards.
+		matchedModelsSection(matched),
+		// Unmatched / other files in a clearly-separated secondary section.
+		otherFilesSection(unmatched),
 		card(
 			h.ID("deletion-candidates"),
 			sectionTitle("Deletion candidates"),
 			candidatesTable(v.Candidates, csrf),
 			h.Div(h.ID("quarantine-preview"), h.Class("mt-3")),
 		),
+		// The shared lightbox + interaction scripts the model-card carousels reuse.
+		// Included once here (the results fragment) so a lazy-loaded card's tiles can
+		// open the lightbox and the prev/next buttons work. Offline/vendored only.
+		lightboxOverlay(),
+		modelPageScript(),
+		libraryCarouselScript(),
 	)
+}
+
+// matchedModelsSection renders the identified models at the TOP of the results
+// as enriched, lazy-loaded cards (one per model), ordered by total local size
+// descending so the biggest reclaimable footprints lead. Each card renders
+// immediately as a placeholder and lazy-loads its name + carousel + details.
+func matchedModelsSection(groups []fileGroup) g.Node {
+	if len(groups) == 0 {
+		return card(
+			sectionTitle("Matched models"),
+			h.P(h.Class("text-sm text-slate-500"),
+				g.Text("No models identified yet. Enable “Match against CivitAI” and scan to identify your library.")),
+		)
+	}
+	var cards []g.Node
+	for _, gr := range groups {
+		cards = append(cards, modelCardLazy(gr))
+	}
+	return card(
+		sectionTitle(fmt.Sprintf("Matched models (%d)", len(groups))),
+		h.Div(h.Class("grid gap-4 md:grid-cols-2"), g.Group(cards)),
+	)
+}
+
+// otherFilesSection renders the unmatched (unidentified) files as a secondary,
+// sortable table below the matched model cards. When everything matched it shows
+// a reassuring note instead.
+func otherFilesSection(unmatched []store.LocalFile) g.Node {
+	if len(unmatched) == 0 {
+		return card(
+			sectionTitle("Other files"),
+			h.P(h.Class("text-sm text-slate-500"), g.Text("Every scanned file was identified on CivitAI.")),
+		)
+	}
+	return card(
+		sectionTitle(fmt.Sprintf("Other files (%d unmatched)", len(unmatched))),
+		libraryModelTable(unmatched),
+	)
+}
+
+// splitMatchedUnmatched partitions scanned model files into matched-model groups
+// (files carrying a CivitAI model id, grouped by model, ordered by total size
+// desc) and the flat list of unmatched files.
+func splitMatchedUnmatched(files []store.LocalFile) (matched []fileGroup, unmatched []store.LocalFile) {
+	byID := map[int]*fileGroup{}
+	var order []int
+	for _, f := range files {
+		if f.ModelID == nil {
+			unmatched = append(unmatched, f)
+			continue
+		}
+		id := *f.ModelID
+		gr, ok := byID[id]
+		if !ok {
+			gr = &fileGroup{modelID: id}
+			byID[id] = gr
+			order = append(order, id)
+		}
+		gr.files = append(gr.files, f)
+	}
+	matched = make([]fileGroup, 0, len(order))
+	for _, id := range order {
+		matched = append(matched, *byID[id])
+	}
+	// Biggest total footprint first; ties broken by model id for determinism.
+	sort.Slice(matched, func(a, b int) bool {
+		sa, sb := groupBytes(matched[a]), groupBytes(matched[b])
+		if sa != sb {
+			return sa > sb
+		}
+		return matched[a].modelID < matched[b].modelID
+	})
+	return matched, unmatched
+}
+
+// groupBytes sums a group's file sizes.
+func groupBytes(gr fileGroup) int64 {
+	var total int64
+	for _, f := range gr.files {
+		total += f.SizeBytes
+	}
+	return total
 }
 
 // librarySummary is the post-scan roll-up the next-steps banner renders.

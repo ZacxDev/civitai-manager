@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,12 +10,96 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	"github.com/ZacxDev/civitai-manager/internal/library"
 	"github.com/ZacxDev/civitai-manager/internal/store"
 	g "maragu.dev/gomponents"
 )
+
+// modelCacheTTL bounds how long a cached model-detail snapshot is served before
+// a refetch. Model detail is near-immutable (name, type, base model, showcase
+// images rarely change), so a long TTL keeps the lazy model cards fast and off
+// the network on re-renders/re-scans; a stale entry is refreshed on next view.
+const modelCacheTTL = 7 * 24 * time.Hour
+
+// handleModelCard renders the enriched, lazy-loaded card for one matched model
+// (hx-get target of modelCardLazy). It resolves the model detail through the
+// model_cache (only calling GetModel on a miss/stale entry), gathers the model's
+// local files for the file count/size, parses the inline showcase images, and
+// renders the carousel honoring the persisted NSFW mode. GET, no state change.
+func (s *Server) handleModelCard(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id <= 0 {
+		s.render(w, http.StatusOK, modelCardError(0, 0, 0, "Invalid model id."))
+		return
+	}
+
+	// The model's local files (for the file count + total size on the card).
+	var group []store.LocalFile
+	var total int64
+	if files, ferr := s.store.ListLocalFiles(); ferr == nil {
+		for _, f := range files {
+			if f.Kind == store.LocalKindModel && f.ModelID != nil && *f.ModelID == id {
+				group = append(group, f)
+				total += f.SizeBytes
+			}
+		}
+	}
+
+	m, raw, err := s.cachedModelDetail(r.Context(), id)
+	if err != nil {
+		s.render(w, http.StatusOK,
+			modelCardError(id, len(group), total, "Details unavailable (offline or not found)."))
+		return
+	}
+	view := buildMatchedModelCardView(id, m, raw, group, s.nsfwMode())
+	s.render(w, http.StatusOK, matchedModelCard(view))
+}
+
+// cachedModelDetail resolves a model's detail through the model_cache: a fresh
+// cached snapshot (within modelCacheTTL) is decoded and returned WITHOUT any
+// network call; otherwise GetModel is called and the result cached. On a fetch
+// error a stale cache entry (if any) is served rather than failing the card.
+func (s *Server) cachedModelDetail(parent context.Context, id int) (*civitai.ModelDetail, []byte, error) {
+	ent, _ := s.store.GetModelCache(id)
+	if ent != nil && time.Since(ent.FetchedAt) < modelCacheTTL {
+		if m := decodeModelDetail(ent.Raw); m != nil {
+			return m, ent.Raw, nil
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
+	defer cancel()
+	m, raw, err := s.reader.GetModel(ctx, strconv.Itoa(id))
+	if err != nil {
+		// Serve a stale snapshot on error rather than dropping the card entirely.
+		if ent != nil {
+			if sm := decodeModelDetail(ent.Raw); sm != nil {
+				return sm, ent.Raw, nil
+			}
+		}
+		return nil, nil, err
+	}
+	if perr := s.store.PutModelCache(id, m.Name, raw); perr != nil {
+		s.log.Warn("cache model detail", "id", id, "err", perr)
+	}
+	return m, raw, nil
+}
+
+// decodeModelDetail reconstructs a ModelDetail from a cached raw GetModel body.
+// Returns nil when the bytes are absent/undecodable (the caller then refetches).
+func decodeModelDetail(raw []byte) *civitai.ModelDetail {
+	if len(raw) == 0 {
+		return nil
+	}
+	var m civitai.ModelDetail
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	return &m
+}
 
 // newScanner builds a library.Scanner from the server's configuration, adding
 // any extra scan-path directories (from the Library page's scan form) unioned

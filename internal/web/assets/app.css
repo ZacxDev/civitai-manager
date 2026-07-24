@@ -107,3 +107,53 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   content: " \25BC"; /* ▼ */
   color: var(--civitai-color-primary);
 }
+
+/*
+ * Model-card showcase carousel (.cm-carousel) — see modelCardCarousel in
+ * model_card_pages.go. A horizontal scroll-snap strip of fixed-width image
+ * tiles: CSS-only scrolling/snapping (no tailwind snap utilities, no CDN), with
+ * optional prev/next buttons driven by the tiny cmCarouselScroll helper. The
+ * scrollbar is de-emphasized but scrolling still works via wheel/drag/buttons.
+ */
+.cm-carousel-wrap {
+  position: relative;
+}
+.cm-carousel {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scroll-behavior: smooth;
+  padding-bottom: 0.25rem;
+}
+.cm-carousel-item {
+  flex: 0 0 10rem;
+  width: 10rem;
+  scroll-snap-align: start;
+}
+.cm-carousel-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 9999px;
+  border: 1px solid var(--civitai-color-border);
+  background: var(--civitai-color-surface, rgba(15, 23, 42, 0.85));
+  color: var(--civitai-color-text, #e2e8f0);
+  cursor: pointer;
+  opacity: 0.85;
+}
+.cm-carousel-btn:hover {
+  opacity: 1;
+}
+.cm-carousel-btn-prev {
+  left: 0.25rem;
+}
+.cm-carousel-btn-next {
+  right: 0.25rem;
+}
