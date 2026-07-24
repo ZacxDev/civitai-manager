@@ -333,26 +333,80 @@ func TestLibrarySubscribeSuggestionsCap(t *testing.T) {
 	}
 }
 
+// errModelReader fails GetModel (and starts with no cache) so the lazy title
+// handler must fall back to "Model #id".
+type errModelReader struct{ fakeReader }
+
+func (errModelReader) GetModel(context.Context, string) (*civitai.ModelDetail, []byte, error) {
+	return nil, nil, civitai.ErrNotFound
+}
+
 // --- F. Suggestions rendering ---
 
 func TestDashboardRendersSuggestions(t *testing.T) {
 	suggestions := []suggestion{
-		{ModelID: 42, FileCount: 2, TotalBytes: 1500},
-		{ModelID: 7, FileCount: 1, TotalBytes: 500},
+		{ModelID: 42, FileCount: 2, TotalBytes: 1500, Name: "Resolved Model"}, // cached name
+		{ModelID: 7, FileCount: 1, TotalBytes: 500},                           // cache miss -> lazy
 	}
 	out := renderString(t, dashboardPage(nil, suggestions, "test-csrf", "dark", NSFWBlur))
 	if !strings.Contains(out, "Subscribe suggestions from your library") {
 		t.Error("suggestions section heading missing")
 	}
-	for _, want := range []string{"Model #42", "Model #7", "/models/42", "/models/7"} {
+	for _, want := range []string{"Resolved Model", "/models/42", "/models/7"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("suggestions missing %q", want)
 		}
+	}
+	// A resolved name renders directly (no lazy fetch for that card).
+	if strings.Contains(out, `hx-get="/models/42/title"`) {
+		t.Error("a cache-resolved suggestion should NOT lazily fetch its title")
+	}
+	// A cache-miss suggestion renders a lazy title container fetched on load.
+	if !strings.Contains(out, `hx-get="/models/7/title"`) {
+		t.Error("a cache-miss suggestion should lazily fetch its title")
+	}
+	if !strings.Contains(out, "Loading…") {
+		t.Error("lazy suggestion title should show a Loading placeholder")
 	}
 	// One-click Subscribe with auto_download=true.
 	if !strings.Contains(out, `name="auto_download"`) || !strings.Contains(out, `value="true"`) {
 		t.Error("suggestion cards must offer one-click auto-download Subscribe")
 	}
+}
+
+// TestModelTitleHandler proves the lazy title endpoint returns the resolved
+// model name (cache-first) and falls back gracefully.
+func TestModelTitleHandler(t *testing.T) {
+	// Cache hit: seed model_cache; the handler must return the cached name without
+	// depending on the reader (stubReader would return "M" anyway, so seed a
+	// distinct name to prove the cache path).
+	t.Run("cache hit", func(t *testing.T) {
+		srv := newTestServer(t)
+		if err := srv.store.PutModelCache(55, "Cached Name", []byte(`{"name":"Cached Name"}`)); err != nil {
+			t.Fatalf("seed cache: %v", err)
+		}
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/models/55/title", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "Cached Name") {
+			t.Errorf("title handler should return the cached name, got %q", rec.Body.String())
+		}
+	})
+
+	// Error fallback: a reader that fails GetModel and no cache entry -> "Model #id".
+	t.Run("error fallback", func(t *testing.T) {
+		srv := newModelServer(t, errModelReader{})
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/models/999/title", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "Model #999") {
+			t.Errorf("title handler should fall back to Model #id, got %q", rec.Body.String())
+		}
+	})
 }
 
 func TestDashboardHidesEmptySuggestions(t *testing.T) {

@@ -170,10 +170,17 @@ type suggestion struct {
 	ModelID    int
 	FileCount  int
 	TotalBytes int64
+	// Name is the model's display title when resolvable from the local
+	// model_cache (filled by the dashboard handler, zero civitai calls). Empty on
+	// a cache miss, in which case the card lazily fetches the title.
+	Name string
 }
 
 // suggestionsList renders the library-derived subscribe suggestions, each with a
-// one-click auto-download Subscribe button.
+// one-click auto-download Subscribe button. The card title shows the real model
+// name when it was resolved from the model_cache (sg.Name); otherwise it renders
+// a lazy title container that fetches the name on load (cache-first, see
+// handleModelTitle) so the dashboard never blocks on civitai to render.
 func suggestionsList(suggestions []suggestion, csrf string) g.Node {
 	return h.Div(
 		h.Class("grid gap-3 sm:grid-cols-2 lg:grid-cols-3"),
@@ -181,17 +188,32 @@ func suggestionsList(suggestions []suggestion, csrf string) g.Node {
 			return card(
 				h.Class("flex items-center justify-between gap-3"),
 				h.Div(
-					h.A(
-						h.Href("/models/"+strconv.Itoa(sg.ModelID)),
-						h.Class("font-medium text-indigo-300 hover:text-indigo-200"),
-						g.Text("Model #"+strconv.Itoa(sg.ModelID)),
-					),
+					suggestionTitle(sg),
 					h.Div(h.Class("text-xs text-slate-500"),
 						g.Text(fmt.Sprintf("%d file(s) · %s", sg.FileCount, humanBytes(sg.TotalBytes)))),
 				),
 				subscribeInline("model", strconv.Itoa(sg.ModelID), "Subscribe", csrf),
 			)
 		}),
+	)
+}
+
+// suggestionTitle renders the suggestion's linked title. When the name was
+// resolved (from model_cache) it renders it directly; on a cache miss it renders
+// a lazy container that htmx-fetches the title on load (GET /models/{id}/title),
+// showing "Loading…" until it resolves — so the dashboard render stays cache-only.
+func suggestionTitle(sg suggestion) g.Node {
+	href := "/models/" + strconv.Itoa(sg.ModelID)
+	linkClass := "font-medium text-indigo-300 hover:text-indigo-200"
+	if sg.Name != "" {
+		return h.A(h.Href(href), h.Class(linkClass), g.Text(sg.Name))
+	}
+	return h.A(
+		h.Href(href), h.Class(linkClass),
+		hx("get", fmt.Sprintf("/models/%d/title", sg.ModelID)),
+		hx("trigger", "load"),
+		hx("swap", "innerHTML"),
+		g.Text("Loading…"),
 	)
 }
 

@@ -48,6 +48,13 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	suggestions := librarySubscribeSuggestions(files, subs, subscribeSuggestionLimit)
+	// Resolve suggestion titles from the local model_cache only (zero civitai
+	// calls); a cache miss leaves Name empty so the card fetches it lazily.
+	for i := range suggestions {
+		if ent, _ := s.store.GetModelCache(suggestions[i].ModelID); ent != nil && ent.Name != "" {
+			suggestions[i].Name = ent.Name
+		}
+	}
 	s.render(w, http.StatusOK, dashboardPage(subs, suggestions, s.csrf, s.currentTheme(), s.nsfwMode()))
 }
 
@@ -196,6 +203,25 @@ func (s *Server) popularModels(parent context.Context, nsfw bool) (*civitai.Mode
 	s.popularExp[nsfw] = time.Now().Add(popularTTL)
 	s.popularMu.Unlock()
 	return res, "Popular this month"
+}
+
+// handleModelTitle returns just the model's display name as an escaped text
+// span, used by the lazy suggestion-title container when the dashboard render
+// found no cached name. It resolves cache-first via cachedModelDetail (GetModel
+// only on a cache miss/stale), and falls back to "Model #id" on any error so the
+// card degrades gracefully rather than showing an error. GET-only; read-only.
+func (s *Server) handleModelTitle(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id <= 0 {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	name := "Model #" + strconv.Itoa(id)
+	m, _, mErr := s.cachedModelDetail(r.Context(), id)
+	if mErr == nil && m != nil && m.Name != "" {
+		name = m.Name
+	}
+	s.render(w, http.StatusOK, g.Text(name))
 }
 
 func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
