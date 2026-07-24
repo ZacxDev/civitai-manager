@@ -282,17 +282,31 @@ func modelDetailPage(v modelDetailView, csrf, theme string) g.Node {
 	mode := normalizeNSFWMode(v.NSFWMode)
 
 	return page(m.Name, theme, csrf,
-		modelHeaderCard(m, creator, csrf),
+		modelHeaderCard(m, v.Images, mode, creator, csrf),
 		g.If(strings.TrimSpace(v.Description) != "", modelDescriptionCard(v.Description)),
 		g.If(len(m.Tags) > 0, modelTagsCard(m.Tags)),
 		modelVersionsCard(v),
-		modelGalleryCard(v.Images, mode, m.ID, csrf),
+		// Community feed: LAZY-loaded at the bottom. The container carries the
+		// SELECTED version id, so switching versions (which re-renders this page)
+		// reloads the feed for the new version. It is NOT fetched inline because a
+		// SearchImages call on the page path is slow (20s+) — see handleModelCommunity.
+		h.Div(
+			h.ID("community-feed"),
+			hx("get", fmt.Sprintf("/models/%d/community?versionId=%d", m.ID, v.SelectedVersionID)),
+			hx("trigger", "load"),
+			hx("swap", "innerHTML"),
+			g.Text("Loading community images…"),
+		),
 		lightboxOverlay(),
 		modelPageScript(),
 	)
 }
 
-func modelHeaderCard(m *civitai.ModelDetail, creator, csrf string) g.Node {
+// modelHeaderCard renders the model header: name/type/creator, key stats, the
+// Subscribe affordance, AND the showcase carousel (moved into the header) with
+// the persisted NSFW display-mode control. The carousel tiles route through
+// galleryTile → the thumbnail helper + NSFW handling and share the page lightbox.
+func modelHeaderCard(m *civitai.ModelDetail, images []galleryImage, mode, creator, csrf string) g.Node {
 	return card(
 		h.Div(
 			h.Class("flex flex-wrap items-start justify-between gap-4"),
@@ -314,6 +328,12 @@ func modelHeaderCard(m *civitai.ModelDetail, creator, csrf string) g.Node {
 			),
 			subscribeInline("model", strconv.Itoa(m.ID), "Subscribe", csrf),
 		),
+		h.Div(
+			h.Class("mt-4 mb-2 flex flex-wrap items-center justify-between gap-2"),
+			h.H2(h.Class("text-sm font-semibold text-slate-300"), g.Text("Showcase images")),
+			nsfwControl(mode, m.ID, csrf),
+		),
+		modelCardCarousel(m.ID, images, mode),
 	)
 }
 
@@ -331,7 +351,10 @@ func modelDescriptionCard(rawHTML string) g.Node {
 	return card(
 		sectionTitle("Description"),
 		h.Div(
-			h.Class("prose-invert max-w-none text-sm text-slate-300 space-y-2 [&_a]:text-indigo-400 [&_a]:underline"),
+			// cm-model-desc deterministically constrains the sanitized author HTML
+			// so wide images / <pre> / <table> / long unbroken tokens cannot overflow
+			// the card (see .cm-model-desc in app.css).
+			h.Class("cm-model-desc prose-invert max-w-none text-sm text-slate-300 space-y-2 [&_a]:text-indigo-400 [&_a]:underline"),
 			g.Raw(sanitizeDescription(rawHTML)),
 		),
 	)
@@ -441,43 +464,6 @@ func fileList(files []civitai.ModelVersionFile) g.Node {
 		))
 	}
 	return h.Ul(h.Class("space-y-1"), g.Group(rows))
-}
-
-// modelGalleryCard renders the showcase image gallery with NSFW handling + the
-// global display-mode control.
-func modelGalleryCard(images []galleryImage, mode string, modelID int, csrf string) g.Node {
-	var tiles []g.Node
-	shown := 0
-	for i, im := range images {
-		nsfw := isNSFWLevel(im.NSFWLevel)
-		if nsfw && mode == NSFWHide {
-			continue // hide mode omits NSFW images entirely
-		}
-		blur := nsfw && mode == NSFWBlur
-		tiles = append(tiles, galleryTile(im, fmt.Sprintf("cm-meta-%d", i), blur))
-		shown++
-	}
-
-	body := g.Node(h.P(h.Class("text-sm text-slate-500"), g.Text("No showcase images available.")))
-	if shown > 0 {
-		body = h.Div(
-			h.Class("grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4"),
-			g.Group(tiles),
-		)
-	}
-
-	return card(
-		h.Div(
-			h.Class("mb-3 flex flex-wrap items-center justify-between gap-2"),
-			sectionTitleInline("Showcase images"),
-			nsfwControl(mode, modelID, csrf),
-		),
-		body,
-	)
-}
-
-func sectionTitleInline(text string) g.Node {
-	return h.H2(h.Class("text-lg font-semibold text-slate-100"), g.Text(text))
 }
 
 // nsfwControl renders the persisted global NSFW display toggle (hide/blur/show).
