@@ -194,6 +194,13 @@ func (s *Scanner) analyzeBroken(wr *walkResult) error {
 	}
 
 	modelBases := modelBaseSet(wr.modelFiles, s.opts.Extensions)
+	// Scope ALL broken detection to directories that actually contain a model
+	// weight file. A `.part`/`.civitai.info`/`.preview.png` sitting in a directory
+	// with NO model file (a ComfyUI custom_nodes tree, a docs/tmp folder) is never
+	// a broken *model* sidecar/partial — it is unrelated data. This is the second
+	// half of the false-positive fix: without it, a stray partial or preview
+	// anywhere under the scanned roots would still be flagged.
+	modelDirs := modelDirSet(wr.modelFiles)
 
 	record := func(path string) error {
 		size := int64(0)
@@ -209,8 +216,12 @@ func (s *Scanner) analyzeBroken(wr *walkResult) error {
 		})
 	}
 
-	// Abandoned .part files: a stray partial with no in-flight download row.
+	// Abandoned .part files: a stray partial with no in-flight download row —
+	// only in a directory that holds model files.
 	for _, part := range wr.parts {
+		if !modelDirs[filepath.Dir(part)] {
+			continue
+		}
 		dest := strings.TrimSuffix(part, partSuffix)
 		active, err := s.store.ActiveDownloadForDest(dest)
 		if err != nil {
@@ -223,8 +234,11 @@ func (s *Scanner) analyzeBroken(wr *walkResult) error {
 		}
 	}
 
-	// Empty .civitai.info sidecars.
+	// Empty .civitai.info sidecars — only in a directory that holds model files.
 	for _, info := range wr.infos {
+		if !modelDirs[filepath.Dir(info)] {
+			continue
+		}
 		if isEmptyFile(info) {
 			if err := record(info); err != nil {
 				return err
@@ -232,8 +246,14 @@ func (s *Scanner) analyzeBroken(wr *walkResult) error {
 		}
 	}
 
-	// Orphan previews: a preview/user image whose sibling model file is gone.
+	// Orphan previews: a `.preview.png` whose sibling model file is gone. Only
+	// `.preview.png` files reach wr.previews (see classify), and only those in a
+	// directory that still holds model files are considered — so a bare screenshot
+	// or a preview in a model-less folder is never flagged.
 	for _, prev := range wr.previews {
+		if !modelDirs[filepath.Dir(prev)] {
+			continue
+		}
 		if !modelBases[previewBase(prev)] {
 			if err := record(prev); err != nil {
 				return err
@@ -241,6 +261,17 @@ func (s *Scanner) analyzeBroken(wr *walkResult) error {
 		}
 	}
 	return nil
+}
+
+// modelDirSet returns the set of directories that contain at least one model
+// weight file, used to scope broken-file detection so sidecars/partials in
+// model-less directories are ignored.
+func modelDirSet(modelFiles []string) map[string]bool {
+	set := make(map[string]bool, len(modelFiles))
+	for _, m := range modelFiles {
+		set[filepath.Dir(m)] = true
+	}
+	return set
 }
 
 // modelBaseSet maps each model file to its base (path minus the model
@@ -258,15 +289,12 @@ func modelBaseSet(modelFiles []string, exts map[string]bool) map[string]bool {
 	return set
 }
 
-// previewBase strips a preview/user-image suffix to the model base it belongs
-// to (".preview.png" before a bare ".png").
+// previewBase strips the ".preview.png" suffix to the model base it belongs to.
+// Only ".preview.png" files reach here (see classify), so a bare ".png" is never
+// treated as a preview.
 func previewBase(prev string) string {
-	lower := strings.ToLower(prev)
-	switch {
-	case strings.HasSuffix(lower, sidecarPreview):
+	if strings.HasSuffix(strings.ToLower(prev), sidecarPreview) {
 		return prev[:len(prev)-len(sidecarPreview)]
-	case strings.HasSuffix(lower, sidecarPNG):
-		return prev[:len(prev)-len(sidecarPNG)]
 	}
 	return prev
 }
