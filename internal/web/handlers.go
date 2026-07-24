@@ -486,10 +486,14 @@ func (s *Server) handleModelSubscribe(w http.ResponseWriter, r *http.Request) {
 		PollInterval: s.cfg.DefaultPollInterval,
 	})
 	if subErr != nil && !errors.Is(subErr, poller.ErrAlreadySubscribed) {
+		// A genuine failure (e.g. the model didn't resolve): surface it in the
+		// control instead of silently collapsing to a bare "Subscribe" button.
 		s.log.Warn("model subscribe", "model", id, "err", subErr)
+		s.render(w, http.StatusOK, subscribeControlCollapsed(id, s.csrf, "Subscribe failed — please try again."))
+		return
 	}
-	// Re-render from the persisted state so the control reflects reality (subscribed
-	// on success/already-subscribed; collapsed if the subscribe genuinely failed).
+	// Re-render from the persisted state so the control reflects reality
+	// (subscribed on success / already-subscribed).
 	s.render(w, http.StatusOK, subscribeControl(id, s.modelSubscription(id), s.csrf))
 }
 

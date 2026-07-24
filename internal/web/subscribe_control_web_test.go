@@ -1,12 +1,44 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/ZacxDev/civitai-manager/internal/store"
 )
+
+// TestSubscribeConfirmFailureShowsError proves a genuine subscribe failure
+// surfaces an error note in the control instead of silently collapsing to a bare
+// Subscribe button — the "feedback" the UX promises.
+func TestSubscribeConfirmFailureShowsError(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	srv := NewServer(st, stubReader{}, storeSubscriber{st: st, err: errors.New("model gone")},
+		Config{BaseURL: "https://civitai.com", DefaultPollInterval: time.Hour, Addr: "127.0.0.1:8787"}, nil)
+
+	rec := post(t, srv, "/models/7/subscribe", url.Values{"mode": {"auto_download"}}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("subscribe = %d", rec.Code)
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, "Subscribe failed") {
+		t.Errorf("a failed subscribe should surface an error note; got:\n%s", out)
+	}
+	if strings.Contains(out, "/models/7/unsubscribe") {
+		t.Error("a failed subscribe must not render the subscribed/unsubscribe state")
+	}
+	if sub := srv.modelSubscription(7); sub != nil {
+		t.Errorf("no subscription should be persisted after a failed subscribe, got %+v", sub)
+	}
+}
 
 // TestSubscribeOptionsPanel proves the options panel (GET /models/{id}/subscribe-options)
 // renders the auto-download (default) vs notify-only choice, a Confirm posting the

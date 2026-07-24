@@ -124,9 +124,15 @@ func TestVersionBreakdownRendersSection(t *testing.T) {
 
 // storeSubscriber is a Subscriber that actually writes a model subscription into
 // the store, so the subscribe handler's re-render reflects real persisted state.
-type storeSubscriber struct{ st *store.Store }
+type storeSubscriber struct {
+	st  *store.Store
+	err error // when set, SubscribeModel fails without persisting (failure-feedback path)
+}
 
 func (s storeSubscriber) SubscribeModel(_ context.Context, modelID int, opts poller.SubscribeOptions) (int64, error) {
+	if s.err != nil {
+		return 0, s.err
+	}
 	if _, err := s.st.FindModelSubscription(modelID); err == nil {
 		return 0, poller.ErrAlreadySubscribed
 	}
@@ -146,7 +152,7 @@ func newSubscribeServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return NewServer(st, stubReader{}, storeSubscriber{st}, Config{
+	return NewServer(st, stubReader{}, storeSubscriber{st: st}, Config{
 		BaseURL: "https://civitai.com", DefaultPollInterval: time.Hour, Addr: "127.0.0.1:8787",
 	}, nil)
 }
