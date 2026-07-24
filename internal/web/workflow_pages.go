@@ -10,29 +10,44 @@ import (
 	h "maragu.dev/gomponents/html"
 )
 
-// workflowsPage renders the Workflows library: an import panel (paste JSON /
-// upload PNG) above a list of stored-workflow cards. flashColor/flashMsg, when
-// set, render an alert at the top (import success/error). extraAllowed reflects
-// the loopback gate — import is disabled off-loopback, matching the design's
-// egress posture for endpoints that ingest arbitrary uploaded content.
-func workflowsPage(wfs []store.Workflow, csrf, theme, nsfwMode, flashColor, flashMsg string, extraAllowed bool) g.Node {
-	var body []g.Node
-	body = append(body, h.H1(h.Class("text-2xl font-semibold text-slate-100"), g.Text("Workflows")))
-	body = append(body, h.P(h.Class("text-sm text-slate-400"),
-		g.Text("Locally-curated ComfyUI workflows. Import an API/UI graph or extract one from a ComfyUI PNG, "+
-			"attach it to a model version, and mark a golden (recommended) one. Local run is coming in a later release.")))
+// libraryWorkflowsView bundles what the Workflows library tab renders: the stored
+// workflows, an optional import/action flash, and the bootstrapped initial content
+// of the stable #workflow-scan-results container (the live scanning fragment on a
+// reload during a scan, or nil to fall back to the idle terminal view).
+type libraryWorkflowsView struct {
+	Workflows   []store.Workflow
+	Flash       string
+	FlashLevel  string
+	ScanInitial g.Node
+}
 
-	if flashMsg != "" {
-		if flashColor == "" {
-			flashColor = "info"
-		}
-		body = append(body, alert(flashColor, "", g.Text(flashMsg)))
+// workflowsPanel is the "Workflows" Library tab: an import panel (paste JSON /
+// upload PNG) above the workflow-scan control + stored-workflow list. It mirrors
+// filesPanel: the scan control and list live inside the STABLE
+// #workflow-scan-results container, so a scan status swap hides the control while
+// scanning and restores it (with the refreshed list) when settled. extraAllowed
+// reflects the loopback gate — import + scanning are disabled off-loopback,
+// matching the egress posture for endpoints that ingest/scan arbitrary content.
+func workflowsPanel(wfs []store.Workflow, csrf string, extraAllowed bool, flashLevel, flashMsg string, scanInitial g.Node) g.Node {
+	if scanInitial == nil {
+		// Idle: the scan form card above the current list (rebuilt on each status swap).
+		scanInitial = workflowScanTerminal(wfs, workflowScanSnapshot{}, csrf, extraAllowed)
 	}
-
+	var body []g.Node
+	body = append(body, h.P(h.Class("text-sm text-slate-400"),
+		g.Text("Locally-curated ComfyUI workflows. Import an API/UI graph, extract one from a ComfyUI PNG, "+
+			"or scan your ComfyUI installs to index and auto-link saved workflows. Local run is coming in a later release.")))
+	if flashMsg != "" {
+		if flashLevel == "" {
+			flashLevel = "info"
+		}
+		body = append(body, alert(flashLevel, "", g.Text(flashMsg)))
+	}
 	body = append(body, workflowImportPanel(csrf, extraAllowed))
-	body = append(body, workflowList(wfs, csrf))
-
-	return page("Workflows", theme, csrf, nsfwMode, body...)
+	// The STABLE poll/results container: only its innerHTML is ever swapped, so the
+	// re-arming workflow-scan poller can never orphan its #workflow-scan-poll.
+	body = append(body, h.Div(h.ID(workflowScanResultsID), scanInitial))
+	return h.Div(h.Class("space-y-6"), g.Group(body))
 }
 
 // workflowImportPanel renders the paste-JSON and upload-PNG import affordances.
@@ -176,7 +191,7 @@ func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode s
 	var body []g.Node
 	body = append(body, h.Div(h.Class("flex items-center justify-between"),
 		h.H1(h.Class("text-2xl font-semibold text-slate-100"), g.Text(name)),
-		h.A(h.Href("/workflows"), h.Class("text-sm text-indigo-400 hover:text-indigo-300"),
+		h.A(h.Href("/library?tab=workflows"), h.Class("text-sm text-indigo-400 hover:text-indigo-300"),
 			g.Text("← Back to Workflows")),
 	))
 

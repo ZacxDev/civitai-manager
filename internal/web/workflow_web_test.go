@@ -78,18 +78,39 @@ func countWorkflows(t *testing.T, srv *Server) int {
 	return len(wfs)
 }
 
-func TestWorkflowsPageRenders(t *testing.T) {
+// TestWorkflowsPageRedirects proves the legacy standalone /workflows page now
+// 303-redirects to the Workflows Library tab (the UI moved into /library).
+func TestWorkflowsPageRedirects(t *testing.T) {
 	srv := newWorkflowServer(t)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/workflows", nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/library?tab=workflows" {
+		t.Errorf("redirect = %q, want /library?tab=workflows", loc)
+	}
+}
+
+// TestWorkflowsLibraryTabRenders proves the Workflows tab of /library renders the
+// import affordances, the workflow-scan control, and the tab strip entry.
+func TestWorkflowsLibraryTabRenders(t *testing.T) {
+	srv := newWorkflowServer(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/library?tab=workflows", nil)
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Workflows", "Import a workflow", "/workflows/import", "/workflows/import-png"} {
+	for _, want := range []string{
+		"Import a workflow", "/workflows/import", "/workflows/import-png",
+		"Scan workflows", `hx-post="/library/workflow-scan"`,
+		`/library?tab=workflows`, // the tab-strip link
+	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("workflows page missing %q", want)
+			t.Errorf("workflows tab missing %q", want)
 		}
 	}
 }
