@@ -58,7 +58,7 @@ func renderCapNote(shown, total int) g.Node {
 		return nil
 	}
 	return h.P(h.Class("mt-3 text-sm text-slate-500"),
-		g.Text(fmt.Sprintf("Showing first %s of %s — capped to keep the page responsive.",
+		g.Text(fmt.Sprintf("Showing largest %s of %s — capped to keep the page responsive.",
 			humanCount(shown), humanCount(total))))
 }
 
@@ -397,6 +397,16 @@ func splitMatchedUnmatched(files []store.LocalFile) (matched []fileGroup, unmatc
 		}
 		return matched[a].modelID < matched[b].modelID
 	})
+	// Unmatched files are rendered then capped (maxRenderedUnmatchedRows), so sort
+	// biggest-first here to make the rendered subset the LARGEST unmatched files —
+	// otherwise the store's path-alphabetical order could cap away the most valuable
+	// file. Ties broken by path for determinism.
+	sort.Slice(unmatched, func(a, b int) bool {
+		if unmatched[a].SizeBytes != unmatched[b].SizeBytes {
+			return unmatched[a].SizeBytes > unmatched[b].SizeBytes
+		}
+		return unmatched[a].Path < unmatched[b].Path
+	})
 	return matched, unmatched
 }
 
@@ -680,11 +690,23 @@ func candidatesTable(cands []store.LocalFile, csrf string) g.Node {
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("No deletion candidates."))
 	}
 	total := len(cands)
+	// Sort a COPY biggest-first (ties by id) BEFORE capping so the rendered subset
+	// is the LARGEST reclaimable candidates, not an arbitrary path-alphabetical slice
+	// (ListCandidates orders by path). Copy first — never mutate the caller's slice.
+	// The summary counts use len() only, so this reorder never affects totals.
+	sorted := append([]store.LocalFile(nil), cands...)
+	sort.Slice(sorted, func(a, b int) bool {
+		if sorted[a].SizeBytes != sorted[b].SizeBytes {
+			return sorted[a].SizeBytes > sorted[b].SizeBytes
+		}
+		return sorted[a].ID < sorted[b].ID
+	})
+	capped := total > maxRenderedCandidateRows
 	// Cap the rendered rows (see maxRenderedCandidateRows). All M candidates remain
 	// counted in the summary/totals; only the emitted rows are limited.
-	shown := cands
-	if total > maxRenderedCandidateRows {
-		shown = cands[:maxRenderedCandidateRows]
+	shown := sorted
+	if capped {
+		shown = sorted[:maxRenderedCandidateRows]
 	}
 	var rows []g.Node
 	for _, c := range shown {
@@ -710,6 +732,14 @@ func candidatesTable(cands []store.LocalFile, csrf string) g.Node {
 			),
 		))
 	}
+	// "Quarantine all <reason>" buttons — one per reason that actually has ≥1
+	// candidate in the FULL (uncapped) set. These hit the cap-immune reason path in
+	// quarantineIDs (ListCandidates resolves ALL of that reason), so candidates past
+	// the render cap remain quarantinable. type="button" so they fire their own htmx
+	// request instead of submitting the surrounding checkbox form (like the per-row
+	// button). Counts come from the full set, so the labels are accurate even capped.
+	allBtns := quarantineAllButtons(cands, csrf)
+
 	return h.Form(
 		hx("post", "/library/quarantine"),
 		hx("vals", fmt.Sprintf(`{"apply":"false","csrf_token":"%s"}`, csrf)),
@@ -728,14 +758,51 @@ func candidatesTable(cands []store.LocalFile, csrf string) g.Node {
 			),
 		),
 		renderCapNote(len(shown), total),
+		// When capped, tell the user the tail is still actionable via "Quarantine all".
+		g.If(capped, h.P(h.Class("mt-1 text-xs text-slate-500"),
+			g.Text(`Use "Quarantine all" to act on every candidate.`))),
 		h.Div(
-			h.Class("mt-3"),
+			h.Class("mt-3 flex flex-wrap items-center gap-2"),
 			civButton("light", "md", []g.Node{
 				h.Type("submit"),
 				h.StyleAttr("--civitai-color-primary:var(--civitai-color-warning)"),
 			}, g.Text("Preview quarantine (selected)")),
+			g.Group(allBtns),
 		),
 	)
+}
+
+// quarantineAllButtons renders one "Quarantine all <count> <reason>" button per
+// candidate reason present in the full (uncapped) cands set. Each button posts to
+// the cap-immune reason path (quarantineIDs → ListCandidates(reason)), so it acts
+// on EVERY candidate of that reason even when the render cap hid the tail. It
+// mirrors the per-row Quarantine button (type=button, warning color, its own htmx
+// request targeting #quarantine-preview) so it never submits the checkbox form.
+func quarantineAllButtons(cands []store.LocalFile, csrf string) []g.Node {
+	counts := map[string]int{}
+	for _, c := range cands {
+		counts[c.CandidateReason]++
+	}
+	var btns []g.Node
+	for _, rl := range []struct{ reason, label string }{
+		{store.CandidateDuplicate, "duplicates"},
+		{store.CandidateSuperseded, "superseded"},
+		{store.CandidateBroken, "broken"},
+	} {
+		n := counts[rl.reason]
+		if n == 0 {
+			continue
+		}
+		btns = append(btns, civButton("subtle", "sm", []g.Node{
+			h.Type("button"),
+			hx("post", "/library/quarantine"),
+			hx("vals", fmt.Sprintf(`{"reason":"%s","apply":"false","csrf_token":"%s"}`, rl.reason, csrf)),
+			hx("target", "#quarantine-preview"),
+			hx("swap", "innerHTML"),
+			h.StyleAttr("--civitai-color-primary:var(--civitai-color-warning)"),
+		}, g.Text(fmt.Sprintf("Quarantine all %s %s", humanCount(n), rl.label))))
+	}
+	return btns
 }
 
 // quarantinePreview renders the dry-run plan with a confirm-apply button, or the
