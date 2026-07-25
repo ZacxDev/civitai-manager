@@ -414,7 +414,8 @@ func TestNSFWSettingPersistsViaEndpoint(t *testing.T) {
 }
 
 // TestModelPageBadgesOwnedVersions proves the version list marks the versions the
-// user has locally with an "in your library" badge, and only those.
+// user has locally with a green ✓ indicator (item 6) — accessible-labeled, not a
+// text badge — and only those.
 func TestModelPageBadgesOwnedVersions(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
 	// The model has versions 11 (v2) and 10 (v1); the user owns only version 11.
@@ -426,22 +427,26 @@ func TestModelPageBadgesOwnedVersions(t *testing.T) {
 	}
 	body := getModelPage(t, srv, "/models/7")
 
-	if !strings.Contains(body, "in your library") {
-		t.Error("owned version should carry the 'in your library' badge")
+	if !strings.Contains(body, `aria-label="In your library"`) {
+		t.Error("owned version should carry the accessible-labeled ✓ indicator")
 	}
-	// Exactly one version is owned, so exactly one badge.
-	if n := strings.Count(body, "in your library"); n != 1 {
-		t.Errorf("expected exactly one owned-version badge, got %d", n)
+	// The old text badge must be gone.
+	if strings.Contains(body, "in your library") {
+		t.Error("the text badge should be replaced by the ✓ indicator")
+	}
+	// Exactly one version is owned, so exactly one indicator.
+	if n := strings.Count(body, `aria-label="In your library"`); n != 1 {
+		t.Errorf("expected exactly one owned-version indicator, got %d", n)
 	}
 }
 
 // TestModelPageNoBadgeWhenNoLocalVersions proves versions the user does not own
-// carry no library badge.
+// carry no library indicator.
 func TestModelPageNoBadgeWhenNoLocalVersions(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
 	body := getModelPage(t, srv, "/models/7")
-	if strings.Contains(body, "in your library") {
-		t.Error("no local files → no version should be badged")
+	if strings.Contains(body, `aria-label="In your library"`) {
+		t.Error("no local files → no version should carry the ✓ indicator")
 	}
 }
 

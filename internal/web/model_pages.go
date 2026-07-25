@@ -468,7 +468,14 @@ func modelVersionsCard(v modelDetailView, csrf string) g.Node {
 			h.Div(h.Class("flex items-center justify-between gap-2"),
 				h.Span(g.Text(ver.Name)),
 				h.Span(h.Class("flex shrink-0 items-center gap-1.5"),
-					g.If(v.LocalVersionIDs[ver.ID], badge("in your library", "green")),
+					// In-library indicator: a compact green ✓ (not a text badge, not a
+					// button), labeled for AT. Only owned versions carry it.
+					g.If(v.LocalVersionIDs[ver.ID], h.Span(
+						h.Class("cm-inlib font-semibold text-green-500"),
+						h.Title("In your library"),
+						g.Attr("aria-label", "In your library"),
+						g.Text("✓"),
+					)),
 					g.If(ver.BaseModel != "", badge(ver.BaseModel, "blue")),
 				),
 			),
