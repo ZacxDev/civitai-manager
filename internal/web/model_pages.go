@@ -129,6 +129,13 @@ func parseNSFWLevel(raw json.RawMessage) int {
 // searchImageCap bounds how many showcase images a single search card renders.
 const searchImageCap = 8
 
+// minShowcaseImages is the "healthy showcase" threshold used when picking which
+// version's images a search card shows: prefer the NEWEST version (by publishedAt)
+// that has at least this many images. This avoids landing on a very recent but
+// sparse minor variant (e.g. a 1-image inpaint/diffusers release) — the CivitAI
+// modelVersions[] order is default-first, NOT date-sorted, so we sort ourselves.
+const minShowcaseImages = 3
+
 // rawSearchImage mirrors one modelVersions[].images[] object in a SearchModels
 // response. It captures the media Type ("image"/"video"); videos are INCLUDED —
 // the tile renders a still poster (civitaiThumbURL forces anim=false) and the
@@ -161,7 +168,8 @@ func parseSearchImages(raw []byte) map[int][]galleryImage {
 		Items []struct {
 			ID            int `json:"id"`
 			ModelVersions []struct {
-				Images []rawSearchImage `json:"images"`
+				PublishedAt string           `json:"publishedAt"`
+				Images      []rawSearchImage `json:"images"`
 			} `json:"modelVersions"`
 		} `json:"items"`
 	}
@@ -169,15 +177,21 @@ func parseSearchImages(raw []byte) map[int][]galleryImage {
 		return out
 	}
 	for _, it := range body.Items {
-		var imgs []galleryImage
-		// Scan versions in order; take the first that yields ≥1 usable image
-		// (skipping earlier versions that carry none).
+		// Build each version's usable-image list (preserving the creator's image
+		// order), tagged with its publish time (zero when absent/unparseable, so it
+		// sorts as oldest).
+		type verImgs struct {
+			pub  time.Time
+			imgs []galleryImage
+		}
+		var cands []verImgs
 		for _, ver := range it.ModelVersions {
+			var vi []galleryImage
 			for _, ri := range ver.Images {
 				if strings.TrimSpace(ri.URL) == "" {
 					continue
 				}
-				imgs = append(imgs, galleryImage{
+				vi = append(vi, galleryImage{
 					URL:       ri.URL,
 					NSFWLevel: parseNSFWLevel(ri.NSFWLevel),
 					Width:     ri.Width,
@@ -185,17 +199,40 @@ func parseSearchImages(raw []byte) map[int][]galleryImage {
 					Meta:      ri.Meta,
 					Type:      ri.Type,
 				})
-				if len(imgs) >= searchImageCap {
-					break
+			}
+			if len(vi) == 0 {
+				continue
+			}
+			pub, _ := time.Parse(time.RFC3339, strings.TrimSpace(ver.PublishedAt))
+			cands = append(cands, verImgs{pub: pub, imgs: vi})
+		}
+		if len(cands) == 0 {
+			continue
+		}
+		// Prefer the NEWEST version (by publishedAt) whose showcase is "healthy"
+		// (≥ minShowcaseImages). If none clears the bar, fall back to the version
+		// with the MOST images — the best available showcase (usually the primary).
+		best := -1
+		for i, c := range cands {
+			if len(c.imgs) < minShowcaseImages {
+				continue
+			}
+			if best == -1 || c.pub.After(cands[best].pub) {
+				best = i
+			}
+		}
+		if best == -1 {
+			for i, c := range cands {
+				if best == -1 || len(c.imgs) > len(cands[best].imgs) {
+					best = i
 				}
 			}
-			if len(imgs) > 0 {
-				break // first version with usable images wins
-			}
 		}
-		if len(imgs) > 0 {
-			out[it.ID] = imgs
+		imgs := cands[best].imgs
+		if len(imgs) > searchImageCap {
+			imgs = imgs[:searchImageCap]
 		}
+		out[it.ID] = imgs
 	}
 	return out
 }
