@@ -239,6 +239,34 @@ func TestCloudWhatifRendersCost(t *testing.T) {
 	}
 }
 
+// TestCloudWhatifZeroCostShowsPerSecondNotice covers the real CustomComfy case:
+// whatif returns cost.base=0 (billing is per-second, computed post-run). We must
+// NOT render a misleading fixed "0 Buzz" price — instead show the per-second
+// notice and still allow Run.
+func TestCloudWhatifZeroCostShowsPerSecondNotice(t *testing.T) {
+	fake := &fakeCloud{whatifResp: &comfy.CloudWorkflow{
+		ID: "wf-0", Status: "unassigned",
+		Cost: &comfy.CloudCost{Base: 0},
+	}}
+	srv := newCloudTestServer(t, fake)
+	id := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"1":{"class_type":"X","inputs":{}}}`)
+
+	rec := post(t, srv, "/workflows/"+id+"/cloud/whatif", url.Values{"resources": {"u"}}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("whatif = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "per second of GPU time") {
+		t.Errorf("zero-cost estimate must show the per-second billing notice:\n%s", body)
+	}
+	if strings.Contains(body, "0 Buzz") {
+		t.Errorf("must NOT render a misleading fixed '0 Buzz' price:\n%s", body)
+	}
+	if !strings.Contains(body, "Run for real") {
+		t.Errorf("Run-for-real must still be available:\n%s", body)
+	}
+}
+
 // TestCloudWhatifInsufficientBuzz asserts the insufficient-Buzz state disables the
 // run (no Run-for-real button).
 func TestCloudWhatifInsufficientBuzz(t *testing.T) {

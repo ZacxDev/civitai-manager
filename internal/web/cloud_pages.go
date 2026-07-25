@@ -160,8 +160,14 @@ type cloudEstimateView struct {
 	err              string // untrusted remote error text (escaped)
 }
 
-// cloudEstimateFragment renders the cost estimate + the "Run for real" button
-// (enabled only when the estimate says the account can afford it).
+// cloudEstimateFragment renders the whatif result + the "Run for real" button.
+//
+// Honesty note: a CustomComfy run is billed PER-SECOND of GPU time and its total
+// is computed only AFTER it completes (Max(1, runtimeSeconds × buzzPerSecond)), so
+// the whatif estimate returns ~0 upfront — it is NOT a meaningful fixed price.
+// Rendering "Estimated cost: 0 Buzz" would read as "free", so instead we confirm
+// the request was accepted, show the per-second billing reality plainly, and only
+// surface a fixed number if the API ever actually returns one (>0).
 func cloudEstimateFragment(v cloudEstimateView, csrf string) g.Node {
 	if v.err != "" {
 		return alert("error", "Estimate failed", g.Text(v.err))
@@ -170,10 +176,16 @@ func cloudEstimateFragment(v cloudEstimateView, csrf string) g.Node {
 		return h.Div()
 	}
 
-	costStr := strconv.FormatFloat(v.cost, 'f', -1, 64)
 	body := []g.Node{
 		h.P(h.Class("text-sm text-slate-200"),
-			g.Text("Estimated cost: "), h.Span(h.Class("font-semibold"), g.Text(costStr+" Buzz"))),
+			g.Text("CivitAI accepted this workflow. It is billed "),
+			h.Span(h.Class("font-semibold"), g.Text("per second of GPU time while running")),
+			g.Text(" — the total isn't known until it finishes, so no fixed upfront price is shown. Buzz will be charged for the actual runtime.")),
+	}
+	if v.cost > 0 {
+		costStr := strconv.FormatFloat(v.cost, 'f', -1, 64)
+		body = append(body, h.P(h.Class("text-sm text-slate-200"),
+			g.Text("Estimated cost: "), h.Span(h.Class("font-semibold"), g.Text(costStr+" Buzz"))))
 	}
 	if v.insufficientBuzz {
 		body = append(body,
