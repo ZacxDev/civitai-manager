@@ -368,23 +368,50 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, modelDetailPage(view, sub, s.csrf, s.currentTheme()))
 }
 
+// communityCacheTTL bounds how long a cached community-image feed is served
+// before a refresh fetch. A stale entry is still served on a fetch failure
+// (fail-open); this only decides when to PREFER a fresh fetch.
+const communityCacheTTL = time.Hour
+
 // handleModelCommunity backs the LAZY-loaded community feed at the bottom of the
 // model page: recent-popular civitai images that use the selected model version.
-// It is a GET fragment (no state change, no CSRF) that makes ONE bounded outbound
-// SearchImages proxy call — the same egress posture as /models — and NEVER breaks
-// the page: on error or empty results it renders a small muted note. It is fetched
-// out-of-band (not inline during page render) because that SearchImages call is
-// slow (20s+, frequently timing out); see loadModelView.
+// It is a GET fragment (no state change, no CSRF) that makes AT MOST ONE bounded
+// outbound SearchImages proxy call — the same egress posture as /models — and
+// NEVER breaks the page. It is CACHE-FIRST + FAIL-OPEN, keyed on
+// (modelID, versionId):
+//
+//  1. A FRESH cached entry (within communityCacheTTL) with items is served with
+//     NO fetch at all.
+//  2. Otherwise it fetches; a SUCCESSFUL non-empty result is cached and rendered.
+//  3. On a fetch error/timeout OR an empty result, it FALLS BACK to the last
+//     cached entry (even if stale) when that has items — so a civitai outage
+//     never blanks a feed the user has seen before.
+//  4. Only when there is no usable cache does it render the muted note.
+//
+// It is fetched out-of-band (not inline during page render) because that
+// SearchImages call is slow (20s+, frequently timing out); see loadModelView.
 func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
+	modelID, _ := strconv.Atoi(r.PathValue("id"))
 	versionID := strings.TrimSpace(r.URL.Query().Get("versionId"))
 	mode := s.nsfwMode()
 	// Validate versionId is a positive integer before spending an upstream round
 	// trip on it (a malformed value would only earn a rejection from civitai).
-	if vid, err := strconv.Atoi(versionID); err != nil || vid <= 0 {
+	vid, verr := strconv.Atoi(versionID)
+	if verr != nil || vid <= 0 {
 		s.render(w, http.StatusOK, communityFeedNote("No community images yet."))
 		return
 	}
 
+	// 1. Cache-first: a fresh cached entry with items serves without any fetch.
+	cached, _ := s.store.GetCommunityCache(modelID, vid)
+	if cached != nil && time.Since(cached.FetchedAt) < communityCacheTTL {
+		if res, derr := civitai.DecodeImageSearch(cached.Raw); derr == nil && res != nil && len(res.Items) > 0 {
+			s.render(w, http.StatusOK, s.communityFeedFragment(res.Items, mode))
+			return
+		}
+	}
+
+	// 2. Fetch.
 	q := url.Values{}
 	q.Set("modelVersionId", versionID)
 	q.Set("sort", "Most Reactions")
@@ -394,16 +421,35 @@ func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	res, err := s.reader.SearchImages(ctx, q)
+	if err == nil && res != nil && len(res.Items) > 0 {
+		// Only cache a successful, non-empty response (never poison with empty/error).
+		// Skip caching when the raw body is absent (nothing to re-decode later).
+		if len(res.Raw) > 0 {
+			if perr := s.store.PutCommunityCache(modelID, vid, res.Raw); perr != nil {
+				s.log.Warn("cache community feed", "model", modelID, "versionId", vid, "err", perr)
+			}
+		}
+		s.render(w, http.StatusOK, s.communityFeedFragment(res.Items, mode))
+		return
+	}
 	if err != nil {
 		s.log.Warn("community feed fetch failed", "versionId", versionID, "err", err)
+	}
+
+	// 3. Fail-open: fall back to the last cached entry (even if stale) with items.
+	if cached != nil {
+		if sres, derr := civitai.DecodeImageSearch(cached.Raw); derr == nil && sres != nil && len(sres.Items) > 0 {
+			s.render(w, http.StatusOK, s.communityFeedFragment(sres.Items, mode))
+			return
+		}
+	}
+
+	// 4. No usable cache → the muted note (error vs empty).
+	if err != nil {
 		s.render(w, http.StatusOK, communityFeedNote("Couldn't load community images."))
 		return
 	}
-	if res == nil || len(res.Items) == 0 {
-		s.render(w, http.StatusOK, communityFeedNote("No community images yet."))
-		return
-	}
-	s.render(w, http.StatusOK, s.communityFeedFragment(res.Items, mode))
+	s.render(w, http.StatusOK, communityFeedNote("No community images yet."))
 }
 
 // nsfwMode returns the persisted global NSFW display mode (default blur).

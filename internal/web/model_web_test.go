@@ -36,6 +36,10 @@ type fakeReader struct {
 	// "no community images" outcome. communityErr, when set, is returned instead.
 	communityImages []civitai.ImageItem
 	communityErr    error
+	// communityRaw, when non-nil, is returned as the SearchImages result's Raw
+	// body (the bytes the community cache stores + re-decodes). Existing tests
+	// leave it nil (the handler then skips caching), preserving prior behavior.
+	communityRaw []byte
 	// lastImageQuery, when non-nil, captures the url.Values of the most recent
 	// SearchImages call so tests can assert the community query params.
 	lastImageQuery *url.Values
@@ -70,7 +74,7 @@ func (f fakeReader) SearchImages(_ context.Context, q url.Values) (*civitai.Imag
 		return nil, f.communityErr
 	}
 	if f.communityImages != nil {
-		return &civitai.ImageSearchResult{Items: f.communityImages}, nil
+		return &civitai.ImageSearchResult{Items: f.communityImages, Raw: f.communityRaw}, nil
 	}
 	return nil, errors.New("SearchImages must not be called from the model page path")
 }
