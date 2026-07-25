@@ -5,18 +5,21 @@ import (
 	"testing"
 )
 
-// TestNSFWToggleCyclesModes proves the navbar's 3-state NSFW control shows the
+// TestNSFWToggleCyclesModes proves the navbar's 2-state NSFW control shows the
 // CURRENT mode as its label and POSTs the correct NEXT mode in the cycle
-// Hide → Blur → Show → Hide (mirroring the theme-toggle idiom).
+// Blur ⇄ Show (mirroring the theme-toggle idiom). The old "hide" state was
+// removed; a stored hide is migrated to blur (see normalizeNSFWMode), so the
+// toggle only ever surfaces Blur or Show.
 func TestNSFWToggleCyclesModes(t *testing.T) {
 	cases := []struct {
 		mode      string
 		wantLabel string
 		wantNext  string
 	}{
-		{NSFWHide, "NSFW: Hide", NSFWBlur},
 		{NSFWBlur, "NSFW: Blur", NSFWShow},
-		{NSFWShow, "NSFW: Show", NSFWHide},
+		{NSFWShow, "NSFW: Show", NSFWBlur},
+		// A stored hide migrates to blur → renders the Blur label, offers Show next.
+		{NSFWHide, "NSFW: Blur", NSFWShow},
 	}
 	for _, tc := range cases {
 		t.Run(tc.mode, func(t *testing.T) {

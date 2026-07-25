@@ -61,7 +61,9 @@ func TestNSFWLevelAndMode(t *testing.T) {
 	}
 
 	for in, want := range map[string]string{
-		"hide": NSFWHide, "HIDE": NSFWHide, "show": NSFWShow,
+		// A stored "hide" MIGRATES to blur (the toggle dropped the hide state), so
+		// normalizeNSFWMode never returns NSFWHide.
+		"hide": NSFWBlur, "HIDE": NSFWBlur, "show": NSFWShow,
 		"blur": NSFWBlur, "": NSFWBlur, "garbage": NSFWBlur,
 	} {
 		if got := normalizeNSFWMode(in); got != want {

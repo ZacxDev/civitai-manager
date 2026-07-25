@@ -321,17 +321,27 @@ func TestModelNSFWShowUnblurs(t *testing.T) {
 	}
 }
 
-func TestModelNSFWHideOmits(t *testing.T) {
+// TestModelNSFWHideMigratesToBlur proves a stored "hide" mode is migrated to blur
+// (the toggle dropped the hide state): the NSFW image is now PRESENT but blurred,
+// not omitted.
+func TestModelNSFWHideMigratesToBlur(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
 	if err := srv.store.SetSetting(nsfwSettingKey, NSFWHide); err != nil {
 		t.Fatal(err)
 	}
+	// The stored hide reads back as blur everywhere.
+	if got := srv.nsfwMode(); got != NSFWBlur {
+		t.Fatalf("stored hide should migrate to blur, got %q", got)
+	}
 	body := getModelPage(t, srv, "/models/7")
-	if strings.Contains(body, "nsfw.jpeg") {
-		t.Error("hide mode should omit the NSFW image entirely")
+	if !strings.Contains(body, "nsfw.jpeg") {
+		t.Error("migrated hide (→blur) should include the NSFW image, not omit it")
+	}
+	if !strings.Contains(body, `data-blurred="1"`) {
+		t.Error("migrated hide (→blur) should blur the NSFW image")
 	}
 	if !strings.Contains(body, "safe.jpeg") {
-		t.Error("hide mode should still show safe images")
+		t.Error("safe images should still show")
 	}
 }
 
@@ -361,16 +371,20 @@ func TestModelNSFWUnknownLevelFailsClosed(t *testing.T) {
 		t.Error("genuinely-safe image should still be shown")
 	}
 
-	// Hide mode: the unknown-level image is omitted; the safe image remains.
+	// A stored hide migrates to blur: the unknown-level (fail-closed NSFW) image is
+	// present but blurred, and the safe image remains un-blurred.
 	if err := srv.store.SetSetting(nsfwSettingKey, NSFWHide); err != nil {
 		t.Fatal(err)
 	}
 	body = getModelPage(t, srv, "/models/7")
-	if strings.Contains(body, "unknown.jpeg") {
-		t.Error("hide mode must omit the unknown-level (fail-closed NSFW) image")
+	if !strings.Contains(body, "unknown.jpeg") {
+		t.Error("migrated hide (→blur) should include the unknown-level image")
+	}
+	if !strings.Contains(body, `data-blurred="1"`) {
+		t.Error("migrated hide (→blur) must blur the unknown-level (fail-closed NSFW) image")
 	}
 	if !strings.Contains(body, "safe.jpeg") {
-		t.Error("hide mode should still show the safe image")
+		t.Error("the safe image should still show")
 	}
 }
 

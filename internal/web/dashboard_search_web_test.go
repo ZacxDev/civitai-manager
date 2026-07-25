@@ -212,13 +212,18 @@ func TestModelCardNSFWModes(t *testing.T) {
 		}
 	})
 
-	t.Run("hide omits nsfw url server-side", func(t *testing.T) {
+	t.Run("stored hide migrates to blur", func(t *testing.T) {
+		// The toggle dropped the hide state; a stored hide now blurs (present) rather
+		// than omitting the NSFW url.
 		out := renderString(t, modelCard(it, images, nil, NSFWHide, "test-csrf", time.Time{}))
-		if strings.Contains(out, nsfwURL) {
-			t.Error("hide mode MUST omit the NSFW image url server-side")
+		if !strings.Contains(out, nsfwURL) {
+			t.Error("migrated hide (→blur) should render the NSFW image url (blurred)")
+		}
+		if !strings.Contains(out, "click to reveal") {
+			t.Error("migrated hide (→blur) should gate the NSFW image behind a reveal overlay")
 		}
 		if !strings.Contains(out, safeURL) {
-			t.Error("safe image must still render under hide")
+			t.Error("safe image must still render")
 		}
 	})
 }

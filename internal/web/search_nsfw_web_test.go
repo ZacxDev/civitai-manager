@@ -26,10 +26,11 @@ func lastCall(t *testing.T, r *recordingSearchReader) map[string][]string {
 	return r.calls[len(r.calls)-1]
 }
 
-// TestSearchNSFWParamByMode proves the civitai model-search nsfw param is tied to
-// the display mode: blur/show send nsfw=true (so NSFW models return WITH their
-// showcase images), hide sends nsfw=false (SFW-only) — across the keyword search,
-// the popular default, and the dashboard subscribe search.
+// TestSearchNSFWParamByMode proves the civitai model-search nsfw param follows the
+// display mode. Since the toggle dropped the hide state (nsfwSearchFlag is now
+// always true — a stored hide migrates to blur), blur/show/hide all send
+// nsfw=true across the keyword search, the popular default, and the dashboard
+// subscribe search.
 func TestSearchNSFWParamByMode(t *testing.T) {
 	cases := []struct {
 		mode string
@@ -37,7 +38,7 @@ func TestSearchNSFWParamByMode(t *testing.T) {
 	}{
 		{NSFWBlur, "true"},
 		{NSFWShow, "true"},
-		{NSFWHide, "false"},
+		{NSFWHide, "true"}, // migrated to blur → still nsfw=true
 	}
 	paths := []string{
 		"/search?q=anime",     // keyword search
@@ -64,10 +65,13 @@ func TestSearchNSFWParamByMode(t *testing.T) {
 	}
 }
 
-// TestPopularCacheKeyedByNSFW proves the popular TTL cache holds a separate entry
-// per NSFW flag: a mode flip must NOT serve the other flag's cached list, and
-// each flag caches independently (no extra fetch within the TTL for a repeat).
-func TestPopularCacheKeyedByNSFW(t *testing.T) {
+// TestPopularCacheSharedAcrossModes proves that after the hide→blur migration, the
+// popular TTL cache is keyed by an nsfw flag that is now always true for every
+// UI-selectable mode (blur/show/hide-migrated-to-blur). So flipping the display
+// mode serves the SAME cached list — no extra fetch within the TTL. (The cache
+// key is still keyed by the flag; there is simply no longer a mode that produces
+// nsfw=false.)
+func TestPopularCacheSharedAcrossModes(t *testing.T) {
 	reader := &recordingSearchReader{result: popularResult(t)}
 	srv := newModelServer(t, reader)
 
@@ -85,32 +89,21 @@ func TestPopularCacheKeyedByNSFW(t *testing.T) {
 	if reader.callCount() != 1 {
 		t.Fatalf("first blur load: calls = %d, want 1", reader.callCount())
 	}
-	// Repeat within TTL is served from the true-flag cache — no extra fetch.
+	if got := lastCall(t, reader)["nsfw"]; len(got) == 0 || got[0] != "true" {
+		t.Errorf("blur popular fetch nsfw = %v, want true", got)
+	}
+
+	// Flip to show → still nsfw=true → served from the SAME cache (no fetch).
+	setNSFWMode(t, srv, NSFWShow)
 	get()
 	if reader.callCount() != 1 {
-		t.Fatalf("cached blur load: calls = %d, want 1", reader.callCount())
+		t.Fatalf("show load should hit the true-flag cache: calls = %d, want 1", reader.callCount())
 	}
 
-	// Flip to hide → nsfw=false. This is a DIFFERENT cache key, so it must fetch
-	// (not serve the true-flag entry) with nsfw=false.
+	// Flip to a stored hide → migrates to blur → nsfw=true → same cache (no fetch).
 	setNSFWMode(t, srv, NSFWHide)
 	get()
-	if reader.callCount() != 2 {
-		t.Fatalf("hide load must not serve the blur cache: calls = %d, want 2", reader.callCount())
-	}
-	if got := lastCall(t, reader)["nsfw"]; len(got) == 0 || got[0] != "false" {
-		t.Errorf("hide popular fetch nsfw = %v, want false", got)
-	}
-	// Repeat hide within TTL is cached.
-	get()
-	if reader.callCount() != 2 {
-		t.Fatalf("cached hide load: calls = %d, want 2", reader.callCount())
-	}
-
-	// Flip back to blur → served from the still-valid true-flag cache (no fetch).
-	setNSFWMode(t, srv, NSFWBlur)
-	get()
-	if reader.callCount() != 2 {
-		t.Fatalf("blur reload should hit the true-flag cache: calls = %d, want 2", reader.callCount())
+	if reader.callCount() != 1 {
+		t.Fatalf("migrated-hide load should hit the true-flag cache: calls = %d, want 1", reader.callCount())
 	}
 }

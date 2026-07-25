@@ -77,21 +77,22 @@ func navbar(theme, csrf, nsfwMode string) g.Node {
 	)
 }
 
-// nsfwToggle renders the global NSFW display control as a 3-state cycling button
+// nsfwToggle renders the global NSFW display control as a 2-state cycling button
 // (matching the themeToggle idiom): the label shows the CURRENT mode and one
-// click advances the cycle Hide → Blur → Show → Hide. It POSTs the NEXT mode
-// (with the CSRF token) to /settings/nsfw; the handler persists it and replies
-// HX-Refresh so the current page re-renders under the new mode (galleries then
-// hide/blur/show accordingly). hx-swap="none" — the refresh does the re-render.
+// click flips between Blur ⇄ Show. It POSTs the NEXT mode (with the CSRF token)
+// to /settings/nsfw; the handler persists it and replies HX-Refresh so the
+// current page re-renders under the new mode (galleries then blur/show
+// accordingly). hx-swap="none" — the refresh does the re-render.
+//
+// The old "hide" state was removed from the cycle; normalizeNSFWMode migrates any
+// stored hide to blur, so the toggle only ever surfaces Blur or Show.
 func nsfwToggle(mode, csrf string) g.Node {
 	mode = normalizeNSFWMode(mode)
 	var next, label string
 	switch mode {
-	case NSFWHide:
-		next, label = NSFWBlur, "NSFW: Hide"
 	case NSFWShow:
-		next, label = NSFWHide, "NSFW: Show"
-	default: // blur (the safe default)
+		next, label = NSFWBlur, "NSFW: Show"
+	default: // blur (the safe default; migrated hide lands here too)
 		next, label = NSFWShow, "NSFW: Blur"
 	}
 	return civButton("outline", "sm",

@@ -140,14 +140,17 @@ func TestCommunityFeedNSFWModes(t *testing.T) {
 		}
 	}
 
-	// hide: the NSFW url must NOT appear in the HTML at all.
+	// A stored hide migrates to blur: the NSFW url IS present (blurred), not omitted.
 	setMode(NSFWHide)
 	_, body := communityReq(t, srv, "/models/7/community?versionId=11")
-	if strings.Contains(body, nsfwURL) {
-		t.Error("hide mode must omit the NSFW image URL from the HTML")
+	if !strings.Contains(body, nsfwURL) {
+		t.Error("migrated hide (→blur) should include the NSFW image URL")
+	}
+	if !strings.Contains(body, `data-blurred="1"`) {
+		t.Error("migrated hide (→blur) should blur the NSFW image")
 	}
 	if !strings.Contains(body, safeURL) {
-		t.Error("hide mode should still render the safe image")
+		t.Error("migrated hide (→blur) should still render the safe image")
 	}
 
 	// blur: NSFW present but blurred; safe always rendered.

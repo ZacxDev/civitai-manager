@@ -14,6 +14,13 @@ import (
 )
 
 // NSFW display modes (persisted under nsfwSettingKey). blur is the default.
+//
+// NSFWHide is RETAINED as a constant (and the two server-side omit branches that
+// key off it are kept) so the "omit NSFW server-side" capability still exists per
+// the CLAUDE.md invariant — but the navbar toggle NO LONGER OFFERS hide (it is a
+// 2-state Blur ⇄ Show control). normalizeNSFWMode migrates any stored "hide" to
+// blur, so no user is stuck on hide and mode == NSFWHide is unreachable in
+// practice (the omit branches are inert but preserved).
 const (
 	NSFWHide       = "hide"
 	NSFWBlur       = "blur"
@@ -23,13 +30,15 @@ const (
 
 // normalizeNSFWMode coerces a stored/submitted value to a known mode, defaulting
 // to blur (the safe default: NSFW images are obscured until the user reveals one).
+// A stored "hide" is MIGRATED to blur: the toggle dropped the hide state, so a
+// previously-persisted hide now reads as blur everywhere (the server-side omit
+// branches keyed on NSFWHide are thus never reached, but stay in place as an
+// inert, preserved capability — see the const block above).
 func normalizeNSFWMode(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case NSFWHide:
-		return NSFWHide
 	case NSFWShow:
 		return NSFWShow
-	default:
+	default: // blur (the safe default) — and "hide" migrates here too
 		return NSFWBlur
 	}
 }
