@@ -1,7 +1,11 @@
 # ComfyUI Workflow Integration — design proposal (v0 draft)
 
-_Status: RESEARCH DONE, DESIGN FOR REVIEW. No code dispatched. Grounded in two
-research passes (codebase recon + external API research), 2026-07-24._
+_Status (updated 2026-07-25): **Slice A (Workflow Library) shipped v0.1.28; A2 (scan
++ Library tab + auto-link) v0.1.29; B (local run + UI→API converter) v0.1.30 — all
+live-verified against the real local ComfyUI.** Slice **C** (remote CivitAI Comfy
+Cloud / Orchestration) is the remaining, **not-started** slice. Original design below
+is unchanged; it was grounded in two research passes (codebase recon + external API
+research), 2026-07-24._
 
 ## 1. The load-bearing findings (what reality forces on the design)
 
@@ -125,14 +129,15 @@ Add to `internal/config`:
 
 ## 7. Proposed slicing (each independently shippable as a v0.1.x)
 
-- **Slice A — Workflow Library (no execution).** `0008` migration + `internal/comfy`
+- **Slice A — Workflow Library (no execution).** _[SHIPPED v0.1.28; A2 scan +
+  auto-link v0.1.29]_ `0008` migration + `internal/comfy`
   PNG-extraction + Workflows tab: import (paste JSON / upload PNG → extract `prompt`
   chunk), list, view, attach-to-version, set-golden. All pure-Go, fully
   testable/verifiable here. **Lowest risk, immediate value, zero external dep.**
-- **Slice B — Local ComfyUI run.** `comfy` client + run streaming-job + result
+- **Slice B — Local ComfyUI run.** _[SHIPPED v0.1.30; incl. UI→API converter]_ `comfy` client + run streaming-job + result
   gallery + `/object_info` pre-flight. **Requires a reachable local ComfyUI to
   live-verify** (open question below).
-- **Slice C — Remote Comfy Cloud.** Orchestration CustomComfy submit + `whatif` cost
+- **Slice C — Remote Comfy Cloud.** _[NOT STARTED — the remaining slice]_ Orchestration CustomComfy submit + `whatif` cost
   preview + poll + results. **Highest uncertainty** (body field names, Buzz), do last.
 
 Recommended order: **A → B → C.** A stands alone and de-risks the data model + UI
