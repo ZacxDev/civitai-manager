@@ -21,8 +21,9 @@ const cloudRunBudget = 30 * time.Minute
 
 // cloudPollInterval is how often the cloud run goroutine polls GetCloudWorkflow.
 // It is above the local run cadence — remote generation is slower and the API is
-// edge-cached, so polling faster wastes requests.
-const cloudPollInterval = 3 * time.Second
+// edge-cached, so polling faster wastes requests. It is a var (not a const) only
+// so tests can shrink it for a fast, deterministic running→done transition.
+var cloudPollInterval = 3 * time.Second
 
 // cloudClient is the CivitAI orchestration surface the cloud handlers need. It is
 // an interface so tests can inject a fake; *comfy.CloudClient satisfies it.
