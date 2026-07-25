@@ -317,36 +317,78 @@ func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, ba
 	modelURL := fmt.Sprintf("%s/models/%d", strings.TrimRight(baseURL, "/"), m.ID)
 
 	return page(m.Name, theme, csrf, mode,
-		modelHeaderCard(m, v.Images, mode, creator, csrf, modelURL, sub),
+		modelHeaderCard(m, creator, csrf, modelURL, sub),
 		g.If(strings.TrimSpace(v.Description) != "", modelDescriptionCard(v.Description)),
 		// Tags are a compact, de-emphasized inline chip row under the description
 		// (not a standalone "Tags" card).
 		g.If(len(m.Tags) > 0, modelTagChips(m.Tags)),
-		modelVersionsCard(v, csrf),
-		// Community feed: LAZY-loaded at the bottom. The container carries the
-		// SELECTED version id, so switching versions (which re-renders this page)
-		// reloads the feed for the new version. It is NOT fetched inline because a
-		// SearchImages call on the page path is slow (20s+) — see handleModelCommunity.
-		h.Div(
-			h.ID("community-feed"),
-			hx("get", fmt.Sprintf("/models/%d/community?versionId=%d", m.ID, v.SelectedVersionID)),
-			// "revealed" (fires when scrolled into view) not "load": the feed sits at
-			// the bottom of the page, so this avoids an outbound civitai Images API
-			// call on every model-page view when the user never scrolls to it.
-			hx("trigger", "revealed"),
-			hx("swap", "innerHTML"),
-			g.Text("Loading community images…"),
-		),
+		// The version-DEPENDENT region: showcase carousel + version list/detail +
+		// the community feed. Selecting a version htmx-swaps this container's
+		// innerHTML (see versionLinkAttrs / handleModel's HX path) so the URL
+		// updates (hx-push-url) and scroll is preserved, without a full reload.
+		h.Div(h.ID(versionRegionID), versionRegionInner(v, csrf)),
 		lightboxOverlay(),
 		modelPageScript(),
+		// The showcase/community carousels' prev/next buttons call cmCarouselScroll.
+		libraryCarouselScript(),
+	)
+}
+
+// versionRegionID is the stable container the version-dependent content lives in;
+// version links htmx-swap its innerHTML (never the node itself), so the poll/swap
+// target survives every version change.
+const versionRegionID = "version-region"
+
+// versionRegionInner renders the version-DEPENDENT content of the model page: the
+// showcase carousel for the selected version, the version list (with the active
+// version highlighted) + its detail, and the lazy community-feed container keyed
+// to the selected version. It is rendered both inside #version-region on the full
+// page AND standalone as the HX-swap response (handleModel's HX path), so a
+// version change re-renders exactly this content — including re-arming the
+// community feed's lazy `revealed` trigger for the new version id.
+func versionRegionInner(v modelDetailView, csrf string) g.Node {
+	m := v.Model
+	mode := normalizeNSFWMode(v.NSFWMode)
+	return g.Group([]g.Node{
+		showcaseCard(m.ID, v.Images, mode),
+		modelVersionsCard(v, csrf),
+		communityFeedContainer(m.ID, v.SelectedVersionID),
+	})
+}
+
+// showcaseCard renders the selected version's showcase carousel (moved out of the
+// header into the version region so it re-renders on a version change). The
+// carousel tiles route through galleryTile → the thumbnail helper + NSFW handling
+// and share the page lightbox.
+func showcaseCard(modelID int, images []galleryImage, mode string) g.Node {
+	return card(
+		h.Div(
+			h.Class("mb-2 flex flex-wrap items-center justify-between gap-2"),
+			h.H2(h.Class("text-sm font-semibold text-slate-300"), g.Text("Showcase images")),
+		),
+		modelCardCarousel(modelID, images, mode),
+	)
+}
+
+// communityFeedContainer is the lazy community-feed container keyed to the
+// selected version. It is fetched on `revealed` (when scrolled into view) — not
+// inline — because the SearchImages call is slow; see handleModelCommunity. When
+// the version region is htmx-swapped, htmx processes this fresh node and re-arms
+// the `revealed` trigger for the new version id.
+func communityFeedContainer(modelID, versionID int) g.Node {
+	return h.Div(
+		h.ID("community-feed"),
+		hx("get", fmt.Sprintf("/models/%d/community?versionId=%d", modelID, versionID)),
+		hx("trigger", "revealed"),
+		hx("swap", "innerHTML"),
+		g.Text("Loading community images…"),
 	)
 }
 
 // modelHeaderCard renders the model header: name/type/creator, key stats, the
-// Subscribe affordance, AND the showcase carousel (moved into the header) with
-// the persisted NSFW display-mode control. The carousel tiles route through
-// galleryTile → the thumbnail helper + NSFW handling and share the page lightbox.
-func modelHeaderCard(m *civitai.ModelDetail, images []galleryImage, mode, creator, csrf, modelURL string, sub *store.Subscription) g.Node {
+// Subscribe affordance, and the "View on CivitAI" link. The showcase carousel is
+// NOT here — it lives in the version region so it re-renders on a version change.
+func modelHeaderCard(m *civitai.ModelDetail, creator, csrf, modelURL string, sub *store.Subscription) g.Node {
 	return card(
 		h.Div(
 			h.Class("flex flex-wrap items-start justify-between gap-4"),
@@ -375,11 +417,6 @@ func modelHeaderCard(m *civitai.ModelDetail, images []galleryImage, mode, creato
 				viewOnCivitaiLink(modelURL),
 			),
 		),
-		h.Div(
-			h.Class("mt-4 mb-2 flex flex-wrap items-center justify-between gap-2"),
-			h.H2(h.Class("text-sm font-semibold text-slate-300"), g.Text("Showcase images")),
-		),
-		modelCardCarousel(m.ID, images, mode),
 	)
 }
 
@@ -462,8 +499,18 @@ func modelVersionsCard(v modelDetailView, csrf string) g.Node {
 		if selected {
 			cls = "block rounded-md border border-indigo-600 bg-indigo-950/40 px-3 py-1.5 text-sm text-indigo-200"
 		}
+		// Version links do an htmx partial swap of #version-region (with hx-push-url
+		// so the URL still becomes /models/{id}?version={vid} and direct links /
+		// refresh work). The plain href is the no-JS fallback: htmx's hx-get on an
+		// <a> with an href degrades to a normal navigation. innerHTML swap preserves
+		// scroll (no scroll modifier added).
+		versionHref := fmt.Sprintf("/models/%d?version=%d", m.ID, ver.ID)
 		items = append(items, h.A(
-			h.Href(fmt.Sprintf("/models/%d?version=%d", m.ID, ver.ID)),
+			h.Href(versionHref),
+			hx("get", versionHref),
+			hx("target", "#"+versionRegionID),
+			hx("swap", "innerHTML"),
+			hx("push-url", "true"),
 			h.Class(cls),
 			h.Div(h.Class("flex items-center justify-between gap-2"),
 				h.Span(g.Text(ver.Name)),

@@ -347,11 +347,18 @@ func (s *Server) handleModelVersionStatus(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	isHX := r.Header.Get("HX-Request") == "true"
 	view, errNode := s.loadModelView(r.Context(), id, r.URL.Query().Get("version"))
 	if errNode != nil {
 		status := http.StatusBadGateway
 		if view.Model == nil && errors.Is(view.loadErr, civitai.ErrNotFound) {
 			status = http.StatusNotFound
+		}
+		// On an HX version swap the target is #version-region, so render just the
+		// error node (a full page would inject <html>/navbar into the region).
+		if isHX {
+			s.render(w, status, errNode)
+			return
 		}
 		s.render(w, status, page("Not found", s.currentTheme(), s.csrf, s.nsfwMode(), errNode))
 		return
@@ -364,6 +371,13 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 	if mid, cerr := strconv.Atoi(id); cerr == nil {
 		view.LocalVersionIDs = s.localVersionIDs(mid)
 		sub = s.modelSubscription(mid)
+	}
+	// A version click is an htmx partial swap of #version-region: render ONLY that
+	// region's inner content (not the full page shell), so scroll is preserved and
+	// the URL is updated via hx-push-url on the link.
+	if isHX {
+		s.render(w, http.StatusOK, versionRegionInner(view, s.csrf))
+		return
 	}
 	s.render(w, http.StatusOK, modelDetailPage(view, sub, s.csrf, s.currentTheme(), s.cfg.BaseURL))
 }
