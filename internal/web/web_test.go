@@ -42,7 +42,7 @@ func TestPagesRenderWithoutPanic(t *testing.T) {
 	})
 
 	t.Run("search empty", func(t *testing.T) {
-		out := renderString(t, searchPage("", nil, nil, "test-csrf", "dark", NSFWBlur, ""))
+		out := renderString(t, searchPage("", nil, nil, "test-csrf", "dark", NSFWBlur, "", "Most Downloaded", "Month"))
 		if !strings.Contains(out, "Search models") {
 			t.Error("search page missing header")
 		}

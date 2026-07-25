@@ -250,3 +250,44 @@ func textInput(kind, id, label string, controlAttrs ...g.Node) g.Node {
 		h.Input(ctrl...),
 	)
 }
+
+// selectOption is one <option> for a labeled select: Value is the submitted form
+// value (and the exact civitai query string, for the search filters); Label is
+// the human wording shown to the user.
+type selectOption struct {
+	Value string
+	Label string
+}
+
+// optionLabel returns the human label for value among opts, falling back to the
+// value itself when it is not a known option.
+func optionLabel(opts []selectOption, value string) string {
+	for _, o := range opts {
+		if o.Value == value {
+			return o.Label
+		}
+	}
+	return value
+}
+
+// labeledSelect renders a bound label + <select name=…> whose option matching
+// selected carries the `selected` attribute. Styled with the civitai text-input
+// role so it inherits the theme-aware control surface (both data-theme paths).
+func labeledSelect(id, name, label string, opts []selectOption, selected string) g.Node {
+	optNodes := make([]g.Node, 0, len(opts))
+	for _, o := range opts {
+		attrs := []g.Node{h.Value(o.Value)}
+		if o.Value == selected {
+			attrs = append(attrs, g.Attr("selected"))
+		}
+		attrs = append(attrs, g.Text(o.Label))
+		optNodes = append(optNodes, h.Option(attrs...))
+	}
+	return h.Div(
+		dataAttr("civitai-ui", "text-input"),
+		h.Label(dataFlag("civitai-ui-label"), h.For(id), g.Text(label)),
+		h.Select(append([]g.Node{
+			dataFlag("civitai-ui-control"), h.ID(id), h.Name(name),
+		}, optNodes...)...),
+	)
+}
