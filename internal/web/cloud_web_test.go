@@ -353,6 +353,9 @@ func TestCloudRunRunningThenStop(t *testing.T) {
 	if !strings.Contains(body, "canceled") {
 		t.Errorf("stop response missing canceled state:\n%s", body)
 	}
+	if !strings.Contains(body, "Buzz may still have been charged") {
+		t.Errorf("stop response must surface the best-effort Buzz-spend caveat:\n%s", body)
+	}
 	if !fake.cancelCalled {
 		t.Error("stop should best-effort cancel the remote cloud workflow")
 	}

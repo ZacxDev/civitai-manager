@@ -95,6 +95,25 @@ func TestResolveResources_AllPaths(t *testing.T) {
 	}
 }
 
+func TestResolveResources_KnownEcosystemUnknownTypeIsGuessed(t *testing.T) {
+	// A known ecosystem (SDXL 1.0) but an unmapped ModelType yields a ":unknown:"
+	// type segment the orchestrator rejects — it must degrade to guessed (never a
+	// green resolved ✓), and the URN must carry the unknown type verbatim.
+	graph := json.RawMessage(`{"1":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"weird.safetensors"}}}`)
+	lk := &fakeLookup{
+		byBasename: map[string]*LocalMatch{"weird.safetensors": {ModelID: 30, VersionID: 40}},
+		models:     map[[2]int][2]string{{30, 40}: {"Poses", "SDXL 1.0"}},
+	}
+	rs, err := ResolveResources(graph, lk)
+	if err != nil {
+		t.Fatalf("ResolveResources: %v", err)
+	}
+	if r, ok := findRes(rs, "weird.safetensors"); !ok || r.Status != ResolveGuessed ||
+		r.URN != "urn:air:sdxl:unknown:civitai:30@40" {
+		t.Errorf("known-eco+unknown-type should be guessed with :unknown: URN: %+v ok=%v", r, ok)
+	}
+}
+
 func TestResolveResources_AmbiguousIsUnresolved(t *testing.T) {
 	// The store method returns nil for an ambiguous basename; resolve then treats
 	// it as unresolved. Simulate by having the lookup return nil for the basename.

@@ -213,8 +213,13 @@ func cloudStatusFragment(snap cloudSnapshot, wfID int64, csrf string) g.Node {
 		return h.Div()
 	}
 	if snap.Stopped {
+		// Cancel is best-effort: if the run reached the orchestrator before Stop, a
+		// cancel was requested but Buzz may already have been charged. Say so plainly
+		// rather than imply a stopped run is always free.
 		return h.Div(h.Class("space-y-2"),
-			h.P(h.Class("text-sm text-amber-400"), g.Text("Cloud run canceled.")))
+			h.P(h.Class("text-sm text-amber-400"), g.Text("Cloud run canceled.")),
+			h.P(h.Class("text-xs text-slate-400"),
+				g.Text("If the run had already been submitted to CivitAI, Buzz may still have been charged.")))
 	}
 	if snap.Running {
 		return cloudRunning(snap, wfID, csrf)

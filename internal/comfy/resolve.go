@@ -92,9 +92,14 @@ func resolveModelRef(ref string, lookup ResourceLookup) ResolvedResource {
 	if !ok {
 		return res // no cache to derive type/ecosystem from
 	}
-	eco, known := EcosystemKey(baseModel)
-	res.URN = BuildCivitaiAIR(eco, URNType(modelType), match.ModelID, match.VersionID)
-	if known {
+	eco, ecoKnown := EcosystemKey(baseModel)
+	urnType := URNType(modelType)
+	res.URN = BuildCivitaiAIR(eco, urnType, match.ModelID, match.VersionID)
+	// Only a fully-mapped URN (known ecosystem AND known type) is "resolved". An
+	// unmapped type yields a ":unknown:" segment the orchestrator rejects, so it
+	// must degrade to "guessed" for the user to review — a green have-✓ badge on an
+	// unsubmittable URN would be a lie.
+	if ecoKnown && urnType != "unknown" {
 		res.Status = ResolveResolved
 	} else {
 		res.Status = ResolveGuessed
