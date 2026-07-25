@@ -43,12 +43,28 @@ func (s *Store) GetCommunityCache(modelID, versionID int) (*CommunityCacheEntry,
 // so a subsequent staleness check measures from this fetch. Callers should only
 // cache SUCCESSFUL, non-empty responses so the cache is never poisoned with an
 // empty/error result the fail-open path would then serve.
+// communityCacheMaxRows bounds the community_cache table: this is a fail-open
+// image-feed cache, not a system of record, so we keep only the most-recently
+// fetched entries and prune the rest. Prevents unbounded growth from browsing
+// many model versions (or a hostile enumerator on a non-loopback deployment).
+var communityCacheMaxRows = 4000
+
 func (s *Store) PutCommunityCache(modelID, versionID int, raw []byte) error {
-	_, err := s.db.Exec(`
+	if _, err := s.db.Exec(`
 		INSERT INTO community_cache (model_id, version_id, raw, fetched_at) VALUES (?, ?, ?, ?)
 		ON CONFLICT (model_id, version_id) DO UPDATE SET
 			raw = excluded.raw,
 			fetched_at = excluded.fetched_at`,
-		modelID, versionID, raw, nowRFC3339())
+		modelID, versionID, raw, nowRFC3339()); err != nil {
+		return err
+	}
+	// Opportunistic bound: drop everything but the newest N by fetched_at. Cheap
+	// (runs only on a cache-miss write) and keeps the table from growing forever.
+	// Tie-break by rowid (insert order) so "newest" is deterministic even when many
+	// entries share the same second-granularity fetched_at.
+	_, err := s.db.Exec(`
+		DELETE FROM community_cache WHERE rowid NOT IN (
+			SELECT rowid FROM community_cache ORDER BY fetched_at DESC, rowid DESC LIMIT ?
+		)`, communityCacheMaxRows)
 	return err
 }

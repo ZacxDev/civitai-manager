@@ -405,7 +405,11 @@ const communityCacheTTL = time.Hour
 // It is fetched out-of-band (not inline during page render) because that
 // SearchImages call is slow (20s+, frequently timing out); see loadModelView.
 func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
-	modelID, _ := strconv.Atoi(r.PathValue("id"))
+	modelID, merr := strconv.Atoi(r.PathValue("id"))
+	if merr != nil || modelID <= 0 {
+		s.render(w, http.StatusOK, communityFeedNote("No community images yet."))
+		return
+	}
 	versionID := strings.TrimSpace(r.URL.Query().Get("versionId"))
 	mode := s.nsfwMode()
 	// Validate versionId is a positive integer before spending an upstream round

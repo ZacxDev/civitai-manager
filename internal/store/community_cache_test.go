@@ -86,3 +86,39 @@ func TestCommunityCacheMigrationApplies(t *testing.T) {
 		t.Fatalf("community_cache table missing after migrate: %v", err)
 	}
 }
+
+// PutCommunityCache bounds the table: after the cap is exceeded, only the
+// most-recently-fetched rows survive (audit 🟡: unbounded cache growth).
+func TestCommunityCachePrunesToCap(t *testing.T) {
+	st, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	orig := communityCacheMaxRows
+	communityCacheMaxRows = 5
+	defer func() { communityCacheMaxRows = orig }()
+
+	// Insert well over the cap; each distinct (model,version) is one row.
+	for i := 1; i <= 12; i++ {
+		if err := st.PutCommunityCache(i, i, []byte(`{"items":[{"id":1}]}`)); err != nil {
+			t.Fatalf("put %d: %v", i, err)
+		}
+	}
+
+	var n int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM community_cache`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != communityCacheMaxRows {
+		t.Fatalf("row count = %d, want cap %d", n, communityCacheMaxRows)
+	}
+	// The most recently written entry must still be present; an early one pruned.
+	if got, _ := st.GetCommunityCache(12, 12); got == nil {
+		t.Error("newest entry (12) was pruned")
+	}
+	if got, _ := st.GetCommunityCache(1, 1); got != nil {
+		t.Error("oldest entry (1) should have been pruned")
+	}
+}
