@@ -145,6 +145,11 @@ type Server struct {
 	// cloudMu guards cloudJob. One cloud run is active at a time (same global MVP
 	// guard as the local run).
 	cloudMu sync.Mutex
+	// cloudPollInterval is how often the active cloud run goroutine polls the
+	// orchestration API. Set once in NewServer (from defaultCloudPollInterval) and
+	// never mutated afterward, so the poll goroutine reads it race-free; tests set
+	// it on their own Server instance before starting a run.
+	cloudPollInterval time.Duration
 	// cloudJob is the current (or most recent) background cloud run, or nil before
 	// the first.
 	cloudJob *cloudJob
@@ -250,8 +255,9 @@ func NewServer(st *store.Store, reader civitai.Reader, sub Subscriber, cfg Confi
 	}
 	return &Server{
 		store: st, reader: reader, sub: sub, cfg: cfg, log: log, csrf: newCSRFToken(),
-		popularVal: map[bool]*civitai.ModelSearchResult{},
-		popularExp: map[bool]time.Time{},
+		cloudPollInterval: defaultCloudPollInterval,
+		popularVal:        map[bool]*civitai.ModelSearchResult{},
+		popularExp:        map[bool]time.Time{},
 	}
 }
 

@@ -152,7 +152,7 @@ func (s *Server) runCloud(ctx context.Context, graph []byte, urns []string, up c
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(cloudPollInterval):
+		case <-time.After(s.cloudPollInterval):
 		}
 		cur, err := client.GetCloudWorkflow(ctx, wf.ID)
 		if err != nil {

@@ -310,10 +310,6 @@ func TestCloudRunTerminalGallery(t *testing.T) {
 // TestCloudRunRunningThenStop starts a run that stays running (submit non-terminal),
 // asserts the running fragment + poller, then stops it (asserting the remote cancel).
 func TestCloudRunRunningThenStop(t *testing.T) {
-	old := cloudPollInterval
-	cloudPollInterval = 5 * time.Millisecond
-	t.Cleanup(func() { cloudPollInterval = old })
-
 	// Submit returns non-terminal; Get keeps returning processing so the job stays
 	// running until Stop cancels it.
 	fake := &fakeCloud{
@@ -321,6 +317,10 @@ func TestCloudRunRunningThenStop(t *testing.T) {
 		getResp: &comfy.CloudWorkflow{ID: "wf-run", Status: "processing"},
 	}
 	srv := newCloudTestServer(t, fake)
+	// Shrink the poll cadence on THIS server instance (set before any run starts,
+	// never mutated after) for a fast, deterministic transition — no shared global,
+	// so the poll goroutine's read cannot race a write.
+	srv.cloudPollInterval = 5 * time.Millisecond
 	id := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"1":{"class_type":"X","inputs":{}}}`)
 
 	rec := post(t, srv, "/workflows/"+id+"/cloud/run", url.Values{"resources": {"u"}}, true)
@@ -329,6 +329,17 @@ func TestCloudRunRunningThenStop(t *testing.T) {
 	}
 	if !hasCloudPoller(rec.Body.String()) {
 		t.Fatalf("run start should be the running fragment:\n%s", rec.Body.String())
+	}
+
+	// The run goroutine records the remote workflow id asynchronously (after Submit
+	// returns). Stop can only best-effort remote-cancel once that id exists, so wait
+	// for it — otherwise this races the goroutine and the cancel assertion flakes.
+	deadline := time.Now().Add(2 * time.Second)
+	for srv.cloudJobState().CloudID == "" {
+		if time.Now().After(deadline) {
+			t.Fatal("run goroutine never recorded the remote cloud workflow id")
+		}
+		time.Sleep(time.Millisecond)
 	}
 
 	rec = post(t, srv, "/workflows/cloud/stop", url.Values{"workflow_id": {id}}, true)

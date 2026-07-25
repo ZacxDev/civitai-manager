@@ -19,11 +19,14 @@ import (
 // remote never settles) from leaking a goroutine forever.
 const cloudRunBudget = 30 * time.Minute
 
-// cloudPollInterval is how often the cloud run goroutine polls GetCloudWorkflow.
-// It is above the local run cadence — remote generation is slower and the API is
-// edge-cached, so polling faster wastes requests. It is a var (not a const) only
-// so tests can shrink it for a fast, deterministic running→done transition.
-var cloudPollInterval = 3 * time.Second
+// defaultCloudPollInterval is how often the cloud run goroutine polls
+// GetCloudWorkflow. It is above the local run cadence — remote generation is
+// slower and the API is edge-cached, so polling faster wastes requests. It seeds
+// the per-Server Server.cloudPollInterval field; tests shrink that field on their
+// own Server instance (never a shared global) for a fast, deterministic
+// running→done transition — the poll goroutine reads it without any concurrent
+// write, so there is no data race.
+const defaultCloudPollInterval = 3 * time.Second
 
 // cloudClient is the CivitAI orchestration surface the cloud handlers need. It is
 // an interface so tests can inject a fake; *comfy.CloudClient satisfies it.
