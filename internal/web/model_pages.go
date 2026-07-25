@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	"github.com/ZacxDev/civitai-manager/internal/store"
@@ -63,6 +64,18 @@ type galleryImage struct {
 	Width     int
 	Height    int
 	Meta      json.RawMessage
+	// Type is the media kind from the civitai payload ("image" or "video"; ""
+	// when absent). A "video" tile still renders a still poster thumbnail (via
+	// civitaiThumbURL, which forces anim=false), but the lightbox plays the
+	// original as a <video> and the tile carries a ▶ badge + data-video marker.
+	Type string
+}
+
+// isVideoType reports whether a media Type string denotes a video (case- and
+// whitespace-insensitive). Centralized so the tile, lightbox marker, and parsers
+// agree on what counts as a video.
+func isVideoType(t string) bool {
+	return strings.EqualFold(strings.TrimSpace(t), "video")
 }
 
 // rawInlineImage mirrors one object of a version's inline images[] array. The
@@ -72,6 +85,7 @@ type galleryImage struct {
 type rawInlineImage struct {
 	URL       string          `json:"url"`
 	NSFWLevel json.RawMessage `json:"nsfwLevel"`
+	Type      string          `json:"type"`
 	Width     int             `json:"width"`
 	Height    int             `json:"height"`
 	Meta      json.RawMessage `json:"meta"`
@@ -92,6 +106,7 @@ func toGalleryImages(raws []rawInlineImage) []galleryImage {
 			Width:     ri.Width,
 			Height:    ri.Height,
 			Meta:      ri.Meta,
+			Type:      ri.Type,
 		})
 	}
 	return out
@@ -115,8 +130,9 @@ func parseNSFWLevel(raw json.RawMessage) int {
 const searchImageCap = 8
 
 // rawSearchImage mirrors one modelVersions[].images[] object in a SearchModels
-// response. It captures the media Type ("image"/"video") so videos can be
-// excluded — the search cards render <img> tiles, which cannot play a video.
+// response. It captures the media Type ("image"/"video"); videos are INCLUDED —
+// the tile renders a still poster (civitaiThumbURL forces anim=false) and the
+// lightbox plays the original — so a video-only model still shows a card.
 type rawSearchImage struct {
 	URL       string          `json:"url"`
 	NSFWLevel json.RawMessage `json:"nsfwLevel"`
@@ -126,13 +142,16 @@ type rawSearchImage struct {
 	Meta      json.RawMessage `json:"meta"`
 }
 
-// parseSearchImages extracts, per model id, the FIRST version's inline showcase
-// images from a SearchModels raw response body (the SDK's typed ModelListItem
-// carries no images, but they are present in res.Raw). Videos are excluded (the
-// card renders <img> tiles) and each model's list is capped at searchImageCap.
-// This is a MANAGER-SIDE parse of data already fetched — it makes no extra API
-// call. Returns a non-nil (possibly empty) map; a model with no usable images is
-// simply absent from it.
+// parseSearchImages extracts, per model id, a showcase-image list from a
+// SearchModels raw response body (the SDK's typed ModelListItem carries no
+// images, but they are present in res.Raw). It scans the model's versions in
+// order and uses the FIRST version that yields at least one usable image — so a
+// model whose first version has no images still shows later-version images.
+// Videos are INCLUDED (the tile renders a still poster; the lightbox plays the
+// original), so a video-only model still gets a card. Each model's list is capped
+// at searchImageCap. This is a MANAGER-SIDE parse of data already fetched — it
+// makes no extra API call. Returns a non-nil (possibly empty) map; a model with
+// no usable images across any version is simply absent from it.
 func parseSearchImages(raw []byte) map[int][]galleryImage {
 	out := map[int][]galleryImage{}
 	if len(raw) == 0 {
@@ -150,26 +169,28 @@ func parseSearchImages(raw []byte) map[int][]galleryImage {
 		return out
 	}
 	for _, it := range body.Items {
-		if len(it.ModelVersions) == 0 {
-			continue
-		}
 		var imgs []galleryImage
-		for _, ri := range it.ModelVersions[0].Images {
-			if strings.TrimSpace(ri.URL) == "" {
-				continue
+		// Scan versions in order; take the first that yields ≥1 usable image
+		// (skipping earlier versions that carry none).
+		for _, ver := range it.ModelVersions {
+			for _, ri := range ver.Images {
+				if strings.TrimSpace(ri.URL) == "" {
+					continue
+				}
+				imgs = append(imgs, galleryImage{
+					URL:       ri.URL,
+					NSFWLevel: parseNSFWLevel(ri.NSFWLevel),
+					Width:     ri.Width,
+					Height:    ri.Height,
+					Meta:      ri.Meta,
+					Type:      ri.Type,
+				})
+				if len(imgs) >= searchImageCap {
+					break
+				}
 			}
-			if strings.EqualFold(strings.TrimSpace(ri.Type), "video") {
-				continue // an <img> tile cannot render a video
-			}
-			imgs = append(imgs, galleryImage{
-				URL:       ri.URL,
-				NSFWLevel: parseNSFWLevel(ri.NSFWLevel),
-				Width:     ri.Width,
-				Height:    ri.Height,
-				Meta:      ri.Meta,
-			})
-			if len(imgs) >= searchImageCap {
-				break
+			if len(imgs) > 0 {
+				break // first version with usable images wins
 			}
 		}
 		if len(imgs) > 0 {
@@ -242,8 +263,12 @@ type modelDetailView struct {
 	SelectedVersionID int
 	Version           *civitai.ModelVersionDetail
 	PublishedAt       string
-	Images            []galleryImage
-	NSFWMode          string
+	// LastUpdated is the newest modelVersions[].publishedAt across ALL versions
+	// (parsed from the GetModel raw), used for the header's "Updated X ago". Zero
+	// when no version carries a parseable date — the stat is then omitted.
+	LastUpdated time.Time
+	Images      []galleryImage
+	NSFWMode    string
 	// LocalVersionIDs is the set of this model's version ids the user has locally
 	// (derived from local files), used to badge owned versions in the version list.
 	LocalVersionIDs map[int]bool
@@ -304,6 +329,84 @@ func versionPublishedDate(raw []byte, versionID int) string {
 	return ""
 }
 
+// maxPublishedTime parses each publishedAt string as RFC3339 and returns the
+// newest as a time.Time (zero when none parse). Empty/unparseable entries are
+// skipped — defensive, never panics on malformed data. civitai timestamps carry
+// fractional seconds (e.g. "2023-05-01T12:00:00.000Z"), which RFC3339 parses.
+func maxPublishedTime(publishedAts []string) time.Time {
+	var newest time.Time
+	for _, s := range publishedAts {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			continue
+		}
+		if t.After(newest) {
+			newest = t
+		}
+	}
+	return newest
+}
+
+// newestVersionPublishedAt scans a GetModel raw body's modelVersions[].publishedAt
+// and returns the newest as a real time.Time (zero when the raw is empty,
+// undecodable, or carries no parseable date). Unlike versionPublishedDate (which
+// truncates to YYYY-MM-DD without parsing), this yields a time.Time for a
+// relative "Updated X ago" render.
+func newestVersionPublishedAt(raw []byte) time.Time {
+	if len(raw) == 0 {
+		return time.Time{}
+	}
+	var body struct {
+		ModelVersions []struct {
+			PublishedAt string `json:"publishedAt"`
+		} `json:"modelVersions"`
+	}
+	if json.Unmarshal(raw, &body) != nil {
+		return time.Time{}
+	}
+	ats := make([]string, 0, len(body.ModelVersions))
+	for _, v := range body.ModelVersions {
+		ats = append(ats, v.PublishedAt)
+	}
+	return maxPublishedTime(ats)
+}
+
+// newestPublishedAtByModel scans a SearchModels raw body and returns, per model
+// id, the newest modelVersions[].publishedAt as a time.Time. A model with no
+// parseable date is absent from the (non-nil) map. Defensive: an empty/undecodable
+// raw yields an empty map, never a panic.
+func newestPublishedAtByModel(raw []byte) map[int]time.Time {
+	out := map[int]time.Time{}
+	if len(raw) == 0 {
+		return out
+	}
+	var body struct {
+		Items []struct {
+			ID            int `json:"id"`
+			ModelVersions []struct {
+				PublishedAt string `json:"publishedAt"`
+			} `json:"modelVersions"`
+		} `json:"items"`
+	}
+	if json.Unmarshal(raw, &body) != nil {
+		return out
+	}
+	for _, it := range body.Items {
+		ats := make([]string, 0, len(it.ModelVersions))
+		for _, v := range it.ModelVersions {
+			ats = append(ats, v.PublishedAt)
+		}
+		if t := maxPublishedTime(ats); !t.IsZero() {
+			out[it.ID] = t
+		}
+	}
+	return out
+}
+
 // modelDetailPage renders the rich model detail page: header + stats, sanitized
 // description, tags, a version selector with per-version detail, and a showcase
 // image gallery with NSFW handling + a lightbox.
@@ -317,7 +420,7 @@ func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, ba
 	modelURL := fmt.Sprintf("%s/models/%d", strings.TrimRight(baseURL, "/"), m.ID)
 
 	return page(m.Name, theme, csrf, mode,
-		modelHeaderCard(m, creator, csrf, modelURL, sub),
+		modelHeaderCard(m, creator, csrf, modelURL, sub, v.LastUpdated),
 		g.If(strings.TrimSpace(v.Description) != "", modelDescriptionCard(v.Description)),
 		// Tags are a compact, de-emphasized inline chip row under the description
 		// (not a standalone "Tags" card).
@@ -388,7 +491,7 @@ func communityFeedContainer(modelID, versionID int) g.Node {
 // modelHeaderCard renders the model header: name/type/creator, key stats, the
 // Subscribe affordance, and the "View on CivitAI" link. The showcase carousel is
 // NOT here — it lives in the version region so it re-renders on a version change.
-func modelHeaderCard(m *civitai.ModelDetail, creator, csrf, modelURL string, sub *store.Subscription) g.Node {
+func modelHeaderCard(m *civitai.ModelDetail, creator, csrf, modelURL string, sub *store.Subscription, lastUpdated time.Time) g.Node {
 	return card(
 		h.Div(
 			h.Class("flex flex-wrap items-start justify-between gap-4"),
@@ -406,6 +509,11 @@ func modelHeaderCard(m *civitai.ModelDetail, creator, csrf, modelURL string, sub
 					statInline("Downloads", compactCount(m.Stats.DownloadCount)),
 					statInline("Likes", compactCount(m.Stats.ThumbsUpCount)),
 					statInline("Comments", compactCount(m.Stats.CommentCount)),
+					// "Updated X ago" from the newest version's publish date; the
+					// absolute date is a hover tooltip. Omitted when no parseable date.
+					g.If(!lastUpdated.IsZero(), statInlineTitled(
+						"Updated", humanSince(lastUpdated),
+						lastUpdated.Local().Format("2006-01-02 15:04"))),
 				),
 			),
 			// Reflect the real subscription state (subscribed → "Subscribed ✓ /
@@ -438,6 +546,16 @@ func viewOnCivitaiLink(modelURL string) g.Node {
 
 func statInline(label, value string) g.Node {
 	return h.Div(
+		h.Span(h.Class("text-slate-500"), g.Text(label+": ")),
+		h.Span(h.Class("font-medium text-slate-200"), g.Text(value)),
+	)
+}
+
+// statInlineTitled is statInline with a hover tooltip (e.g. the absolute date
+// behind a relative "Updated X ago"). title is trusted, formatted server-side.
+func statInlineTitled(label, value, title string) g.Node {
+	return h.Div(
+		h.Title(title),
 		h.Span(h.Class("text-slate-500"), g.Text(label+": ")),
 		h.Span(h.Class("font-medium text-slate-200"), g.Text(value)),
 	)
@@ -709,12 +827,24 @@ func galleryTile(im galleryImage, metaID string, blur bool) g.Node {
 		imgClass += " blur-xl"
 	}
 
+	isVideo := isVideoType(im.Type)
+	altText := "showcase image"
+	if isVideo {
+		altText = "showcase video"
+	}
+
 	img := h.Img(
+		// Video tiles still show a STILL poster thumbnail: civitaiThumbURL forces
+		// anim=false, so the CDN returns a poster frame even for a video source.
 		h.Src(civitaiThumbURL(im.URL, tileThumbWidth(im))),
-		h.Alt("showcase image"),
+		h.Alt(altText),
 		h.Loading("lazy"),
+		// data-full is the ORIGINAL url (played as <video> for a video, shown at
+		// full-res in the lightbox for an image); data-video marks video tiles so
+		// cmTileClick opens the correct lightbox media node.
 		g.Attr("data-full", im.URL),
 		g.Attr("data-meta", metaID),
+		g.If(isVideo, g.Attr("data-video", "1")),
 		g.If(blur, g.Attr("data-blurred", "1")),
 		g.Attr("onclick", "cmTileClick(this)"),
 		h.Class(imgClass),
@@ -723,6 +853,15 @@ func galleryTile(im galleryImage, metaID string, blur bool) g.Node {
 	children := []g.Node{
 		h.Class("group relative aspect-square overflow-hidden rounded-md border border-slate-800 bg-slate-900"),
 		img,
+	}
+	if isVideo {
+		// A subtle ▶ badge over the poster so the tile clearly reads as a video.
+		// Styled by .cm-video-badge in app.css (theme-aware; not a Tailwind util).
+		children = append(children, h.Span(
+			h.Class("cm-video-badge"),
+			g.Attr("aria-hidden", "true"),
+			g.Text("▶"),
+		))
 	}
 	if blur {
 		children = append(children, h.Button(
@@ -783,6 +922,18 @@ func lightboxOverlay() g.Node {
 			h.Class("flex max-h-full w-full max-w-5xl flex-col gap-3 overflow-hidden md:flex-row"),
 			h.Img(h.ID("cm-lightbox-img"), h.Alt("full image"),
 				h.Class("max-h-[85vh] max-w-full rounded-md object-contain")),
+			// Video counterpart, hidden until a video tile is opened. muted +
+			// playsinline lets it autoplay under browser policy; loop keeps it going.
+			// cmOpenLightbox/cmCloseLightbox toggle which of img/video is visible and
+			// pause+clear the video on close so it stops playing.
+			h.Video(
+				h.ID("cm-lightbox-video"),
+				g.Attr("controls", ""),
+				g.Attr("loop", ""),
+				g.Attr("muted", ""),
+				g.Attr("playsinline", ""),
+				h.Class("hidden max-h-[85vh] max-w-full rounded-md object-contain"),
+			),
 			h.Div(
 				h.ID("cm-lightbox-meta"),
 				h.Class("max-h-[85vh] w-full overflow-y-auto rounded-md bg-slate-900 p-3 md:w-80"),
@@ -815,11 +966,25 @@ function cmReveal(btn){
 }
 function cmTileClick(img){
   if (img.getAttribute('data-blurred')){ return; }
-  cmOpenLightbox(img.getAttribute('data-full'), img.getAttribute('data-meta'));
+  cmOpenLightbox(img.getAttribute('data-full'), img.getAttribute('data-meta'), img.getAttribute('data-video'));
 }
-function cmOpenLightbox(url, metaId){
+function cmOpenLightbox(url, metaId, isVideo){
   var box = document.getElementById('cm-lightbox');
-  document.getElementById('cm-lightbox-img').src = url;
+  var im = document.getElementById('cm-lightbox-img');
+  var vid = document.getElementById('cm-lightbox-video');
+  if (isVideo && vid){
+    // Show the <video>, play it (muted → autoplay allowed), hide the <img>.
+    if (im){ im.classList.add('hidden'); im.src = ''; }
+    vid.src = url;
+    vid.classList.remove('hidden');
+    vid.muted = true;
+    var p = vid.play();
+    if (p && p.catch){ p.catch(function(){}); }
+  } else {
+    // Show the <img>, pause+clear the <video>.
+    if (vid){ vid.pause(); vid.removeAttribute('src'); vid.load(); vid.classList.add('hidden'); }
+    if (im){ im.src = url; im.classList.remove('hidden'); }
+  }
   var meta = document.getElementById('cm-lightbox-meta');
   var tpl = document.getElementById(metaId);
   meta.innerHTML = tpl ? tpl.innerHTML : '';
@@ -831,7 +996,11 @@ function cmCloseLightbox(ev){
   var box = document.getElementById('cm-lightbox');
   box.classList.add('hidden');
   box.classList.remove('flex');
-  document.getElementById('cm-lightbox-img').src = '';
+  var im = document.getElementById('cm-lightbox-img');
+  if (im){ im.src = ''; }
+  var vid = document.getElementById('cm-lightbox-video');
+  // Pause + clear the video src so closing stops playback (not just hides it).
+  if (vid){ vid.pause(); vid.removeAttribute('src'); vid.load(); vid.classList.add('hidden'); }
 }
 function cmToggleDesc(btn){
   var box = btn.closest('.cm-desc-collapsible');

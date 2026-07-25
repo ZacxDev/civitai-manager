@@ -159,6 +159,35 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 }
 
 /*
+ * Video thumbnail badge (.cm-video-badge) — see galleryTile in model_pages.go.
+ * A subtle centered ▶ over a video tile's still poster so it clearly reads as a
+ * video (the tile shows a poster frame; the lightbox plays the original). Uses a
+ * translucent dark chip with a light glyph so it reads in both data-theme paths
+ * over an arbitrary poster image. Pointer-events off so the tile's own onclick
+ * (open lightbox) still fires through the badge. No CDN, no Tailwind util.
+ */
+.cm-video-badge {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 9999px;
+  background: rgba(15, 23, 42, 0.6);
+  color: #f8fafc;
+  font-size: 1rem;
+  line-height: 1;
+  padding-left: 0.15rem; /* optically center the ▶ glyph */
+  pointer-events: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+/*
  * Model description (.cm-model-desc) — see modelDescriptionCard in
  * model_pages.go. The sanitized author HTML is arbitrary and can overflow its
  * card (wide images/video, <pre>/<table>, long unbroken tokens/URLs). These rules

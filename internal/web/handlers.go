@@ -591,6 +591,8 @@ func (s *Server) loadModelView(parent context.Context, id, versionParam string) 
 		Model:       m,
 		Description: parseModelDescription(raw),
 		NSFWMode:    s.nsfwMode(),
+		// Newest publishedAt across all versions → header "Updated X ago".
+		LastUpdated: newestVersionPublishedAt(raw),
 	}
 
 	// Selected version: the ?version= override, else the latest (first listed).

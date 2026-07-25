@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	"github.com/ZacxDev/civitai-manager/internal/store"
@@ -27,9 +28,14 @@ func searchRawJSON(t *testing.T, items []any) []byte {
 }
 
 func TestParseSearchImages(t *testing.T) {
-	// A representative response: item 1 has two versions (only the FIRST is used)
-	// with an image, a video (excluded), and a second image; item 2 has an empty
-	// images array; item 3 has no versions; item 4 has 10 images (cap check).
+	// A representative response:
+	//   item 1: first version [image, VIDEO, image] — videos are now INCLUDED
+	//           (poster thumbnail), so all 3 are kept; the 2nd version must not leak.
+	//   item 2: single version with an empty images array → absent.
+	//   item 3: no versions → absent.
+	//   item 4: 10 images (cap check).
+	//   item 5: first version has NO images, a LATER version does → scan to it.
+	//   item 6: only a video (video-only model) → still yields a card.
 	tenImages := make([]any, 0, 10)
 	for i := 0; i < 10; i++ {
 		tenImages = append(tenImages, map[string]any{
@@ -54,22 +60,38 @@ func TestParseSearchImages(t *testing.T) {
 		map[string]any{"id": 4, "modelVersions": []any{
 			map[string]any{"id": 40, "images": tenImages},
 		}},
+		map[string]any{"id": 5, "modelVersions": []any{
+			map[string]any{"id": 51, "images": []any{}}, // first version: no images
+			map[string]any{"id": 52, "images": []any{
+				map[string]any{"url": "https://image.civitai.com/m5-later.jpeg", "type": "image"},
+			}},
+		}},
+		map[string]any{"id": 6, "modelVersions": []any{
+			map[string]any{"id": 61, "images": []any{
+				map[string]any{"url": "https://image.civitai.com/m6-only.mp4", "type": "video"},
+			}},
+		}},
 	})
 
 	got := parseSearchImages(raw)
 
-	// Item 1: first version only, video excluded → 2 images.
+	// Item 1: first version wins, VIDEO now included → 3 images in order.
 	m1 := got[1]
-	if len(m1) != 2 {
-		t.Fatalf("model 1: want 2 images (video excluded), got %d", len(m1))
+	if len(m1) != 3 {
+		t.Fatalf("model 1: want 3 images (video included), got %d", len(m1))
 	}
-	if m1[0].URL != "https://image.civitai.com/m1-a.jpeg" || m1[1].URL != "https://image.civitai.com/m1-b.jpeg" {
-		t.Errorf("model 1 urls wrong: %+v", m1)
+	if m1[0].URL != "https://image.civitai.com/m1-a.jpeg" ||
+		m1[1].URL != "https://image.civitai.com/m1-vid.mp4" ||
+		m1[2].URL != "https://image.civitai.com/m1-b.jpeg" {
+		t.Errorf("model 1 urls/order wrong: %+v", m1)
 	}
-	if m1[1].NSFWLevel != 4 {
-		t.Errorf("model 1 second image nsfwLevel: want 4, got %d", m1[1].NSFWLevel)
+	if !isVideoType(m1[1].Type) {
+		t.Errorf("model 1 middle item should carry video Type, got %q", m1[1].Type)
 	}
-	// The second version's image must NOT leak in.
+	if m1[2].NSFWLevel != 4 {
+		t.Errorf("model 1 third image nsfwLevel: want 4, got %d", m1[2].NSFWLevel)
+	}
+	// The second version's image must NOT leak in (first version already yielded).
 	for _, im := range m1 {
 		if strings.Contains(im.URL, "other-version") {
 			t.Errorf("second version's image leaked into model 1: %s", im.URL)
@@ -85,6 +107,16 @@ func TestParseSearchImages(t *testing.T) {
 	// Item 4: capped at searchImageCap.
 	if len(got[4]) != searchImageCap {
 		t.Errorf("model 4: want cap %d images, got %d", searchImageCap, len(got[4]))
+	}
+	// Item 5: first version imageless → scans to the later version's image.
+	m5 := got[5]
+	if len(m5) != 1 || m5[0].URL != "https://image.civitai.com/m5-later.jpeg" {
+		t.Errorf("model 5: want the later version's single image, got %+v", m5)
+	}
+	// Item 6: video-only model still yields a (video-typed) tile.
+	m6 := got[6]
+	if len(m6) != 1 || m6[0].URL != "https://image.civitai.com/m6-only.mp4" || !isVideoType(m6[0].Type) {
+		t.Errorf("model 6 (video-only): want one video tile, got %+v", m6)
 	}
 }
 
@@ -109,7 +141,7 @@ func TestModelCardNSFWModes(t *testing.T) {
 	it := civitai.ModelListItem{ID: 5, Name: "Card Model", Type: "LORA"}
 
 	t.Run("show renders nsfw plain", func(t *testing.T) {
-		out := renderString(t, modelCard(it, images, nil, NSFWShow, "test-csrf"))
+		out := renderString(t, modelCard(it, images, nil, NSFWShow, "test-csrf", time.Time{}))
 		if !strings.Contains(out, nsfwURL) {
 			t.Error("show mode should render the NSFW image url")
 		}
@@ -122,7 +154,7 @@ func TestModelCardNSFWModes(t *testing.T) {
 	})
 
 	t.Run("blur renders nsfw blurred", func(t *testing.T) {
-		out := renderString(t, modelCard(it, images, nil, NSFWBlur, "test-csrf"))
+		out := renderString(t, modelCard(it, images, nil, NSFWBlur, "test-csrf", time.Time{}))
 		if !strings.Contains(out, nsfwURL) {
 			t.Error("blur mode still renders the url (behind a reveal overlay)")
 		}
@@ -138,7 +170,7 @@ func TestModelCardNSFWModes(t *testing.T) {
 	})
 
 	t.Run("hide omits nsfw url server-side", func(t *testing.T) {
-		out := renderString(t, modelCard(it, images, nil, NSFWHide, "test-csrf"))
+		out := renderString(t, modelCard(it, images, nil, NSFWHide, "test-csrf", time.Time{}))
 		if strings.Contains(out, nsfwURL) {
 			t.Error("hide mode MUST omit the NSFW image url server-side")
 		}
