@@ -47,6 +47,12 @@ type Config struct {
 	// endpoint exposes. Zero falls back to the config package defaults.
 	WebScanTimeout  time.Duration
 	WebScanMaxFiles int
+	// ComfyURL is the local ComfyUI server base URL for workflow runs/preflight. It
+	// is config-only (never a per-request parameter). Empty disables local run.
+	ComfyURL string
+	// ComfyToken is an optional bearer token for a login-fronted ComfyUI. Secret —
+	// never rendered/logged.
+	ComfyToken string
 }
 
 // Server wires the store, the CivitAI reader, and the subscriber into an

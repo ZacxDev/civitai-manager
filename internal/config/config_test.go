@@ -125,6 +125,56 @@ func TestConfigStringRedactsToken(t *testing.T) {
 	}
 }
 
+func TestComfyURLDefault(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnvToken, "")
+	t.Setenv(EnvComfyToken, "")
+	cfg, err := Resolve(Flags{ConfigPath: filepath.Join(dir, "missing.yaml")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ComfyURL != DefaultComfyURL {
+		t.Errorf("comfy_url default: got %q want %q", cfg.ComfyURL, DefaultComfyURL)
+	}
+	if cfg.ComfyToken != "" {
+		t.Errorf("comfy_token should be empty by default, got %q", cfg.ComfyToken)
+	}
+}
+
+func TestComfyURLFromFileTrimsSlash(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnvToken, "")
+	t.Setenv(EnvComfyToken, "")
+	cfgPath := writeConfig(t, dir, "comfy_url: http://127.0.0.1:9999/\n")
+	cfg, err := Resolve(Flags{ConfigPath: cfgPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ComfyURL != "http://127.0.0.1:9999" {
+		t.Errorf("comfy_url: got %q want trailing slash trimmed", cfg.ComfyURL)
+	}
+}
+
+func TestComfyTokenFromEnvAndRedacted(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnvToken, "")
+	t.Setenv(EnvComfyToken, "comfy-secret-token")
+	cfg, err := Resolve(Flags{ConfigPath: filepath.Join(dir, "missing.yaml")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ComfyToken != "comfy-secret-token" {
+		t.Errorf("comfy_token from env: got %q", cfg.ComfyToken)
+	}
+	s := cfg.String()
+	if contains(s, "comfy-secret-token") {
+		t.Fatalf("String() leaked the comfy token: %q", s)
+	}
+	if !contains(s, "****oken") {
+		t.Errorf("String() should include the redacted comfy token, got %q", s)
+	}
+}
+
 func TestXDGConfigDir(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
 	dir, err := ConfigDir()
