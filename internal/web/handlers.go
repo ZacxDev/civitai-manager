@@ -452,6 +452,97 @@ func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, communityFeedNote("No community images yet."))
 }
 
+// handleModelDownload enqueues a single model-version FILE into the app's
+// download queue. It is CSRF-protected (a state-changing POST) but NOT
+// loopback-gated: the destination path is derived SERVER-SIDE from the model /
+// version / file metadata (civitai.DestPath under s.cfg.ModelRoot), never from a
+// client-submitted path. On success it returns a "Queued ✓" fragment that
+// outerHTML-replaces the file's Download button; a duplicate (an active row
+// already exists) returns "Already queued"; any resolution failure returns a
+// muted note. The dup-guard and single-active-per-file invariant live in
+// store.Enqueue (ux_dlq_active).
+func (s *Server) handleModelDownload(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id <= 0 {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	versionID, _ := strconv.Atoi(r.FormValue("versionId"))
+	fileID, _ := strconv.Atoi(r.FormValue("fileId"))
+	if versionID <= 0 || fileID <= 0 {
+		s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "Invalid request", false))
+		return
+	}
+
+	// Resolve the model (cache-first) for its type/creator/name, and the version
+	// for its files + names. Both are needed to compute the destination path.
+	m, _, merr := s.cachedModelDetail(r.Context(), id)
+	if merr != nil || m == nil {
+		s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "Could not load model", false))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	vd, _, verr := s.reader.GetModelVersion(ctx, strconv.Itoa(versionID))
+	if verr != nil || vd == nil {
+		s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "Could not load version", false))
+		return
+	}
+	var file *civitai.ModelVersionFile
+	for i := range vd.Files {
+		if vd.Files[i].ID == fileID {
+			file = &vd.Files[i]
+			break
+		}
+	}
+	if file == nil {
+		s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "File not found", false))
+		return
+	}
+	dlURL := strings.TrimSpace(file.DownloadURL)
+	if dlURL == "" {
+		dlURL = strings.TrimSpace(vd.DownloadURL) // version-level fallback
+	}
+	if dlURL == "" {
+		s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "No download URL available", false))
+		return
+	}
+
+	creator := ""
+	if m.Creator != nil {
+		creator = m.Creator.Username
+	}
+	dest := civitai.DestPath(s.cfg.ModelRoot, m.Type, creator, m.Name, vd.Name, file.Name)
+	_, inserted, eerr := s.store.Enqueue(store.QueueItem{
+		ModelID:        id,
+		VersionID:      versionID,
+		FileID:         fileID,
+		FileName:       file.Name,
+		DownloadURL:    dlURL,
+		DestPath:       dest,
+		Status:         store.StatusQueued,
+		SizeKB:         file.SizeKB,
+		SHA256Expected: file.Hashes.SHA256,
+	})
+	if eerr != nil {
+		s.log.Warn("enqueue file download", "model", id, "version", versionID, "file", fileID, "err", eerr)
+		s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "Enqueue failed", false))
+		return
+	}
+	if !inserted {
+		s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "Already queued", false))
+		return
+	}
+	s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "Queued ✓", true))
+}
+
 // nsfwMode returns the persisted global NSFW display mode (default blur).
 func (s *Server) nsfwMode() string {
 	v, err := s.store.GetSettingDefault(nsfwSettingKey, NSFWBlur)

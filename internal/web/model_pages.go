@@ -322,7 +322,7 @@ func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, ba
 		// Tags are a compact, de-emphasized inline chip row under the description
 		// (not a standalone "Tags" card).
 		g.If(len(m.Tags) > 0, modelTagChips(m.Tags)),
-		modelVersionsCard(v),
+		modelVersionsCard(v, csrf),
 		// Community feed: LAZY-loaded at the bottom. The container carries the
 		// SELECTED version id, so switching versions (which re-renders this page)
 		// reloads the feed for the new version. It is NOT fetched inline because a
@@ -453,7 +453,7 @@ func modelTagChips(tags []string) g.Node {
 
 // modelVersionsCard renders the version list (each a link that reloads the page
 // with that version selected) and the selected version's detail block.
-func modelVersionsCard(v modelDetailView) g.Node {
+func modelVersionsCard(v modelDetailView, csrf string) g.Node {
 	m := v.Model
 	var items []g.Node
 	for _, ver := range m.ModelVersions {
@@ -480,14 +480,15 @@ func modelVersionsCard(v modelDetailView) g.Node {
 		h.Div(
 			h.Class("grid gap-4 md:grid-cols-3"),
 			h.Div(h.Class("space-y-1.5 md:col-span-1"), g.Group(items)),
-			h.Div(h.Class("md:col-span-2"), versionDetail(v)),
+			h.Div(h.Class("md:col-span-2"), versionDetail(v, csrf)),
 		),
 	)
 }
 
 // versionDetail renders the selected version's key facts: base model, trigger
-// words as copy-able chips, published date, and the file list.
-func versionDetail(v modelDetailView) g.Node {
+// words as copy-able chips, published date, and the file list (each file with a
+// Download action that enqueues it — csrf is threaded through for that POST).
+func versionDetail(v modelDetailView, csrf string) g.Node {
 	ver := v.Version
 	if ver == nil {
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("Select a version to see its details."))
@@ -502,7 +503,7 @@ func versionDetail(v modelDetailView) g.Node {
 	if len(ver.TrainedWords) > 0 {
 		rows = append(rows, detailRow("Trigger words", triggerWordChips(ver.TrainedWords)))
 	}
-	rows = append(rows, detailRow("Files", fileList(ver.Files)))
+	rows = append(rows, detailRow("Files", fileList(v.Model.ID, ver.ID, ver.Files, ver.DownloadURL, csrf)))
 
 	return h.Div(h.Class("space-y-3"), g.Group(rows))
 }
@@ -532,22 +533,64 @@ func triggerWordChips(words []string) g.Node {
 	)
 }
 
-func fileList(files []civitai.ModelVersionFile) g.Node {
+// fileList renders the selected version's files, each with a Download action that
+// enqueues the file into the app's download queue (POST /models/{id}/download,
+// CSRF-protected). versionDownloadURL is the version-level fallback used when a
+// file carries no own downloadUrl.
+func fileList(modelID, versionID int, files []civitai.ModelVersionFile, versionDownloadURL, csrf string) g.Node {
 	if len(files) == 0 {
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("No files."))
 	}
 	var rows []g.Node
 	for _, f := range files {
+		hasURL := strings.TrimSpace(f.DownloadURL) != "" || strings.TrimSpace(versionDownloadURL) != ""
 		rows = append(rows, h.Li(
 			h.Class("flex items-center justify-between gap-2 rounded border border-slate-800 px-2 py-1 text-xs"),
 			h.Span(h.Class("truncate text-slate-300"), g.Text(f.Name)),
 			h.Span(h.Class("flex shrink-0 items-center gap-2 text-slate-500"),
 				g.If(f.Type != "", badge(f.Type, "slate")),
 				g.Text(humanBytes(int64(f.SizeKB*1024))),
+				downloadFileButton(modelID, versionID, f.ID, csrf, hasURL),
 			),
 		))
 	}
 	return h.Ul(h.Class("space-y-1"), g.Group(rows))
+}
+
+// downloadFileID is the stable element id for a file's download control, so the
+// POST can outerHTML-swap just that control with its "Queued ✓" / error feedback.
+func downloadFileID(modelID, versionID, fileID int) string {
+	return fmt.Sprintf("dl-%d-%d-%d", modelID, versionID, fileID)
+}
+
+// downloadFileButton renders the per-file Download control. When no download URL
+// is resolvable it renders a disabled note instead of a button. The POST carries
+// the CSRF token (via hx-vals) and the version/file ids; the server resolves the
+// destination path from the model/version/file metadata (no client path).
+func downloadFileButton(modelID, versionID, fileID int, csrf string, hasURL bool) g.Node {
+	if !hasURL {
+		return h.Span(h.Class("text-slate-600"), h.Title("No download URL available"), g.Text("no URL"))
+	}
+	id := downloadFileID(modelID, versionID, fileID)
+	return civButton("outline", "sm", []g.Node{
+		h.Type("button"),
+		h.ID(id),
+		hx("post", fmt.Sprintf("/models/%d/download", modelID)),
+		hx("vals", fmt.Sprintf(`{"versionId":"%d","fileId":"%d","csrf_token":%q}`, versionID, fileID, csrf)),
+		hx("target", "#"+id),
+		hx("swap", "outerHTML"),
+	}, g.Text("Download"))
+}
+
+// downloadFeedback renders the small fragment that replaces a file's Download
+// control after a POST: a green "Queued ✓" on success, or a muted note (already
+// queued / error). ok tints it green.
+func downloadFeedback(modelID, versionID, fileID int, msg string, ok bool) g.Node {
+	cls := "text-xs text-amber-400"
+	if ok {
+		cls = "text-xs font-medium text-green-500"
+	}
+	return h.Span(h.ID(downloadFileID(modelID, versionID, fileID)), h.Class(cls), g.Text(msg))
 }
 
 // galleryTile renders one showcase image. When blur is true the image is shown
