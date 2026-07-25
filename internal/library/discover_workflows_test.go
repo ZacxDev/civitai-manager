@@ -77,3 +77,27 @@ func TestComfyLegacyWorkflowsDir(t *testing.T) {
 		t.Errorf("WorkflowScanDirs = %v, want [%s]", dirs, want)
 	}
 }
+
+// A marked ComfyUI install ROOT must resolve to its user/default/workflows dir
+// SPECIFICALLY (not the whole tree), so bundled examples/templates aren't swept in.
+func TestWorkflowDirsForMarkedComfyRoot(t *testing.T) {
+	root := t.TempDir()
+	wf := filepath.Join(root, "user", "default", "workflows")
+	mkdirAll(t, wf)
+	mkdirAll(t, filepath.Join(root, "custom_nodes", "somenode", "example_workflows"))
+	mkdirAll(t, filepath.Join(root, "models", "checkpoints"))
+
+	got := WorkflowDirsForMarked(root)
+	if len(got) != 1 || got[0] != wf {
+		t.Errorf("WorkflowDirsForMarked(root) = %v, want [%s] (not the whole tree)", got, wf)
+	}
+}
+
+// A marked arbitrary directory (no ComfyUI layout) is scanned as-is.
+func TestWorkflowDirsForMarkedArbitrary(t *testing.T) {
+	dir := t.TempDir()
+	got := WorkflowDirsForMarked(dir)
+	if len(got) != 1 || got[0] != dir {
+		t.Errorf("WorkflowDirsForMarked(arbitrary) = %v, want [%s]", got, dir)
+	}
+}
