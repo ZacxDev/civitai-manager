@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -262,5 +263,17 @@ func TestClientBearerTokenAndUnauthorized(t *testing.T) {
 	_, err := anon.SystemStats(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("expected a 401 error, got %v", err)
+	}
+}
+
+// NewID must return a valid UUID: ComfyUI 0.x rejects a non-UUID prompt_id with
+// HTTP 400 "prompt_id must be a valid UUID" (found via live-verify against 0.27).
+func TestNewIDIsUUID(t *testing.T) {
+	re := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	for i := 0; i < 200; i++ {
+		id := NewID()
+		if !re.MatchString(id) {
+			t.Fatalf("NewID() = %q, not a UUID v4", id)
+		}
 	}
 }

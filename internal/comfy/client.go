@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -57,8 +56,18 @@ type Client struct {
 func NewClient(baseURL, token string) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),
-		http:    &http.Client{Timeout: 120 * time.Second},
-		token:   strings.TrimSpace(token),
+		http: &http.Client{
+			Timeout: 120 * time.Second,
+			// This client intentionally has NO SSRF guard (it must reach loopback,
+			// where ComfyUI runs). ComfyUI's real API never redirects these
+			// endpoints, so do NOT follow redirects — otherwise a hostile/compromised
+			// comfy_url could 3xx a request (e.g. /view, whose bytes we proxy back to
+			// the browser) at an internal metadata service. (audit 🟡)
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		token: strings.TrimSpace(token),
 	}
 }
 
@@ -512,11 +521,17 @@ func (c *Client) SystemStats(ctx context.Context) (*SystemStats, error) {
 	return &st, nil
 }
 
-// NewID returns a random hex id suitable for a ComfyUI client_id / prompt_id.
+// NewID returns a random UUID v4 string suitable for a ComfyUI client_id /
+// prompt_id. ComfyUI (>= 0.x frontend) REQUIRES prompt_id to be a valid UUID and
+// rejects a bare hex string with HTTP 400 "prompt_id must be a valid UUID", so
+// this MUST stay UUID-formatted — verified against a live ComfyUI 0.27.
 func NewID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		return hex.EncodeToString([]byte(time.Now().String()))
+		// Deterministic fallback still shaped as a UUID (v4/variant bits below).
+		copy(b, []byte(time.Now().String()))
 	}
-	return hex.EncodeToString(b)
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }

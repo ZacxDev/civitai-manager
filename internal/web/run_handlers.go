@@ -138,7 +138,19 @@ func (s *Server) startRun(wf *store.Workflow) {
 
 	go func() {
 		defer cancel()
-		res, err := run(ctx, wf, up)
+		var res *runResult
+		var err error
+		// The run path parses two large untrusted surfaces (the imported UI graph in
+		// ConvertUIToAPI and untrusted comfy JSON). A panic here must fail THIS job,
+		// not crash the server. (audit 🟡)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("run panicked: %v", r)
+				}
+			}()
+			res, err = run(ctx, wf, up)
+		}()
 		s.runMu.Lock()
 		defer s.runMu.Unlock()
 		job.running = false
@@ -416,7 +428,14 @@ func (s *Server) handleWorkflowRunView(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not fetch image from ComfyUI", http.StatusBadGateway)
 		return
 	}
+	// The comfy server is untrusted: constrain the proxied response to images so a
+	// hostile comfy can't return text/html+JS that renders in our origin on direct
+	// navigation, and forbid content-type sniffing. (audit 🟡)
+	if !strings.HasPrefix(ct, "image/") {
+		ct = "application/octet-stream"
+	}
 	w.Header().Set("Content-Type", ct)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(data)
 }

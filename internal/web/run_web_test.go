@@ -78,7 +78,9 @@ func hasRunPoller(body string) bool {
 
 func pollRunUntilDone(t *testing.T, srv *Server, id string) string {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	// Generous: the run job is async and -race under parallel-suite load is ~10x
+	// slower, so a tight deadline flakes (timeout, not a race).
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		rec := get(t, srv, "/workflows/"+id+"/run/status")
 		if rec.Code != http.StatusOK {
