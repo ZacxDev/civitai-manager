@@ -59,6 +59,9 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 // format, extracts referenced resources for api graphs, stores the workflow, and
 // redirects back to the library with a flash.
 func (s *Server) handleWorkflowImport(w http.ResponseWriter, r *http.Request) {
+	// Bound the pasted-graph body (net/http caps urlencoded forms at 10 MiB, but be
+	// explicit) so a hostile paste can't buffer an oversized graph before parsing.
+	r.Body = http.MaxBytesReader(w, r.Body, maxWorkflowUpload)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return

@@ -247,3 +247,59 @@ func mustFloat(t *testing.T, s string) float64 {
 	}
 	return v
 }
+
+// TestGraphSVGCapsHugeNodeCount: a workflow with more than gMaxNodes nodes must
+// render a bounded SVG + a truncation note (audit 🟡: unbounded-render DoS).
+func TestGraphSVGCapsHugeNodeCount(t *testing.T) {
+	total := gMaxNodes * 3 // well over the cap so the bound is meaningful
+	var b strings.Builder
+	b.WriteString(`{"nodes":[`)
+	for i := 0; i < total; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		x := strconv.Itoa((i % 20) * 120)
+		y := strconv.Itoa((i / 20) * 80)
+		b.WriteString(`{"id":` + strconv.Itoa(i) + `,"type":"N","pos":[` + x + `,` + y + `],"size":[100,60]}`)
+	}
+	b.WriteString(`],"links":[]}`)
+
+	node, ok := workflowGraphSVG([]byte(b.String()))
+	if !ok {
+		t.Fatal("expected an SVG")
+	}
+	out := renderGraphNode(t, node)
+	want := "first " + strconv.Itoa(gMaxNodes) + " of " + strconv.Itoa(total)
+	if !strings.Contains(out, want) {
+		t.Errorf("missing truncation note %q", want)
+	}
+	// Each rendered node emits a body + title-bar rect (2). The rect count must be
+	// bounded by the cap, NOT proportional to `total`.
+	if n := strings.Count(out, "<rect"); n > gMaxNodes*2 {
+		t.Errorf("rendered %d rects (%d nodes); cap is %d nodes", n, n/2, gMaxNodes)
+	}
+}
+
+// TestGraphStructuredCapsHugeNodeCount: the API-format structured fallback also caps.
+func TestGraphStructuredCapsHugeNodeCount(t *testing.T) {
+	total := gMaxNodes + 50
+	var b strings.Builder
+	b.WriteByte('{')
+	for i := 0; i < total; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`"` + strconv.Itoa(i) + `":{"class_type":"KSampler","inputs":{}}`)
+	}
+	b.WriteByte('}')
+
+	node := structuredAPINodes([]byte(b.String()))
+	if node == nil {
+		t.Fatal("expected a structured node list")
+	}
+	out := renderGraphNode(t, node)
+	want := "first " + strconv.Itoa(gMaxNodes) + " of " + strconv.Itoa(total)
+	if !strings.Contains(out, want) {
+		t.Errorf("missing truncation note %q", want)
+	}
+}

@@ -27,6 +27,11 @@ const (
 	gDefaultW    = 200.0
 	gDefaultH    = 90.0
 	gMaxWidgets  = 3 // key widget values shown inside a node
+	// Render caps: a crafted/huge workflow (nodes/links arrays can be enormous
+	// within the import/scan size limits) must not spike memory/CPU when its
+	// detail page is opened. Cap the elements we emit; note truncation to the user.
+	gMaxNodes = 600
+	gMaxLinks = 2000
 )
 
 // linkTypeColor maps a litegraph link data type to a wire color (litegraph
@@ -104,7 +109,11 @@ func workflowGraphSVG(graph []byte) (g.Node, bool) {
 	var haveBox bool
 	var minX, minY, maxX, maxY float64
 
-	for _, n := range lg.Nodes {
+	truncated := len(lg.Nodes) > gMaxNodes
+	for i, n := range lg.Nodes {
+		if i >= gMaxNodes {
+			break // render cap — a hostile graph must not blow up the response
+		}
 		px, py, ok := parseXY(n.Pos)
 		if !ok {
 			continue // can't place — skip this node (defensive)
@@ -163,11 +172,18 @@ func workflowGraphSVG(graph []byte) (g.Node, bool) {
 	svg := g.El("svg", children...)
 
 	// Scrollable both ways, bounded height, so a huge graph never blows the layout.
-	return h.Div(
+	kids := []g.Node{
 		h.Class("overflow-auto rounded border border-slate-800 bg-slate-900 p-2"),
 		h.Style("max-height:32rem"),
-		svg,
-	), true
+	}
+	if truncated {
+		kids = append(kids, h.P(
+			h.Class("mb-2 text-xs text-amber-400"),
+			g.Text(fmt.Sprintf("Large workflow — showing the first %d of %d nodes.", gMaxNodes, len(lg.Nodes))),
+		))
+	}
+	kids = append(kids, svg)
+	return h.Div(kids...), true
 }
 
 // svgNode renders one placed node group: body + title bar + title + a few widget
@@ -255,7 +271,10 @@ func svgLinks(raw json.RawMessage, placed map[string]placedNode) []g.Node {
 		return nil
 	}
 	var out []g.Node
-	for _, l := range links {
+	for i, l := range links {
+		if i >= gMaxLinks {
+			break // render cap (see gMaxNodes)
+		}
 		// [link_id, origin_node, origin_slot, target_node, target_slot, type]
 		if len(l) < 6 {
 			continue
@@ -357,6 +376,10 @@ func structuredAPINodes(graph []byte) g.Node {
 	sort.Slice(ids, func(i, j int) bool { return lessNumericID(ids[i], ids[j]) })
 
 	cards := make([]g.Node, 0, len(ids))
+	if len(ids) > gMaxNodes {
+		cards = append(cards, structuredTruncNote(len(ids)))
+		ids = ids[:gMaxNodes]
+	}
 	for _, id := range ids {
 		n := m[id]
 		var rows []g.Node
@@ -381,6 +404,13 @@ func structuredAPINodes(graph []byte) g.Node {
 		))
 	}
 	return h.Div(cards...)
+}
+
+// structuredTruncNote is the "large workflow, list truncated" banner shared by the
+// structured (non-SVG) fallbacks.
+func structuredTruncNote(total int) g.Node {
+	return h.P(h.Class("mb-2 text-xs text-amber-400"),
+		g.Text(fmt.Sprintf("Large workflow — showing the first %d of %d nodes.", gMaxNodes, total)))
 }
 
 // structuredInputRow renders one input: a link ["srcId", slot] as a connection,
@@ -416,7 +446,12 @@ func structuredUINodes(graph []byte) g.Node {
 		return nil
 	}
 	cards := make([]g.Node, 0, len(lg.Nodes))
-	for _, n := range lg.Nodes {
+	nodes := lg.Nodes
+	if len(nodes) > gMaxNodes {
+		cards = append(cards, structuredTruncNote(len(nodes)))
+		nodes = nodes[:gMaxNodes]
+	}
+	for _, n := range nodes {
 		id := rawIDToString(n.ID)
 		title := strings.TrimSpace(n.Title)
 		if title == "" {
