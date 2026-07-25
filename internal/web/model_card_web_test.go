@@ -226,7 +226,7 @@ func TestModelCardLazyMarkup(t *testing.T) {
 	gr := fileGroup{modelID: 42, files: []store.LocalFile{
 		{SizeBytes: 2 * 1024 * 1024 * 1024, ModelID: intPtr(42)},
 	}}
-	out := renderString(t, modelCardLazy(gr))
+	out := renderString(t, modelCardLazy(gr, ""))
 	for _, want := range []string{
 		`hx-get="/library/model-card/42"`,
 		`hx-trigger="load"`,
