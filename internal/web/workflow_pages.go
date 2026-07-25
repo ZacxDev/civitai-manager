@@ -50,7 +50,17 @@ func workflowsPanel(wfs []store.Workflow, csrf string, extraAllowed bool, flashL
 	return h.Div(h.Class("space-y-6"), g.Group(body))
 }
 
-// workflowImportPanel renders the paste-JSON and upload-PNG import affordances.
+// workflowImportDialogID is the native <dialog> opened by the "Import a workflow"
+// trigger button. The open call is a tiny INLINE script (allowed — the offline
+// invariant forbids EXTERNAL scripts/styles only); the dialog closes via its own
+// <form method="dialog"> controls.
+const workflowImportDialogID = "workflow-import-dialog"
+
+// workflowImportPanel renders the "Import a workflow" trigger button plus the
+// native <dialog> holding the paste-JSON and upload-PNG import forms. The forms,
+// their endpoints, CSRF, and loopback gate are unchanged — only relocated behind
+// the modal. The <dialog> itself is a transparent positioning shell; the visible
+// surface is a theme-aware card so it renders correctly under both data-themes.
 func workflowImportPanel(csrf string, extraAllowed bool) g.Node {
 	if !extraAllowed {
 		return card(
@@ -59,38 +69,68 @@ func workflowImportPanel(csrf string, extraAllowed bool) g.Node {
 				g.Text("Workflow import is disabled when the server is bound to a non-loopback address.")),
 		)
 	}
+	trigger := civButton("filled", "md", []g.Node{
+		h.Type("button"),
+		// Inline open — no external script. showModal() gives the native top-layer
+		// modal + backdrop; the dialog id is a constant, not user input.
+		g.Attr("onclick", "document.getElementById('"+workflowImportDialogID+"').showModal()"),
+	}, g.Text("Import a workflow"))
+
+	dialog := h.Dialog(
+		h.ID(workflowImportDialogID),
+		// Transparent, chrome-less shell — the inner card provides the visible,
+		// theme-aware surface. Constrain width; the UA centers a showModal() dialog.
+		h.Class("bg-transparent p-0 border-0 w-full max-w-2xl"),
+		card(
+			h.Div(h.Class("flex items-center justify-between gap-4 mb-3"),
+				h.H2(h.Class("text-lg font-semibold text-slate-100"), g.Text("Import a workflow")),
+				// A dialog-method form closes the modal without submitting anything.
+				h.Form(h.Method("dialog"), h.Class("inline"),
+					civButton("subtle", "sm", []g.Node{h.Type("submit"),
+						g.Attr("aria-label", "Close")}, g.Text("✕"))),
+			),
+			h.Div(h.Class("grid gap-6 md:grid-cols-2"),
+				// Paste API/UI JSON.
+				h.Form(
+					h.Method("post"), h.Action("/workflows/import"),
+					h.Class("space-y-3"),
+					csrfInput(csrf),
+					textInput("text-input", "wf-name", "Name (optional)",
+						h.Type("text"), h.Name("name"), h.Placeholder("e.g. SDXL portrait")),
+					textInput("textarea", "wf-graph", "Workflow JSON (API or UI format)",
+						h.Name("graph"), h.Rows("8"),
+						h.Placeholder(`{"3":{"class_type":"CheckpointLoaderSimple", ...}}`),
+						g.Attr("required")),
+					btnPrimary(g.Text("Import JSON")),
+				),
+				// Upload a ComfyUI PNG.
+				h.Form(
+					h.Method("post"), h.Action("/workflows/import-png"),
+					g.Attr("enctype", "multipart/form-data"),
+					h.Class("space-y-3"),
+					csrfInput(csrf),
+					h.Div(
+						h.Label(dataFlag("civitai-ui-label"), h.For("wf-png"),
+							g.Text("ComfyUI PNG (extracts the embedded workflow)")),
+						h.Input(h.Type("file"), h.ID("wf-png"), h.Name("png"),
+							h.Accept("image/png"), g.Attr("required"),
+							h.Class("block w-full text-sm text-slate-300 mt-1")),
+					),
+					btnPrimary(g.Text("Upload PNG")),
+				),
+			),
+			h.Div(h.Class("flex justify-end mt-4"),
+				h.Form(h.Method("dialog"), h.Class("inline"),
+					btnSecondary(g.Text("Cancel")))),
+		),
+	)
+
 	return card(
 		sectionTitle("Import a workflow"),
-		h.Div(h.Class("grid gap-6 md:grid-cols-2"),
-			// Paste API/UI JSON.
-			h.Form(
-				h.Method("post"), h.Action("/workflows/import"),
-				h.Class("space-y-3"),
-				csrfInput(csrf),
-				textInput("text-input", "wf-name", "Name (optional)",
-					h.Type("text"), h.Name("name"), h.Placeholder("e.g. SDXL portrait")),
-				textInput("textarea", "wf-graph", "Workflow JSON (API or UI format)",
-					h.Name("graph"), h.Rows("8"),
-					h.Placeholder(`{"3":{"class_type":"CheckpointLoaderSimple", ...}}`),
-					g.Attr("required")),
-				btnPrimary(g.Text("Import JSON")),
-			),
-			// Upload a ComfyUI PNG.
-			h.Form(
-				h.Method("post"), h.Action("/workflows/import-png"),
-				g.Attr("enctype", "multipart/form-data"),
-				h.Class("space-y-3"),
-				csrfInput(csrf),
-				h.Div(
-					h.Label(dataFlag("civitai-ui-label"), h.For("wf-png"),
-						g.Text("ComfyUI PNG (extracts the embedded workflow)")),
-					h.Input(h.Type("file"), h.ID("wf-png"), h.Name("png"),
-						h.Accept("image/png"), g.Attr("required"),
-						h.Class("block w-full text-sm text-slate-300 mt-1")),
-				),
-				btnPrimary(g.Text("Upload PNG")),
-			),
-		),
+		h.P(h.Class("text-sm text-slate-400 mb-3"),
+			g.Text("Paste an API/UI graph or extract one from a ComfyUI PNG.")),
+		trigger,
+		dialog,
 	)
 }
 

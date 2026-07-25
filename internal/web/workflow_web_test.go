@@ -115,6 +115,34 @@ func TestWorkflowsLibraryTabRenders(t *testing.T) {
 	}
 }
 
+// TestWorkflowsImportModalRenders proves the import affordance is a trigger button
+// that opens a native <dialog> containing BOTH import forms (paste + PNG) with a
+// CSRF token — the offline modal relocation from feature 1.
+func TestWorkflowsImportModalRenders(t *testing.T) {
+	srv := newWorkflowServer(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/library?tab=workflows", nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="workflow-import-dialog"`,       // the native dialog
+		"<dialog",                           // element itself
+		".showModal()",                      // inline (non-external) opener
+		`onclick="document.getElementById(`, // trigger wiring
+		`action="/workflows/import"`,        // paste form still present
+		`action="/workflows/import-png"`,    // PNG form still present
+		`name="csrf_token"`,                 // CSRF preserved inside the dialog
+		`method="dialog"`,                   // native close control
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("import modal missing %q", want)
+		}
+	}
+}
+
 func TestWorkflowImportHappyPath(t *testing.T) {
 	srv := newWorkflowServer(t)
 	body := "name=mywf&graph=" + urlEsc(testAPIGraph) + "&csrf_token=" + srv.csrf
