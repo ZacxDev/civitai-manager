@@ -178,6 +178,10 @@ func TestThemeToggleRendersAndPersists(t *testing.T) {
 	if !strings.Contains(dark, `aria-label="Switch to light theme"`) || !strings.Contains(dark, `data-civitai-ui="button"`) {
 		t.Errorf("dark page missing the light-theme toggle control")
 	}
+	// The dark toggle renders a SUN glyph (click → light) — no text label.
+	if !strings.Contains(dark, "☀") {
+		t.Errorf("dark theme toggle should render the sun glyph")
+	}
 
 	light := renderString(t, dashboardPage(subs, nil, "csrf", "light", NSFWBlur))
 	if !strings.Contains(light, `data-theme="light"`) {
@@ -185,6 +189,10 @@ func TestThemeToggleRendersAndPersists(t *testing.T) {
 	}
 	if !strings.Contains(light, `aria-label="Switch to dark theme"`) {
 		t.Errorf("light page missing the dark-theme toggle control")
+	}
+	// The light toggle renders a MOON glyph (click → dark).
+	if !strings.Contains(light, "☾") {
+		t.Errorf("light theme toggle should render the moon glyph")
 	}
 
 	// Round-trip through the handler + store.

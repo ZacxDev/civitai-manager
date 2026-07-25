@@ -120,10 +120,17 @@ func navLink(href, label string) g.Node {
 // it in the settings store and replies HX-Refresh so the page re-renders under
 // the new <html data-theme>. civitai resolves all tokens from that ancestor
 // attribute, so one round-trip re-themes everything.
+//
+// The control shows a glyph (not text): in dark it shows a SUN "☀" (click →
+// light), in light a MOON "☾" (click → dark). A unicode glyph keeps it
+// offline-safe. Since the visible label is now an icon, the aria-label carries
+// the "Switch to <next> theme" wording for assistive tech.
 func themeToggle(theme, csrf string) g.Node {
-	next, label := "dark", "Dark"
+	// Default (light): show a moon → switching to dark.
+	next, glyph := "dark", "☾"
 	if theme == "dark" {
-		next, label = "light", "Light"
+		// In dark: show a sun → switching to light.
+		next, glyph = "light", "☀"
 	}
 	return civButton("outline", "sm",
 		[]g.Node{
@@ -133,7 +140,7 @@ func themeToggle(theme, csrf string) g.Node {
 			hx("swap", "none"),
 			g.Attr("aria-label", "Switch to "+next+" theme"),
 		},
-		g.Text(label),
+		h.Span(g.Attr("aria-hidden", "true"), g.Text(glyph)),
 	)
 }
 
