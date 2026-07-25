@@ -836,7 +836,7 @@ func civitaiThumbURL(rawURL string, width int) string {
 func galleryTile(im galleryImage, metaID string, blur bool) g.Node {
 	imgClass := "h-full w-full cursor-zoom-in object-cover transition"
 	if blur {
-		imgClass += " blur-xl"
+		imgClass += " cm-blur"
 	}
 
 	isVideo := isVideoType(im.Type)
@@ -973,7 +973,7 @@ function cmCopy(btn){
 }
 function cmReveal(btn){
   var img = btn.parentElement.querySelector('img');
-  if (img){ img.classList.remove('blur-xl'); img.removeAttribute('data-blurred'); }
+  if (img){ img.classList.remove('cm-blur'); img.removeAttribute('data-blurred'); }
   btn.remove();
 }
 function cmTileClick(img){

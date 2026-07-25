@@ -159,6 +159,18 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 }
 
 /*
+ * NSFW blur (.cm-blur) — see galleryTile (model_pages.go) + communityImageTile
+ * (model_community_pages.go). Applied to a showcase/community <img> when the
+ * NSFW display mode is blur; cmReveal removes it on click-to-reveal. Defined here
+ * (not as a Tailwind utility) because output.css is a static purged build — the
+ * old blur-xl utility (24px) is replaced by this slightly-lower 18px blur.
+ * Theme-agnostic (no token needed). No CDN.
+ */
+.cm-blur {
+  filter: blur(18px);
+}
+
+/*
  * Video thumbnail badge (.cm-video-badge) — see galleryTile in model_pages.go.
  * A subtle centered ▶ over a video tile's still poster so it clearly reads as a
  * video (the tile shows a poster frame; the lightbox plays the original). Uses a

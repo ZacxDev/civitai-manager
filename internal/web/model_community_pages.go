@@ -88,7 +88,7 @@ func (s *Server) communityImageTile(it civitai.ImageItem, mode string) g.Node {
 
 	imgClass := "h-full w-full object-cover transition"
 	if blur {
-		imgClass += " blur-xl"
+		imgClass += " cm-blur"
 	}
 	img := h.Img(
 		h.Src(civitaiThumbURL(it.URL, thumbnailWidth)),

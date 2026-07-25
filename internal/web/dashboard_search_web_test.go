@@ -204,7 +204,7 @@ func TestModelCardNSFWModes(t *testing.T) {
 		if !strings.Contains(out, "click to reveal") {
 			t.Error("blur mode should gate the NSFW image behind a reveal overlay")
 		}
-		if !strings.Contains(out, "blur-xl") {
+		if !strings.Contains(out, "cm-blur") {
 			t.Error("blur mode should blur the NSFW image")
 		}
 		if !strings.Contains(out, safeURL) {

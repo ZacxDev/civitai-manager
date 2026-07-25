@@ -299,8 +299,8 @@ func TestModelNSFWBlurByDefault(t *testing.T) {
 	if !strings.Contains(body, "safe.jpeg") || !strings.Contains(body, "nsfw.jpeg") {
 		t.Fatal("both images should be present by default (blur mode)")
 	}
-	if !strings.Contains(body, `data-blurred="1"`) || !strings.Contains(body, "blur-xl") {
-		t.Error("NSFW image should be blurred by default (blur-xl + data-blurred)")
+	if !strings.Contains(body, `data-blurred="1"`) || !strings.Contains(body, "cm-blur") {
+		t.Error("NSFW image should be blurred by default (cm-blur + data-blurred)")
 	}
 	if !strings.Contains(body, "click to reveal") {
 		t.Error("blurred NSFW image should offer click-to-reveal")
@@ -364,7 +364,7 @@ func TestModelNSFWUnknownLevelFailsClosed(t *testing.T) {
 	if !strings.Contains(body, "unknown.jpeg") {
 		t.Fatal("unknown-level image should be present in blur mode")
 	}
-	if !strings.Contains(body, `data-blurred="1"`) || !strings.Contains(body, "blur-xl") {
+	if !strings.Contains(body, `data-blurred="1"`) || !strings.Contains(body, "cm-blur") {
 		t.Error("unknown-level image must be blurred (fail closed)")
 	}
 	if !strings.Contains(body, "safe.jpeg") {
