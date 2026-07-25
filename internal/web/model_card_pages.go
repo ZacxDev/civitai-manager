@@ -244,18 +244,26 @@ func versionStatusFragment(bd versionBreakdown, raw []byte) g.Node {
 	if latest == "" {
 		latest = fmt.Sprintf("Version #%d", bd.LatestID)
 	}
-	have := "none in library"
+	// Both publish dates come from the SAME cached raw GetModel body — zero extra
+	// calls. Each is appended inline ("· Published YYYY-MM-DD") only when present,
+	// and omitted gracefully when the version isn't in the model's version list
+	// (versionPublishedDate → ""). All names/dates are untrusted → g.Text escapes.
+	haveLine := "You have: none in library"
 	if len(bd.Local) > 0 {
-		have = bd.Local[0].Name // Local is newest-first (list order)
+		haveLine = "You have: " + bd.Local[0].Name // Local is newest-first (list order)
+		if d := versionPublishedDate(raw, bd.Local[0].VersionID); d != "" {
+			haveLine += " · Published " + d
+		}
+	}
+	latestLine := "Latest: " + latest
+	if d := versionPublishedDate(raw, bd.LatestID); d != "" {
+		latestLine += " · Published " + d
 	}
 
 	pop := []g.Node{
 		h.Div(h.Class("cm-vstatus-title"), g.Text("Update available")),
-		h.Div(g.Text("You have: " + have)),
-		h.Div(g.Text("Latest: " + latest)),
-	}
-	if date := versionPublishedDate(raw, bd.LatestID); date != "" {
-		pop = append(pop, h.Div(h.Class("cm-vstatus-date"), g.Text("Published "+date)))
+		h.Div(g.Text(haveLine)),
+		h.Div(g.Text(latestLine)),
 	}
 
 	return h.Span(

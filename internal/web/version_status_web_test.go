@@ -140,6 +140,68 @@ func TestVersionStatusUnknownModelDegrades(t *testing.T) {
 	}
 }
 
+// TestVersionStatusBothPublishDates proves the popover shows BOTH the local and
+// the latest version's publish date (item 2), sourced from the same cached raw.
+func TestVersionStatusBothPublishDates(t *testing.T) {
+	raw := versionStatusRaw(t, []map[string]any{
+		{"id": 20, "name": "v2", "publishedAt": "2024-03-10T12:00:00.000Z"},
+		{"id": 10, "name": "v1", "publishedAt": "2023-01-05T12:00:00.000Z"},
+	})
+	srv := seedVersionStatus(t, raw, 10) // has v1 (id 10); latest is v2 (id 20)
+
+	body := getModelPage(t, srv, "/models/7/version-status")
+	for _, want := range []string{
+		"You have: v1", "Published 2023-01-05", // local version's date
+		"Latest: v2", "Published 2024-03-10", // latest version's date
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("popover missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// TestVersionStatusOmitsMissingLocalDate proves the popover degrades gracefully
+// when the user's local version is NOT in the model's version list (its date is
+// unknown): it renders the local name without a date and does not crash.
+func TestVersionStatusOmitsMissingLocalDate(t *testing.T) {
+	raw := versionStatusRaw(t, []map[string]any{
+		{"id": 20, "name": "v2", "publishedAt": "2024-03-10T12:00:00.000Z"},
+		{"id": 10, "name": "v1", "publishedAt": "2023-01-05T12:00:00.000Z"},
+	})
+	// The user owns version 99, which is not in the list → no resolvable date.
+	srv := seedVersionStatus(t, raw, 99)
+
+	body := getModelPage(t, srv, "/models/7/version-status")
+	if !strings.Contains(body, "You have: Version #99") {
+		t.Errorf("should name the unknown local version:\n%s", body)
+	}
+	// The local line carries no date; the latest line still does.
+	if strings.Contains(body, "You have: Version #99 · Published") {
+		t.Error("an unknown local version must not fabricate a publish date")
+	}
+	if !strings.Contains(body, "Latest: v2 · Published 2024-03-10") {
+		t.Errorf("the latest line should still carry its date:\n%s", body)
+	}
+}
+
+// TestVersionStatusEscapesNames proves untrusted version names in the popover are
+// HTML-escaped (never injected raw).
+func TestVersionStatusEscapesNames(t *testing.T) {
+	raw := versionStatusRaw(t, []map[string]any{
+		{"id": 20, "name": "<b>evil</b>", "publishedAt": "2024-03-10T12:00:00.000Z"},
+		{"id": 10, "name": "v1"},
+	})
+	srv := seedVersionStatus(t, raw, 10)
+
+	body := getModelPage(t, srv, "/models/7/version-status")
+	if strings.Contains(body, "<b>evil</b>") {
+		t.Errorf("version name must be escaped, not injected raw:\n%s", body)
+	}
+	if !strings.Contains(body, "&lt;b&gt;evil&lt;/b&gt;") {
+		t.Errorf("escaped version name should appear:\n%s", body)
+	}
+}
+
 // TestSuggestionCardLazyVersionStatus proves each dashboard suggestion card wires
 // the lazy version-status trigger.
 func TestSuggestionCardLazyVersionStatus(t *testing.T) {
