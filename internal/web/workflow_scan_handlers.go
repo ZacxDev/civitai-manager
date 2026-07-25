@@ -63,8 +63,8 @@ func (s *Server) handleWorkflowScan(w http.ResponseWriter, r *http.Request) {
 // already running (idempotent). The scan derives its context from the server base
 // context (so shutdown cancels it) with the runaway-backstop budget, and STREAMS
 // each processed workflow into the job (appended under workflowScanMu). In
-// production it resolves the ComfyUI workflow dirs (auto-discovery unioned with the
-// persisted scan_dirs) and runs a library.WorkflowScanner.
+// production it resolves the ComfyUI workflow dirs (the marked install dirs'
+// user-workflow dirs, else auto-discovery) and runs a library.WorkflowScanner.
 func (s *Server) startWorkflowScan() {
 	s.workflowScanMu.Lock()
 	defer s.workflowScanMu.Unlock()
@@ -119,9 +119,9 @@ func (s *Server) startWorkflowScan() {
 }
 
 // realWorkflowScan is the production workflow-scan seam: it resolves the ComfyUI
-// workflow directories (a bounded auto-discovery crawl for installs' WorkflowDirs,
-// unioned with the persisted scan_dirs) and runs a library.WorkflowScanner over
-// them, streaming each result via onWorkflow.
+// workflow directories (the user's marked install dirs, derived to their
+// user-workflow dirs; or a bounded $HOME auto-discovery crawl when nothing is
+// marked) and runs a library.WorkflowScanner over them, streaming each result.
 func (s *Server) realWorkflowScan(ctx context.Context, onWorkflow func(library.WorkflowResult)) (*library.WorkflowScanReport, error) {
 	dirs := s.resolveWorkflowScanDirs(ctx)
 	if len(dirs) == 0 {
@@ -137,13 +137,6 @@ func (s *Server) realWorkflowScan(ctx context.Context, onWorkflow func(library.W
 // directly). Discovery errors are tolerated — a partial/empty result just narrows
 // the scan.
 func (s *Server) resolveWorkflowScanDirs(ctx context.Context) []string {
-	crawl := s.crawlFn
-	if crawl == nil {
-		crawl = library.DiscoverInstalls
-	}
-	installs, _ := crawl(ctx, s.discoverRoots, library.DiscoverOptions{})
-	dirs := library.WorkflowScanDirs(installs)
-
 	seen := map[string]bool{}
 	var out []string
 	add := func(d string) {
@@ -153,13 +146,30 @@ func (s *Server) resolveWorkflowScanDirs(ctx context.Context) []string {
 		seen[d] = true
 		out = append(out, d)
 	}
-	for _, d := range dirs {
-		add(d)
-	}
-	if sel, err := s.store.ListScanDirs(); err == nil {
+
+	// Preferred, deterministic path: the user has already marked their install
+	// dirs (the same ones the model scan uses). Derive each one's user-workflow
+	// directory and scan THAT specifically — fast, and no $HOME crawl. This also
+	// avoids sweeping in bundled custom-node examples / ComfyUI templates that a
+	// full-tree walk of an install root would pick up.
+	if sel, err := s.store.ListScanDirs(); err == nil && len(sel) > 0 {
 		for _, d := range sel {
-			add(d)
+			for _, wd := range library.WorkflowDirsForMarked(d) {
+				add(wd)
+			}
 		}
+		return out
+	}
+
+	// Fallback only when nothing is marked: auto-discover ComfyUI installs under
+	// $HOME/opt (bounded, best-effort) and scan their workflow dirs.
+	crawl := s.crawlFn
+	if crawl == nil {
+		crawl = library.DiscoverInstalls
+	}
+	installs, _ := crawl(ctx, s.discoverRoots, library.DiscoverOptions{})
+	for _, d := range library.WorkflowScanDirs(installs) {
+		add(d)
 	}
 	return out
 }

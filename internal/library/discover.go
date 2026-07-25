@@ -687,6 +687,19 @@ func WorkflowScanDirs(installs []Install) []string {
 	return out
 }
 
+// WorkflowDirsForMarked derives the directories to scan for a user-marked install
+// directory. When dir is a ComfyUI install root, this returns its user-workflow
+// dirs (user/default/workflows and legacy workflows/) SPECIFICALLY — not the whole
+// tree — so bundled custom-node example workflows and ComfyUI's built-in templates
+// don't drown the user's own saved workflows. When dir has no such layout (an
+// arbitrary directory the user pointed us at), it returns dir itself.
+func WorkflowDirsForMarked(dir string) []string {
+	if wdirs, _ := comfyDerivedDirs(dir); len(wdirs) > 0 {
+		return wdirs
+	}
+	return []string{dir}
+}
+
 // detectA1111: webui.py or launch.py + models/Stable-diffusion + models/Lora.
 func detectA1111(dir string) (string, []string, bool) {
 	if !fileExists(filepath.Join(dir, "webui.py")) && !fileExists(filepath.Join(dir, "launch.py")) {
