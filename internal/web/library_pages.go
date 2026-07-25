@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	"github.com/ZacxDev/civitai-manager/internal/library"
 	"github.com/ZacxDev/civitai-manager/internal/store"
 	g "maragu.dev/gomponents"
@@ -107,6 +108,12 @@ type libraryView struct {
 	Candidates  []store.LocalFile
 	TotalBytes  int64
 	Reclaimable int64
+	// OutOfDate is the number of distinct matched models whose CACHED civitai
+	// detail shows an update available (latest remote version not in the library).
+	// It is populated by the Server via computeOutOfDate BEFORE rendering (cache-
+	// only, no fetch), and is 0 for a pure render (no store) or a cold cache — see
+	// computeOutOfDate. summarizeLibrary surfaces it as the "out of date" pill count.
+	OutOfDate int
 }
 
 func buildLibraryView(files []store.LocalFile) libraryView {
@@ -262,8 +269,9 @@ func filesPanel(v libraryView, csrf string, allowExtra bool, selectedDirs []stri
 		)
 	}
 	if scanInitial == nil {
-		// Idle (never scanned): the scan form card above the idle library content.
-		scanInitial = filesTabBody(libraryContent(v, csrf), csrf, matchRemote)
+		// Idle: the scan controls above the idle library content. Before the first
+		// scan the form is inline; once results exist it moves behind a dialog.
+		scanInitial = filesTabBody(libraryContent(v, csrf), csrf, matchRemote, hasResults(v))
 	}
 	// The STABLE poll/results container is now the ONLY always-on element: only its
 	// innerHTML is ever swapped, so the re-arming scan poller can never orphan a
@@ -273,10 +281,23 @@ func filesPanel(v libraryView, csrf string, allowExtra bool, selectedDirs []stri
 	return h.Div(h.ID("scan-results"), scanInitial)
 }
 
+// hasResults reports whether the Model-files tab has any scan output yet — matched
+// model files or flagged candidates. It gates the scan-controls placement: inline
+// before the first scan (nothing yet), behind a "Scan / Rescan" dialog once there
+// are results (so the controls stop dominating a populated results view).
+func hasResults(v libraryView) bool {
+	return len(v.Files) > 0 || len(v.Candidates) > 0
+}
+
+// scanFormDialogID is the native <dialog> holding the scan form once the tab has
+// results. Mirrors workflowImportDialogID — opened by an inline showModal() (an
+// inline script is allowed; only EXTERNAL scripts/styles are forbidden), closed by
+// its own <form method="dialog"> control.
+const scanFormDialogID = "scan-form-dialog"
+
 // modelScanFormCard is the "Model files" scan form wrapped in its titled card. It
-// is the part of the #scan-results body that appears in the IDLE and TERMINAL
-// states and is ABSENT while a scan runs, so swapping #scan-results between those
-// states shows/hides the form automatically.
+// is the INLINE (first-scan) form: shown above the idle library content before any
+// scan has produced results.
 func modelScanFormCard(csrf string, matchRemote bool) g.Node {
 	return card(
 		sectionTitle("Model files"),
@@ -284,14 +305,54 @@ func modelScanFormCard(csrf string, matchRemote bool) g.Node {
 	)
 }
 
+// scanRescanCard is the post-results scan control: a titled card with a "Scan /
+// Rescan" trigger that opens the native <dialog> holding the scan form. The form,
+// its POST endpoint, CSRF, loopback gate and the streaming poll into #scan-results
+// are UNCHANGED — the form is only relocated behind the modal. The dialog closes
+// on submit (onsubmit → dialog.close()) and on Cancel/✕ (<form method="dialog">).
+func scanRescanCard(csrf string, matchRemote bool) g.Node {
+	trigger := civButton("outline", "md", []g.Node{
+		h.Type("button"),
+		g.Attr("onclick", "document.getElementById('"+scanFormDialogID+"').showModal()"),
+	}, g.Text("Scan / Rescan"))
+
+	dialog := h.Dialog(
+		h.ID(scanFormDialogID),
+		// Transparent shell; the inner card is the visible, theme-aware surface.
+		h.Class("bg-transparent p-0 border-0 w-full max-w-lg"),
+		card(
+			h.Div(h.Class("flex items-center justify-between gap-4 mb-3"),
+				h.H2(h.Class("text-lg font-semibold text-slate-100"), g.Text("Scan for model files")),
+				h.Form(h.Method("dialog"), h.Class("inline"),
+					civButton("subtle", "sm", []g.Node{h.Type("submit"),
+						g.Attr("aria-label", "Close")}, g.Text("✕"))),
+			),
+			modelScanForm(csrf, matchRemote),
+		),
+	)
+
+	return card(
+		sectionTitle("Model files"),
+		h.P(h.Class("text-sm text-slate-400"),
+			g.Text("Re-run the scan to pick up new, changed, or removed files.")),
+		h.Div(h.Class("mt-2"), trigger),
+		dialog,
+	)
+}
+
 // filesTabBody is the innerHTML of #scan-results for the IDLE and TERMINAL states:
-// the scan form card ABOVE the given results body (idle library content, or the
-// terminal scanResults view). The RUNNING state does NOT use this — it swaps in
-// scanScanning alone (no form) so the live progress is the main content.
-func filesTabBody(body g.Node, csrf string, matchRemote bool) g.Node {
+// the scan CONTROLS above the given results body (idle library content, or the
+// terminal scanResults view). Before the first scan (hasResults=false) the form is
+// inline; once there are results it moves behind the "Scan / Rescan" dialog. The
+// RUNNING state does NOT use this — it swaps in scanScanning alone (no form).
+func filesTabBody(body g.Node, csrf string, matchRemote, hasResults bool) g.Node {
+	controls := modelScanFormCard(csrf, matchRemote)
+	if hasResults {
+		controls = scanRescanCard(csrf, matchRemote)
+	}
 	return h.Div(
 		h.Class("space-y-6"),
-		modelScanFormCard(csrf, matchRemote),
+		controls,
 		body,
 	)
 }
@@ -328,6 +389,11 @@ func modelScanForm(csrf string, matchRemote bool) g.Node {
 		hx("post", "/library/scan"),
 		hx("target", "#scan-results"),
 		hx("swap", "innerHTML"),
+		// NOTE: no onsubmit dialog-close. A successful scan HX-Redirects to the Model
+		// files tab (a full reload), which removes the "Scan / Rescan" <dialog>
+		// naturally — so closing it here is redundant, and a native onsubmit close can
+		// race htmx's own submit handling (browser/version-dependent, unverifiable
+		// without a real browser). Deterministic path: let the redirect do it.
 		h.Class("space-y-3"),
 		csrfInput(csrf),
 		h.Label(
@@ -485,11 +551,13 @@ type librarySummary struct {
 	Duplicates       int   // redundant copies (duplicate + superseded candidates)
 	DuplicateBytes   int64 // reclaimable bytes from those redundant copies
 	Broken           int   // broken sidecars/partials
+	OutOfDate        int   // matched models with a newer remote version (cache-only)
 }
 
 // summarizeLibrary derives the banner roll-up from a libraryView: distinct
 // identified models, unidentified files, redundant (duplicate/superseded)
-// copies + their reclaimable bytes, and broken files.
+// copies + their reclaimable bytes, broken files, and the out-of-date count
+// (surfaced from v.OutOfDate, which the Server computes cache-only before render).
 func summarizeLibrary(v libraryView) librarySummary {
 	var s librarySummary
 	models := map[int]bool{}
@@ -510,7 +578,44 @@ func summarizeLibrary(v libraryView) librarySummary {
 			s.DuplicateBytes += c.SizeBytes
 		}
 	}
+	s.OutOfDate = v.OutOfDate
 	return s
+}
+
+// modelDetailResolver resolves a model id to its civitai detail, or nil when it
+// cannot be resolved. The out-of-date computation passes a CACHE-ONLY resolver so
+// the dashboard/library render never blocks on the network.
+type modelDetailResolver func(id int) *civitai.ModelDetail
+
+// computeOutOfDate counts the distinct matched models in v whose resolved detail
+// shows an update available (the latest remote version is not in the library).
+//
+// It is cache-only in practice: the Server passes a resolver that returns nil for
+// an uncached/stale model, and those are skipped (never counted, never fetched).
+// So on a COLD cache the count UNDERSTATES — that is intentional, to keep the
+// render fast. resolve may be nil (pure render / no store), yielding 0.
+func computeOutOfDate(v libraryView, resolve modelDetailResolver) int {
+	if resolve == nil {
+		return 0
+	}
+	filesByModel := map[int][]store.LocalFile{}
+	for _, f := range v.Files {
+		if f.ModelID != nil {
+			id := *f.ModelID
+			filesByModel[id] = append(filesByModel[id], f)
+		}
+	}
+	n := 0
+	for id, files := range filesByModel {
+		m := resolve(id)
+		if m == nil {
+			continue
+		}
+		if buildVersionBreakdown(m.ModelVersions, files).UpdateAvailable {
+			n++
+		}
+	}
+	return n
 }
 
 // summaryBanner is the "what to do next" banner at the top of the Model-files
@@ -521,27 +626,38 @@ func summarizeLibrary(v libraryView) librarySummary {
 func summaryBanner(v libraryView) g.Node {
 	s := summarizeLibrary(v)
 
-	// Clean state: nothing to act on — reassure rather than nag.
-	if s.Duplicates == 0 && s.Broken == 0 {
-		return alert("success", "Your library is clean",
-			h.P(h.Class("mt-1 text-sm"),
-				g.Text(fmt.Sprintf("No duplicates or broken files found — %d models identified · %d unmatched.",
-					s.ModelsIdentified, s.Unmatched))),
-		)
-	}
-
-	// Actionable roll-up: dot-separated counts.
-	pieces := []g.Node{
-		bannerStat(strconv.Itoa(s.ModelsIdentified), "models identified"),
+	// The stat-pills row: always show the models pill; show the rest only when > 0.
+	// The "out of date" pill is the REMOTE update-available signal (cache-only),
+	// distinct from the local duplicate/superseded (quarantine) counts.
+	pills := []g.Node{
+		statPill("neutral", "📦", s.ModelsIdentified, "models"),
 	}
 	if s.Duplicates > 0 {
-		pieces = append(pieces, bannerSep(),
-			bannerStat(strconv.Itoa(s.Duplicates),
-				fmt.Sprintf("duplicates (reclaim %s)", humanBytes(s.DuplicateBytes))))
+		pills = append(pills, statPill("dup", "⧉", s.Duplicates,
+			"duplicates · "+humanBytes(s.DuplicateBytes)))
 	}
-	pieces = append(pieces, bannerSep(), bannerStat(strconv.Itoa(s.Unmatched), "unmatched"))
+	if s.OutOfDate > 0 {
+		pills = append(pills, statPill("update", "⟳", s.OutOfDate, "out of date"))
+	}
 	if s.Broken > 0 {
-		pieces = append(pieces, bannerSep(), bannerStat(strconv.Itoa(s.Broken), "broken"))
+		pills = append(pills, statPill("broken", "⚠", s.Broken, "broken"))
+	}
+	if s.Unmatched > 0 {
+		pills = append(pills, statPill("neutral", "○", s.Unmatched, "unmatched"))
+	}
+
+	// Clean state: nothing to quarantine — reassure rather than nag. The pills row
+	// is still informative, so render it above the reassurance.
+	if s.Duplicates == 0 && s.Broken == 0 {
+		return card(
+			h.Class("border-indigo-500/40"),
+			h.Div(h.Class("flex flex-wrap items-center gap-2"), g.Group(pills)),
+			alert("success", "Your library is clean",
+				h.P(h.Class("mt-1 text-sm"),
+					g.Text(fmt.Sprintf("No duplicates or broken files found — %d models identified · %d unmatched.",
+						s.ModelsIdentified, s.Unmatched))),
+			),
+		)
 	}
 
 	primaryLabel := "Review & quarantine duplicates"
@@ -554,8 +670,8 @@ func summaryBanner(v libraryView) g.Node {
 		h.Div(
 			h.Class("flex flex-wrap items-center justify-between gap-4"),
 			h.Div(
-				h.Class("flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-200"),
-				g.Group(pieces),
+				h.Class("flex flex-wrap items-center gap-2"),
+				g.Group(pills),
 			),
 			h.Div(
 				h.Class("flex items-center gap-3"),
@@ -572,17 +688,17 @@ func summaryBanner(v libraryView) g.Node {
 	)
 }
 
-// bannerStat renders one "<value> <label>" chunk of the summary count line.
-func bannerStat(value, label string) g.Node {
+// statPill renders one color-coded count chip for the summary row: a glyph, the
+// bold count, and a label. variant selects the theme-aware .cm-pill-* color
+// (neutral/dup/update/broken), all of which resolve from --civitai-* tokens so the
+// pill reads in both light and dark (data-theme). See app.css.
+func statPill(variant, glyph string, count int, label string) g.Node {
 	return h.Span(
-		h.Span(h.Class("font-semibold text-slate-100"), g.Text(value+" ")),
-		h.Span(h.Class("text-slate-400"), g.Text(label)),
+		h.Class("cm-pill cm-pill-"+variant),
+		g.Text(glyph+" "),
+		h.Span(h.Class("font-semibold"), g.Text(strconv.Itoa(count))),
+		g.Text(" "+label),
 	)
-}
-
-// bannerSep is the muted dot separator between banner count chunks.
-func bannerSep() g.Node {
-	return h.Span(h.Class("text-slate-600"), g.Text("·"))
 }
 
 // File-size magnitude thresholds for the color-coded Size cell (see sizeClass).

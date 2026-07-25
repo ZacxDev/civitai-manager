@@ -98,34 +98,94 @@ func (s *Server) handleSetTheme(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// searchSortOptions / searchPeriodOptions back the search page's sort + period
+// filter dropdowns. Each option's Value is the EXACT CivitAI query string sent to
+// the models API; Label is the human wording shown in the <select>.
+var searchSortOptions = []selectOption{
+	{"Most Downloaded", "Most downloaded"},
+	{"Highest Rated", "Highest rated"},
+	{"Newest", "Newest"},
+}
+
+var searchPeriodOptions = []selectOption{
+	{"AllTime", "All time"},
+	{"Month", "This month"},
+	{"Week", "This week"},
+}
+
+// normalizeSearchSort validates a ?sort= value against the whitelist, defaulting
+// to "Most Downloaded". Only whitelisted values are ever forwarded to civitai.
+func normalizeSearchSort(v string) string {
+	switch v {
+	case "Most Downloaded", "Highest Rated", "Newest":
+		return v
+	}
+	return "Most Downloaded"
+}
+
+// normalizeSearchPeriod validates a ?period= value against the whitelist,
+// defaulting to def (the empty-query popular feed defaults to "Month" to preserve
+// the cached "Popular this month" behavior; a keyword search defaults to
+// "AllTime", the least-restrictive window ≈ the prior no-period behavior).
+func normalizeSearchPeriod(v, def string) string {
+	switch v {
+	case "AllTime", "Month", "Week":
+		return v
+	}
+	return def
+}
+
+// searchHeadingFor labels a non-default result grid (e.g. "Highest rated · this
+// week"). The default empty-query feed keeps its own "Popular this month" heading
+// (see popularModels), so this is only used for chosen sort/period combinations.
+func searchHeadingFor(sort, period string) string {
+	return optionLabel(searchSortOptions, sort) + " · " + optionLabel(searchPeriodOptions, period)
+}
+
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
-	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	q0 := r.URL.Query()
+	query := strings.TrimSpace(q0.Get("q"))
 	isHX := r.Header.Get("HX-Request") == "true"
 	mode := s.nsfwMode()
 	nsfw := s.nsfwSearchFlag()
+	sortSel := normalizeSearchSort(q0.Get("sort"))
+	// The empty-query feed defaults to Month (the cached popular default); a keyword
+	// search defaults to AllTime so it does not silently narrow to a monthly window.
+	periodDefault := "AllTime"
+	if query == "" {
+		periodDefault = "Month"
+	}
+	periodSel := normalizeSearchPeriod(q0.Get("period"), periodDefault)
 	// Per-render model-subscription map (ONE ListSubscriptions query, not per card)
 	// so each result card's subscribe control reflects real subscribed state.
 	subs := s.modelSubscriptions()
 
 	if query == "" {
-		// Empty query → the recent-popular default feed (cached per NSFW flag),
-		// with a heading. If that fetch fails, res stays nil and searchResults
-		// falls back to the "Enter a query…" hint.
-		res, heading := s.popularModels(r.Context(), nsfw)
+		var res *civitai.ModelSearchResult
+		var heading string
+		if sortSel == "Most Downloaded" && periodSel == "Month" {
+			// The default popular feed: cached per NSFW flag with its own heading.
+			res, heading = s.popularModels(r.Context(), nsfw)
+		} else {
+			// A chosen sort/period on the empty-query feed: direct fetch, labeled.
+			res = s.searchFeed(r.Context(), nsfw, sortSel, periodSel)
+			heading = searchHeadingFor(sortSel, periodSel)
+		}
 		if isHX {
 			s.render(w, http.StatusOK, searchResults(res, subs, mode, s.csrf, heading))
 			return
 		}
-		s.render(w, http.StatusOK, searchPage("", res, subs, s.csrf, s.currentTheme(), mode, heading))
+		s.render(w, http.StatusOK, searchPage("", res, subs, s.csrf, s.currentTheme(), mode, heading, sortSel, periodSel))
 		return
 	}
 
 	q := url.Values{}
 	q.Set("query", query)
 	q.Set("limit", searchLimit)
-	// Keyword search returns the most popular matches first (the empty-query
-	// "popular this month" default already sorts Most Downloaded).
-	q.Set("sort", "Most Downloaded")
+	// Thread the chosen sort/period through to civitai (defaults: Most Downloaded,
+	// AllTime). Period meaningfully applies to Most Downloaded/Highest Rated.
+	q.Set("sort", sortSel)
+	q.Set("period", periodSel)
 	// Tie the nsfw param to the display mode so NSFW models return WITH their
 	// showcase images (blur/show) or are excluded (hide) — see setNSFWParam.
 	setNSFWParam(q, nsfw)
@@ -137,14 +197,34 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			s.render(w, http.StatusOK, errorNote("Search failed: "+err.Error()))
 			return
 		}
-		s.render(w, http.StatusOK, searchPage(query, nil, subs, s.csrf, s.currentTheme(), mode, ""))
+		s.render(w, http.StatusOK, searchPage(query, nil, subs, s.csrf, s.currentTheme(), mode, "", sortSel, periodSel))
 		return
 	}
 	if isHX {
 		s.render(w, http.StatusOK, searchResults(res, subs, mode, s.csrf, ""))
 		return
 	}
-	s.render(w, http.StatusOK, searchPage(query, res, subs, s.csrf, s.currentTheme(), mode, ""))
+	s.render(w, http.StatusOK, searchPage(query, res, subs, s.csrf, s.currentTheme(), mode, "", sortSel, periodSel))
+}
+
+// searchFeed fetches a no-query model feed for a chosen sort/period (the empty-
+// query search page with a non-default filter). Unlike popularModels it is NOT
+// cached — the cache is reserved for the default Most Downloaded/Month feed. On
+// any error it returns nil so searchResults falls back to the empty-state hint.
+func (s *Server) searchFeed(parent context.Context, nsfw bool, sort, period string) *civitai.ModelSearchResult {
+	q := url.Values{}
+	q.Set("sort", sort)
+	q.Set("period", period)
+	q.Set("limit", searchLimit)
+	setNSFWParam(q, nsfw)
+	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
+	defer cancel()
+	res, err := s.reader.SearchModels(ctx, q)
+	if err != nil {
+		s.log.Warn("search feed fetch failed", "sort", sort, "period", period, "err", err)
+		return nil
+	}
+	return res
 }
 
 // handleSubscribeSearch backs the dashboard's integrated civitai search: it
@@ -164,6 +244,9 @@ func (s *Server) handleSubscribeSearch(w http.ResponseWriter, r *http.Request) {
 	q := url.Values{}
 	q.Set("query", query)
 	q.Set("limit", searchLimit)
+	// Return the most popular matches first (the main keyword search does the same);
+	// without an explicit sort the dashboard mini-search inherited the API default.
+	q.Set("sort", "Most Downloaded")
 	// Same NSFW-image behavior as the main search (see setNSFWParam).
 	setNSFWParam(q, s.nsfwSearchFlag())
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -228,6 +311,38 @@ func (s *Server) handleModelTitle(w http.ResponseWriter, r *http.Request) {
 		name = m.Name
 	}
 	s.render(w, http.StatusOK, g.Text(name))
+}
+
+// handleModelVersionStatus backs the lazy version-status badge on the dashboard
+// subscribe-suggestion cards. It resolves the model detail CACHE-FIRST (one
+// GetModel on a miss/stale, matching the model-page posture), cross-references the
+// model's local files, and renders the "new version" badge + popover when the
+// latest remote version is not in the library — or an empty fragment when up to
+// date. GET-only, read-only (no CSRF). It NEVER panics on malformed cache/JSON and
+// degrades to an empty fragment on any error, so a card is never broken by it.
+func (s *Server) handleModelVersionStatus(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id <= 0 {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	// The model's local files (model-kind) for the in-library version cross-ref.
+	var files []store.LocalFile
+	if fs, ferr := s.store.ListLocalFilesByModel(id); ferr == nil {
+		for _, f := range fs {
+			if f.Kind == store.LocalKindModel {
+				files = append(files, f)
+			}
+		}
+	}
+	m, raw, err := s.cachedModelDetail(r.Context(), id)
+	if err != nil || m == nil {
+		// Offline / not found → render nothing rather than an error chip.
+		s.render(w, http.StatusOK, g.Text(""))
+		return
+	}
+	bd := buildVersionBreakdown(m.ModelVersions, files)
+	s.render(w, http.StatusOK, versionStatusFragment(bd, raw))
 }
 
 func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {

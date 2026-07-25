@@ -185,7 +185,14 @@ func suggestionsList(suggestions []suggestion, csrf string) g.Node {
 			return card(
 				h.Class("flex items-center justify-between gap-3"),
 				h.Div(
-					suggestionTitle(sg),
+					h.Class("min-w-0"),
+					h.Div(
+						h.Class("flex items-center gap-2"),
+						suggestionTitle(sg),
+						// Lazy version-status badge (cache-first on load): shows a "new
+						// version" chip + hover popover when a remote update exists.
+						versionStatusLazy(sg.ModelID),
+					),
 					h.Div(h.Class("text-xs text-slate-500"),
 						g.Text(fmt.Sprintf("%d file(s) · %s", sg.FileCount, humanBytes(sg.TotalBytes)))),
 				),
@@ -484,22 +491,26 @@ func progressBar(it store.QueueItem) g.Node {
 // mode is the app's NSFW display mode (hide|blur|show), threaded to the showcase
 // carousels on each card. heading, when set, labels the result grid (e.g.
 // "Popular this month" for the empty-query default feed).
-func searchPage(query string, res *civitai.ModelSearchResult, subs map[int]*store.Subscription, csrf, theme, mode, heading string) g.Node {
+func searchPage(query string, res *civitai.ModelSearchResult, subs map[int]*store.Subscription, csrf, theme, mode, heading, sortSel, periodSel string) g.Node {
 	return page("Search", theme, csrf, mode,
 		card(
 			sectionTitle("Search models"),
 			h.Form(
-				h.Class("flex items-end gap-3"),
+				h.Class("flex flex-wrap items-end gap-3"),
 				hx("get", "/search"),
 				hx("target", "#search-results"),
 				hx("swap", "innerHTML"),
 				hx("trigger", "submit"),
 				h.Div(
-					h.Class("flex-1"),
+					h.Class("min-w-[12rem] flex-1"),
 					textInput("text-input", "search-q", "Query",
 						h.Type("text"), h.Name("q"), h.Value(query),
 						h.Placeholder("Search by name, tag, …")),
 				),
+				// Sort + period filter dropdowns (GET params threaded into the civitai
+				// query). Their values are the exact civitai query strings.
+				labeledSelect("search-sort", "sort", "Sort", searchSortOptions, sortSel),
+				labeledSelect("search-period", "period", "Period", searchPeriodOptions, periodSel),
 				btnPrimary(g.Text("Search")),
 			),
 		),

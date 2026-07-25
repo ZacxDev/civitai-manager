@@ -273,6 +273,37 @@ func parsePublishedAt(raw []byte) string {
 	return strings.TrimSpace(body.PublishedAt)
 }
 
+// versionPublishedDate extracts the publish DATE (YYYY-MM-DD) of the given version
+// id from a raw GetModel body's modelVersions[]. It is defensive: an absent field,
+// undecodable bytes, or a missing version all yield "" (the popover then omits the
+// date). The ISO timestamp (e.g. "2023-05-01T12:00:00.000Z") is truncated to its
+// date prefix without pulling in a time parse, so a malformed value never panics.
+func versionPublishedDate(raw []byte, versionID int) string {
+	if len(raw) == 0 || versionID == 0 {
+		return ""
+	}
+	var body struct {
+		ModelVersions []struct {
+			ID          int    `json:"id"`
+			PublishedAt string `json:"publishedAt"`
+		} `json:"modelVersions"`
+	}
+	if json.Unmarshal(raw, &body) != nil {
+		return ""
+	}
+	for _, v := range body.ModelVersions {
+		if v.ID != versionID {
+			continue
+		}
+		p := strings.TrimSpace(v.PublishedAt)
+		if len(p) >= 10 && p[4] == '-' && p[7] == '-' {
+			return p[:10]
+		}
+		return p
+	}
+	return ""
+}
+
 // modelDetailPage renders the rich model detail page: header + stats, sanitized
 // description, tags, a version selector with per-version detail, and a showcase
 // image gallery with NSFW handling + a lightbox.

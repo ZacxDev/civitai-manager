@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
@@ -13,13 +14,20 @@ func matchedFile(id int, size int64) store.LocalFile {
 		Status: store.LocalStatusMatched, Kind: store.LocalKindModel}
 }
 
+func matchedFileVer(id, ver int, size int64) store.LocalFile {
+	m, v := id, ver
+	return store.LocalFile{ModelID: &m, VersionID: &v, SizeBytes: size,
+		Status: store.LocalStatusMatched, Kind: store.LocalKindModel}
+}
+
 func candidate(reason string, size int64) store.LocalFile {
 	return store.LocalFile{CandidateReason: reason, SizeBytes: size,
 		Kind: store.LocalKindModel, Status: store.LocalStatusMatched}
 }
 
-// TestSummaryBannerCounts asserts the banner renders the right roll-up and the
-// actionable CTAs given a populated libraryView.
+// TestSummaryBannerCounts asserts summarizeLibrary rolls up the right counts and
+// the pills row renders the models/duplicates/out-of-date/broken/unmatched pills
+// plus the quarantine CTA given a populated libraryView.
 func TestSummaryBannerCounts(t *testing.T) {
 	v := libraryView{
 		Files: []store.LocalFile{
@@ -33,6 +41,7 @@ func TestSummaryBannerCounts(t *testing.T) {
 			candidate(store.CandidateSuperseded, 1*1024*1024*1024), // 1 GB (counts as duplicate/redundant)
 			candidate(store.CandidateBroken, 10),
 		},
+		OutOfDate: 1, // one matched model has a newer remote version (cache-derived)
 	}
 
 	s := summarizeLibrary(v)
@@ -51,13 +60,17 @@ func TestSummaryBannerCounts(t *testing.T) {
 	if s.DuplicateBytes != 3*1024*1024*1024 {
 		t.Errorf("DuplicateBytes = %d, want 3GB", s.DuplicateBytes)
 	}
+	if s.OutOfDate != 1 {
+		t.Errorf("OutOfDate = %d, want 1", s.OutOfDate)
+	}
 
 	out := renderString(t, summaryBanner(v))
 	for _, want := range []string{
-		"2", "models identified",
-		"duplicates (reclaim 3.0 GB)",
-		"unmatched",
-		"broken",
+		"cm-pill", "models", // the models pill
+		"duplicates · 3.0 GB",           // duplicates pill with reclaimable bytes
+		"cm-pill-update", "out of date", // the out-of-date (remote update) pill
+		"broken",                             // broken pill
+		"unmatched",                          // unmatched pill
 		"Review &amp; quarantine duplicates", // primary CTA (ampersand escaped)
 		"See deletion candidates",            // secondary link
 		"#deletion-candidates",               // CTA target anchor
@@ -65,6 +78,22 @@ func TestSummaryBannerCounts(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("summary banner missing %q\n%s", want, out)
 		}
+	}
+}
+
+// TestSummaryBannerOutOfDatePillConditional asserts the out-of-date pill is only
+// rendered when OutOfDate > 0.
+func TestSummaryBannerOutOfDatePillConditional(t *testing.T) {
+	v := libraryView{
+		Files:      []store.LocalFile{matchedFile(1, 1<<20)},
+		Candidates: []store.LocalFile{candidate(store.CandidateBroken, 10)}, // actionable → non-clean card
+	}
+	if out := renderString(t, summaryBanner(v)); strings.Contains(out, "out of date") {
+		t.Errorf("no out-of-date pill expected when OutOfDate==0:\n%s", out)
+	}
+	v.OutOfDate = 3
+	if out := renderString(t, summaryBanner(v)); !strings.Contains(out, "out of date") || !strings.Contains(out, "cm-pill-update") {
+		t.Errorf("out-of-date pill expected when OutOfDate>0")
 	}
 }
 
@@ -84,5 +113,42 @@ func TestSummaryBannerCleanState(t *testing.T) {
 	// No quarantine CTA in the clean state.
 	if strings.Contains(out, "Review &amp; quarantine") {
 		t.Errorf("clean state must not show a quarantine CTA")
+	}
+}
+
+// TestComputeOutOfDate proves the cache-only out-of-date count: a model whose
+// resolved detail has a newer remote version counts; an uncached model (resolver
+// returns nil) does not; and a nil resolver yields 0 without panicking.
+func TestComputeOutOfDate(t *testing.T) {
+	v := libraryView{
+		Files: []store.LocalFile{
+			matchedFileVer(1, 10, 1<<20), // model 1, local version 10
+			matchedFileVer(2, 20, 1<<20), // model 2, local version 20 (uncached)
+		},
+	}
+	resolve := func(id int) *civitai.ModelDetail {
+		if id == 1 {
+			// Latest remote version (99) is NOT in the library → update available.
+			return &civitai.ModelDetail{ModelVersions: []civitai.ModelVersionSummary{
+				{ID: 99, Name: "v3"}, {ID: 10, Name: "v1"},
+			}}
+		}
+		return nil // model 2 is uncached → skipped, never fetched
+	}
+	if n := computeOutOfDate(v, resolve); n != 1 {
+		t.Errorf("computeOutOfDate = %d, want 1 (only the cached, updatable model)", n)
+	}
+	if n := computeOutOfDate(v, nil); n != 0 {
+		t.Errorf("computeOutOfDate with nil resolver = %d, want 0", n)
+	}
+
+	// A cached model whose latest version IS local must not count.
+	resolveUpToDate := func(id int) *civitai.ModelDetail {
+		return &civitai.ModelDetail{ModelVersions: []civitai.ModelVersionSummary{
+			{ID: 10, Name: "v1"},
+		}}
+	}
+	if n := computeOutOfDate(libraryView{Files: []store.LocalFile{matchedFileVer(1, 10, 1<<20)}}, resolveUpToDate); n != 0 {
+		t.Errorf("an up-to-date cached model must not count, got %d", n)
 	}
 }
