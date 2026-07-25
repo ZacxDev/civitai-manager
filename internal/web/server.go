@@ -348,6 +348,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /workflows/{id}/golden", s.handleWorkflowGolden)
 
 	mux.HandleFunc("POST /workflows/{id}/run", s.handleWorkflowRun)
+	mux.HandleFunc("GET /workflows/{id}/run/comfy-status", s.handleWorkflowRunComfyStatus)
 	mux.HandleFunc("GET /workflows/{id}/run/status", s.handleWorkflowRunStatus)
 	mux.HandleFunc("POST /workflows/run/stop", s.handleWorkflowRunStop)
 	mux.HandleFunc("GET /workflows/run/view", s.handleWorkflowRunView)

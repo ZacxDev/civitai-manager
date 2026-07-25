@@ -113,7 +113,7 @@ func workflowScanScanning(snap workflowScanSnapshot, csrf string) g.Node {
 // workflowScanTerminal is the settled fragment (no poller): a status line, the
 // scan form card (restored), and the authoritative workflow list rebuilt from the
 // store. snap.Started=false renders just the form + list so a stray poller halts.
-func workflowScanTerminal(wfs []store.Workflow, snap workflowScanSnapshot, csrf string, extraAllowed bool) g.Node {
+func workflowScanTerminal(wfs []store.Workflow, snap workflowScanSnapshot, csrf string, extraAllowed bool, resolver workflowResolver) g.Node {
 	var status g.Node
 	switch {
 	case !snap.Started:
@@ -131,7 +131,7 @@ func workflowScanTerminal(wfs []store.Workflow, snap workflowScanSnapshot, csrf 
 		h.Class("space-y-4"),
 		workflowScanFormCard(csrf, extraAllowed),
 		g.If(status != nil, card(h.Class("space-y-1"), sectionTitle("Workflow scan"), status)),
-		workflowList(wfs, csrf),
+		workflowList(wfs, csrf, resolver),
 	)
 }
 
