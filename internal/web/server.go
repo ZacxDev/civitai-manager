@@ -53,6 +53,13 @@ type Config struct {
 	// ComfyToken is an optional bearer token for a login-fronted ComfyUI. Secret —
 	// never rendered/logged.
 	ComfyToken string
+	// ComfyCloud enables the "Run on CivitAI Cloud" feature (submit to the CivitAI
+	// orchestration API, sending the graph + resource list to civitai.com and
+	// spending Buzz). Default false → the cloud UI is shown but disabled with a note.
+	ComfyCloud bool
+	// Token is the CivitAI API token, reused as the bearer for the cloud
+	// orchestration API. Secret — never rendered/logged.
+	Token string
 }
 
 // Server wires the store, the CivitAI reader, and the subscriber into an
@@ -129,6 +136,18 @@ type Server struct {
 	runMu sync.Mutex
 	// runJob is the current (or most recent) background run, or nil before the first.
 	runJob *runJob
+
+	// cloudClientFn builds the CivitAI orchestration (cloud) client. Nil
+	// (production) builds a comfy.CloudClient from the default base URL + the
+	// CivitAI token; tests inject a fake to exercise the whatif/run/poll flow
+	// without hitting civitai.com.
+	cloudClientFn func() cloudClient
+	// cloudMu guards cloudJob. One cloud run is active at a time (same global MVP
+	// guard as the local run).
+	cloudMu sync.Mutex
+	// cloudJob is the current (or most recent) background cloud run, or nil before
+	// the first.
+	cloudJob *cloudJob
 
 	// popularMu guards the in-process TTL cache of the "recent popular" feed shown
 	// as the empty-query search default. The feed is keyed by the NSFW flag
@@ -354,6 +373,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /workflows/{id}/run/status", s.handleWorkflowRunStatus)
 	mux.HandleFunc("POST /workflows/run/stop", s.handleWorkflowRunStop)
 	mux.HandleFunc("GET /workflows/run/view", s.handleWorkflowRunView)
+
+	mux.HandleFunc("GET /workflows/{id}/cloud", s.handleWorkflowCloud)
+	mux.HandleFunc("POST /workflows/{id}/cloud/whatif", s.handleWorkflowCloudWhatif)
+	mux.HandleFunc("POST /workflows/{id}/cloud/run", s.handleWorkflowCloudRun)
+	mux.HandleFunc("GET /workflows/cloud/status", s.handleWorkflowCloudStatus)
+	mux.HandleFunc("POST /workflows/cloud/stop", s.handleWorkflowCloudStop)
 
 	return logRequests(s.log, mux)
 }

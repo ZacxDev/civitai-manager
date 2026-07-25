@@ -1,0 +1,244 @@
+package web
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/ZacxDev/civitai-manager/internal/comfy"
+	"github.com/ZacxDev/civitai-manager/internal/store"
+)
+
+// Cloud run phases (cloudJob.phase). These are the UI-facing coarse states; the
+// finer orchestration status enum is carried separately in the message.
+const (
+	cloudPhasePreparing = "preparing"
+	cloudPhaseRunning   = "running"
+	cloudPhaseDone      = "done"
+	cloudPhaseFailed    = "failed"
+)
+
+// cloudJob is the in-memory state of a single background cloud run. All fields are
+// read/written only under Server.cloudMu.
+//
+// It mirrors runJob's race-safe streaming pattern (append/mutate + snapshot both
+// under the mutex). It is deliberately a PARALLEL job type rather than a merge of
+// the local run machinery: the cloud path polls a remote Workflow object (status
+// enum + blob URLs) instead of ComfyUI /history+/queue, so a shared struct would
+// carry two disjoint field sets. The snapshot/poll/stop SHAPE is shared (same
+// stable-container poll contract, same one-global-run guard, same gallery idea),
+// which is what keeps the streaming rules consistent.
+type cloudJob struct {
+	running    bool
+	workflowID int64 // the local workflow id (for fragment targeting)
+	// cloudID is the orchestration workflow id (untrusted remote string; escaped).
+	cloudID string
+	phase   string
+	// status is the raw orchestration status enum (untrusted; escaped).
+	status string
+	// message is a human status/error line (may embed untrusted remote text →
+	// escaped at render time).
+	message    string
+	blobURLs   []string
+	stopped    bool
+	err        error
+	startedAt  time.Time
+	finishedAt time.Time
+	cancel     context.CancelFunc
+}
+
+// cloudUpdater lets runCloud stream status transitions into the job under the
+// mutex (mirrors runUpdater for the local run).
+type cloudUpdater struct {
+	setStatus  func(phase, status, msg string)
+	setCloudID func(id string)
+}
+
+// startCloudRun launches a background cloud run for wf with the given resource
+// URNs, unless one is already running (idempotent — a re-click starts no second
+// goroutine). Same one-global-run invariant as the local run.
+func (s *Server) startCloudRun(wf *store.Workflow, urns []string) {
+	s.cloudMu.Lock()
+	defer s.cloudMu.Unlock()
+	if s.cloudJob != nil && s.cloudJob.running {
+		return
+	}
+
+	base := s.baseCtx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(base, cloudRunBudget)
+	job := &cloudJob{
+		running: true, workflowID: wf.ID, phase: cloudPhasePreparing,
+		message: "Submitting to CivitAI cloud…", startedAt: time.Now(), cancel: cancel,
+	}
+	s.cloudJob = job
+
+	up := cloudUpdater{
+		setStatus: func(phase, status, msg string) {
+			s.cloudMu.Lock()
+			job.phase, job.status, job.message = phase, status, msg
+			s.cloudMu.Unlock()
+		},
+		setCloudID: func(id string) {
+			s.cloudMu.Lock()
+			job.cloudID = id
+			s.cloudMu.Unlock()
+		},
+	}
+
+	graph := []byte(wf.Graph)
+	go func() {
+		defer cancel()
+		var urls []string
+		var err error
+		// The poll loop decodes untrusted remote JSON; a panic must fail THIS job,
+		// not crash the server.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("cloud run panicked: %v", r)
+				}
+			}()
+			urls, err = s.runCloud(ctx, graph, urns, up)
+		}()
+		s.cloudMu.Lock()
+		defer s.cloudMu.Unlock()
+		job.running = false
+		job.finishedAt = time.Now()
+		switch {
+		case job.stopped:
+			job.phase, job.message = cloudPhaseFailed, "Cloud run canceled."
+		case err != nil:
+			job.phase, job.err, job.message = cloudPhaseFailed, err, cloudErrorMessage(err)
+		default:
+			job.phase, job.blobURLs = cloudPhaseDone, urls
+			if len(urls) == 0 {
+				job.message = "Cloud run complete (no images returned)."
+			} else {
+				job.message = "Cloud run complete."
+			}
+		}
+	}()
+}
+
+// runCloud submits the template for real and polls the orchestration workflow to a
+// terminal state, returning the result blob URLs on success or an error otherwise.
+func (s *Server) runCloud(ctx context.Context, graph []byte, urns []string, up cloudUpdater) ([]string, error) {
+	client := s.cloud()
+	if client == nil {
+		return nil, fmt.Errorf("CivitAI cloud is not configured (set a CivitAI token)")
+	}
+
+	tmpl := comfy.NewCustomComfyTemplate(graph, urns)
+	wf, err := client.SubmitCloud(ctx, tmpl, false)
+	if err != nil {
+		return nil, err
+	}
+	if wf.ID == "" {
+		return nil, fmt.Errorf("orchestration API returned no workflow id")
+	}
+	up.setCloudID(wf.ID)
+
+	// The submit response may already be terminal (200 done) or still running (202).
+	if comfy.CloudStatusTerminal(wf.Status) {
+		return cloudTerminalResult(wf)
+	}
+	up.setStatus(cloudPhaseRunning, wf.Status, cloudStatusLine(wf.Status))
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(cloudPollInterval):
+		}
+		cur, err := client.GetCloudWorkflow(ctx, wf.ID)
+		if err != nil {
+			return nil, fmt.Errorf("poll cloud workflow: %w", err)
+		}
+		if comfy.CloudStatusTerminal(cur.Status) {
+			return cloudTerminalResult(cur)
+		}
+		up.setStatus(cloudPhaseRunning, cur.Status, cloudStatusLine(cur.Status))
+	}
+}
+
+// cloudTerminalResult maps a terminal Workflow to (blobURLs, err): succeeded →
+// the blob URLs; failed/expired/canceled → an error naming the status.
+func cloudTerminalResult(wf *comfy.CloudWorkflow) ([]string, error) {
+	if strings.EqualFold(strings.TrimSpace(wf.Status), comfy.CloudStatusSucceeded) {
+		return wf.BlobURLs(), nil
+	}
+	return nil, fmt.Errorf("cloud run %s", strings.TrimSpace(wf.Status))
+}
+
+// cloudStatusLine renders a human line for an in-flight orchestration status.
+func cloudStatusLine(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case comfy.CloudStatusUnassigned, comfy.CloudStatusScheduled:
+		return "Scheduled — waiting for a worker…"
+	case comfy.CloudStatusPreparing:
+		return "Preparing…"
+	case comfy.CloudStatusProcessing:
+		return "Generating on CivitAI cloud…"
+	default:
+		return "Working…"
+	}
+}
+
+// stopCloudRun requests cancellation of the active cloud run and cancels its poll
+// context. Idempotent.
+func (s *Server) stopCloudRun() {
+	s.cloudMu.Lock()
+	j := s.cloudJob
+	if j == nil || !j.running {
+		s.cloudMu.Unlock()
+		return
+	}
+	j.stopped = true
+	cancel := j.cancel
+	cloudID := j.cloudID
+	s.cloudMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	// Best-effort remote cancel (PUT status=canceled) on its own short deadline.
+	if cloudID != "" {
+		if c := s.cloud(); c != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = c.CancelCloudWorkflow(ctx, cloudID)
+		}
+	}
+}
+
+// cloudSnapshot is a locked, self-consistent view of the cloud run job.
+type cloudSnapshot struct {
+	Started, Running bool
+	WorkflowID       int64
+	CloudID          string
+	Phase            string
+	Status           string
+	Message          string
+	BlobURLs         []string
+	Stopped          bool
+}
+
+// cloudJobState returns a locked snapshot of the current cloud run job.
+func (s *Server) cloudJobState() cloudSnapshot {
+	s.cloudMu.Lock()
+	defer s.cloudMu.Unlock()
+	j := s.cloudJob
+	if j == nil {
+		return cloudSnapshot{}
+	}
+	urls := make([]string, len(j.blobURLs))
+	copy(urls, j.blobURLs)
+	return cloudSnapshot{
+		Started: true, Running: j.running, WorkflowID: j.workflowID,
+		CloudID: j.cloudID, Phase: j.phase, Status: j.status, Message: j.message,
+		BlobURLs: urls, Stopped: j.stopped,
+	}
+}
