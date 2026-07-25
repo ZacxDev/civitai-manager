@@ -1,0 +1,1199 @@
+{
+  "BasicGuider": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "conditioning": [
+          "CONDITIONING",
+          {}
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "model",
+        "conditioning"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "GUIDER"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "GUIDER"
+    ],
+    "output_tooltips": [
+      null
+    ],
+    "output_matchtypes": null,
+    "name": "BasicGuider",
+    "display_name": "Basic Guider",
+    "description": "",
+    "python_module": "comfy_extras.nodes_custom_sampler",
+    "category": "model/sampling/guiders",
+    "output_node": false,
+    "deprecated": false,
+    "experimental": false,
+    "dev_only": false,
+    "api_node": false,
+    "price_badge": null,
+    "search_aliases": null,
+    "essentials_category": null,
+    "has_intermediate_output": false
+  },
+  "BasicScheduler": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "scheduler": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "simple",
+              "sgm_uniform",
+              "karras",
+              "exponential",
+              "ddim_uniform",
+              "beta",
+              "normal",
+              "linear_quadratic",
+              "kl_optimal"
+            ]
+          }
+        ],
+        "steps": [
+          "INT",
+          {
+            "default": 20,
+            "min": 1,
+            "max": 10000
+          }
+        ],
+        "denoise": [
+          "FLOAT",
+          {
+            "default": 1.0,
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "model",
+        "scheduler",
+        "steps",
+        "denoise"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "SIGMAS"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "SIGMAS"
+    ],
+    "output_tooltips": [
+      null
+    ],
+    "output_matchtypes": null,
+    "name": "BasicScheduler",
+    "display_name": null,
+    "description": "",
+    "python_module": "comfy_extras.nodes_custom_sampler",
+    "category": "model/sampling/schedulers",
+    "output_node": false,
+    "deprecated": false,
+    "experimental": false,
+    "dev_only": false,
+    "api_node": false,
+    "price_badge": null,
+    "search_aliases": null,
+    "essentials_category": null,
+    "has_intermediate_output": false
+  },
+  "CLIPTextEncodeFlux": {
+    "input": {
+      "required": {
+        "clip": [
+          "CLIP",
+          {}
+        ],
+        "clip_l": [
+          "STRING",
+          {
+            "multiline": true,
+            "dynamicPrompts": true
+          }
+        ],
+        "t5xxl": [
+          "STRING",
+          {
+            "multiline": true,
+            "dynamicPrompts": true
+          }
+        ],
+        "guidance": [
+          "FLOAT",
+          {
+            "default": 3.5,
+            "min": 0.0,
+            "max": 100.0,
+            "step": 0.1
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "clip",
+        "clip_l",
+        "t5xxl",
+        "guidance"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "CONDITIONING"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "CONDITIONING"
+    ],
+    "output_tooltips": [
+      null
+    ],
+    "output_matchtypes": null,
+    "name": "CLIPTextEncodeFlux",
+    "display_name": null,
+    "description": "",
+    "python_module": "comfy_extras.nodes_flux",
+    "category": "model/conditioning/flux",
+    "output_node": false,
+    "deprecated": false,
+    "experimental": false,
+    "dev_only": false,
+    "api_node": false,
+    "price_badge": null,
+    "search_aliases": null,
+    "essentials_category": null,
+    "has_intermediate_output": false
+  },
+  "DualCLIPLoader": {
+    "input": {
+      "required": {
+        "clip_name1": [
+          [
+            "clip_l.safetensors",
+            "gemma_3_12B_it_fp4_mixed.safetensors",
+            "ltx-2.3_text_projection_bf16.safetensors",
+            "qwen3vl_4b_fp8_scaled.safetensors",
+            "qwen_3_4b.safetensors",
+            "qwen_3_4b_fp4_mixed.safetensors",
+            "t5xxl_fp16.safetensors",
+            "umt5_xxl_fp16.safetensors",
+            "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+          ]
+        ],
+        "clip_name2": [
+          [
+            "clip_l.safetensors",
+            "gemma_3_12B_it_fp4_mixed.safetensors",
+            "ltx-2.3_text_projection_bf16.safetensors",
+            "qwen3vl_4b_fp8_scaled.safetensors",
+            "qwen_3_4b.safetensors",
+            "qwen_3_4b_fp4_mixed.safetensors",
+            "t5xxl_fp16.safetensors",
+            "umt5_xxl_fp16.safetensors",
+            "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+          ]
+        ],
+        "type": [
+          [
+            "sdxl",
+            "sd3",
+            "flux",
+            "hunyuan_video",
+            "hidream",
+            "hunyuan_image",
+            "hunyuan_video_15",
+            "kandinsky5",
+            "kandinsky5_image",
+            "ltxv",
+            "newbie",
+            "ace"
+          ]
+        ]
+      },
+      "optional": {
+        "device": [
+          [
+            "default",
+            "cpu"
+          ],
+          {
+            "advanced": true
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "clip_name1",
+        "clip_name2",
+        "type"
+      ],
+      "optional": [
+        "device"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "CLIP"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "CLIP"
+    ],
+    "name": "DualCLIPLoader",
+    "display_name": "Load CLIP (Dual)",
+    "description": "Recipes:\nsdxl: clip-l, clip-g\nsd3: clip-l, clip-g / clip-l, t5 / clip-g, t5\nflux: clip-l, t5\nhidream: at least one of t5 or llama, recommended t5 and llama\nhunyuan_image: qwen2.5vl 7b and byt5 small\nnewbie: gemma-3-4b-it, jina clip v2",
+    "python_module": "nodes",
+    "category": "model/loaders",
+    "output_node": false,
+    "has_intermediate_output": false,
+    "search_aliases": []
+  },
+  "HintImageEnchance": {
+    "input": {
+      "required": {
+        "hint_image": [
+          "IMAGE"
+        ],
+        "image_gen_width": [
+          "INT",
+          {
+            "default": 512,
+            "min": 64,
+            "max": 8192,
+            "step": 8
+          }
+        ],
+        "image_gen_height": [
+          "INT",
+          {
+            "default": 512,
+            "min": 64,
+            "max": 8192,
+            "step": 8
+          }
+        ],
+        "resize_mode": [
+          [
+            "Just Resize",
+            "Crop and Resize",
+            "Resize and Fill"
+          ],
+          {
+            "default": "Just Resize"
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "hint_image",
+        "image_gen_width",
+        "image_gen_height",
+        "resize_mode"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "IMAGE"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "IMAGE"
+    ],
+    "name": "HintImageEnchance",
+    "display_name": "Enchance And Resize Hint Images",
+    "description": "",
+    "python_module": "custom_nodes.comfyui_controlnet_aux",
+    "category": "ControlNet Preprocessors",
+    "output_node": false,
+    "has_intermediate_output": false,
+    "search_aliases": []
+  },
+  "ImageScaleBy": {
+    "input": {
+      "required": {
+        "image": [
+          "IMAGE"
+        ],
+        "upscale_method": [
+          [
+            "nearest-exact",
+            "bilinear",
+            "area",
+            "bicubic",
+            "lanczos"
+          ]
+        ],
+        "scale_by": [
+          "FLOAT",
+          {
+            "default": 1.0,
+            "min": 0.01,
+            "max": 8.0,
+            "step": 0.01
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "image",
+        "upscale_method",
+        "scale_by"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "IMAGE"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "IMAGE"
+    ],
+    "name": "ImageScaleBy",
+    "display_name": "Upscale Image By",
+    "description": "",
+    "python_module": "nodes",
+    "category": "image/upscaling",
+    "output_node": false,
+    "has_intermediate_output": false,
+    "search_aliases": [],
+    "essentials_category": "Image Tools"
+  },
+  "KSamplerSelect": {
+    "input": {
+      "required": {
+        "sampler_name": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "euler",
+              "euler_cfg_pp",
+              "euler_ancestral",
+              "euler_ancestral_cfg_pp",
+              "heun",
+              "heunpp2",
+              "exp_heun_2_x0",
+              "exp_heun_2_x0_sde",
+              "dpm_2",
+              "dpm_2_ancestral",
+              "lms",
+              "dpm_fast",
+              "dpm_adaptive",
+              "dpmpp_2s_ancestral",
+              "dpmpp_2s_ancestral_cfg_pp",
+              "dpmpp_sde",
+              "dpmpp_sde_gpu",
+              "dpmpp_2m",
+              "dpmpp_2m_cfg_pp",
+              "dpmpp_2m_sde",
+              "dpmpp_2m_sde_gpu",
+              "dpmpp_2m_sde_heun",
+              "dpmpp_2m_sde_heun_gpu",
+              "dpmpp_3m_sde",
+              "dpmpp_3m_sde_gpu",
+              "ddpm",
+              "lcm",
+              "ipndm",
+              "ipndm_v",
+              "deis",
+              "res_multistep",
+              "res_multistep_cfg_pp",
+              "res_multistep_ancestral",
+              "res_multistep_ancestral_cfg_pp",
+              "gradient_estimation",
+              "gradient_estimation_cfg_pp",
+              "er_sde",
+              "seeds_2",
+              "seeds_3",
+              "sa_solver",
+              "sa_solver_pece",
+              "ddim",
+              "uni_pc",
+              "uni_pc_bh2"
+            ]
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "sampler_name"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "SAMPLER"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "SAMPLER"
+    ],
+    "output_tooltips": [
+      null
+    ],
+    "output_matchtypes": null,
+    "name": "KSamplerSelect",
+    "display_name": null,
+    "description": "",
+    "python_module": "comfy_extras.nodes_custom_sampler",
+    "category": "model/sampling/samplers",
+    "output_node": false,
+    "deprecated": false,
+    "experimental": false,
+    "dev_only": false,
+    "api_node": false,
+    "price_badge": null,
+    "search_aliases": null,
+    "essentials_category": null,
+    "has_intermediate_output": false
+  },
+  "LoadImage": {
+    "input": {
+      "required": {
+        "image": [
+          [
+            "00eb6ace-2411-4f41-9889-c147429416a3.png",
+            "018a0111-6636-422e-924e-802c07ed219a.png",
+            "03422b53-231f-48b8-996b-3a6d488b7ce6.png",
+            "111acb90-cc01-4ebc-b791-4c287f789c3b.png",
+            "1140f77c-3271-4dc5-a724-8faea709fadd.png",
+            "11ac2e7c-0a5d-4c04-8ef4-bd9c63a8afef.png",
+            "11bcd626-08b7-4f82-9306-8ec723eb2c9b.png",
+            "15356e85-5ec9-4c49-a4b4-9529a6b8296f.png",
+            "18d4ac94-a1d9-4acf-b542-121ca73918c9.png",
+            "1953f86e-c21e-4f39-8751-3e6e964a7731.png",
+            "19ac1172-f0bb-4ccb-b39a-e466cfd466c4.png",
+            "1b078b47-532d-478e-950c-615ffe357611.png",
+            "1ff54f35-39b2-4ed6-b57a-1d836aa2fb3f.png",
+            "2025-06-20-030056_cyberrealisticPony_catalystV30_258658880190483.png",
+            "2025-06-20-141618_cyberrealisticPony_catalystV30_759813508428169.png",
+            "2025-06-20-142116_cyberrealisticPony_catalystV30_677375731671668.png",
+            "2025-06-22-180650_cyberrealisticPony_catalystV30_75008832919120.png",
+            "2025-06-22-182532_cyberrealisticPony_catalystV30_361091732063081.png",
+            "2025-08-02-233540__1109260026644359.png",
+            "2025-08-04-141229__585533401376991.png",
+            "2025-12-26-011007__184723864525269.png",
+            "2026-02-22-231802__1078881192936127.png",
+            "2026-02-23-001840__10299146123261.png",
+            "2026-02-23-002032__589246424637100.png",
+            "2026-02-24-230933__1028684521369923.png",
+            "2026-02-24-231003__937845839727240.png",
+            "2026-02-24-231110__261857673418903.png",
+            "2026-02-24-231211__222237865699028.png",
+            "2026-02-24-231318__921661807079724.png",
+            "2026-02-24-231351__959358144376592.png",
+            "2026-02-25-210657__683386575698030.png",
+            "2026-02-25-210726__476797358447696.png",
+            "2026-02-25-210817__494450274853237.png",
+            "2026-02-25-210825__545960455742094.png",
+            "2026-02-25-210833__105337948352887.png",
+            "2026-02-25-210849__962232475767573.png",
+            "2026-02-25-210904__811152905374064.png",
+            "2026-02-25-210927__962799374466418.png",
+            "2026-02-25-210935__175369551258468.png",
+            "2026-03-15-000012__180344825495716.png",
+            "2026-03-15-000347__335247764316247.png",
+            "2026-03-15-001543__1065729377823446.png",
+            "2026-03-15-001701__14832252729255.png",
+            "2026-03-15-002051__1010320900821521.png",
+            "2026-03-15-002122__481678882398774.png",
+            "2026-03-15-002134__892410323027469.png",
+            "2026-03-16-235917__901255742820887.png",
+            "2026-03-16-235935__703787375111994.png",
+            "2026-03-16-235941__953237152008665.png",
+            "2026-03-17-182624__631302837317184.png",
+            "2026-03-17-182806__953492100358422.png",
+            "2026-03-17-183007__69195975972538.png",
+            "2026-07-17-161321__609208171574039.png",
+            "2026-07-17-161332__224146475212629.png",
+            "27e0f4eb-de66-4436-9de0-dd87b7f60ddf.png",
+            "27f168a8-7586-45eb-9f7a-87c5f4b7470c.png",
+            "28ec6c7d-7791-4ee1-97a5-d2bcc489e1e3.png",
+            "2eb7963b-8c2c-4921-8aa9-bf2b928c29ab.png",
+            "3093587b-8061-49ab-ac1b-6d9a0bd6ee5a.png",
+            "31c738f8-8c24-460c-a112-b4583d5952e6.png",
+            "320f7416-1c68-4c01-8c7d-f7bd0a9ef5fe.png",
+            "32edeba7-3f53-468e-ba90-8567a883c176.png",
+            "3556062e-282a-4985-aaac-eddc59238cbc.png",
+            "383d7111-9212-4be2-9d83-d69c83a8c0fe.png",
+            "38a4f3d0-c1b3-465f-9a0e-bb3728d75582.png",
+            "3b751683-a7b3-41d3-902c-38a6d6a4b1dc.png",
+            "420ded08-db0e-458e-a36d-e548d9f6186b.png",
+            "42fabd31-efc8-439f-b588-cc5817acec27.png",
+            "46fe2dd5-4fff-4324-9009-0e16ffc15663.png",
+            "51dc6871-6dae-4740-989e-7d1ff55d97f5.png",
+            "526aa699-de02-4d96-b6a0-75c1f407a566.png",
+            "542536ed-d6f2-47d4-94c9-e3aba5166a18.png",
+            "5457048e-0fa6-4efa-ae60-3eb814f814db.png",
+            "5582d4fd-51a1-4fc9-9c3e-3cea5e9de7b1.png",
+            "558869d6-264a-4e6f-b3bc-3cadfecafe8a.png",
+            "56754ed0-892a-429a-b182-2483c203e642.png",
+            "5ae12bb6-ea0b-4b27-a6c6-429065d9fc55.png",
+            "6559f14d-b74f-434c-b8b7-46cce38b9503.png",
+            "65829526-63f8-45be-bf63-c67a9e0732d0.png",
+            "6863f979-00d7-4c35-b731-a4d058fc831d.png",
+            "69ba30ae-b9a8-44ab-b60b-bdb7ce67cb21.png",
+            "6aa48591-5db6-4809-b3ad-32958134116a.png",
+            "6dd0d464-9a8a-440c-834a-b284eca0c43b.png",
+            "7002affe-19c1-4bbd-ac6f-563ae2722e5f.png",
+            "71e9fe2e-4694-447d-9b6d-e5aa38137cee.png",
+            "7376e6ef-9b33-4e75-b800-5e86ddd1960e.png",
+            "747890bb-c0ec-4826-bf6f-1a5f255e1023.png",
+            "7508a1d6-5f63-40d8-b104-6d017888d0d1.png",
+            "7c27b1a9-1871-4d79-a727-7eefdfad9be5.png",
+            "7c29f859-052a-4f76-91c4-23e3efdf7bcf.png",
+            "7cf79a2c-45e8-4d54-bbfe-8ce76dba8c65.png",
+            "7dd64ca7-e6e0-420f-9ab5-6cb3a6592c95.png",
+            "7e4f84a7-e6b4-4c92-9e28-1ea4e95b6e95.png",
+            "7ef08605-866d-4cf0-9670-8f43c2b1274c.png",
+            "859c7d13-db22-49a4-b227-629fae424007.png",
+            "878c94b8-831f-4142-91ef-121469c88745.png",
+            "8ac1d3ca-b5d2-432b-b9fc-002a2f35251d.png",
+            "8aed35a5-4d96-4d3f-aa62-334ae33f0ad0.png",
+            "8b49229f-f155-407b-ad15-3c1d80340d33.png",
+            "8c268a34-eaad-4685-ab18-a687d619f555.png",
+            "8cb9c6c9-3cf7-4773-8422-084613d491c5.png",
+            "90ef3a15-2375-4402-a570-4255aaf11d1b.png",
+            "94e98a81-a594-4369-aab7-2be6033623c1.png",
+            "967d1497-9c48-44b7-b61e-080aa535169c.png",
+            "97e7c747-9372-4dab-b3b4-c35065e1d10a.png",
+            "9a3d79cd-4073-40bd-8f00-e3e6303f4132.png",
+            "9d273075-15d6-41e8-acf2-2e5edff13b39.png",
+            "9e9c75e3-f09e-468c-9dde-49b456f8ac79.png",
+            "ComfyUI_00038_.png",
+            "ComfyUI_00040_.png",
+            "ComfyUI_00057_.png",
+            "ComfyUI_00062_.png",
+            "ComfyUI_00074_.png",
+            "ComfyUI_00458_.png",
+            "ComfyUI_01082_.png",
+            "ComfyUI_01098_.png",
+            "ComfyUI_01155_.png",
+            "ComfyUI_01302_.png",
+            "ComfyUI_01679_.png",
+            "ComfyUI_temp_hpdxq_00006_.png",
+            "ComfyUI_temp_ijbfm_00003_.png",
+            "ComfyUI_temp_jguxc_00026_.png",
+            "ComfyUI_temp_jhitv_00001_.png",
+            "ComfyUI_temp_kcpgf_00029_.png",
+            "ComfyUI_temp_nchii_00039_.png",
+            "ComfyUI_temp_obzqk_00019_.png",
+            "ComfyUI_temp_ohpeu_00002_.png",
+            "ComfyUI_temp_paaci_00003_.png",
+            "ComfyUI_temp_pyipy_00002_.png",
+            "ComfyUI_temp_qaymv_00001_.png",
+            "ComfyUI_temp_qcjcz_00008_.png",
+            "ComfyUI_temp_qcjcz_00012_.png",
+            "ComfyUI_temp_qlumj_00012_.png",
+            "ComfyUI_temp_qxeos_00259_.png",
+            "ComfyUI_temp_qzxji_00004_.png",
+            "ComfyUI_temp_rcztp_00013_.png",
+            "ComfyUI_temp_rdqzf_00001_.png",
+            "ComfyUI_temp_sbkgd_00010_.png",
+            "ComfyUI_temp_tiepp_00031_.png",
+            "ComfyUI_temp_trbam_00003_.png",
+            "ComfyUI_temp_upxvy_00015_.png",
+            "ComfyUI_temp_vkzhy_00066_.png",
+            "ComfyUI_temp_vkzhy_00067_.png",
+            "Girls_fashion_new_styles_skirts_dress_and_tops_at_lemonade12_0069.jpg",
+            "IMG-20250902-WA0001.webp",
+            "a0def884-cc41-4115-9df9-7c04d76c6109.png",
+            "a1be1dbf-1d21-4a2a-8b11-49ba6912f7c1.png",
+            "a96572e2-cddd-407d-ab4b-4079d1774867.png",
+            "a9659a1d-f8bd-477a-b9ef-869af8fbf439.png",
+            "ab0029f3-6775-4101-bdaf-aadd51cdad76.png",
+            "af5c69ee-dccc-4bd7-ba6d-ce64b9ceb26b.png",
+            "afab0124-c883-4c76-8589-cfbd69770cca.png",
+            "ahegao_baked.png",
+            "ahegao_d05.png",
+            "ahegao_d06.png",
+            "ahegao_d07.png",
+            "b0f79984-b0cf-455c-a18f-b5b3d2e5237c.png",
+            "b11928de-c9d9-4a7c-a373-0f026c0ff8b4.png",
+            "b5e1a384-2d15-4f54-9b8c-f7fde8d31d9c.png",
+            "b7ea52ff-42b3-4133-b08c-f7d8fb59ca9c.png",
+            "bbad6fea-e1ee-43d7-a344-b0e9ae482087.png",
+            "bc32817d-bc88-41d8-8b3e-20dc62d594d7.png",
+            "bcce1b80-9d2a-4af4-a762-2630cb4e3b8d.png",
+            "bded1003-d4b1-494f-bd04-846c244fe039.png",
+            "c74c021e-3f33-461e-b398-d586cb353835.png",
+            "c7778771-5f41-4f0c-8b4e-95249e0fd552.png",
+            "ca259f93-c35a-4624-9ab7-abe040ce0160.png",
+            "ca929d39-6caf-4b8e-8086-feddf9b40587.png",
+            "coherent_step000_0b26f7ed.png",
+            "coherent_step000_10b8d621.png",
+            "coherent_step000_16f38909.png",
+            "coherent_step000_2460022d.png",
+            "coherent_step000_40daf417.png",
+            "coherent_step000_4124f43a.png",
+            "coherent_step000_4bd20bd9.png",
+            "coherent_step000_61ce426e.png",
+            "coherent_step000_801421ba.png",
+            "coherent_step000_8b84d87d.png",
+            "coherent_step000_8efff6ce.png",
+            "coherent_step000_923a42f2.png",
+            "coherent_step000_a95085d8.png",
+            "coherent_step000_f7a3a1f4.png",
+            "coherent_step001_0cadce8e.png",
+            "coherent_step001_0e2316cb.png",
+            "coherent_step001_2f2e78f1.png",
+            "coherent_step001_3a9235a8.png",
+            "coherent_step001_4151d749.png",
+            "coherent_step001_4a77d105.png",
+            "coherent_step001_63bc49cf.png",
+            "coherent_step001_6a031c12.png",
+            "coherent_step001_9663a650.png",
+            "coherent_step001_d5c1413d.png",
+            "coherent_step001_dd9df3b5.png",
+            "coherent_step001_f1b50e6b.png",
+            "coherent_step002_3a934e2a.png",
+            "coherent_step002_3eba50bc.png",
+            "coherent_step002_4b83267b.png",
+            "coherent_step002_65e95851.png",
+            "coherent_step002_8d506092.png",
+            "coherent_step002_a3c2dc3a.png",
+            "coherent_step002_a4660e45.png",
+            "coherent_step002_a5ed56f2.png",
+            "coherent_step002_a615ff6e.png",
+            "coherent_step002_eb9fd0aa.png",
+            "coherent_step002_f8cc6d48.png",
+            "d2fea0fd-532d-4b6b-b59b-4132b1bb4810.png",
+            "d478b0df-fa9e-4003-98dc-f32fd4687b10.png",
+            "d534d5f0-8c60-44a3-bfb6-4e429d3b85cd.png",
+            "d607eaa2-1564-4b9e-a7d9-4bd7d073bab0.png",
+            "d72cef43-8489-4c35-9fc7-d1fd24cf5263.png",
+            "d84f1f00-dba9-489b-89a7-3a9656271159.png",
+            "d8f6dcb0-9a8d-489a-a67d-8023ccdc65c8.png",
+            "d97533ea-ced4-48f1-a3bb-c80cdd02da28.png",
+            "dea7ff8b-0512-4ac9-80dd-034a0952a980.png",
+            "df26dc4b-3e5c-4256-8d1e-d792dec71423.png",
+            "e190e845-b480-4791-905e-91f96a457075.png",
+            "e4f840d6-9be6-4eaf-bd44-2a61b6fbf149.png",
+            "e9876b7e-b208-4b3d-9230-84dc9f4e7024.png",
+            "ea43b62e-3d0f-4c15-a218-df607d3bb217.png",
+            "ee4992c5-710c-43fa-9b92-c0620b5f5337.png",
+            "ef15e644-dc7f-4617-bd1f-5d68b685f8ae.png",
+            "example.png",
+            "extend_in_000.png",
+            "extend_in_001.png",
+            "extend_in_002.png",
+            "f011cfdb-f791-442d-bfe5-977f7dfa94b3.png",
+            "f26587e6-29c1-48f0-932b-56780e6a64d6.png",
+            "f47c580c-237f-48c3-92cb-10137068adf7.png",
+            "f4da8167-c3a2-4760-b428-630385a78e64.png",
+            "f5d29cee-10af-4383-89fd-15770a7bab87.png",
+            "f7e185cb-bb46-4847-abda-b4b087bcf74a.png",
+            "fad9e968-299f-4d4d-b70b-cde7387d1c35.png",
+            "fcfc3f8c-d2bc-4bba-81eb-303625e8d9e5.png",
+            "ff859888-f817-481a-a55f-f16f754f530c.png",
+            "lol_00085_.png",
+            "lol_00275_.png",
+            "lol_00279_.png",
+            "lol_00655_.png",
+            "lol_01446_.png",
+            "ltx_src.png",
+            "zz_start.png"
+          ],
+          {
+            "image_upload": true
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "image"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "IMAGE",
+      "MASK"
+    ],
+    "output_is_list": [
+      false,
+      false
+    ],
+    "output_name": [
+      "IMAGE",
+      "MASK"
+    ],
+    "name": "LoadImage",
+    "display_name": "Load Image",
+    "description": "",
+    "python_module": "nodes",
+    "category": "image",
+    "output_node": false,
+    "has_intermediate_output": false,
+    "search_aliases": [
+      "load image",
+      "open image",
+      "import image",
+      "image input",
+      "upload image",
+      "read image",
+      "image loader"
+    ],
+    "essentials_category": "Basics"
+  },
+  "Power Lora Loader (rgthree)": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL"
+        ]
+      },
+      "optional": {
+        "clip": [
+          "CLIP"
+        ]
+      },
+      "hidden": {}
+    },
+    "input_order": {
+      "required": [
+        "model"
+      ],
+      "optional": [
+        "clip"
+      ],
+      "hidden": []
+    },
+    "is_input_list": false,
+    "output": [
+      "MODEL",
+      "CLIP"
+    ],
+    "output_is_list": [
+      false,
+      false
+    ],
+    "output_name": [
+      "MODEL",
+      "CLIP"
+    ],
+    "name": "Power Lora Loader (rgthree)",
+    "display_name": "Power Lora Loader (rgthree)",
+    "description": "",
+    "python_module": "custom_nodes.rgthree-comfy",
+    "category": "rgthree",
+    "output_node": false,
+    "has_intermediate_output": false,
+    "search_aliases": []
+  },
+  "RandomNoise": {
+    "input": {
+      "required": {
+        "noise_seed": [
+          "INT",
+          {
+            "default": 0,
+            "min": 0,
+            "max": 18446744073709551615,
+            "control_after_generate": true
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "noise_seed"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "NOISE"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "NOISE"
+    ],
+    "output_tooltips": [
+      null
+    ],
+    "output_matchtypes": null,
+    "name": "RandomNoise",
+    "display_name": null,
+    "description": "",
+    "python_module": "comfy_extras.nodes_custom_sampler",
+    "category": "model/sampling/noise",
+    "output_node": false,
+    "deprecated": false,
+    "experimental": false,
+    "dev_only": false,
+    "api_node": false,
+    "price_badge": null,
+    "search_aliases": null,
+    "essentials_category": null,
+    "has_intermediate_output": false
+  },
+  "SamplerCustomAdvanced": {
+    "input": {
+      "required": {
+        "noise": [
+          "NOISE",
+          {}
+        ],
+        "guider": [
+          "GUIDER",
+          {}
+        ],
+        "sampler": [
+          "SAMPLER",
+          {}
+        ],
+        "sigmas": [
+          "SIGMAS",
+          {}
+        ],
+        "latent_image": [
+          "LATENT",
+          {}
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "noise",
+        "guider",
+        "sampler",
+        "sigmas",
+        "latent_image"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "LATENT",
+      "LATENT"
+    ],
+    "output_is_list": [
+      false,
+      false
+    ],
+    "output_name": [
+      "output",
+      "denoised_output"
+    ],
+    "output_tooltips": [
+      null,
+      null
+    ],
+    "output_matchtypes": null,
+    "name": "SamplerCustomAdvanced",
+    "display_name": null,
+    "description": "",
+    "python_module": "comfy_extras.nodes_custom_sampler",
+    "category": "model/sampling/custom",
+    "output_node": false,
+    "deprecated": false,
+    "experimental": false,
+    "dev_only": false,
+    "api_node": false,
+    "price_badge": null,
+    "search_aliases": null,
+    "essentials_category": null,
+    "has_intermediate_output": false
+  },
+  "SaveImage": {
+    "input": {
+      "required": {
+        "images": [
+          "IMAGE",
+          {
+            "tooltip": "The images to save."
+          }
+        ],
+        "filename_prefix": [
+          "STRING",
+          {
+            "default": "ComfyUI",
+            "tooltip": "The prefix for the file to save. This may include formatting information such as %date:yyyy-MM-dd% or %Empty Latent Image.width% to include values from nodes."
+          }
+        ]
+      },
+      "hidden": {
+        "prompt": "PROMPT",
+        "extra_pnginfo": "EXTRA_PNGINFO"
+      }
+    },
+    "input_order": {
+      "required": [
+        "images",
+        "filename_prefix"
+      ],
+      "hidden": [
+        "prompt",
+        "extra_pnginfo"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "IMAGE"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "images"
+    ],
+    "name": "SaveImage",
+    "display_name": "Save Image",
+    "description": "Saves the input images to your ComfyUI output directory.",
+    "python_module": "nodes",
+    "category": "image",
+    "output_node": true,
+    "has_intermediate_output": false,
+    "search_aliases": [
+      "save",
+      "save image",
+      "export image",
+      "output image",
+      "write image",
+      "download"
+    ],
+    "essentials_category": "Basics"
+  },
+  "UNETLoader": {
+    "input": {
+      "required": {
+        "unet_name": [
+          [
+            "DasiwaWAN22I2V14BLightspeed_midnightflirtHighV7.safetensors",
+            "DasiwaWAN22I2V14BLightspeed_midnightflirtLowV7.safetensors",
+            "DasiwaWAN22I2V14BLightspeed_tastysinHighV8.safetensors",
+            "DasiwaWAN22I2V14BLightspeed_tastysinLowV8.safetensors",
+            "Wan2_2-TI2V-5B_fp8_e4m3fn_scaled_KJ.safetensors",
+            "flux1-fill-dev.safetensors",
+            "getphatFLUXReality_v7.safetensors",
+            "krea2MuseByStable_v20TurboINT8.safetensors",
+            "krea2Raw_v10.safetensors",
+            "krea2_turbo_fp8_scaled.safetensors",
+            "ltx-2.3-22b-dev-fp8.safetensors",
+            "onTHEFLYWanAIWan21VideoModel_kijaiWan21I2V14B480P.safetensors",
+            "onTHEFLYWanAIWan21VideoModel_kijaiWan21I2V14B720P.safetensors",
+            "sulphur_dev_fp8mixed.safetensors",
+            "unstableDissolution_Fp8E4m3.safetensors",
+            "wan-22-NSFW-22-H-e8.safetensors",
+            "wan-22-NSFW-22-L-e8.safetensors",
+            "wan2.1_vace_1.3B_fp16.safetensors",
+            "wan2.1_vace_14B_fp16.safetensors",
+            "wan2.2_i2v_A14b_high_noise_scaled_fp8_e4m3_lightx2v_4step_comfyui_1030.safetensors",
+            "wan2.2_i2v_A14b_low_noise_scaled_fp8_e4m3_lightx2v_4step_comfyui.safetensors",
+            "zImageTurbo_turbo.safetensors",
+            "z_image_turbo_nvfp4.safetensors"
+          ]
+        ],
+        "weight_dtype": [
+          [
+            "default",
+            "fp8_e4m3fn",
+            "fp8_e4m3fn_fast",
+            "fp8_e5m2"
+          ],
+          {
+            "advanced": true
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "unet_name",
+        "weight_dtype"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "MODEL"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "MODEL"
+    ],
+    "name": "UNETLoader",
+    "display_name": "Load Diffusion Model",
+    "description": "",
+    "python_module": "nodes",
+    "category": "model/loaders",
+    "output_node": false,
+    "has_intermediate_output": false,
+    "search_aliases": []
+  },
+  "VAEDecode": {
+    "input": {
+      "required": {
+        "samples": [
+          "LATENT",
+          {
+            "tooltip": "The latent to be decoded."
+          }
+        ],
+        "vae": [
+          "VAE",
+          {
+            "tooltip": "The VAE model used for decoding the latent."
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "samples",
+        "vae"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "IMAGE"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "IMAGE"
+    ],
+    "name": "VAEDecode",
+    "display_name": "VAE Decode",
+    "description": "Decodes latent images back into pixel space images.",
+    "python_module": "nodes",
+    "category": "model/latent",
+    "output_node": false,
+    "has_intermediate_output": false,
+    "output_tooltips": [
+      "The decoded image."
+    ],
+    "search_aliases": [
+      "decode",
+      "decode latent",
+      "latent to image",
+      "render latent"
+    ]
+  },
+  "VAEEncode": {
+    "input": {
+      "required": {
+        "pixels": [
+          "IMAGE"
+        ],
+        "vae": [
+          "VAE"
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "pixels",
+        "vae"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "LATENT"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "LATENT"
+    ],
+    "name": "VAEEncode",
+    "display_name": "VAE Encode",
+    "description": "",
+    "python_module": "nodes",
+    "category": "model/latent",
+    "output_node": false,
+    "has_intermediate_output": false,
+    "search_aliases": [
+      "encode",
+      "encode image",
+      "image to latent"
+    ]
+  },
+  "VAELoader": {
+    "input": {
+      "required": {
+        "vae_name": [
+          [
+            "LTX23_video_vae_bf16.safetensors",
+            "ae.safetensors",
+            "qwen_image_vae.safetensors",
+            "sdxl-vae-fp16-fix.safetensors",
+            "wan2.2_vae.safetensors",
+            "wan_2.1_vae.safetensors",
+            "pixel_space"
+          ]
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "vae_name"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "VAE"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "VAE"
+    ],
+    "name": "VAELoader",
+    "display_name": "Load VAE",
+    "description": "",
+    "python_module": "nodes",
+    "category": "model/loaders",
+    "output_node": false,
+    "has_intermediate_output": false,
+    "search_aliases": []
+  }
+}
