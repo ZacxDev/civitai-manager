@@ -388,12 +388,29 @@ func statInline(label, value string) g.Node {
 func modelDescriptionCard(rawHTML string) g.Node {
 	return card(
 		sectionTitle("Description"),
+		// Collapsible wrapper: default-collapsed to a max-height with a bottom fade
+		// and a Read more / Show less toggle (cmToggleDesc flips data-collapsed). The
+		// max-height/fade live in .cm-desc-collapsible (app.css); the sanitization is
+		// unchanged — the toggle only bounds the rendered height.
 		h.Div(
-			// cm-model-desc deterministically constrains the sanitized author HTML
-			// so wide images / <pre> / <table> / long unbroken tokens cannot overflow
-			// the card (see .cm-model-desc in app.css).
-			h.Class("cm-model-desc prose-invert max-w-none text-sm text-slate-300 space-y-2 [&_a]:text-indigo-400 [&_a]:underline"),
-			g.Raw(sanitizeDescription(rawHTML)),
+			h.Class("cm-desc-collapsible"),
+			dataAttr("collapsed", "true"),
+			h.Div(
+				// cm-model-desc deterministically constrains the sanitized author HTML
+				// so wide images / <pre> / <table> / long unbroken tokens cannot overflow
+				// the card (see .cm-model-desc in app.css).
+				h.Class("cm-model-desc cm-desc-content prose-invert max-w-none text-sm text-slate-300 space-y-2 [&_a]:text-indigo-400 [&_a]:underline"),
+				g.Raw(sanitizeDescription(rawHTML)),
+			),
+			// Bottom fade, shown only while collapsed (CSS).
+			h.Div(h.Class("cm-desc-fade"), g.Attr("aria-hidden", "true")),
+			h.Button(
+				h.Type("button"),
+				h.Class("cm-desc-toggle"),
+				g.Attr("aria-expanded", "false"),
+				g.Attr("onclick", "cmToggleDesc(this)"),
+				g.Text("Read more"),
+			),
 		),
 	)
 }
@@ -689,6 +706,14 @@ function cmCloseLightbox(ev){
   box.classList.add('hidden');
   box.classList.remove('flex');
   document.getElementById('cm-lightbox-img').src = '';
+}
+function cmToggleDesc(btn){
+  var box = btn.closest('.cm-desc-collapsible');
+  if(!box){ return; }
+  var collapsed = box.getAttribute('data-collapsed') === 'true';
+  box.setAttribute('data-collapsed', collapsed ? 'false' : 'true');
+  btn.setAttribute('aria-expanded', collapsed ? 'true' : 'false');
+  btn.textContent = collapsed ? 'Show less' : 'Read more';
 }
 document.addEventListener('keydown', function(e){ if (e.key === 'Escape'){ cmCloseLightbox(); } });
 `

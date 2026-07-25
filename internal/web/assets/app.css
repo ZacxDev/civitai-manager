@@ -185,6 +185,52 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 }
 
 /*
+ * Collapsible description (.cm-desc-collapsible) — see modelDescriptionCard in
+ * model_pages.go. Default-collapsed to a max-height with a bottom fade + a
+ * Read more / Show less toggle (cmToggleDesc flips data-collapsed). The fade
+ * blends to the card surface token so it reads in both data-theme paths; when
+ * expanded the height cap and fade are removed. Token-only (no CDN, no JS for the
+ * layout itself — JS only flips the attribute).
+ */
+.cm-desc-collapsible {
+  position: relative;
+}
+.cm-desc-collapsible[data-collapsed="true"] .cm-desc-content {
+  max-height: 20rem;
+  overflow: hidden;
+}
+.cm-desc-fade {
+  display: none;
+}
+.cm-desc-collapsible[data-collapsed="true"] .cm-desc-fade {
+  display: block;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 2.25rem;
+  height: 3.5rem;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--civitai-color-surface));
+}
+.cm-desc-toggle {
+  margin-top: 0.75rem;
+  padding: 0.2rem 0.75rem;
+  border-radius: 0.375rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  color: var(--civitai-color-primary);
+  background: transparent;
+  border: 1px solid var(--civitai-color-border);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.cm-desc-toggle:hover,
+.cm-desc-toggle:focus-visible {
+  border-color: var(--civitai-color-primary);
+  background: color-mix(in srgb, var(--civitai-color-primary) 10%, transparent);
+}
+
+/*
  * Library summary stat pills (.cm-pill*) — see statPill/summaryBanner in
  * library_pages.go. Color-coded count chips (models/duplicates/out-of-date/broken/
  * unmatched). All colors resolve from --civitai-* semantic tokens so the pills read

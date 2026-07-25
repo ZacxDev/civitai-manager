@@ -221,6 +221,31 @@ func TestModelDescriptionSanitized(t *testing.T) {
 	}
 }
 
+// TestModelDescriptionCollapsible proves the description is wrapped in the
+// collapsible container with a Read more toggle (item 3), the sanitized content
+// still renders, and sanitization is unchanged (injected script/handler stripped).
+func TestModelDescriptionCollapsible(t *testing.T) {
+	srv := newModelServer(t, newModelReader(t))
+	body := getModelPage(t, srv, "/models/7")
+
+	for _, want := range []string{
+		"cm-desc-collapsible", `data-collapsed="true"`,
+		"cm-desc-content", "cm-desc-toggle", "cmToggleDesc",
+		"Read more",
+		"Nice model", // sanitized content survives inside the wrapper
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("collapsible description missing %q", want)
+		}
+	}
+	// Sanitization must be unchanged: the injected <script>/onerror are stripped.
+	for _, bad := range []string{"alert(1)", "alert(2)", "onerror"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("unsafe content %q survived the collapsible wrapper", bad)
+		}
+	}
+}
+
 func TestModelNSFWBlurByDefault(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
 	body := getModelPage(t, srv, "/models/7")
