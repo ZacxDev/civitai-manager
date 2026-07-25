@@ -243,7 +243,7 @@ func (s *Server) renderScanStatus(w http.ResponseWriter) {
 		s.renderError(w, "reload library", ferr)
 		return
 	}
-	tv := s.annotateOutOfDate(buildLibraryView(files))
+	tv := s.annotateLibrary(buildLibraryView(files))
 	s.render(w, http.StatusOK, filesTabBody(scanResults(tv, snap, s.csrf), s.csrf, s.matchRemoteEnabled(), hasResults(tv)))
 }
 

@@ -61,7 +61,7 @@ func makeCandidates(n int) []store.LocalFile {
 // cards render and the truncation note carries the TRUE total; the heading counts M.
 func TestMatchedModelsSectionCaps(t *testing.T) {
 	total := maxRenderedMatchedCards + 50
-	out := renderString(t, matchedModelsSection(makeMatchedGroups(total)))
+	out := renderString(t, matchedModelsSection(makeMatchedGroups(total), nil))
 
 	// One `id="model-card-` per rendered card.
 	if got := strings.Count(out, `id="model-card-`); got != maxRenderedMatchedCards {
@@ -85,7 +85,7 @@ func TestMatchedModelsSectionCaps(t *testing.T) {
 // TestMatchedModelsSectionNoCapWhenUnderLimit: <= cap renders all cards, no note.
 func TestMatchedModelsSectionNoCapWhenUnderLimit(t *testing.T) {
 	total := 3
-	out := renderString(t, matchedModelsSection(makeMatchedGroups(total)))
+	out := renderString(t, matchedModelsSection(makeMatchedGroups(total), nil))
 
 	if got := strings.Count(out, `id="model-card-`); got != total {
 		t.Fatalf("expected all %d cards rendered, got %d", total, got)

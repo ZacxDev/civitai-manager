@@ -275,11 +275,17 @@ func versionStatusFragment(bd versionBreakdown, raw []byte) g.Node {
 // details) via htmx (hx-get load), replacing itself (outerHTML) with the
 // server-rendered modelCard. The browser naturally throttles the concurrent
 // lazy loads.
-func modelCardLazy(gr fileGroup) g.Node {
+func modelCardLazy(gr fileGroup, name string) g.Node {
 	id := gr.modelID
 	var total int64
 	for _, f := range gr.files {
 		total += f.SizeBytes
+	}
+	// Show the cached name immediately when we have it; otherwise the "Model #id"
+	// placeholder, which the lazy full-card load below then replaces with the name.
+	label := name
+	if label == "" {
+		label = "Model #" + strconv.Itoa(id)
 	}
 	return card(
 		h.ID(fmt.Sprintf("model-card-%d", id)),
@@ -292,7 +298,7 @@ func modelCardLazy(gr fileGroup) g.Node {
 			h.A(
 				h.Href("/models/"+strconv.Itoa(id)),
 				h.Class("text-base font-semibold text-indigo-300 hover:text-indigo-200"),
-				g.Text("Model #"+strconv.Itoa(id)),
+				g.Text(label),
 			),
 			sizeText(total),
 		),

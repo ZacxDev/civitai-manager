@@ -161,12 +161,37 @@ func (s *Server) cachedModelDetailResolver() modelDetailResolver {
 	}
 }
 
-// annotateOutOfDate populates v.OutOfDate from the cache-only resolver, so the
-// summary pills can report how many matched models have a newer remote version
-// without a fetch. Called by the Server just before rendering a libraryView.
-func (s *Server) annotateOutOfDate(v libraryView) libraryView {
+// annotateLibrary populates the cache-only, render-time fields of a libraryView
+// before it is rendered: OutOfDate (how many matched models have a newer remote
+// version) and ModelNames (cached display names, so matched cards show the real
+// name immediately). Both are derived without any network round trip.
+func (s *Server) annotateLibrary(v libraryView) libraryView {
 	v.OutOfDate = computeOutOfDate(v, s.cachedModelDetailResolver())
+	v.ModelNames = s.matchedModelNames(v)
 	return v
+}
+
+// matchedModelNames resolves the cached display name for each distinct matched
+// model, CACHE-ONLY (the model_cache name column). A name never goes "stale" for
+// display purposes, so staleness is ignored here (unlike the out-of-date version
+// check). Uncached models are simply absent from the map.
+func (s *Server) matchedModelNames(v libraryView) map[int]string {
+	names := map[int]string{}
+	for _, f := range v.Files {
+		if f.ModelID == nil {
+			continue
+		}
+		id := *f.ModelID
+		if _, done := names[id]; done {
+			continue
+		}
+		if ent, _ := s.store.GetModelCache(id); ent != nil && ent.Name != "" {
+			names[id] = ent.Name
+		} else {
+			names[id] = "" // memoize the miss so we don't re-query this id
+		}
+	}
+	return names
 }
 
 // decodeModelDetail reconstructs a ModelDetail from a cached raw GetModel body.
@@ -296,7 +321,7 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			scanInitial = scanScanning(snap, s.csrf)
 		} else {
 			// Terminal: the scan form card above the completed results (form restored).
-			tv := s.annotateOutOfDate(buildLibraryView(files))
+			tv := s.annotateLibrary(buildLibraryView(files))
 			scanInitial = filesTabBody(scanResults(tv, snap, s.csrf), s.csrf, s.matchRemoteEnabled(), hasResults(tv))
 		}
 	}
@@ -328,7 +353,7 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	s.render(w, http.StatusOK, libraryPage(s.annotateOutOfDate(buildLibraryView(files)), s.csrf, s.extraPathsAllowed(), selected, s.currentTheme(), tab, discoverInitial, s.matchRemoteEnabled(), scanInitial, s.nsfwMode(), lw))
+	s.render(w, http.StatusOK, libraryPage(s.annotateLibrary(buildLibraryView(files)), s.csrf, s.extraPathsAllowed(), selected, s.currentTheme(), tab, discoverInitial, s.matchRemoteEnabled(), scanInitial, s.nsfwMode(), lw))
 }
 
 func (s *Server) handleLibraryScan(w http.ResponseWriter, r *http.Request) {

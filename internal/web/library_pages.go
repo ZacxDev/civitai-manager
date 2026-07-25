@@ -114,6 +114,12 @@ type libraryView struct {
 	// only, no fetch), and is 0 for a pure render (no store) or a cold cache — see
 	// computeOutOfDate. summarizeLibrary surfaces it as the "out of date" pill count.
 	OutOfDate int
+	// ModelNames maps a matched model id → its cached display name (cache-only,
+	// populated by the Server before rendering). It lets a matched-model card show
+	// the real name IMMEDIATELY instead of the "Model #id" placeholder while its
+	// full detail lazy-loads. Missing (uncached) ids fall back to "Model #id",
+	// which the per-card lazy load then replaces. Nil on a pure render (no store).
+	ModelNames map[int]string
 }
 
 func buildLibraryView(files []store.LocalFile) libraryView {
@@ -425,7 +431,7 @@ func libraryContent(v libraryView, csrf string) g.Node {
 			),
 		),
 		// MATCHED MODELS FIRST — enriched, lazy-loaded cards.
-		matchedModelsSection(matched),
+		matchedModelsSection(matched, v.ModelNames),
 		// Unmatched / other files in a clearly-separated secondary section.
 		otherFilesSection(unmatched),
 		card(
@@ -447,7 +453,7 @@ func libraryContent(v libraryView, csrf string) g.Node {
 // as enriched, lazy-loaded cards (one per model), ordered by total local size
 // descending so the biggest reclaimable footprints lead. Each card renders
 // immediately as a placeholder and lazy-loads its name + carousel + details.
-func matchedModelsSection(groups []fileGroup) g.Node {
+func matchedModelsSection(groups []fileGroup, names map[int]string) g.Node {
 	if len(groups) == 0 {
 		return card(
 			sectionTitle("Matched models"),
@@ -465,7 +471,7 @@ func matchedModelsSection(groups []fileGroup) g.Node {
 	}
 	var cards []g.Node
 	for _, gr := range shown {
-		cards = append(cards, modelCardLazy(gr))
+		cards = append(cards, modelCardLazy(gr, names[gr.modelID]))
 	}
 	return card(
 		sectionTitle(fmt.Sprintf("Matched models (%d)", total)),
