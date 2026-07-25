@@ -217,6 +217,60 @@ func (s *Store) HasLocalFileNamed(basename string) (bool, error) {
 	return false, rows.Err()
 }
 
+// LocalFileByBasename returns the indexed file whose BASENAME matches basename
+// (case-insensitively), for the ComfyUI cloud-run resource resolver: a workflow
+// references a model by bare filename, and this maps it back to the file's
+// civitai model/version linkage. It mirrors HasLocalFileNamed's basename match
+// (SQL LIKE narrows by path suffix; the exact case-insensitive basename compare
+// in Go is the real gate) but returns the matched *LocalFile.
+//
+// Ambiguity guard: when MULTIPLE indexed files share the basename but disagree on
+// their (model_id, version_id) linkage, the match is AMBIGUOUS and cannot be
+// resolved to a single URN — this returns (nil, nil) (treated as unresolved by the
+// caller) rather than guessing. Rows that agree (or a lone match) return that file.
+// No match returns (nil, nil).
+func (s *Store) LocalFileByBasename(basename string) (*LocalFile, error) {
+	basename = strings.TrimSpace(basename)
+	if basename == "" {
+		return nil, nil
+	}
+	like := "%" + string(filepath.Separator) + basename
+	files, err := s.queryLocalFiles(
+		`SELECT `+localFileCols+` FROM local_files WHERE path LIKE ? OR path = ?`, like, basename)
+	if err != nil {
+		return nil, err
+	}
+	lowWant := strings.ToLower(basename)
+	var match *LocalFile
+	for i := range files {
+		if strings.ToLower(filepath.Base(files[i].Path)) != lowWant {
+			continue // LIKE false-positive (e.g. "myvae.safetensors" for "vae.safetensors")
+		}
+		f := files[i]
+		if match == nil {
+			match = &f
+			continue
+		}
+		if !sameLinkage(match, &f) {
+			return nil, nil // ambiguous — differing model/version linkage
+		}
+	}
+	return match, nil
+}
+
+// sameLinkage reports whether two local files carry the same (model_id, version_id)
+// civitai linkage (both nil counts as same).
+func sameLinkage(a, b *LocalFile) bool {
+	return intPtrEq(a.ModelID, b.ModelID) && intPtrEq(a.VersionID, b.VersionID)
+}
+
+func intPtrEq(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
 // CountLocalFiles returns how many files are indexed.
 func (s *Store) CountLocalFiles() (int, error) {
 	var n int

@@ -117,6 +117,12 @@ type Config struct {
 	// It is a secret: mirror Token's handling — NEVER log it; RedactToken it in any
 	// diagnostic output.
 	ComfyToken string `yaml:"comfy_token"`
+	// ComfyCloud enables the "Run on CivitAI Cloud" feature: submitting a workflow
+	// to the CivitAI orchestration API (which sends the graph + resource list to
+	// civitai.com AND spends Buzz from the account behind Token). Default false —
+	// the cloud UI is only shown/enabled when this is true, so the egress+spend is
+	// strictly opt-in. It reuses the existing Token for auth (no new secret).
+	ComfyCloud bool `yaml:"comfy_cloud"`
 
 	// MaxFileSizeBytes is the resolved byte value of MaxFileSize (0 = unlimited).
 	MaxFileSizeBytes int64 `yaml:"-"`
@@ -547,6 +553,6 @@ func (c *Config) Redacted() Config {
 // String renders the config with the token redacted.
 func (c *Config) String() string {
 	r := c.Redacted()
-	return fmt.Sprintf("Config{BaseURL:%s Addr:%s ModelRoot:%s DBPath:%s PollInterval:%s DownloadJitter:%s MaxFileSize:%d ComfyURL:%s Token:%s ComfyToken:%s}",
-		r.BaseURL, r.Addr, r.ModelRoot, r.DBPath, c.DefaultPollInterval.D(), c.DownloadJitter.D(), c.MaxFileSizeBytes, r.ComfyURL, r.Token, r.ComfyToken)
+	return fmt.Sprintf("Config{BaseURL:%s Addr:%s ModelRoot:%s DBPath:%s PollInterval:%s DownloadJitter:%s MaxFileSize:%d ComfyURL:%s ComfyCloud:%t Token:%s ComfyToken:%s}",
+		r.BaseURL, r.Addr, r.ModelRoot, r.DBPath, c.DefaultPollInterval.D(), c.DownloadJitter.D(), c.MaxFileSizeBytes, r.ComfyURL, c.ComfyCloud, r.Token, r.ComfyToken)
 }
