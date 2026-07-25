@@ -215,6 +215,60 @@ func buildMatchedModelCardView(id int, m *civitai.ModelDetail, raw []byte, files
 	return v
 }
 
+// versionStatusLazy is the small STABLE span a suggestion card renders inline
+// beside its title; it lazy-loads the version-status badge (hx-get on load) so the
+// dashboard render never blocks on civitai. The endpoint (cache-first) returns
+// either the "new version" badge + popover or an empty fragment (up to date).
+func versionStatusLazy(modelID int) g.Node {
+	return h.Span(
+		h.ID(fmt.Sprintf("version-status-%d", modelID)),
+		h.Class("inline-flex"),
+		hx("get", fmt.Sprintf("/models/%d/version-status", modelID)),
+		hx("trigger", "load"),
+		hx("swap", "innerHTML"),
+	)
+}
+
+// versionStatusFragment renders the suggestion's version-status: when an update is
+// available (the latest remote version is not in the library) it renders a small
+// violet "new version" badge with a CSS hover/focus popover naming the user's
+// newest local version → the latest available version (+ its publish date when
+// known). When up to date it renders NOTHING (g.Text("")) to keep the grid clean.
+// All model/version names + dates are untrusted civitai strings — g.Text escapes
+// every one. raw is the cached GetModel body (for the publish date); it may be nil.
+func versionStatusFragment(bd versionBreakdown, raw []byte) g.Node {
+	if !bd.UpdateAvailable || bd.LatestID == 0 {
+		return g.Text("") // up to date (or unknown) → render nothing
+	}
+	latest := bd.LatestName
+	if latest == "" {
+		latest = fmt.Sprintf("Version #%d", bd.LatestID)
+	}
+	have := "none in library"
+	if len(bd.Local) > 0 {
+		have = bd.Local[0].Name // Local is newest-first (list order)
+	}
+
+	pop := []g.Node{
+		h.Div(h.Class("cm-vstatus-title"), g.Text("Update available")),
+		h.Div(g.Text("You have: " + have)),
+		h.Div(g.Text("Latest: " + latest)),
+	}
+	if date := versionPublishedDate(raw, bd.LatestID); date != "" {
+		pop = append(pop, h.Div(h.Class("cm-vstatus-date"), g.Text("Published "+date)))
+	}
+
+	return h.Span(
+		h.Class("cm-vstatus"),
+		g.Attr("tabindex", "0"),
+		// Accessible summary for AT / non-hover users (escaped).
+		g.Attr("aria-label", "Update available: latest version "+latest),
+		g.Attr("title", "Update available: "+latest),
+		h.Span(h.Class("cm-vstatus-badge"), g.Text("⟳ new version")),
+		h.Span(h.Class("cm-vstatus-pop"), g.Attr("role", "tooltip"), g.Group(pop)),
+	)
+}
+
 // modelCardLazy is the placeholder container rendered IMMEDIATELY in the results
 // view for one matched model: it shows what is already known (model id, file
 // count, total size) and lazy-loads the enriched card (name + carousel +

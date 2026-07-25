@@ -313,6 +313,38 @@ func (s *Server) handleModelTitle(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, g.Text(name))
 }
 
+// handleModelVersionStatus backs the lazy version-status badge on the dashboard
+// subscribe-suggestion cards. It resolves the model detail CACHE-FIRST (one
+// GetModel on a miss/stale, matching the model-page posture), cross-references the
+// model's local files, and renders the "new version" badge + popover when the
+// latest remote version is not in the library — or an empty fragment when up to
+// date. GET-only, read-only (no CSRF). It NEVER panics on malformed cache/JSON and
+// degrades to an empty fragment on any error, so a card is never broken by it.
+func (s *Server) handleModelVersionStatus(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id <= 0 {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	// The model's local files (model-kind) for the in-library version cross-ref.
+	var files []store.LocalFile
+	if fs, ferr := s.store.ListLocalFilesByModel(id); ferr == nil {
+		for _, f := range fs {
+			if f.Kind == store.LocalKindModel {
+				files = append(files, f)
+			}
+		}
+	}
+	m, raw, err := s.cachedModelDetail(r.Context(), id)
+	if err != nil || m == nil {
+		// Offline / not found → render nothing rather than an error chip.
+		s.render(w, http.StatusOK, g.Text(""))
+		return
+	}
+	bd := buildVersionBreakdown(m.ModelVersions, files)
+	s.render(w, http.StatusOK, versionStatusFragment(bd, raw))
+}
+
 func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	view, errNode := s.loadModelView(r.Context(), id, r.URL.Query().Get("version"))

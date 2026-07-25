@@ -185,7 +185,14 @@ func suggestionsList(suggestions []suggestion, csrf string) g.Node {
 			return card(
 				h.Class("flex items-center justify-between gap-3"),
 				h.Div(
-					suggestionTitle(sg),
+					h.Class("min-w-0"),
+					h.Div(
+						h.Class("flex items-center gap-2"),
+						suggestionTitle(sg),
+						// Lazy version-status badge (cache-first on load): shows a "new
+						// version" chip + hover popover when a remote update exists.
+						versionStatusLazy(sg.ModelID),
+					),
 					h.Div(h.Class("text-xs text-slate-500"),
 						g.Text(fmt.Sprintf("%d file(s) · %s", sg.FileCount, humanBytes(sg.TotalBytes)))),
 				),
