@@ -138,7 +138,7 @@ func TestModelCardCarouselRespectsNSFW(t *testing.T) {
 	if !strings.Contains(blur, "nsfw.jpeg") || !strings.Contains(blur, `data-blurred="1"`) || !strings.Contains(blur, "cm-blur") {
 		t.Error("blur mode: NSFW image should be present but blurred")
 	}
-	if !strings.Contains(blur, "click to reveal") {
+	if !strings.Contains(blur, "reveal") {
 		t.Error("blur mode: blurred image should offer click-to-reveal")
 	}
 	if !strings.Contains(blur, "safe.jpeg") {

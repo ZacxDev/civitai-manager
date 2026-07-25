@@ -302,7 +302,7 @@ func TestModelNSFWBlurByDefault(t *testing.T) {
 	if !strings.Contains(body, `data-blurred="1"`) || !strings.Contains(body, "cm-blur") {
 		t.Error("NSFW image should be blurred by default (cm-blur + data-blurred)")
 	}
-	if !strings.Contains(body, "click to reveal") {
+	if !strings.Contains(body, "reveal") {
 		t.Error("blurred NSFW image should offer click-to-reveal")
 	}
 }

@@ -880,7 +880,7 @@ func galleryTile(im galleryImage, metaID string, blur bool) g.Node {
 			h.Type("button"),
 			g.Attr("onclick", "cmReveal(this)"),
 			h.Class("cm-reveal absolute inset-0 z-10 flex items-center justify-center bg-slate-950/40 text-xs font-medium text-slate-100"),
-			g.Text("NSFW · click to reveal"),
+			g.Text("reveal"),
 		))
 	}
 	children = append(children, imageMetaHidden(metaID, im))

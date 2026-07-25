@@ -188,7 +188,7 @@ func TestModelCardNSFWModes(t *testing.T) {
 		if !strings.Contains(out, nsfwURL) {
 			t.Error("show mode should render the NSFW image url")
 		}
-		if strings.Contains(out, "click to reveal") {
+		if strings.Contains(out, "reveal") {
 			t.Error("show mode should not blur/gate the NSFW image")
 		}
 		if !strings.Contains(out, safeURL) {
@@ -201,7 +201,7 @@ func TestModelCardNSFWModes(t *testing.T) {
 		if !strings.Contains(out, nsfwURL) {
 			t.Error("blur mode still renders the url (behind a reveal overlay)")
 		}
-		if !strings.Contains(out, "click to reveal") {
+		if !strings.Contains(out, "reveal") {
 			t.Error("blur mode should gate the NSFW image behind a reveal overlay")
 		}
 		if !strings.Contains(out, "cm-blur") {
@@ -219,7 +219,7 @@ func TestModelCardNSFWModes(t *testing.T) {
 		if !strings.Contains(out, nsfwURL) {
 			t.Error("migrated hide (→blur) should render the NSFW image url (blurred)")
 		}
-		if !strings.Contains(out, "click to reveal") {
+		if !strings.Contains(out, "reveal") {
 			t.Error("migrated hide (→blur) should gate the NSFW image behind a reveal overlay")
 		}
 		if !strings.Contains(out, safeURL) {

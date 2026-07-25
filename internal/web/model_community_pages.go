@@ -119,7 +119,7 @@ func (s *Server) communityImageTile(it civitai.ImageItem, mode string) g.Node {
 			h.Type("button"),
 			g.Attr("onclick", "event.preventDefault();event.stopPropagation();cmReveal(this)"),
 			h.Class("cm-reveal absolute inset-0 z-10 flex items-center justify-center bg-slate-950/40 text-xs font-medium text-slate-100"),
-			g.Text("NSFW · click to reveal"),
+			g.Text("reveal"),
 		))
 	}
 	// Caption overlay: poster username + reaction count. Usernames are untrusted

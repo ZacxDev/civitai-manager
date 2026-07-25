@@ -162,7 +162,7 @@ func TestCommunityFeedNSFWModes(t *testing.T) {
 	if !strings.Contains(body, "cm-blur") || !strings.Contains(body, `data-blurred="1"`) {
 		t.Error("blur mode should blur the NSFW image (cm-blur + data-blurred)")
 	}
-	if !strings.Contains(body, "click to reveal") {
+	if !strings.Contains(body, "reveal") {
 		t.Error("blurred NSFW image should offer click-to-reveal")
 	}
 	if !strings.Contains(body, safeURL) {
