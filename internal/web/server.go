@@ -47,6 +47,12 @@ type Config struct {
 	// endpoint exposes. Zero falls back to the config package defaults.
 	WebScanTimeout  time.Duration
 	WebScanMaxFiles int
+	// ComfyURL is the local ComfyUI server base URL for workflow runs/preflight. It
+	// is config-only (never a per-request parameter). Empty disables local run.
+	ComfyURL string
+	// ComfyToken is an optional bearer token for a login-fronted ComfyUI. Secret —
+	// never rendered/logged.
+	ComfyToken string
 }
 
 // Server wires the store, the CivitAI reader, and the subscriber into an
@@ -110,6 +116,19 @@ type Server struct {
 	// workflowScanJob is the current (or most recent) background workflow-scan job,
 	// or nil before the first workflow scan is triggered.
 	workflowScanJob *workflowScanJob
+
+	// runFn performs a workflow run against ComfyUI. Nil (production) uses realRun
+	// (load workflow → convert if UI → preflight → submit → poll history/queue).
+	// Tests inject a seam to drive job phases deterministically without a ComfyUI.
+	runFn func(ctx context.Context, wf *store.Workflow, up runUpdater) (*runResult, error)
+	// comfyClientFn builds the ComfyUI client used by realRun and the /view proxy.
+	// Nil (production) builds a comfy.Client from cfg.ComfyURL/ComfyToken; tests
+	// inject a fake to exercise the real run orchestration and the view proxy.
+	comfyClientFn func() comfyClient
+	// runMu guards runJob. One workflow run is active at a time (global MVP guard).
+	runMu sync.Mutex
+	// runJob is the current (or most recent) background run, or nil before the first.
+	runJob *runJob
 
 	// popularMu guards the in-process TTL cache of the "recent popular" feed shown
 	// as the empty-query search default. The feed is keyed by the NSFW flag
@@ -327,6 +346,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /workflows/{id}/delete", s.handleWorkflowDelete)
 	mux.HandleFunc("POST /workflows/{id}/attach", s.handleWorkflowAttach)
 	mux.HandleFunc("POST /workflows/{id}/golden", s.handleWorkflowGolden)
+
+	mux.HandleFunc("POST /workflows/{id}/run", s.handleWorkflowRun)
+	mux.HandleFunc("GET /workflows/{id}/run/status", s.handleWorkflowRunStatus)
+	mux.HandleFunc("POST /workflows/run/stop", s.handleWorkflowRunStop)
+	mux.HandleFunc("GET /workflows/run/view", s.handleWorkflowRunView)
 
 	return logRequests(s.log, mux)
 }

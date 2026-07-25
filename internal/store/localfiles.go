@@ -3,6 +3,8 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -180,6 +182,39 @@ func (s *Store) ClearCandidates() error {
 // off disk). A missing path is not an error.
 func (s *Store) DeleteLocalFileByPath(path string) error {
 	return execDeleteLocalFileByPath(s.db, path)
+}
+
+// HasLocalFileNamed reports whether the library indexes any file whose BASENAME
+// matches basename (case-insensitively). It backs the ComfyUI run preflight's
+// "do I have this referenced model on disk?" check: a workflow references a model
+// by bare filename, and a match here (under any scanned directory) means the file
+// is present even if ComfyUI's own models/ folder does not yet list it. The SQL
+// LIKE narrows candidate rows by path suffix; the exact case-insensitive basename
+// compare in Go is the real gate (so "vae.safetensors" cannot match
+// "myvae.safetensors").
+func (s *Store) HasLocalFileNamed(basename string) (bool, error) {
+	basename = strings.TrimSpace(basename)
+	if basename == "" {
+		return false, nil
+	}
+	like := "%" + string(filepath.Separator) + basename
+	rows, err := s.db.Query(
+		`SELECT path FROM local_files WHERE path LIKE ? OR path = ?`, like, basename)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	lowWant := strings.ToLower(basename)
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return false, err
+		}
+		if strings.ToLower(filepath.Base(path)) == lowWant {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // CountLocalFiles returns how many files are indexed.

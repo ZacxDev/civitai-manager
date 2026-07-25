@@ -48,6 +48,13 @@ const (
 	DefaultWebScanMaxFiles = 50000
 	// EnvToken is the environment variable holding the API token.
 	EnvToken = "CIVITAI_TOKEN"
+	// EnvComfyToken is the environment variable holding an optional ComfyUI login
+	// token (for installs fronted by ComfyUI-Login). Like the CivitAI token it is a
+	// secret and is never logged.
+	EnvComfyToken = "COMFY_TOKEN"
+	// DefaultComfyURL is the default local ComfyUI server address. ComfyUI listens
+	// on loopback with no auth by default.
+	DefaultComfyURL = "http://127.0.0.1:8188"
 
 	appDir = "civitai-manager"
 )
@@ -101,6 +108,15 @@ type Config struct {
 	// (the model file is still downloaded). Empty / "0" means no cap (write any
 	// size). Parsed into MaxPreviewSizeBytes.
 	MaxPreviewSize string `yaml:"max_preview_size"`
+	// ComfyURL is the local ComfyUI server base URL used for workflow runs and
+	// preflight (/object_info). It is CONFIG-ONLY — never a per-request parameter —
+	// so a run endpoint can never be pointed at an arbitrary target. Empty falls back
+	// to DefaultComfyURL.
+	ComfyURL string `yaml:"comfy_url"`
+	// ComfyToken is an OPTIONAL bearer token for a ComfyUI fronted by a login node.
+	// It is a secret: mirror Token's handling — NEVER log it; RedactToken it in any
+	// diagnostic output.
+	ComfyToken string `yaml:"comfy_token"`
 
 	// MaxFileSizeBytes is the resolved byte value of MaxFileSize (0 = unlimited).
 	MaxFileSizeBytes int64 `yaml:"-"`
@@ -252,6 +268,7 @@ func defaults() (*Config, error) {
 		DBPath:              filepath.Join(dir, "civitai-manager.db"),
 		WebScanTimeout:      Duration(DefaultWebScanTimeout),
 		WebScanMaxFiles:     DefaultWebScanMaxFiles,
+		ComfyURL:            DefaultComfyURL,
 	}, nil
 }
 
@@ -292,9 +309,13 @@ func Resolve(flags Flags) (*Config, error) {
 		return nil, err
 	}
 
-	// Env layer: only the token is env-configurable.
+	// Env layer: the CivitAI token and the optional ComfyUI token are
+	// env-configurable (both secrets).
 	if env := os.Getenv(EnvToken); env != "" {
 		cfg.Token = env
+	}
+	if env := os.Getenv(EnvComfyToken); env != "" {
+		cfg.ComfyToken = env
 	}
 
 	// Flag layer (highest precedence).
@@ -381,6 +402,10 @@ func (c *Config) normalize() error {
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 	if c.BaseURL == "" {
 		c.BaseURL = DefaultBaseURL
+	}
+	c.ComfyURL = strings.TrimRight(strings.TrimSpace(c.ComfyURL), "/")
+	if c.ComfyURL == "" {
+		c.ComfyURL = DefaultComfyURL
 	}
 	if c.DefaultPollInterval.D() <= 0 {
 		c.DefaultPollInterval = Duration(DefaultPollInterval)
@@ -515,12 +540,13 @@ func RedactToken(token string) string {
 func (c *Config) Redacted() Config {
 	dup := *c
 	dup.Token = RedactToken(c.Token)
+	dup.ComfyToken = RedactToken(c.ComfyToken)
 	return dup
 }
 
 // String renders the config with the token redacted.
 func (c *Config) String() string {
 	r := c.Redacted()
-	return fmt.Sprintf("Config{BaseURL:%s Addr:%s ModelRoot:%s DBPath:%s PollInterval:%s DownloadJitter:%s MaxFileSize:%d Token:%s}",
-		r.BaseURL, r.Addr, r.ModelRoot, r.DBPath, c.DefaultPollInterval.D(), c.DownloadJitter.D(), c.MaxFileSizeBytes, r.Token)
+	return fmt.Sprintf("Config{BaseURL:%s Addr:%s ModelRoot:%s DBPath:%s PollInterval:%s DownloadJitter:%s MaxFileSize:%d ComfyURL:%s Token:%s ComfyToken:%s}",
+		r.BaseURL, r.Addr, r.ModelRoot, r.DBPath, c.DefaultPollInterval.D(), c.DownloadJitter.D(), c.MaxFileSizeBytes, r.ComfyURL, r.Token, r.ComfyToken)
 }

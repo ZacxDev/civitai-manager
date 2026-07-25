@@ -49,8 +49,9 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load workflow", err)
 		return
 	}
+	runSection := runPanel(wf, s.runJobState(), s.csrf, s.extraPathsAllowed())
 	s.render(w, http.StatusOK, workflowDetailPage(wf, prettyJSON(wf.Graph),
-		s.csrf, s.currentTheme(), s.nsfwMode()))
+		s.csrf, s.currentTheme(), s.nsfwMode(), runSection))
 }
 
 // handleWorkflowImport ingests a pasted API/UI graph. CSRF-protected and
