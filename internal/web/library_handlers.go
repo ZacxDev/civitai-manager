@@ -292,6 +292,7 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 	lw := libraryWorkflowsView{
 		Flash:      r.URL.Query().Get("flash"),
 		FlashLevel: r.URL.Query().Get("level"),
+		Resolver:   s.workflowResolver(),
 	}
 	if wfs, werr := s.store.ListWorkflows(r.Context()); werr == nil {
 		lw.Workflows = wfs
@@ -299,7 +300,7 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			if snap.Running {
 				lw.ScanInitial = workflowScanScanning(snap, s.csrf)
 			} else {
-				lw.ScanInitial = workflowScanTerminal(wfs, snap, s.csrf, s.extraPathsAllowed())
+				lw.ScanInitial = workflowScanTerminal(wfs, snap, s.csrf, s.extraPathsAllowed(), s.workflowResolver())
 			}
 		}
 	}

@@ -274,6 +274,54 @@ func (s *Server) handleWorkflowGolden(w http.ResponseWriter, r *http.Request) {
 	s.redirectWorkflows(w, r, "Golden workflow set.", "success")
 }
 
+// workflowResolver builds the offline-first display resolver for workflow list
+// items: model name/raw from model_cache and local-file presence from the store.
+// Both funcs read the store lazily (per card), and the workflow list is small, so
+// this stays cheap. Never fetches civitai — the model name lazy-loads via
+// /models/{id}/title only for cards whose model is uncached.
+func (s *Server) workflowResolver() workflowResolver {
+	return workflowResolver{
+		cachedModel: func(id int) (string, []byte, bool) {
+			ent, err := s.store.GetModelCache(id)
+			if err != nil || ent == nil {
+				return "", nil, false
+			}
+			return ent.Name, ent.Raw, true
+		},
+		haveFile: func(basename string) bool {
+			ok, _ := s.store.HasLocalFileNamed(basename)
+			return ok
+		},
+	}
+}
+
+// versionNameFromRaw parses a version's display name out of a cached GetModel raw
+// body (modelVersions[].name where id == versionID). Defensive: any parse failure
+// or absent id yields ok=false so the caller falls back to "version {id}".
+func versionNameFromRaw(raw []byte, versionID int) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	var m struct {
+		ModelVersions []struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+		} `json:"modelVersions"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return "", false
+	}
+	for _, v := range m.ModelVersions {
+		if v.ID == versionID {
+			if strings.TrimSpace(v.Name) == "" {
+				return "", false
+			}
+			return v.Name, true
+		}
+	}
+	return "", false
+}
+
 // --- helpers ---
 
 // redirectWorkflows POST-redirect-GETs back to the Workflows Library tab with a

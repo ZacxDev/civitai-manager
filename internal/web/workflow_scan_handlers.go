@@ -238,7 +238,7 @@ func (s *Server) renderWorkflowScanStatus(w http.ResponseWriter) {
 		s.renderError(w, "reload workflows", err)
 		return
 	}
-	s.render(w, http.StatusOK, workflowScanTerminal(wfs, snap, s.csrf, s.extraPathsAllowed()))
+	s.render(w, http.StatusOK, workflowScanTerminal(wfs, snap, s.csrf, s.extraPathsAllowed(), s.workflowResolver()))
 }
 
 // handleWorkflowScanStatus is polled by the scanning fragment. GET (no state
