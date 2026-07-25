@@ -365,7 +365,7 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 		view.LocalVersionIDs = s.localVersionIDs(mid)
 		sub = s.modelSubscription(mid)
 	}
-	s.render(w, http.StatusOK, modelDetailPage(view, sub, s.csrf, s.currentTheme()))
+	s.render(w, http.StatusOK, modelDetailPage(view, sub, s.csrf, s.currentTheme(), s.cfg.BaseURL))
 }
 
 // communityCacheTTL bounds how long a cached community-image feed is served

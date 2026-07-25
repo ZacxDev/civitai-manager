@@ -275,6 +275,23 @@ func TestModelNoTagsRendersNothing(t *testing.T) {
 	}
 }
 
+// TestModelHeaderViewOnCivitai proves the header carries a hardened "View on
+// CivitAI" link to {BaseURL}/models/{id} (item 5).
+func TestModelHeaderViewOnCivitai(t *testing.T) {
+	srv := newModelServer(t, newModelReader(t))
+	body := getModelPage(t, srv, "/models/7")
+
+	if !strings.Contains(body, `href="https://civitai.com/models/7"`) {
+		t.Errorf("header should link to the civitai model page:\n%s", body)
+	}
+	if !strings.Contains(body, "View on CivitAI") {
+		t.Error("header should show a 'View on CivitAI' affordance")
+	}
+	if !strings.Contains(body, `target="_blank"`) || !strings.Contains(body, `rel="noopener noreferrer"`) {
+		t.Error("the external link must be target=_blank rel=noopener noreferrer")
+	}
+}
+
 func TestModelNSFWBlurByDefault(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
 	body := getModelPage(t, srv, "/models/7")

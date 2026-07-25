@@ -307,16 +307,17 @@ func versionPublishedDate(raw []byte, versionID int) string {
 // modelDetailPage renders the rich model detail page: header + stats, sanitized
 // description, tags, a version selector with per-version detail, and a showcase
 // image gallery with NSFW handling + a lightbox.
-func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme string) g.Node {
+func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, baseURL string) g.Node {
 	m := v.Model
 	creator := ""
 	if m.Creator != nil {
 		creator = m.Creator.Username
 	}
 	mode := normalizeNSFWMode(v.NSFWMode)
+	modelURL := fmt.Sprintf("%s/models/%d", strings.TrimRight(baseURL, "/"), m.ID)
 
 	return page(m.Name, theme, csrf, mode,
-		modelHeaderCard(m, v.Images, mode, creator, csrf, sub),
+		modelHeaderCard(m, v.Images, mode, creator, csrf, modelURL, sub),
 		g.If(strings.TrimSpace(v.Description) != "", modelDescriptionCard(v.Description)),
 		// Tags are a compact, de-emphasized inline chip row under the description
 		// (not a standalone "Tags" card).
@@ -345,7 +346,7 @@ func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme str
 // Subscribe affordance, AND the showcase carousel (moved into the header) with
 // the persisted NSFW display-mode control. The carousel tiles route through
 // galleryTile → the thumbnail helper + NSFW handling and share the page lightbox.
-func modelHeaderCard(m *civitai.ModelDetail, images []galleryImage, mode, creator, csrf string, sub *store.Subscription) g.Node {
+func modelHeaderCard(m *civitai.ModelDetail, images []galleryImage, mode, creator, csrf, modelURL string, sub *store.Subscription) g.Node {
 	return card(
 		h.Div(
 			h.Class("flex flex-wrap items-start justify-between gap-4"),
@@ -365,15 +366,36 @@ func modelHeaderCard(m *civitai.ModelDetail, images []galleryImage, mode, creato
 					statInline("Comments", compactCount(m.Stats.CommentCount)),
 				),
 			),
-			// Reflect the real subscription state: subscribed → "Subscribed ✓ /
-			// Unsubscribe", not-subscribed → collapsed "Subscribe" (sub is nil).
-			subscribeControl(m.ID, sub, csrf),
+			// Reflect the real subscription state (subscribed → "Subscribed ✓ /
+			// Unsubscribe", not-subscribed → collapsed "Subscribe") and a secondary
+			// "View on CivitAI" link out to the model's civitai.com page.
+			h.Div(
+				h.Class("flex flex-col items-end gap-2"),
+				subscribeControl(m.ID, sub, csrf),
+				viewOnCivitaiLink(modelURL),
+			),
 		),
 		h.Div(
 			h.Class("mt-4 mb-2 flex flex-wrap items-center justify-between gap-2"),
 			h.H2(h.Class("text-sm font-semibold text-slate-300"), g.Text("Showcase images")),
 		),
 		modelCardCarousel(m.ID, images, mode),
+	)
+}
+
+// viewOnCivitaiLink renders the header's secondary "View on CivitAI" affordance:
+// an anchor styled as a civitai outline button (the component CSS is
+// attribute-driven, so it styles an <a> too) that opens the model's civitai.com
+// page in a new tab, hardened with rel=noopener noreferrer.
+func viewOnCivitaiLink(modelURL string) g.Node {
+	return h.A(
+		h.Href(modelURL),
+		h.Target("_blank"),
+		g.Attr("rel", "noopener noreferrer"),
+		dataAttr("civitai-ui", "button"),
+		dataAttr("variant", "outline"),
+		dataAttr("size", "sm"),
+		g.Text("View on CivitAI ↗"),
 	)
 }
 
