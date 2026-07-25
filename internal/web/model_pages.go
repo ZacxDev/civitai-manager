@@ -518,7 +518,10 @@ func modelVersionsCard(v modelDetailView, csrf string) g.Node {
 					// In-library indicator: a compact green ✓ (not a text badge, not a
 					// button), labeled for AT. Only owned versions carry it.
 					g.If(v.LocalVersionIDs[ver.ID], h.Span(
-						h.Class("cm-inlib font-semibold text-green-500"),
+						// cm-ok resolves the green from the civitai success token so the
+						// indicator is genuinely green in both themes, independent of the
+						// purged Tailwind build (which omits text-green-*).
+						h.Class("cm-ok font-semibold"),
 						h.Title("In your library"),
 						g.Attr("aria-label", "In your library"),
 						g.Text("✓"),
@@ -642,7 +645,7 @@ func downloadFileButton(modelID, versionID, fileID int, csrf string, hasURL bool
 func downloadFeedback(modelID, versionID, fileID int, msg string, ok bool) g.Node {
 	cls := "text-xs text-amber-400"
 	if ok {
-		cls = "text-xs font-medium text-green-500"
+		cls = "text-xs font-medium cm-ok" // green from the civitai success token
 	}
 	return h.Span(h.ID(downloadFileID(modelID, versionID, fileID)), h.Class(cls), g.Text(msg))
 }

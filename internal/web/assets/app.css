@@ -267,6 +267,17 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 }
 
 /*
+ * .cm-ok is a token-resolved success color (green in both themes), used for the
+ * version-list "in your library" ✓ indicator and the "Queued ✓" download
+ * feedback. It resolves from --civitai-color-success rather than a Tailwind
+ * text-green-* utility because the purged output.css omits those; this keeps the
+ * green deterministic and theme-aware. No CDN.
+ */
+.cm-ok {
+  color: var(--civitai-color-success);
+}
+
+/*
  * Model tag chips (.cm-tag-chip) — see modelTagChips in model_pages.go. A
  * compact, de-emphasized inline chip row under the description (replaces the old
  * "Tags" card). Muted color + border resolve from --civitai-* tokens so both
