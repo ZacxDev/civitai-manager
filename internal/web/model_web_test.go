@@ -246,6 +246,35 @@ func TestModelDescriptionCollapsible(t *testing.T) {
 	}
 }
 
+// TestModelTagsChipRow proves tags render as a compact inline chip row (item 4),
+// not a standalone "Tags" card.
+func TestModelTagsChipRow(t *testing.T) {
+	srv := newModelServer(t, newModelReader(t))
+	body := getModelPage(t, srv, "/models/7")
+
+	if !strings.Contains(body, "cm-tag-chip") {
+		t.Error("tags should render as inline cm-tag-chip chips")
+	}
+	if !strings.Contains(body, "anime") || !strings.Contains(body, "portrait") {
+		t.Error("tag text should render")
+	}
+	if strings.Contains(body, ">Tags<") {
+		t.Errorf("tags should not be a standalone 'Tags' card:\n%s", body)
+	}
+}
+
+// TestModelNoTagsRendersNothing proves a model with no tags renders no chip row.
+func TestModelNoTagsRendersNothing(t *testing.T) {
+	reader := newModelReader(t)
+	reader.model.Tags = nil
+	srv := newModelServer(t, reader)
+	body := getModelPage(t, srv, "/models/7")
+
+	if strings.Contains(body, "cm-tag-chip") {
+		t.Error("a model with no tags should render no chip row")
+	}
+}
+
 func TestModelNSFWBlurByDefault(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
 	body := getModelPage(t, srv, "/models/7")

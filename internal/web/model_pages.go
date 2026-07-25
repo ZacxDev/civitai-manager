@@ -318,7 +318,9 @@ func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme str
 	return page(m.Name, theme, csrf, mode,
 		modelHeaderCard(m, v.Images, mode, creator, csrf, sub),
 		g.If(strings.TrimSpace(v.Description) != "", modelDescriptionCard(v.Description)),
-		g.If(len(m.Tags) > 0, modelTagsCard(m.Tags)),
+		// Tags are a compact, de-emphasized inline chip row under the description
+		// (not a standalone "Tags" card).
+		g.If(len(m.Tags) > 0, modelTagChips(m.Tags)),
 		modelVersionsCard(v),
 		// Community feed: LAZY-loaded at the bottom. The container carries the
 		// SELECTED version id, so switching versions (which re-renders this page)
@@ -415,13 +417,15 @@ func modelDescriptionCard(rawHTML string) g.Node {
 	)
 }
 
-func modelTagsCard(tags []string) g.Node {
-	return card(
-		sectionTitle("Tags"),
-		h.Div(
-			h.Class("flex flex-wrap gap-1.5"),
-			g.Map(tags, func(t string) g.Node { return badge(t, "slate") }),
-		),
+// modelTagChips renders the model's tags as a compact, muted inline chip row
+// (see .cm-tag-chip in app.css) — small and de-emphasized rather than a full
+// "Tags" card. Tag text is untrusted civitai data → g.Text escapes each one.
+func modelTagChips(tags []string) g.Node {
+	return h.Div(
+		h.Class("flex flex-wrap items-center gap-1.5 px-1"),
+		g.Map(tags, func(t string) g.Node {
+			return h.Span(h.Class("cm-tag-chip"), g.Text(t))
+		}),
 	)
 }
 

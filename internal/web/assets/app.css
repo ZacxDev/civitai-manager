@@ -267,6 +267,23 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 }
 
 /*
+ * Model tag chips (.cm-tag-chip) — see modelTagChips in model_pages.go. A
+ * compact, de-emphasized inline chip row under the description (replaces the old
+ * "Tags" card). Muted color + border resolve from --civitai-* tokens so both
+ * data-theme paths read correctly. No CDN.
+ */
+.cm-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.7rem;
+  line-height: 1.2;
+  color: var(--civitai-color-text-dimmed);
+  border: 1px solid var(--civitai-color-border);
+}
+
+/*
  * Suggestion "new version" badge + hover popover (.cm-vstatus*) — see
  * versionStatusFragment in model_card_pages.go. A CSS-only hover/focus popover (no
  * external JS) shows the local→latest version detail. Colors resolve from
