@@ -2,10 +2,62 @@
 
 _Status (updated 2026-07-25): **Slice A (Workflow Library) shipped v0.1.28; A2 (scan
 + Library tab + auto-link) v0.1.29; B (local run + UI→API converter) v0.1.30 — all
-live-verified against the real local ComfyUI.** Slice **C** (remote CivitAI Comfy
-Cloud / Orchestration) is the remaining, **not-started** slice. Original design below
-is unchanged; it was grounded in two research passes (codebase recon + external API
-research), 2026-07-24._
+live-verified against the real local ComfyUI. Slice C1 (remote CivitAI Comfy Cloud —
+thin end-to-end) shipped v0.1.41.** All three integration slices are now shipped.
+Original design below is unchanged; it was grounded in two research passes (codebase
+recon + external API research), 2026-07-24._
+
+## Slice C1 — SHIPPED v0.1.41 (verified contract + caveats)
+
+**Verified against the real `@civitai/client` SDK (v0.2.0-beta.81, prod) AND a live
+`whatif` call to `https://orchestration.civitai.com` on 2026-07-25** — no guessed
+field names remain:
+
+- **Auth:** `Authorization: Bearer <CivitAI token>` (the manager's existing config
+  `Token`, reused). Base URL `https://orchestration.civitai.com`.
+- **Submit:** `POST /v2/consumer/workflows?whatif=<bool>` (opt `&wait=<sec>`). Body =
+  `WorkflowTemplate`: `{"steps":[{"$type":"customComfy","name":"comfy","input":{"resources":[<AIR URN strings>],"workflow":<raw API-format graph obj>,"trace":"none"}}]}`.
+  `$type` is literally `"customComfy"` (camelCase); `trace` ∈ `none|logs|binary`.
+- **Poll:** `GET /v2/consumer/workflows/{id}` → `Workflow{ id, status(unassigned→
+  preparing→scheduled→processing→succeeded|failed|expired|canceled), cost{base,factors},
+  transactions{insufficientBuzz}, steps[].output.blobs[]{id,url,available,type} }`.
+- **Cancel:** `PUT /v2/consumer/workflows/{id}` status=`canceled` (best-effort Stop).
+- **resources[]** must declare EVERY asset as an AIR URN — models AND custom nodes
+  (`urn:air:comfy:nodepack:comfyregistry:<author>/<pack>@<ver>`); the orchestrator
+  does NOT inspect the graph. Model URN grammar (from `civitai/src/shared/utils/air.ts`):
+  `urn:air:<ecosystem-lower>:<type>:civitai:<modelId>@<versionId>[+<fileId>]`;
+  ecosystem from baseModel, type from ModelType (checkpoint/lora/lycoris/vae/embedding/
+  controlnet/upscaler/unet/…).
+
+**⚠️ Load-bearing live-verify finding: CustomComfy is PER-SECOND metered.** `whatif`
+returns `cost.base=0` — the real charge is `Max(1, runtimeSeconds × buzzPerSecond)`
+computed AFTER the run, so there is NO meaningful upfront total. The UI therefore does
+NOT show "Estimated cost: N Buzz" (would read as free); it confirms acceptance + states
+per-second billing plainly. `transactions.insufficientBuzz` is consequently ~never set
+on a customComfy whatif → the affordability gate is effectively inert.
+
+**Implementation:** `internal/comfy/{air,cloud,resolve}.go`; `internal/web/{cloud_handlers,
+cloud_job,cloud_pages}.go`; config `comfy_cloud` (opt-in, **default off**); store
+`LocalFileByBasename`. Hybrid AIR-URN resolution: auto-derive filename→local_files→
+model_cache→URN, flag `guessed`/`unresolved`/`custom-node`, user edits the URN list
+before whatif→submit→poll→gallery. Egress+Buzz warning mirrors `match_remote`.
+Endpoints loopback-gated + CSRF-before-egress. Reuses the race-safe streaming-job
+pattern (local|cloud). Result blobs render as civitai-CDN `<img>` (same trust class
+as showcase images). `/audit-pr` no 🔴; a DATA RACE (mutable poll-interval global) +
+a stop-test flake were caught by the `-race` gate and fixed.
+
+**Caveats / fast-follows (NOT yet done):**
+1. **Real cloud run (spends Buzz) NOT yet live-verified** — only the free `whatif` +
+   resolution path is. Held for explicit user OK / a cheap designated workflow.
+2. **`minimumDurationSeconds` submit-time affordability gate** — the real runaway-spend
+   protection (reject unless the user can afford N sec; + the server-side live-balance
+   mid-run cancel). Recommended fast-follow given whatif's cost preview is inert.
+3. **Stop mid-submit can still charge Buzz** (best-effort cancel before cloudID is
+   recorded) — surfaced in the canceled fragment, not fully preventable client-side.
+4. **UI-format workflows** can't cloud-run (no local `/object_info` to convert) — panel
+   says "API-format required"; no faked conversion.
+5. Custom-node detection is a curated core-node heuristic; the run gate is UI-only
+   (orchestrator re-enforces affordability on the real submit).
 
 ## 1. The load-bearing findings (what reality forces on the design)
 
