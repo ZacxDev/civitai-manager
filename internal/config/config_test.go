@@ -141,6 +141,34 @@ func TestComfyURLDefault(t *testing.T) {
 	}
 }
 
+func TestComfyCloudDefaultAndFromFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnvToken, "")
+	t.Setenv(EnvComfyToken, "")
+
+	// Default: false.
+	cfg, err := Resolve(Flags{ConfigPath: filepath.Join(dir, "missing.yaml")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ComfyCloud {
+		t.Errorf("comfy_cloud should default to false")
+	}
+
+	// From file: true.
+	cfgPath := writeConfig(t, dir, "comfy_cloud: true\n")
+	cfg, err = Resolve(Flags{ConfigPath: cfgPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ComfyCloud {
+		t.Errorf("comfy_cloud from file: got false want true")
+	}
+	if !contains(cfg.String(), "ComfyCloud:true") {
+		t.Errorf("String() should report ComfyCloud:true, got %q", cfg.String())
+	}
+}
+
 func TestComfyURLFromFileTrimsSlash(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(EnvToken, "")

@@ -81,6 +81,8 @@ func serveRun(ctx context.Context, st *store.Store, client civitai.Client, cfg *
 		WebScanMaxFiles:     cfg.WebScanMaxFiles,
 		ComfyURL:            cfg.ComfyURL,
 		ComfyToken:          cfg.ComfyToken,
+		ComfyCloud:          cfg.ComfyCloud,
+		Token:               cfg.Token,
 	}, log)
 	// Tie background discovery crawls to the server lifecycle: cancelling ctx on
 	// shutdown cancels any in-flight crawl instead of leaking its goroutine.

@@ -12,6 +12,7 @@ import (
 
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
 	"github.com/ZacxDev/civitai-manager/internal/store"
+	g "maragu.dev/gomponents"
 )
 
 // maxWorkflowUpload bounds a PNG upload's total request body. ComfyUI metadata
@@ -49,7 +50,10 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	runSection := runPanel(wf, s.runJobState(), s.csrf, s.extraPathsAllowed())
+	runSection := g.Group([]g.Node{
+		runPanel(wf, s.runJobState(), s.csrf, s.extraPathsAllowed()),
+		cloudEntryCard(wf.ID),
+	})
 	s.render(w, http.StatusOK, workflowDetailPage(wf, prettyJSON(wf.Graph),
 		s.csrf, s.currentTheme(), s.nsfwMode(), runSection))
 }
