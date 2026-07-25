@@ -145,12 +145,14 @@ func workflowCard(wf store.Workflow, csrf string) g.Node {
 			g.Text(fmt.Sprintf("%d resource%s", n, plural(n)))))
 	}
 
-	// Actions row.
+	// Actions row. Run links to the detail page, which hosts the live run panel
+	// (submit → progress → result gallery) against the local ComfyUI. It is an
+	// anchor styled as a button (not a <button> inside an <a>, which is invalid).
 	var actions []g.Node
-	// Run is intentionally disabled this slice (no execution engine yet).
-	actions = append(actions, civButton("outline", "sm",
-		[]g.Node{h.Type("button"), g.Attr("disabled"),
-			g.Attr("title", "local run coming in the next release")},
+	actions = append(actions, h.A(
+		h.Href("/workflows/"+id+"#"+runStatusContainerID),
+		dataAttr("civitai-ui", "button"), dataAttr("variant", "outline"), dataAttr("size", "sm"),
+		g.Attr("title", "Run on your local ComfyUI"),
 		g.Text("Run")))
 	actions = append(actions, h.A(h.Href("/workflows/"+id),
 		h.Class("text-sm text-indigo-400 hover:text-indigo-300 self-center"),
@@ -180,8 +182,9 @@ func workflowCard(wf store.Workflow, csrf string) g.Node {
 }
 
 // workflowDetailPage renders a single workflow: its pretty-printed graph (escaped
-// — untrusted), resources, attachment controls, and metadata.
-func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode string) g.Node {
+// — untrusted), resources, attachment controls, and metadata. runSection is the
+// live Run panel (nil renders no run controls).
+func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode string, runSection g.Node) g.Node {
 	id := strconv.FormatInt(wf.ID, 10)
 	name := wf.Name
 	if strings.TrimSpace(name) == "" {
@@ -211,6 +214,11 @@ func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode s
 	}
 	meta = append(meta, metaRow("Golden", boolText(wf.IsGolden)))
 	body = append(body, card(sectionTitle("Details"), h.Dl(h.Class("space-y-1"), g.Group(meta))))
+
+	// Run panel (local ComfyUI execution).
+	if runSection != nil {
+		body = append(body, runSection)
+	}
 
 	// Resources card.
 	if len(wf.Resources) > 0 {
