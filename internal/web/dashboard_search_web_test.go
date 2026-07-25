@@ -129,6 +129,54 @@ func TestParseSearchImagesEmptyRaw(t *testing.T) {
 	}
 }
 
+// TestParseSearchImagesNewestHealthyVersion covers the version-selection policy:
+// pick the NEWEST version (by publishedAt) with a healthy showcase
+// (>= minShowcaseImages), skipping a more-recent-but-sparse variant; fall back to
+// the richest version when none clears the bar. modelVersions[] order is
+// default-first (NOT date-sorted), so selection must sort by date itself.
+func TestParseSearchImagesNewestHealthyVersion(t *testing.T) {
+	imgs := func(n int, prefix string) []any {
+		out := make([]any, 0, n)
+		for i := 0; i < n; i++ {
+			out = append(out, map[string]any{
+				"url": "https://image.civitai.com/" + prefix + string(rune('a'+i)) + ".jpeg", "type": "image",
+			})
+		}
+		return out
+	}
+	raw := searchRawJSON(t, []any{
+		// Model 100: default-first order lists the OLDER healthy version first, then a
+		// NEWER healthy version → the newer one must win (proves date-sort, not [0]).
+		map[string]any{"id": 100, "modelVersions": []any{
+			map[string]any{"id": 1, "publishedAt": "2023-07-29T00:00:00.000Z", "images": imgs(5, "old-")},
+			map[string]any{"id": 2, "publishedAt": "2023-12-06T00:00:00.000Z", "images": imgs(5, "new-")},
+		}},
+		// Model 200: the NEWEST version is sparse (1 img < threshold); an older version
+		// is healthy → skip the sparse newest, take the healthy older one.
+		map[string]any{"id": 200, "modelVersions": []any{
+			map[string]any{"id": 3, "publishedAt": "2024-05-12T00:00:00.000Z", "images": imgs(6, "healthy-")},
+			map[string]any{"id": 4, "publishedAt": "2024-05-13T00:00:00.000Z", "images": imgs(1, "sparse-")},
+		}},
+		// Model 300: NO version clears the threshold → fall back to the richest (2 imgs).
+		map[string]any{"id": 300, "modelVersions": []any{
+			map[string]any{"id": 5, "publishedAt": "2024-01-01T00:00:00.000Z", "images": imgs(1, "one-")},
+			map[string]any{"id": 6, "publishedAt": "2024-02-01T00:00:00.000Z", "images": imgs(2, "two-")},
+		}},
+	})
+
+	got := parseSearchImages(raw)
+
+	if m := got[100]; len(m) != 5 || !strings.Contains(m[0].URL, "new-") {
+		t.Errorf("model 100: want the newer healthy version's images, got %+v", m)
+	}
+	if m := got[200]; len(m) != 6 || !strings.Contains(m[0].URL, "healthy-") {
+		t.Errorf("model 200: want the healthy version (skip sparse newest), got %+v", m)
+	}
+	if m := got[300]; len(m) != 2 || !strings.Contains(m[0].URL, "two-") {
+		t.Errorf("model 300: want the richest version as fallback, got %+v", m)
+	}
+}
+
 // --- B. NSFW modes on cards ---
 
 func TestModelCardNSFWModes(t *testing.T) {
