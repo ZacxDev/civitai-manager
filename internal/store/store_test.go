@@ -28,8 +28,8 @@ func TestMigrationApplies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 9 {
-		t.Fatalf("schema version = %d, want 9", v)
+	if v != 10 {
+		t.Fatalf("schema version = %d, want 10", v)
 	}
 	// Re-running migrate (via a second Open on a file) is idempotent; here we
 	// just confirm the core tables exist by exercising them below.

@@ -215,14 +215,17 @@ func buildMatchedModelCardView(id int, m *civitai.ModelDetail, raw []byte, files
 	return v
 }
 
-// versionStatusLazy is the small STABLE span a suggestion card renders inline
-// beside its title; it lazy-loads the version-status badge (hx-get on load) so the
-// dashboard render never blocks on civitai. The endpoint (cache-first) returns
-// either the "new version" badge + popover or an empty fragment (up to date).
+// versionStatusLazy is the STABLE own-row container a suggestion card renders
+// BELOW its title/footprint; it lazy-loads the version-status badge (hx-get on
+// load) so the dashboard render never blocks on civitai. The endpoint
+// (cache-first) returns either the "new version" pill + popover or an EMPTY
+// fragment (up to date). The .cm-vstatus-lazy class hides the container while it
+// is empty (before load AND when the fragment is empty), so an up-to-date card
+// shows no stray badge and no empty gap in the grid.
 func versionStatusLazy(modelID int) g.Node {
-	return h.Span(
+	return h.Div(
 		h.ID(fmt.Sprintf("version-status-%d", modelID)),
-		h.Class("inline-flex"),
+		h.Class("cm-vstatus-lazy"),
 		hx("get", fmt.Sprintf("/models/%d/version-status", modelID)),
 		hx("trigger", "load"),
 		hx("swap", "innerHTML"),
@@ -244,18 +247,26 @@ func versionStatusFragment(bd versionBreakdown, raw []byte) g.Node {
 	if latest == "" {
 		latest = fmt.Sprintf("Version #%d", bd.LatestID)
 	}
-	have := "none in library"
+	// Both publish dates come from the SAME cached raw GetModel body — zero extra
+	// calls. Each is appended inline ("· Published YYYY-MM-DD") only when present,
+	// and omitted gracefully when the version isn't in the model's version list
+	// (versionPublishedDate → ""). All names/dates are untrusted → g.Text escapes.
+	haveLine := "You have: none in library"
 	if len(bd.Local) > 0 {
-		have = bd.Local[0].Name // Local is newest-first (list order)
+		haveLine = "You have: " + bd.Local[0].Name // Local is newest-first (list order)
+		if d := versionPublishedDate(raw, bd.Local[0].VersionID); d != "" {
+			haveLine += " · Published " + d
+		}
+	}
+	latestLine := "Latest: " + latest
+	if d := versionPublishedDate(raw, bd.LatestID); d != "" {
+		latestLine += " · Published " + d
 	}
 
 	pop := []g.Node{
 		h.Div(h.Class("cm-vstatus-title"), g.Text("Update available")),
-		h.Div(g.Text("You have: " + have)),
-		h.Div(g.Text("Latest: " + latest)),
-	}
-	if date := versionPublishedDate(raw, bd.LatestID); date != "" {
-		pop = append(pop, h.Div(h.Class("cm-vstatus-date"), g.Text("Published "+date)))
+		h.Div(g.Text(haveLine)),
+		h.Div(g.Text(latestLine)),
 	}
 
 	return h.Span(

@@ -95,7 +95,7 @@ func TestModelDetailPageRendersSubControl(t *testing.T) {
 	view := modelDetailView{Model: m, SelectedVersionID: 1,
 		Version: &civitai.ModelVersionDetail{ID: 1}}
 
-	nilOut := renderString(t, modelDetailPage(view, nil, "csrf", "dark"))
+	nilOut := renderString(t, modelDetailPage(view, nil, "csrf", "dark", "https://civitai.com"))
 	if !strings.Contains(nilOut, `hx-get="/models/42/subscribe-options"`) {
 		t.Errorf("nil sub should render the collapsed Subscribe control:\n%s", nilOut)
 	}
@@ -105,7 +105,7 @@ func TestModelDetailPageRendersSubControl(t *testing.T) {
 
 	mid := 42
 	sub := &store.Subscription{Kind: store.KindModel, ModelID: &mid, AutoDownload: true}
-	subOut := renderString(t, modelDetailPage(view, sub, "csrf", "dark"))
+	subOut := renderString(t, modelDetailPage(view, sub, "csrf", "dark", "https://civitai.com"))
 	if !strings.Contains(subOut, `hx-post="/models/42/unsubscribe"`) {
 		t.Errorf("non-nil sub should render Unsubscribe:\n%s", subOut)
 	}

@@ -36,6 +36,10 @@ type fakeReader struct {
 	// "no community images" outcome. communityErr, when set, is returned instead.
 	communityImages []civitai.ImageItem
 	communityErr    error
+	// communityRaw, when non-nil, is returned as the SearchImages result's Raw
+	// body (the bytes the community cache stores + re-decodes). Existing tests
+	// leave it nil (the handler then skips caching), preserving prior behavior.
+	communityRaw []byte
 	// lastImageQuery, when non-nil, captures the url.Values of the most recent
 	// SearchImages call so tests can assert the community query params.
 	lastImageQuery *url.Values
@@ -70,7 +74,7 @@ func (f fakeReader) SearchImages(_ context.Context, q url.Values) (*civitai.Imag
 		return nil, f.communityErr
 	}
 	if f.communityImages != nil {
-		return &civitai.ImageSearchResult{Items: f.communityImages}, nil
+		return &civitai.ImageSearchResult{Items: f.communityImages, Raw: f.communityRaw}, nil
 	}
 	return nil, errors.New("SearchImages must not be called from the model page path")
 }
@@ -217,6 +221,77 @@ func TestModelDescriptionSanitized(t *testing.T) {
 	}
 }
 
+// TestModelDescriptionCollapsible proves the description is wrapped in the
+// collapsible container with a Read more toggle (item 3), the sanitized content
+// still renders, and sanitization is unchanged (injected script/handler stripped).
+func TestModelDescriptionCollapsible(t *testing.T) {
+	srv := newModelServer(t, newModelReader(t))
+	body := getModelPage(t, srv, "/models/7")
+
+	for _, want := range []string{
+		"cm-desc-collapsible", `data-collapsed="true"`,
+		"cm-desc-content", "cm-desc-toggle", "cmToggleDesc",
+		"Read more",
+		"Nice model", // sanitized content survives inside the wrapper
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("collapsible description missing %q", want)
+		}
+	}
+	// Sanitization must be unchanged: the injected <script>/onerror are stripped.
+	for _, bad := range []string{"alert(1)", "alert(2)", "onerror"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("unsafe content %q survived the collapsible wrapper", bad)
+		}
+	}
+}
+
+// TestModelTagsChipRow proves tags render as a compact inline chip row (item 4),
+// not a standalone "Tags" card.
+func TestModelTagsChipRow(t *testing.T) {
+	srv := newModelServer(t, newModelReader(t))
+	body := getModelPage(t, srv, "/models/7")
+
+	if !strings.Contains(body, "cm-tag-chip") {
+		t.Error("tags should render as inline cm-tag-chip chips")
+	}
+	if !strings.Contains(body, "anime") || !strings.Contains(body, "portrait") {
+		t.Error("tag text should render")
+	}
+	if strings.Contains(body, ">Tags<") {
+		t.Errorf("tags should not be a standalone 'Tags' card:\n%s", body)
+	}
+}
+
+// TestModelNoTagsRendersNothing proves a model with no tags renders no chip row.
+func TestModelNoTagsRendersNothing(t *testing.T) {
+	reader := newModelReader(t)
+	reader.model.Tags = nil
+	srv := newModelServer(t, reader)
+	body := getModelPage(t, srv, "/models/7")
+
+	if strings.Contains(body, "cm-tag-chip") {
+		t.Error("a model with no tags should render no chip row")
+	}
+}
+
+// TestModelHeaderViewOnCivitai proves the header carries a hardened "View on
+// CivitAI" link to {BaseURL}/models/{id} (item 5).
+func TestModelHeaderViewOnCivitai(t *testing.T) {
+	srv := newModelServer(t, newModelReader(t))
+	body := getModelPage(t, srv, "/models/7")
+
+	if !strings.Contains(body, `href="https://civitai.com/models/7"`) {
+		t.Errorf("header should link to the civitai model page:\n%s", body)
+	}
+	if !strings.Contains(body, "View on CivitAI") {
+		t.Error("header should show a 'View on CivitAI' affordance")
+	}
+	if !strings.Contains(body, `target="_blank"`) || !strings.Contains(body, `rel="noopener noreferrer"`) {
+		t.Error("the external link must be target=_blank rel=noopener noreferrer")
+	}
+}
+
 func TestModelNSFWBlurByDefault(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
 	body := getModelPage(t, srv, "/models/7")
@@ -339,7 +414,8 @@ func TestNSFWSettingPersistsViaEndpoint(t *testing.T) {
 }
 
 // TestModelPageBadgesOwnedVersions proves the version list marks the versions the
-// user has locally with an "in your library" badge, and only those.
+// user has locally with a green ✓ indicator (item 6) — accessible-labeled, not a
+// text badge — and only those.
 func TestModelPageBadgesOwnedVersions(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
 	// The model has versions 11 (v2) and 10 (v1); the user owns only version 11.
@@ -351,22 +427,26 @@ func TestModelPageBadgesOwnedVersions(t *testing.T) {
 	}
 	body := getModelPage(t, srv, "/models/7")
 
-	if !strings.Contains(body, "in your library") {
-		t.Error("owned version should carry the 'in your library' badge")
+	if !strings.Contains(body, `aria-label="In your library"`) {
+		t.Error("owned version should carry the accessible-labeled ✓ indicator")
 	}
-	// Exactly one version is owned, so exactly one badge.
-	if n := strings.Count(body, "in your library"); n != 1 {
-		t.Errorf("expected exactly one owned-version badge, got %d", n)
+	// The old text badge must be gone.
+	if strings.Contains(body, "in your library") {
+		t.Error("the text badge should be replaced by the ✓ indicator")
+	}
+	// Exactly one version is owned, so exactly one indicator.
+	if n := strings.Count(body, `aria-label="In your library"`); n != 1 {
+		t.Errorf("expected exactly one owned-version indicator, got %d", n)
 	}
 }
 
 // TestModelPageNoBadgeWhenNoLocalVersions proves versions the user does not own
-// carry no library badge.
+// carry no library indicator.
 func TestModelPageNoBadgeWhenNoLocalVersions(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
 	body := getModelPage(t, srv, "/models/7")
-	if strings.Contains(body, "in your library") {
-		t.Error("no local files → no version should be badged")
+	if strings.Contains(body, `aria-label="In your library"`) {
+		t.Error("no local files → no version should carry the ✓ indicator")
 	}
 }
 

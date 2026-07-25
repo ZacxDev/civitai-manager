@@ -307,43 +307,88 @@ func versionPublishedDate(raw []byte, versionID int) string {
 // modelDetailPage renders the rich model detail page: header + stats, sanitized
 // description, tags, a version selector with per-version detail, and a showcase
 // image gallery with NSFW handling + a lightbox.
-func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme string) g.Node {
+func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, baseURL string) g.Node {
 	m := v.Model
 	creator := ""
 	if m.Creator != nil {
 		creator = m.Creator.Username
 	}
 	mode := normalizeNSFWMode(v.NSFWMode)
+	modelURL := fmt.Sprintf("%s/models/%d", strings.TrimRight(baseURL, "/"), m.ID)
 
 	return page(m.Name, theme, csrf, mode,
-		modelHeaderCard(m, v.Images, mode, creator, csrf, sub),
+		modelHeaderCard(m, creator, csrf, modelURL, sub),
 		g.If(strings.TrimSpace(v.Description) != "", modelDescriptionCard(v.Description)),
-		g.If(len(m.Tags) > 0, modelTagsCard(m.Tags)),
-		modelVersionsCard(v),
-		// Community feed: LAZY-loaded at the bottom. The container carries the
-		// SELECTED version id, so switching versions (which re-renders this page)
-		// reloads the feed for the new version. It is NOT fetched inline because a
-		// SearchImages call on the page path is slow (20s+) — see handleModelCommunity.
-		h.Div(
-			h.ID("community-feed"),
-			hx("get", fmt.Sprintf("/models/%d/community?versionId=%d", m.ID, v.SelectedVersionID)),
-			// "revealed" (fires when scrolled into view) not "load": the feed sits at
-			// the bottom of the page, so this avoids an outbound civitai Images API
-			// call on every model-page view when the user never scrolls to it.
-			hx("trigger", "revealed"),
-			hx("swap", "innerHTML"),
-			g.Text("Loading community images…"),
-		),
+		// Tags are a compact, de-emphasized inline chip row under the description
+		// (not a standalone "Tags" card).
+		g.If(len(m.Tags) > 0, modelTagChips(m.Tags)),
+		// The version-DEPENDENT region: showcase carousel + version list/detail +
+		// the community feed. Selecting a version htmx-swaps this container's
+		// innerHTML (see versionLinkAttrs / handleModel's HX path) so the URL
+		// updates (hx-push-url) and scroll is preserved, without a full reload.
+		h.Div(h.ID(versionRegionID), versionRegionInner(v, csrf)),
 		lightboxOverlay(),
 		modelPageScript(),
+		// The showcase/community carousels' prev/next buttons call cmCarouselScroll.
+		libraryCarouselScript(),
+	)
+}
+
+// versionRegionID is the stable container the version-dependent content lives in;
+// version links htmx-swap its innerHTML (never the node itself), so the poll/swap
+// target survives every version change.
+const versionRegionID = "version-region"
+
+// versionRegionInner renders the version-DEPENDENT content of the model page: the
+// showcase carousel for the selected version, the version list (with the active
+// version highlighted) + its detail, and the lazy community-feed container keyed
+// to the selected version. It is rendered both inside #version-region on the full
+// page AND standalone as the HX-swap response (handleModel's HX path), so a
+// version change re-renders exactly this content — including re-arming the
+// community feed's lazy `revealed` trigger for the new version id.
+func versionRegionInner(v modelDetailView, csrf string) g.Node {
+	m := v.Model
+	mode := normalizeNSFWMode(v.NSFWMode)
+	return g.Group([]g.Node{
+		showcaseCard(m.ID, v.Images, mode),
+		modelVersionsCard(v, csrf),
+		communityFeedContainer(m.ID, v.SelectedVersionID),
+	})
+}
+
+// showcaseCard renders the selected version's showcase carousel (moved out of the
+// header into the version region so it re-renders on a version change). The
+// carousel tiles route through galleryTile → the thumbnail helper + NSFW handling
+// and share the page lightbox.
+func showcaseCard(modelID int, images []galleryImage, mode string) g.Node {
+	return card(
+		h.Div(
+			h.Class("mb-2 flex flex-wrap items-center justify-between gap-2"),
+			h.H2(h.Class("text-sm font-semibold text-slate-300"), g.Text("Showcase images")),
+		),
+		modelCardCarousel(modelID, images, mode),
+	)
+}
+
+// communityFeedContainer is the lazy community-feed container keyed to the
+// selected version. It is fetched on `revealed` (when scrolled into view) — not
+// inline — because the SearchImages call is slow; see handleModelCommunity. When
+// the version region is htmx-swapped, htmx processes this fresh node and re-arms
+// the `revealed` trigger for the new version id.
+func communityFeedContainer(modelID, versionID int) g.Node {
+	return h.Div(
+		h.ID("community-feed"),
+		hx("get", fmt.Sprintf("/models/%d/community?versionId=%d", modelID, versionID)),
+		hx("trigger", "revealed"),
+		hx("swap", "innerHTML"),
+		g.Text("Loading community images…"),
 	)
 }
 
 // modelHeaderCard renders the model header: name/type/creator, key stats, the
-// Subscribe affordance, AND the showcase carousel (moved into the header) with
-// the persisted NSFW display-mode control. The carousel tiles route through
-// galleryTile → the thumbnail helper + NSFW handling and share the page lightbox.
-func modelHeaderCard(m *civitai.ModelDetail, images []galleryImage, mode, creator, csrf string, sub *store.Subscription) g.Node {
+// Subscribe affordance, and the "View on CivitAI" link. The showcase carousel is
+// NOT here — it lives in the version region so it re-renders on a version change.
+func modelHeaderCard(m *civitai.ModelDetail, creator, csrf, modelURL string, sub *store.Subscription) g.Node {
 	return card(
 		h.Div(
 			h.Class("flex flex-wrap items-start justify-between gap-4"),
@@ -363,15 +408,31 @@ func modelHeaderCard(m *civitai.ModelDetail, images []galleryImage, mode, creato
 					statInline("Comments", compactCount(m.Stats.CommentCount)),
 				),
 			),
-			// Reflect the real subscription state: subscribed → "Subscribed ✓ /
-			// Unsubscribe", not-subscribed → collapsed "Subscribe" (sub is nil).
-			subscribeControl(m.ID, sub, csrf),
+			// Reflect the real subscription state (subscribed → "Subscribed ✓ /
+			// Unsubscribe", not-subscribed → collapsed "Subscribe") and a secondary
+			// "View on CivitAI" link out to the model's civitai.com page.
+			h.Div(
+				h.Class("flex flex-col items-end gap-2"),
+				subscribeControl(m.ID, sub, csrf),
+				viewOnCivitaiLink(modelURL),
+			),
 		),
-		h.Div(
-			h.Class("mt-4 mb-2 flex flex-wrap items-center justify-between gap-2"),
-			h.H2(h.Class("text-sm font-semibold text-slate-300"), g.Text("Showcase images")),
-		),
-		modelCardCarousel(m.ID, images, mode),
+	)
+}
+
+// viewOnCivitaiLink renders the header's secondary "View on CivitAI" affordance:
+// an anchor styled as a civitai outline button (the component CSS is
+// attribute-driven, so it styles an <a> too) that opens the model's civitai.com
+// page in a new tab, hardened with rel=noopener noreferrer.
+func viewOnCivitaiLink(modelURL string) g.Node {
+	return h.A(
+		h.Href(modelURL),
+		h.Target("_blank"),
+		g.Attr("rel", "noopener noreferrer"),
+		dataAttr("civitai-ui", "button"),
+		dataAttr("variant", "outline"),
+		dataAttr("size", "sm"),
+		g.Text("View on CivitAI ↗"),
 	)
 }
 
@@ -388,29 +449,48 @@ func statInline(label, value string) g.Node {
 func modelDescriptionCard(rawHTML string) g.Node {
 	return card(
 		sectionTitle("Description"),
+		// Collapsible wrapper: default-collapsed to a max-height with a bottom fade
+		// and a Read more / Show less toggle (cmToggleDesc flips data-collapsed). The
+		// max-height/fade live in .cm-desc-collapsible (app.css); the sanitization is
+		// unchanged — the toggle only bounds the rendered height.
 		h.Div(
-			// cm-model-desc deterministically constrains the sanitized author HTML
-			// so wide images / <pre> / <table> / long unbroken tokens cannot overflow
-			// the card (see .cm-model-desc in app.css).
-			h.Class("cm-model-desc prose-invert max-w-none text-sm text-slate-300 space-y-2 [&_a]:text-indigo-400 [&_a]:underline"),
-			g.Raw(sanitizeDescription(rawHTML)),
+			h.Class("cm-desc-collapsible"),
+			dataAttr("collapsed", "true"),
+			h.Div(
+				// cm-model-desc deterministically constrains the sanitized author HTML
+				// so wide images / <pre> / <table> / long unbroken tokens cannot overflow
+				// the card (see .cm-model-desc in app.css).
+				h.Class("cm-model-desc cm-desc-content prose-invert max-w-none text-sm text-slate-300 space-y-2 [&_a]:text-indigo-400 [&_a]:underline"),
+				g.Raw(sanitizeDescription(rawHTML)),
+			),
+			// Bottom fade, shown only while collapsed (CSS).
+			h.Div(h.Class("cm-desc-fade"), g.Attr("aria-hidden", "true")),
+			h.Button(
+				h.Type("button"),
+				h.Class("cm-desc-toggle"),
+				g.Attr("aria-expanded", "false"),
+				g.Attr("onclick", "cmToggleDesc(this)"),
+				g.Text("Read more"),
+			),
 		),
 	)
 }
 
-func modelTagsCard(tags []string) g.Node {
-	return card(
-		sectionTitle("Tags"),
-		h.Div(
-			h.Class("flex flex-wrap gap-1.5"),
-			g.Map(tags, func(t string) g.Node { return badge(t, "slate") }),
-		),
+// modelTagChips renders the model's tags as a compact, muted inline chip row
+// (see .cm-tag-chip in app.css) — small and de-emphasized rather than a full
+// "Tags" card. Tag text is untrusted civitai data → g.Text escapes each one.
+func modelTagChips(tags []string) g.Node {
+	return h.Div(
+		h.Class("flex flex-wrap items-center gap-1.5 px-1"),
+		g.Map(tags, func(t string) g.Node {
+			return h.Span(h.Class("cm-tag-chip"), g.Text(t))
+		}),
 	)
 }
 
 // modelVersionsCard renders the version list (each a link that reloads the page
 // with that version selected) and the selected version's detail block.
-func modelVersionsCard(v modelDetailView) g.Node {
+func modelVersionsCard(v modelDetailView, csrf string) g.Node {
 	m := v.Model
 	var items []g.Node
 	for _, ver := range m.ModelVersions {
@@ -419,13 +499,33 @@ func modelVersionsCard(v modelDetailView) g.Node {
 		if selected {
 			cls = "block rounded-md border border-indigo-600 bg-indigo-950/40 px-3 py-1.5 text-sm text-indigo-200"
 		}
+		// Version links do an htmx partial swap of #version-region (with hx-push-url
+		// so the URL still becomes /models/{id}?version={vid} and direct links /
+		// refresh work). The plain href is the no-JS fallback: htmx's hx-get on an
+		// <a> with an href degrades to a normal navigation. innerHTML swap preserves
+		// scroll (no scroll modifier added).
+		versionHref := fmt.Sprintf("/models/%d?version=%d", m.ID, ver.ID)
 		items = append(items, h.A(
-			h.Href(fmt.Sprintf("/models/%d?version=%d", m.ID, ver.ID)),
+			h.Href(versionHref),
+			hx("get", versionHref),
+			hx("target", "#"+versionRegionID),
+			hx("swap", "innerHTML"),
+			hx("push-url", "true"),
 			h.Class(cls),
 			h.Div(h.Class("flex items-center justify-between gap-2"),
 				h.Span(g.Text(ver.Name)),
 				h.Span(h.Class("flex shrink-0 items-center gap-1.5"),
-					g.If(v.LocalVersionIDs[ver.ID], badge("in your library", "green")),
+					// In-library indicator: a compact green ✓ (not a text badge, not a
+					// button), labeled for AT. Only owned versions carry it.
+					g.If(v.LocalVersionIDs[ver.ID], h.Span(
+						// cm-ok resolves the green from the civitai success token so the
+						// indicator is genuinely green in both themes, independent of the
+						// purged Tailwind build (which omits text-green-*).
+						h.Class("cm-ok font-semibold"),
+						h.Title("In your library"),
+						g.Attr("aria-label", "In your library"),
+						g.Text("✓"),
+					)),
 					g.If(ver.BaseModel != "", badge(ver.BaseModel, "blue")),
 				),
 			),
@@ -437,14 +537,15 @@ func modelVersionsCard(v modelDetailView) g.Node {
 		h.Div(
 			h.Class("grid gap-4 md:grid-cols-3"),
 			h.Div(h.Class("space-y-1.5 md:col-span-1"), g.Group(items)),
-			h.Div(h.Class("md:col-span-2"), versionDetail(v)),
+			h.Div(h.Class("md:col-span-2"), versionDetail(v, csrf)),
 		),
 	)
 }
 
 // versionDetail renders the selected version's key facts: base model, trigger
-// words as copy-able chips, published date, and the file list.
-func versionDetail(v modelDetailView) g.Node {
+// words as copy-able chips, published date, and the file list (each file with a
+// Download action that enqueues it — csrf is threaded through for that POST).
+func versionDetail(v modelDetailView, csrf string) g.Node {
 	ver := v.Version
 	if ver == nil {
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("Select a version to see its details."))
@@ -459,7 +560,7 @@ func versionDetail(v modelDetailView) g.Node {
 	if len(ver.TrainedWords) > 0 {
 		rows = append(rows, detailRow("Trigger words", triggerWordChips(ver.TrainedWords)))
 	}
-	rows = append(rows, detailRow("Files", fileList(ver.Files)))
+	rows = append(rows, detailRow("Files", fileList(v.Model.ID, ver.ID, ver.Files, ver.DownloadURL, csrf)))
 
 	return h.Div(h.Class("space-y-3"), g.Group(rows))
 }
@@ -489,22 +590,64 @@ func triggerWordChips(words []string) g.Node {
 	)
 }
 
-func fileList(files []civitai.ModelVersionFile) g.Node {
+// fileList renders the selected version's files, each with a Download action that
+// enqueues the file into the app's download queue (POST /models/{id}/download,
+// CSRF-protected). versionDownloadURL is the version-level fallback used when a
+// file carries no own downloadUrl.
+func fileList(modelID, versionID int, files []civitai.ModelVersionFile, versionDownloadURL, csrf string) g.Node {
 	if len(files) == 0 {
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("No files."))
 	}
 	var rows []g.Node
 	for _, f := range files {
+		hasURL := strings.TrimSpace(f.DownloadURL) != "" || strings.TrimSpace(versionDownloadURL) != ""
 		rows = append(rows, h.Li(
 			h.Class("flex items-center justify-between gap-2 rounded border border-slate-800 px-2 py-1 text-xs"),
 			h.Span(h.Class("truncate text-slate-300"), g.Text(f.Name)),
 			h.Span(h.Class("flex shrink-0 items-center gap-2 text-slate-500"),
 				g.If(f.Type != "", badge(f.Type, "slate")),
 				g.Text(humanBytes(int64(f.SizeKB*1024))),
+				downloadFileButton(modelID, versionID, f.ID, csrf, hasURL),
 			),
 		))
 	}
 	return h.Ul(h.Class("space-y-1"), g.Group(rows))
+}
+
+// downloadFileID is the stable element id for a file's download control, so the
+// POST can outerHTML-swap just that control with its "Queued ✓" / error feedback.
+func downloadFileID(modelID, versionID, fileID int) string {
+	return fmt.Sprintf("dl-%d-%d-%d", modelID, versionID, fileID)
+}
+
+// downloadFileButton renders the per-file Download control. When no download URL
+// is resolvable it renders a disabled note instead of a button. The POST carries
+// the CSRF token (via hx-vals) and the version/file ids; the server resolves the
+// destination path from the model/version/file metadata (no client path).
+func downloadFileButton(modelID, versionID, fileID int, csrf string, hasURL bool) g.Node {
+	if !hasURL {
+		return h.Span(h.Class("text-slate-600"), h.Title("No download URL available"), g.Text("no URL"))
+	}
+	id := downloadFileID(modelID, versionID, fileID)
+	return civButton("outline", "sm", []g.Node{
+		h.Type("button"),
+		h.ID(id),
+		hx("post", fmt.Sprintf("/models/%d/download", modelID)),
+		hx("vals", fmt.Sprintf(`{"versionId":"%d","fileId":"%d","csrf_token":%q}`, versionID, fileID, csrf)),
+		hx("target", "#"+id),
+		hx("swap", "outerHTML"),
+	}, g.Text("Download"))
+}
+
+// downloadFeedback renders the small fragment that replaces a file's Download
+// control after a POST: a green "Queued ✓" on success, or a muted note (already
+// queued / error). ok tints it green.
+func downloadFeedback(modelID, versionID, fileID int, msg string, ok bool) g.Node {
+	cls := "text-xs text-amber-400"
+	if ok {
+		cls = "text-xs font-medium cm-ok" // green from the civitai success token
+	}
+	return h.Span(h.ID(downloadFileID(modelID, versionID, fileID)), h.Class(cls), g.Text(msg))
 }
 
 // galleryTile renders one showcase image. When blur is true the image is shown
@@ -689,6 +832,14 @@ function cmCloseLightbox(ev){
   box.classList.add('hidden');
   box.classList.remove('flex');
   document.getElementById('cm-lightbox-img').src = '';
+}
+function cmToggleDesc(btn){
+  var box = btn.closest('.cm-desc-collapsible');
+  if(!box){ return; }
+  var collapsed = box.getAttribute('data-collapsed') === 'true';
+  box.setAttribute('data-collapsed', collapsed ? 'false' : 'true');
+  btn.setAttribute('aria-expanded', collapsed ? 'true' : 'false');
+  btn.textContent = collapsed ? 'Show less' : 'Read more';
 }
 document.addEventListener('keydown', function(e){ if (e.key === 'Escape'){ cmCloseLightbox(); } });
 `

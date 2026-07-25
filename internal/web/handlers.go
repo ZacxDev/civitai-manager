@@ -347,11 +347,18 @@ func (s *Server) handleModelVersionStatus(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	isHX := r.Header.Get("HX-Request") == "true"
 	view, errNode := s.loadModelView(r.Context(), id, r.URL.Query().Get("version"))
 	if errNode != nil {
 		status := http.StatusBadGateway
 		if view.Model == nil && errors.Is(view.loadErr, civitai.ErrNotFound) {
 			status = http.StatusNotFound
+		}
+		// On an HX version swap the target is #version-region, so render just the
+		// error node (a full page would inject <html>/navbar into the region).
+		if isHX {
+			s.render(w, status, errNode)
+			return
 		}
 		s.render(w, status, page("Not found", s.currentTheme(), s.csrf, s.nsfwMode(), errNode))
 		return
@@ -365,26 +372,64 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 		view.LocalVersionIDs = s.localVersionIDs(mid)
 		sub = s.modelSubscription(mid)
 	}
-	s.render(w, http.StatusOK, modelDetailPage(view, sub, s.csrf, s.currentTheme()))
+	// A version click is an htmx partial swap of #version-region: render ONLY that
+	// region's inner content (not the full page shell), so scroll is preserved and
+	// the URL is updated via hx-push-url on the link.
+	if isHX {
+		s.render(w, http.StatusOK, versionRegionInner(view, s.csrf))
+		return
+	}
+	s.render(w, http.StatusOK, modelDetailPage(view, sub, s.csrf, s.currentTheme(), s.cfg.BaseURL))
 }
+
+// communityCacheTTL bounds how long a cached community-image feed is served
+// before a refresh fetch. A stale entry is still served on a fetch failure
+// (fail-open); this only decides when to PREFER a fresh fetch.
+const communityCacheTTL = time.Hour
 
 // handleModelCommunity backs the LAZY-loaded community feed at the bottom of the
 // model page: recent-popular civitai images that use the selected model version.
-// It is a GET fragment (no state change, no CSRF) that makes ONE bounded outbound
-// SearchImages proxy call — the same egress posture as /models — and NEVER breaks
-// the page: on error or empty results it renders a small muted note. It is fetched
-// out-of-band (not inline during page render) because that SearchImages call is
-// slow (20s+, frequently timing out); see loadModelView.
+// It is a GET fragment (no state change, no CSRF) that makes AT MOST ONE bounded
+// outbound SearchImages proxy call — the same egress posture as /models — and
+// NEVER breaks the page. It is CACHE-FIRST + FAIL-OPEN, keyed on
+// (modelID, versionId):
+//
+//  1. A FRESH cached entry (within communityCacheTTL) with items is served with
+//     NO fetch at all.
+//  2. Otherwise it fetches; a SUCCESSFUL non-empty result is cached and rendered.
+//  3. On a fetch error/timeout OR an empty result, it FALLS BACK to the last
+//     cached entry (even if stale) when that has items — so a civitai outage
+//     never blanks a feed the user has seen before.
+//  4. Only when there is no usable cache does it render the muted note.
+//
+// It is fetched out-of-band (not inline during page render) because that
+// SearchImages call is slow (20s+, frequently timing out); see loadModelView.
 func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
+	modelID, merr := strconv.Atoi(r.PathValue("id"))
+	if merr != nil || modelID <= 0 {
+		s.render(w, http.StatusOK, communityFeedNote("No community images yet."))
+		return
+	}
 	versionID := strings.TrimSpace(r.URL.Query().Get("versionId"))
 	mode := s.nsfwMode()
 	// Validate versionId is a positive integer before spending an upstream round
 	// trip on it (a malformed value would only earn a rejection from civitai).
-	if vid, err := strconv.Atoi(versionID); err != nil || vid <= 0 {
+	vid, verr := strconv.Atoi(versionID)
+	if verr != nil || vid <= 0 {
 		s.render(w, http.StatusOK, communityFeedNote("No community images yet."))
 		return
 	}
 
+	// 1. Cache-first: a fresh cached entry with items serves without any fetch.
+	cached, _ := s.store.GetCommunityCache(modelID, vid)
+	if cached != nil && time.Since(cached.FetchedAt) < communityCacheTTL {
+		if res, derr := civitai.DecodeImageSearch(cached.Raw); derr == nil && res != nil && len(res.Items) > 0 {
+			s.render(w, http.StatusOK, s.communityFeedFragment(res.Items, mode))
+			return
+		}
+	}
+
+	// 2. Fetch.
 	q := url.Values{}
 	q.Set("modelVersionId", versionID)
 	q.Set("sort", "Most Reactions")
@@ -394,16 +439,126 @@ func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	res, err := s.reader.SearchImages(ctx, q)
+	if err == nil && res != nil && len(res.Items) > 0 {
+		// Only cache a successful, non-empty response (never poison with empty/error).
+		// Skip caching when the raw body is absent (nothing to re-decode later).
+		if len(res.Raw) > 0 {
+			if perr := s.store.PutCommunityCache(modelID, vid, res.Raw); perr != nil {
+				s.log.Warn("cache community feed", "model", modelID, "versionId", vid, "err", perr)
+			}
+		}
+		s.render(w, http.StatusOK, s.communityFeedFragment(res.Items, mode))
+		return
+	}
 	if err != nil {
 		s.log.Warn("community feed fetch failed", "versionId", versionID, "err", err)
+	}
+
+	// 3. Fail-open: fall back to the last cached entry (even if stale) with items.
+	if cached != nil {
+		if sres, derr := civitai.DecodeImageSearch(cached.Raw); derr == nil && sres != nil && len(sres.Items) > 0 {
+			s.render(w, http.StatusOK, s.communityFeedFragment(sres.Items, mode))
+			return
+		}
+	}
+
+	// 4. No usable cache → the muted note (error vs empty).
+	if err != nil {
 		s.render(w, http.StatusOK, communityFeedNote("Couldn't load community images."))
 		return
 	}
-	if res == nil || len(res.Items) == 0 {
-		s.render(w, http.StatusOK, communityFeedNote("No community images yet."))
+	s.render(w, http.StatusOK, communityFeedNote("No community images yet."))
+}
+
+// handleModelDownload enqueues a single model-version FILE into the app's
+// download queue. It is CSRF-protected (a state-changing POST) but NOT
+// loopback-gated: the destination path is derived SERVER-SIDE from the model /
+// version / file metadata (civitai.DestPath under s.cfg.ModelRoot), never from a
+// client-submitted path. On success it returns a "Queued ✓" fragment that
+// outerHTML-replaces the file's Download button; a duplicate (an active row
+// already exists) returns "Already queued"; any resolution failure returns a
+// muted note. The dup-guard and single-active-per-file invariant live in
+// store.Enqueue (ux_dlq_active).
+func (s *Server) handleModelDownload(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id <= 0 {
+		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	s.render(w, http.StatusOK, s.communityFeedFragment(res.Items, mode))
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	versionID, _ := strconv.Atoi(r.FormValue("versionId"))
+	fileID, _ := strconv.Atoi(r.FormValue("fileId"))
+	if versionID <= 0 || fileID <= 0 {
+		s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "Invalid request", false))
+		return
+	}
+
+	// Resolve the model (cache-first) for its type/creator/name, and the version
+	// for its files + names. Both are needed to compute the destination path.
+	m, _, merr := s.cachedModelDetail(r.Context(), id)
+	if merr != nil || m == nil {
+		s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "Could not load model", false))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	vd, _, verr := s.reader.GetModelVersion(ctx, strconv.Itoa(versionID))
+	if verr != nil || vd == nil {
+		s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "Could not load version", false))
+		return
+	}
+	var file *civitai.ModelVersionFile
+	for i := range vd.Files {
+		if vd.Files[i].ID == fileID {
+			file = &vd.Files[i]
+			break
+		}
+	}
+	if file == nil {
+		s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "File not found", false))
+		return
+	}
+	dlURL := strings.TrimSpace(file.DownloadURL)
+	if dlURL == "" {
+		dlURL = strings.TrimSpace(vd.DownloadURL) // version-level fallback
+	}
+	if dlURL == "" {
+		s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "No download URL available", false))
+		return
+	}
+
+	creator := ""
+	if m.Creator != nil {
+		creator = m.Creator.Username
+	}
+	dest := civitai.DestPath(s.cfg.ModelRoot, m.Type, creator, m.Name, vd.Name, file.Name)
+	_, inserted, eerr := s.store.Enqueue(store.QueueItem{
+		ModelID:        id,
+		VersionID:      versionID,
+		FileID:         fileID,
+		FileName:       file.Name,
+		DownloadURL:    dlURL,
+		DestPath:       dest,
+		Status:         store.StatusQueued,
+		SizeKB:         file.SizeKB,
+		SHA256Expected: file.Hashes.SHA256,
+	})
+	if eerr != nil {
+		s.log.Warn("enqueue file download", "model", id, "version", versionID, "file", fileID, "err", eerr)
+		s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "Enqueue failed", false))
+		return
+	}
+	if !inserted {
+		s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "Already queued", false))
+		return
+	}
+	s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "Queued ✓", true))
 }
 
 // nsfwMode returns the persisted global NSFW display mode (default blur).
