@@ -15,11 +15,16 @@ import (
 // outerHTML-replacing the poller node itself — the repo's streaming invariant).
 const runStatusContainerID = "run-status"
 
-// runPanel is the detail-page "Run" section: a Run button above the stable
-// #run-status container whose innerHTML the poller drives through running →
-// terminal. The button is enabled for both api and ui workflows (ui graphs are
-// converted to api at run time). When the server is bound off-loopback the run
-// endpoints are gated, so the panel shows a disabled note instead.
+// runComfyStatusID is the STABLE container the reachability fragment loads into. It
+// lazy-loads once on page load and is re-fetched by the Recheck button — its
+// innerHTML is swapped, never the node itself (same streaming invariant).
+const runComfyStatusID = "run-comfy-status"
+
+// runPanel is the detail-page "Run" section. The Run control is gated behind a
+// ComfyUI reachability check: a lazy-loaded (#run-comfy-status) fragment pings the
+// server and renders a green/red pill plus an enabled/disabled Run button + a
+// Recheck. The actual run job drives the separate stable #run-status container
+// (unchanged). When bound off-loopback the run endpoints are gated → a note.
 func runPanel(wf *store.Workflow, snap runSnapshot, csrf string, extraAllowed bool) g.Node {
 	id := strconv.FormatInt(wf.ID, 10)
 	if !extraAllowed {
@@ -29,7 +34,62 @@ func runPanel(wf *store.Workflow, snap runSnapshot, csrf string, extraAllowed bo
 				g.Text("Local run is disabled when the server is bound to a non-loopback address.")),
 		)
 	}
-	runBtn := civButton("filled", "md", []g.Node{
+	return card(
+		sectionTitle("Run"),
+		h.P(h.Class("text-xs text-slate-500 mb-3"),
+			g.Text("Submits this workflow to your local ComfyUI ("+comfyDisplayURL(wf)+"). "+
+				"UI-format graphs are converted to API format first; missing nodes or models are reported before submitting.")),
+		// Reachability region: lazy-loads the pill + (enabled/disabled) Run button.
+		h.Div(h.ID(runComfyStatusID),
+			hx("get", "/workflows/"+id+"/run/comfy-status"),
+			hx("trigger", "load"),
+			hx("swap", "innerHTML"),
+			h.Span(h.Class("text-sm text-slate-400"), g.Text("Checking ComfyUI…")),
+		),
+		// Run job status container (unchanged): poller drives running → terminal.
+		h.Div(h.ID(runStatusContainerID), runStatusFragment(snap, wf.ID, csrf)),
+	)
+}
+
+// comfyStatusView is the resolved reachability state the fragment renders.
+type comfyStatusView struct {
+	configured bool   // s.comfy() != nil
+	reachable  bool   // SystemStats succeeded
+	version    string // ComfyUIVersion (untrusted — escaped)
+	comfyURL   string // configured comfy_url (escaped)
+}
+
+// runComfyStatusFragment renders the reachability pill + Run/Recheck controls into
+// #run-comfy-status. Reachable → green pill + enabled Run; unreachable → red pill +
+// disabled Run (with a tooltip) + Recheck; unconfigured → a neutral note. Every
+// untrusted string (version, comfy_url) goes through g.Text via badge/text.
+func runComfyStatusFragment(wfID int64, csrf string, v comfyStatusView) g.Node {
+	id := strconv.FormatInt(wfID, 10)
+	if !v.configured {
+		return h.Div(h.Class("text-sm text-slate-400"),
+			g.Text("Local ComfyUI is not configured. Set comfy_url to enable running workflows."))
+	}
+	if v.reachable {
+		label := "ComfyUI reachable"
+		if v.version != "" {
+			label += " · v" + v.version
+		}
+		return h.Div(h.Class("flex flex-wrap items-center gap-3"),
+			badge(label, "green"),
+			runButtonEnabled(id, csrf),
+			recheckButton(id),
+		)
+	}
+	return h.Div(h.Class("flex flex-wrap items-center gap-3"),
+		badge("No ComfyUI reachable at "+v.comfyURL, "red"),
+		runButtonDisabled("ComfyUI is not reachable — start it (or fix comfy_url), then Recheck."),
+		recheckButton(id),
+	)
+}
+
+// runButtonEnabled is the live Run control: posts to /run and swaps #run-status.
+func runButtonEnabled(id, csrf string) g.Node {
+	return civButton("filled", "md", []g.Node{
 		h.Type("button"),
 		hx("post", "/workflows/"+id+"/run"),
 		hx("target", "#"+runStatusContainerID),
@@ -37,17 +97,26 @@ func runPanel(wf *store.Workflow, snap runSnapshot, csrf string, extraAllowed bo
 		hx("disabled-elt", "this"),
 		csrfInline(csrf),
 	}, g.Text("Run on ComfyUI"))
+}
 
-	return card(
-		h.Div(h.Class("flex items-center justify-between gap-4"),
-			sectionTitle("Run"),
-			runBtn,
-		),
-		h.P(h.Class("text-xs text-slate-500 mb-3"),
-			g.Text("Submits this workflow to your local ComfyUI ("+comfyDisplayURL(wf)+"). "+
-				"UI-format graphs are converted to API format first; missing nodes or models are reported before submitting.")),
-		h.Div(h.ID(runStatusContainerID), runStatusFragment(snap, wf.ID, csrf)),
-	)
+// runButtonDisabled is the inert Run control shown when ComfyUI is unreachable; the
+// tooltip explains why.
+func runButtonDisabled(reason string) g.Node {
+	return civButton("filled", "md", []g.Node{
+		h.Type("button"),
+		h.Disabled(),
+		g.Attr("title", reason),
+	}, g.Text("Run on ComfyUI"))
+}
+
+// recheckButton re-fetches the reachability fragment into #run-comfy-status.
+func recheckButton(id string) g.Node {
+	return civButton("outline", "sm", []g.Node{
+		h.Type("button"),
+		hx("get", "/workflows/"+id+"/run/comfy-status"),
+		hx("target", "#"+runComfyStatusID),
+		hx("swap", "innerHTML"),
+	}, g.Text("Recheck"))
 }
 
 // comfyDisplayURL is a tiny indirection so the panel copy can name the server; the

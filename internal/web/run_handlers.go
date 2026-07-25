@@ -360,6 +360,40 @@ func (s *Server) handleWorkflowRun(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf))
 }
 
+// comfyStatusTimeout bounds the reachability probe so a dead/hung ComfyUI can
+// never block the page render. It has its OWN short deadline (independent of the
+// request) — a run itself may take minutes, but a health ping must be quick.
+const comfyStatusTimeout = 3 * time.Second
+
+// handleWorkflowRunComfyStatus pings ComfyUI and returns the reachability fragment
+// (pill + enabled/disabled Run + Recheck) for #run-comfy-status. GET (no state
+// change, no CSRF); loopback-gated like the other comfy-reaching endpoints. The
+// probe uses a short, independent timeout so an unreachable/hung server degrades to
+// the red pill instead of hanging the request.
+func (s *Server) handleWorkflowRunComfyStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.gate(w) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad workflow id", http.StatusBadRequest)
+		return
+	}
+	client := s.comfy()
+	if client == nil {
+		s.render(w, http.StatusOK, runComfyStatusFragment(id, s.csrf, comfyStatusView{configured: false}))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), comfyStatusTimeout)
+	defer cancel()
+	view := comfyStatusView{configured: true, comfyURL: s.cfg.ComfyURL}
+	if stats, serr := client.SystemStats(ctx); serr == nil && stats != nil {
+		view.reachable = true
+		view.version = stats.ComfyUIVersion
+	}
+	s.render(w, http.StatusOK, runComfyStatusFragment(id, s.csrf, view))
+}
+
 // handleWorkflowRunStatus is polled by the running fragment. GET (no state change,
 // no CSRF); loopback-gated like the other comfy-reaching endpoints.
 func (s *Server) handleWorkflowRunStatus(w http.ResponseWriter, r *http.Request) {
