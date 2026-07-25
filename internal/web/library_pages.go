@@ -389,11 +389,11 @@ func modelScanForm(csrf string, matchRemote bool) g.Node {
 		hx("post", "/library/scan"),
 		hx("target", "#scan-results"),
 		hx("swap", "innerHTML"),
-		// When this form lives inside the "Scan / Rescan" <dialog>, close it on submit
-		// so the live progress (which swaps into #scan-results behind the modal) is
-		// visible. A no-op when rendered inline (closest('dialog') is null). onsubmit
-		// (native) fires only on submit — not on the match-remote checkbox's change.
-		g.Attr("onsubmit", "var d=this.closest('dialog');if(d){d.close();}"),
+		// NOTE: no onsubmit dialog-close. A successful scan HX-Redirects to the Model
+		// files tab (a full reload), which removes the "Scan / Rescan" <dialog>
+		// naturally — so closing it here is redundant, and a native onsubmit close can
+		// race htmx's own submit handling (browser/version-dependent, unverifiable
+		// without a real browser). Deterministic path: let the redirect do it.
 		h.Class("space-y-3"),
 		csrfInput(csrf),
 		h.Label(
