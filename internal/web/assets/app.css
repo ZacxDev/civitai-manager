@@ -126,10 +126,22 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   scroll-behavior: smooth;
   padding-bottom: 0.25rem;
 }
+/*
+ * The carousel is a fixed-HEIGHT horizontal strip: each item is 10rem TALL and
+ * derives its width from the tile's own aspect-ratio (set inline on the tile box
+ * by galleryTile). So ratio-varied tiles (portrait/landscape/square) size their
+ * width from the shared height and never crop. A missing-dimension tile falls
+ * back to aspect-square (→ a 10rem square). flex:0 0 auto lets each item take its
+ * natural (ratio-derived) width.
+ */
 .cm-carousel-item {
-  flex: 0 0 10rem;
-  width: 10rem;
+  flex: 0 0 auto;
+  height: 10rem;
   scroll-snap-align: start;
+}
+.cm-carousel-item > * {
+  height: 100%;
+  width: auto;
 }
 .cm-carousel-btn {
   position: absolute;
@@ -168,6 +180,36 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  */
 .cm-blur {
   filter: blur(18px);
+}
+
+/*
+ * Community masonry (.cm-masonry) — see communityFeedFragment/communityImageTile
+ * in model_community_pages.go. A CSS multi-column layout: true-aspect-ratio tiles
+ * (each with an inline aspect-ratio from the image's own W/H) flow into columns,
+ * and their varying heights produce the masonry effect. column-count steps up
+ * with viewport width; each tile avoids breaking across a column and carries a
+ * bottom gap. Token-free (theme-agnostic); no CDN, no Tailwind grid utilities.
+ */
+.cm-masonry {
+  column-count: 2;
+  column-gap: 0.5rem;
+}
+@media (min-width: 640px) {
+  .cm-masonry {
+    column-count: 3;
+  }
+}
+@media (min-width: 1024px) {
+  .cm-masonry {
+    column-count: 4;
+  }
+}
+.cm-masonry-item {
+  display: block;
+  width: 100%;
+  margin-bottom: 0.5rem;
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
 }
 
 /*

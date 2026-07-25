@@ -862,10 +862,21 @@ func galleryTile(im galleryImage, metaID string, blur bool) g.Node {
 		h.Class(imgClass),
 	)
 
-	children := []g.Node{
-		h.Class("group relative aspect-square overflow-hidden rounded-md border border-slate-800 bg-slate-900"),
-		img,
+	// True aspect ratio: shape the tile box to the image's own W/H so object-cover
+	// fills it without cropping. The carousel is a fixed-HEIGHT strip (.cm-carousel-item
+	// sets the height), so the box's width is derived from this ratio. When the
+	// dimensions are missing/zero, fall back to a square box (aspect-square).
+	wrapClass := "group relative overflow-hidden rounded-md border border-slate-800 bg-slate-900"
+	children := []g.Node{}
+	if im.Width > 0 && im.Height > 0 {
+		children = append(children,
+			h.Class(wrapClass),
+			h.StyleAttr(fmt.Sprintf("aspect-ratio: %d/%d", im.Width, im.Height)),
+		)
+	} else {
+		children = append(children, h.Class(wrapClass+" aspect-square"))
 	}
+	children = append(children, img)
 	if isVideo {
 		// A subtle ▶ badge over the poster so the tile clearly reads as a video.
 		// Styled by .cm-video-badge in app.css (theme-aware; not a Tailwind util).

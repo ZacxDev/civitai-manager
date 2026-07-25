@@ -68,8 +68,10 @@ func (s *Server) communityFeedFragment(items []civitai.ImageItem, mode string) g
 	}
 	return card(
 		h.H2(h.Class("text-lg font-semibold text-slate-100 mb-3"), g.Text("Community images")),
+		// CSS multi-column masonry (.cm-masonry): variable-height, true-aspect-ratio
+		// tiles flow into columns (2 on mobile, 3–4 at wider widths) — see app.css.
 		h.Div(
-			h.Class("grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4"),
+			h.Class("cm-masonry"),
 			g.Group(tiles),
 		),
 	)
@@ -108,10 +110,20 @@ func (s *Server) communityImageTile(it civitai.ImageItem, mode string) g.Node {
 		img,
 	)
 
-	children := []g.Node{
-		h.Class("group relative aspect-square overflow-hidden rounded-md border border-slate-800 bg-slate-900"),
-		link,
+	// True aspect ratio: shape the tile to the image's own W/H (object-cover fills
+	// it without cropping); the variable heights are what make the columns read as
+	// masonry. Fall back to a square box when the dimensions are missing/zero.
+	wrapClass := "cm-masonry-item group relative overflow-hidden rounded-md border border-slate-800 bg-slate-900"
+	children := []g.Node{}
+	if it.Width > 0 && it.Height > 0 {
+		children = append(children,
+			h.Class(wrapClass),
+			h.StyleAttr(fmt.Sprintf("aspect-ratio: %d/%d", it.Width, it.Height)),
+		)
+	} else {
+		children = append(children, h.Class(wrapClass+" aspect-square"))
 	}
+	children = append(children, link)
 	if blur {
 		// Reuse the showcase cm-reveal/blur-xl pattern. The reveal must not follow
 		// the tile's outbound link, so it stops the click before revealing in place.
