@@ -399,16 +399,34 @@ func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode s
 			g.Text("Leave both blank and submit to detach (also clears golden).")),
 	))
 
-	// Graph card — escaped, scrollable.
+	// Graph card — a server-rendered SVG for UI-format graphs (litegraph
+	// coordinates), a structured node listing for API-format / unrenderable graphs,
+	// plus a collapsible raw-JSON view. All content escaped (untrusted graph).
 	body = append(body, card(
-		sectionTitle("Graph JSON"),
-		h.Pre(
-			h.Class("overflow-x-auto text-xs text-slate-300 bg-slate-900 rounded p-3 max-h-96"),
-			h.Code(g.Text(prettyGraph)),
+		sectionTitle("Graph"),
+		workflowGraphSection([]byte(wf.Graph), wf.Format),
+		h.Details(h.Class("mt-3 text-sm"),
+			h.Summary(h.Class("cursor-pointer text-slate-400 select-none"), g.Text("View raw JSON")),
+			h.Pre(
+				h.Class("overflow-x-auto text-xs text-slate-300 bg-slate-900 rounded p-3 max-h-96 mt-2"),
+				h.Code(g.Text(prettyGraph)),
+			),
 		),
 	))
 
 	return page(name+" · Workflow", theme, csrf, nsfwMode, body...)
+}
+
+// workflowGraphSection picks the best graph rendering: an SVG for a UI-format
+// (litegraph) graph that carries coordinates, else a structured node listing (also
+// the fallback when a UI graph cannot be laid out).
+func workflowGraphSection(graph []byte, format string) g.Node {
+	if format == store.WorkflowFormatUI {
+		if svg, ok := workflowGraphSVG(graph); ok {
+			return svg
+		}
+	}
+	return workflowGraphStructured(graph, format)
 }
 
 // postButton renders a small inline form that POSTs (with CSRF + optional extra
