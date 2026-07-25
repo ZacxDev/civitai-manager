@@ -41,8 +41,8 @@ func TestSearchNSFWParamByMode(t *testing.T) {
 		{NSFWHide, "true"}, // migrated to blur → still nsfw=true
 	}
 	paths := []string{
-		"/search?q=anime",     // keyword search
-		"/search",             // popular default (empty query)
+		"/search?q=anime",           // keyword search
+		"/search",                   // popular default (empty query)
 		"/subscribe/search?q=anime", // dashboard subscribe search
 	}
 	for _, tc := range cases {

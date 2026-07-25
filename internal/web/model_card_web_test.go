@@ -68,8 +68,8 @@ func TestHandleModelCardEnrichesAndCaches(t *testing.T) {
 	for _, want := range []string{
 		"Great Model",  // name (not "#id")
 		"LORA", "SDXL", // type + base model details
-		"cm-carousel", // the carousel
-		"safe.jpeg",   // showcase images rendered
+		"cm-carousel",                            // the carousel
+		"safe.jpeg",                              // showcase images rendered
 		"Versions in your library", "Total size", // version breakdown
 		"Subscribe", // subscribe toggle
 		"/models/7", // link to the model page

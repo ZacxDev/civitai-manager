@@ -387,12 +387,21 @@ func newestVersionPublishedAt(raw []byte) time.Time {
 	return maxPublishedTime(ats)
 }
 
-// newestPublishedAtByModel scans a SearchModels raw body and returns, per model
-// id, the newest modelVersions[].publishedAt as a time.Time. A model with no
-// parseable date is absent from the (non-nil) map. Defensive: an empty/undecodable
-// raw yields an empty map, never a panic.
-func newestPublishedAtByModel(raw []byte) map[int]time.Time {
-	out := map[int]time.Time{}
+// modelUpdateInfo is the per-model "last updated" summary derived from a
+// SearchModels raw body: the newest version's publish time plus that version's
+// NAME (both feed the search card's "Updated X ago" hover popover). Name is an
+// untrusted civitai string — escape it at render time.
+type modelUpdateInfo struct {
+	At   time.Time
+	Name string
+}
+
+// newestVersionInfoByModel scans a SearchModels raw body and returns, per model
+// id, the newest modelVersions[].publishedAt (as a time.Time) together with that
+// version's name. A model with no parseable date is absent from the (non-nil) map.
+// Defensive: an empty/undecodable raw yields an empty map, never a panic.
+func newestVersionInfoByModel(raw []byte) map[int]modelUpdateInfo {
+	out := map[int]modelUpdateInfo{}
 	if len(raw) == 0 {
 		return out
 	}
@@ -400,6 +409,7 @@ func newestPublishedAtByModel(raw []byte) map[int]time.Time {
 		Items []struct {
 			ID            int `json:"id"`
 			ModelVersions []struct {
+				Name        string `json:"name"`
 				PublishedAt string `json:"publishedAt"`
 			} `json:"modelVersions"`
 		} `json:"items"`
@@ -408,15 +418,82 @@ func newestPublishedAtByModel(raw []byte) map[int]time.Time {
 		return out
 	}
 	for _, it := range body.Items {
-		ats := make([]string, 0, len(it.ModelVersions))
+		var newest time.Time
+		var name string
 		for _, v := range it.ModelVersions {
-			ats = append(ats, v.PublishedAt)
+			s := strings.TrimSpace(v.PublishedAt)
+			if s == "" {
+				continue
+			}
+			t, err := time.Parse(time.RFC3339, s)
+			if err != nil {
+				continue
+			}
+			if t.After(newest) {
+				newest = t
+				name = v.Name
+			}
 		}
-		if t := maxPublishedTime(ats); !t.IsZero() {
-			out[it.ID] = t
+		if !newest.IsZero() {
+			out[it.ID] = modelUpdateInfo{At: newest, Name: name}
 		}
 	}
 	return out
+}
+
+// isoDatePrefix truncates an ISO-8601 timestamp to its YYYY-MM-DD date prefix,
+// defensively — an input that is not shaped like a date is returned unchanged and
+// nothing ever panics.
+func isoDatePrefix(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 10 && s[4] == '-' && s[7] == '-' {
+		return s[:10]
+	}
+	return s
+}
+
+// updatedPopBody builds the "Updated X ago" hover-popover child (.cm-updated-pop),
+// mirroring .cm-vstatus-pop: an absolute "Updated {date}" title line, then
+// "Latest version: {name}" and "Published {date}" lines shown only when available
+// (each omitted gracefully when empty). versionName/versionDate are untrusted
+// civitai strings — g.Text escapes every one; absDate is server-formatted (trusted).
+func updatedPopBody(absDate, versionName, versionDate string) g.Node {
+	rows := []g.Node{
+		h.Div(h.Class("cm-updated-title"), g.Text("Updated "+absDate)),
+	}
+	if strings.TrimSpace(versionName) != "" {
+		rows = append(rows, h.Div(g.Text("Latest version: "+versionName)))
+	}
+	if strings.TrimSpace(versionDate) != "" {
+		rows = append(rows, h.Div(h.Class("cm-updated-date"), g.Text("Published "+versionDate)))
+	}
+	return h.Span(h.Class("cm-updated-pop"), g.Attr("role", "tooltip"), g.Group(rows))
+}
+
+// updatedHeaderStat renders the model header's "Updated: X ago" stat as a
+// hover/focus popover trigger (mirroring statInline's look) carrying updatedPopBody.
+// A plain title= tooltip is kept as a harmless fallback for AT / non-hover users.
+func updatedHeaderStat(rel, absDate, versionName, versionDate string) g.Node {
+	return h.Div(
+		h.Class("cm-updated"),
+		g.Attr("tabindex", "0"),
+		h.Title("Updated "+absDate),
+		h.Span(h.Class("text-slate-500"), g.Text("Updated: ")),
+		h.Span(h.Class("font-medium text-slate-200"), g.Text(rel)),
+		updatedPopBody(absDate, versionName, versionDate),
+	)
+}
+
+// updatedCardLine renders a search card's "Updated X ago" line as a hover/focus
+// popover trigger carrying updatedPopBody, with a title= fallback.
+func updatedCardLine(rel, absDate, versionName, versionDate string) g.Node {
+	return h.Div(
+		h.Class("cm-updated text-xs text-slate-500"),
+		g.Attr("tabindex", "0"),
+		h.Title("Updated "+absDate),
+		h.Span(g.Text("Updated "+rel)),
+		updatedPopBody(absDate, versionName, versionDate),
+	)
 }
 
 // modelDetailPage renders the rich model detail page: header + stats, sanitized
@@ -431,8 +508,16 @@ func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, ba
 	mode := normalizeNSFWMode(v.NSFWMode)
 	modelURL := fmt.Sprintf("%s/models/%d", strings.TrimRight(baseURL, "/"), m.ID)
 
+	// The header's "Updated X ago" popover names the (default-selected, i.e. latest)
+	// version and its publish date when available — degrades gracefully when absent.
+	verName, verDate := "", ""
+	if v.Version != nil {
+		verName = v.Version.Name
+		verDate = isoDatePrefix(v.PublishedAt)
+	}
+
 	return page(m.Name, theme, csrf, mode,
-		modelHeaderCard(m, creator, csrf, modelURL, sub, v.LastUpdated),
+		modelHeaderCard(m, creator, csrf, modelURL, sub, v.LastUpdated, verName, verDate),
 		g.If(strings.TrimSpace(v.Description) != "", modelDescriptionCard(v.Description)),
 		// Tags are a compact, de-emphasized inline chip row under the description
 		// (not a standalone "Tags" card).
@@ -503,7 +588,7 @@ func communityFeedContainer(modelID, versionID int) g.Node {
 // modelHeaderCard renders the model header: name/type/creator, key stats, the
 // Subscribe affordance, and the "View on CivitAI" link. The showcase carousel is
 // NOT here — it lives in the version region so it re-renders on a version change.
-func modelHeaderCard(m *civitai.ModelDetail, creator, csrf, modelURL string, sub *store.Subscription, lastUpdated time.Time) g.Node {
+func modelHeaderCard(m *civitai.ModelDetail, creator, csrf, modelURL string, sub *store.Subscription, lastUpdated time.Time, versionName, versionDate string) g.Node {
 	return card(
 		h.Div(
 			h.Class("flex flex-wrap items-start justify-between gap-4"),
@@ -521,11 +606,13 @@ func modelHeaderCard(m *civitai.ModelDetail, creator, csrf, modelURL string, sub
 					statInline("Downloads", compactCount(m.Stats.DownloadCount)),
 					statInline("Likes", compactCount(m.Stats.ThumbsUpCount)),
 					statInline("Comments", compactCount(m.Stats.CommentCount)),
-					// "Updated X ago" from the newest version's publish date; the
-					// absolute date is a hover tooltip. Omitted when no parseable date.
-					g.If(!lastUpdated.IsZero(), statInlineTitled(
-						"Updated", humanSince(lastUpdated),
-						lastUpdated.Local().Format("2006-01-02 15:04"))),
+					// "Updated X ago" from the newest version's publish date, with a
+					// hover/focus popover (absolute date + latest version name/date).
+					// Omitted when no parseable date.
+					g.If(!lastUpdated.IsZero(), updatedHeaderStat(
+						humanSince(lastUpdated),
+						lastUpdated.Local().Format("2006-01-02 15:04"),
+						versionName, versionDate)),
 				),
 			),
 			// Reflect the real subscription state (subscribed → "Subscribed ✓ /
@@ -558,16 +645,6 @@ func viewOnCivitaiLink(modelURL string) g.Node {
 
 func statInline(label, value string) g.Node {
 	return h.Div(
-		h.Span(h.Class("text-slate-500"), g.Text(label+": ")),
-		h.Span(h.Class("font-medium text-slate-200"), g.Text(value)),
-	)
-}
-
-// statInlineTitled is statInline with a hover tooltip (e.g. the absolute date
-// behind a relative "Updated X ago"). title is trusted, formatted server-side.
-func statInlineTitled(label, value, title string) g.Node {
-	return h.Div(
-		h.Title(title),
 		h.Span(h.Class("text-slate-500"), g.Text(label+": ")),
 		h.Span(h.Class("font-medium text-slate-200"), g.Text(value)),
 	)

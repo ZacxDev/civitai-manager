@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	"github.com/ZacxDev/civitai-manager/internal/store"
@@ -184,7 +183,7 @@ func TestModelCardNSFWModes(t *testing.T) {
 	it := civitai.ModelListItem{ID: 5, Name: "Card Model", Type: "LORA"}
 
 	t.Run("show renders nsfw plain", func(t *testing.T) {
-		out := renderString(t, modelCard(it, images, nil, NSFWShow, "test-csrf", time.Time{}))
+		out := renderString(t, modelCard(it, images, nil, NSFWShow, "test-csrf", modelUpdateInfo{}))
 		if !strings.Contains(out, nsfwURL) {
 			t.Error("show mode should render the NSFW image url")
 		}
@@ -197,7 +196,7 @@ func TestModelCardNSFWModes(t *testing.T) {
 	})
 
 	t.Run("blur renders nsfw blurred", func(t *testing.T) {
-		out := renderString(t, modelCard(it, images, nil, NSFWBlur, "test-csrf", time.Time{}))
+		out := renderString(t, modelCard(it, images, nil, NSFWBlur, "test-csrf", modelUpdateInfo{}))
 		if !strings.Contains(out, nsfwURL) {
 			t.Error("blur mode still renders the url (behind a reveal overlay)")
 		}
@@ -215,7 +214,7 @@ func TestModelCardNSFWModes(t *testing.T) {
 	t.Run("stored hide migrates to blur", func(t *testing.T) {
 		// The toggle dropped the hide state; a stored hide now blurs (present) rather
 		// than omitting the NSFW url.
-		out := renderString(t, modelCard(it, images, nil, NSFWHide, "test-csrf", time.Time{}))
+		out := renderString(t, modelCard(it, images, nil, NSFWHide, "test-csrf", modelUpdateInfo{}))
 		if !strings.Contains(out, nsfwURL) {
 			t.Error("migrated hide (→blur) should render the NSFW image url (blurred)")
 		}
