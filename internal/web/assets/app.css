@@ -226,21 +226,45 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  * external JS) shows the local→latest version detail. Colors resolve from
  * --civitai-* tokens so both data-theme paths render correctly.
  */
+/*
+ * .cm-vstatus-lazy is the own-row container the suggestion card renders below its
+ * title (see versionStatusLazy). It collapses to nothing while empty — before the
+ * lazy fragment loads AND when the fragment is empty (model up to date) — so an
+ * up-to-date card shows no stray badge and no empty gap.
+ */
+.cm-vstatus-lazy:empty {
+  display: none;
+}
 .cm-vstatus {
   position: relative;
   display: inline-flex;
   cursor: default;
 }
+/*
+ * The "new version" pill reads as a small, delightful violet button: a tinted
+ * fill + violet border that brighten on hover/focus, all resolved from the
+ * --civitai-color-primary token so both data-theme paths render correctly. The
+ * color-mix fills degrade to transparent (border+text still show) on the rare
+ * engine without color-mix support. No CDN.
+ */
 .cm-vstatus-badge {
   display: inline-flex;
   align-items: center;
-  gap: 0.2rem;
-  padding: 0.05rem 0.4rem;
+  gap: 0.3rem;
+  padding: 0.15rem 0.6rem;
   border-radius: 9999px;
-  font-size: 0.7rem;
+  font-size: 0.72rem;
   font-weight: 600;
   color: var(--civitai-color-primary);
-  border: 1px solid var(--civitai-color-primary);
+  border: 1px solid color-mix(in srgb, var(--civitai-color-primary) 55%, transparent);
+  background: color-mix(in srgb, var(--civitai-color-primary) 12%, transparent);
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+.cm-vstatus:hover .cm-vstatus-badge,
+.cm-vstatus:focus-within .cm-vstatus-badge {
+  background: color-mix(in srgb, var(--civitai-color-primary) 22%, transparent);
+  border-color: var(--civitai-color-primary);
+  transform: translateY(-1px);
 }
 .cm-vstatus-pop {
   display: none;

@@ -183,20 +183,21 @@ func suggestionsList(suggestions []suggestion, csrf string) g.Node {
 		h.Class("grid gap-3 sm:grid-cols-2 lg:grid-cols-3"),
 		g.Map(suggestions, func(sg suggestion) g.Node {
 			return card(
-				h.Class("flex items-center justify-between gap-3"),
+				h.Class("flex flex-col gap-2"),
 				h.Div(
-					h.Class("min-w-0"),
+					h.Class("flex items-center justify-between gap-3"),
 					h.Div(
-						h.Class("flex items-center gap-2"),
+						h.Class("min-w-0"),
 						suggestionTitle(sg),
-						// Lazy version-status badge (cache-first on load): shows a "new
-						// version" chip + hover popover when a remote update exists.
-						versionStatusLazy(sg.ModelID),
+						h.Div(h.Class("text-xs text-slate-500"),
+							g.Text(fmt.Sprintf("%d file(s) · %s", sg.FileCount, humanBytes(sg.TotalBytes)))),
 					),
-					h.Div(h.Class("text-xs text-slate-500"),
-						g.Text(fmt.Sprintf("%d file(s) · %s", sg.FileCount, humanBytes(sg.TotalBytes)))),
+					subscribeInline("model", strconv.Itoa(sg.ModelID), "Subscribe", csrf),
 				),
-				subscribeInline("model", strconv.Itoa(sg.ModelID), "Subscribe", csrf),
+				// Lazy version-status pill on its OWN ROW below the title/footprint
+				// (cache-first on load): a violet "new version" button + hover popover
+				// when a remote update exists; collapses to nothing when up to date.
+				versionStatusLazy(sg.ModelID),
 			)
 		}),
 	)

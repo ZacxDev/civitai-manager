@@ -215,14 +215,17 @@ func buildMatchedModelCardView(id int, m *civitai.ModelDetail, raw []byte, files
 	return v
 }
 
-// versionStatusLazy is the small STABLE span a suggestion card renders inline
-// beside its title; it lazy-loads the version-status badge (hx-get on load) so the
-// dashboard render never blocks on civitai. The endpoint (cache-first) returns
-// either the "new version" badge + popover or an empty fragment (up to date).
+// versionStatusLazy is the STABLE own-row container a suggestion card renders
+// BELOW its title/footprint; it lazy-loads the version-status badge (hx-get on
+// load) so the dashboard render never blocks on civitai. The endpoint
+// (cache-first) returns either the "new version" pill + popover or an EMPTY
+// fragment (up to date). The .cm-vstatus-lazy class hides the container while it
+// is empty (before load AND when the fragment is empty), so an up-to-date card
+// shows no stray badge and no empty gap in the grid.
 func versionStatusLazy(modelID int) g.Node {
-	return h.Span(
+	return h.Div(
 		h.ID(fmt.Sprintf("version-status-%d", modelID)),
-		h.Class("inline-flex"),
+		h.Class("cm-vstatus-lazy"),
 		hx("get", fmt.Sprintf("/models/%d/version-status", modelID)),
 		hx("trigger", "load"),
 		hx("swap", "innerHTML"),

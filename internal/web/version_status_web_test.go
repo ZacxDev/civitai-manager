@@ -202,6 +202,37 @@ func TestVersionStatusEscapesNames(t *testing.T) {
 	}
 }
 
+// TestSuggestionVersionStatusOnOwnRow proves the lazy version-status container is
+// placed on its OWN ROW below the title/footprint (item 1), as a collapsible
+// cm-vstatus-lazy block — not inline beside the title.
+func TestSuggestionVersionStatusOnOwnRow(t *testing.T) {
+	out := renderString(t, suggestionsList([]suggestion{
+		{ModelID: 7, FileCount: 2, TotalBytes: 1 << 20, Name: "Great Model"},
+	}, "csrf"))
+
+	if !strings.Contains(out, `class="cm-vstatus-lazy"`) {
+		t.Errorf("version-status should be an own-row cm-vstatus-lazy container:\n%s", out)
+	}
+	// Placement: the container renders AFTER the file-count footprint (below the
+	// title/footprint, not inline beside the title).
+	footprint := strings.Index(out, "file(s)")
+	status := strings.Index(out, `id="version-status-7"`)
+	if footprint < 0 || status < 0 || status < footprint {
+		t.Errorf("version-status should render below the footprint (footprint=%d status=%d):\n%s",
+			footprint, status, out)
+	}
+}
+
+// TestSuggestionUpToDateNoStrayBadge proves an up-to-date model's version-status
+// fragment renders nothing (no stray pill), keeping the own-row container empty
+// (and thus collapsed by CSS).
+func TestSuggestionUpToDateNoStrayBadge(t *testing.T) {
+	out := renderString(t, versionStatusFragment(versionBreakdown{UpdateAvailable: false}, nil))
+	if strings.TrimSpace(out) != "" || strings.Contains(out, "cm-vstatus") {
+		t.Errorf("up-to-date fragment should render nothing, got %q", out)
+	}
+}
+
 // TestSuggestionCardLazyVersionStatus proves each dashboard suggestion card wires
 // the lazy version-status trigger.
 func TestSuggestionCardLazyVersionStatus(t *testing.T) {
