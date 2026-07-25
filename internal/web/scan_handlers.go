@@ -243,7 +243,8 @@ func (s *Server) renderScanStatus(w http.ResponseWriter) {
 		s.renderError(w, "reload library", ferr)
 		return
 	}
-	s.render(w, http.StatusOK, filesTabBody(scanResults(buildLibraryView(files), snap, s.csrf), s.csrf, s.matchRemoteEnabled()))
+	tv := s.annotateOutOfDate(buildLibraryView(files))
+	s.render(w, http.StatusOK, filesTabBody(scanResults(tv, snap, s.csrf), s.csrf, s.matchRemoteEnabled(), hasResults(tv)))
 }
 
 // handleScanStatus is polled by the scanning fragment. GET (no state change, so

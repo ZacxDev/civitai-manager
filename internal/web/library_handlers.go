@@ -146,6 +146,29 @@ func (s *Server) cachedModelDetail(parent context.Context, id int) (*civitai.Mod
 	return m, raw, nil
 }
 
+// cachedModelDetailResolver returns a CACHE-ONLY model-detail resolver: it reads
+// the model_cache and returns nil for a missing/stale/undecodable entry — it never
+// calls GetModel. computeOutOfDate uses it so the library render's out-of-date
+// count is derived without any network round trip (and thus understates on a cold
+// cache; see computeOutOfDate).
+func (s *Server) cachedModelDetailResolver() modelDetailResolver {
+	return func(id int) *civitai.ModelDetail {
+		ent, _ := s.store.GetModelCache(id)
+		if ent == nil || time.Since(ent.FetchedAt) >= modelCacheTTL {
+			return nil
+		}
+		return decodeModelDetail(ent.Raw)
+	}
+}
+
+// annotateOutOfDate populates v.OutOfDate from the cache-only resolver, so the
+// summary pills can report how many matched models have a newer remote version
+// without a fetch. Called by the Server just before rendering a libraryView.
+func (s *Server) annotateOutOfDate(v libraryView) libraryView {
+	v.OutOfDate = computeOutOfDate(v, s.cachedModelDetailResolver())
+	return v
+}
+
 // decodeModelDetail reconstructs a ModelDetail from a cached raw GetModel body.
 // Returns nil when the bytes are absent/undecodable (the caller then refetches).
 func decodeModelDetail(raw []byte) *civitai.ModelDetail {
@@ -273,7 +296,8 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			scanInitial = scanScanning(snap, s.csrf)
 		} else {
 			// Terminal: the scan form card above the completed results (form restored).
-			scanInitial = filesTabBody(scanResults(buildLibraryView(files), snap, s.csrf), s.csrf, s.matchRemoteEnabled())
+			tv := s.annotateOutOfDate(buildLibraryView(files))
+			scanInitial = filesTabBody(scanResults(tv, snap, s.csrf), s.csrf, s.matchRemoteEnabled(), hasResults(tv))
 		}
 	}
 	tab := r.URL.Query().Get("tab")
@@ -304,7 +328,7 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	s.render(w, http.StatusOK, libraryPage(buildLibraryView(files), s.csrf, s.extraPathsAllowed(), selected, s.currentTheme(), tab, discoverInitial, s.matchRemoteEnabled(), scanInitial, s.nsfwMode(), lw))
+	s.render(w, http.StatusOK, libraryPage(s.annotateOutOfDate(buildLibraryView(files)), s.csrf, s.extraPathsAllowed(), selected, s.currentTheme(), tab, discoverInitial, s.matchRemoteEnabled(), scanInitial, s.nsfwMode(), lw))
 }
 
 func (s *Server) handleLibraryScan(w http.ResponseWriter, r *http.Request) {
