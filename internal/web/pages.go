@@ -152,7 +152,7 @@ func subscribeSearchResults(res *civitai.ModelSearchResult, subs map[int]*store.
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("No results."))
 	}
 	images := parseSearchImages(res.Raw)
-	updated := newestPublishedAtByModel(res.Raw)
+	updated := newestVersionInfoByModel(res.Raw)
 	return h.Div(
 		h.Class("grid gap-4 sm:grid-cols-2 lg:grid-cols-3"),
 		g.Map(res.Items, func(it civitai.ModelListItem) g.Node {
@@ -535,9 +535,9 @@ func searchResults(res *civitai.ModelSearchResult, subs map[int]*store.Subscript
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("No results."))
 	}
 	images := parseSearchImages(res.Raw)
-	// Per-model newest publishedAt (from the SAME raw already parsed for images) →
-	// each card's "Updated X ago" line.
-	updated := newestPublishedAtByModel(res.Raw)
+	// Per-model newest version info (from the SAME raw already parsed for images) →
+	// each card's "Updated X ago" line + its hover popover (version name/date).
+	updated := newestVersionInfoByModel(res.Raw)
 	grid := h.Div(
 		h.Class("grid gap-4 sm:grid-cols-2 lg:grid-cols-3"),
 		g.Map(res.Items, func(it civitai.ModelListItem) g.Node {
@@ -552,7 +552,7 @@ func searchResults(res *civitai.ModelSearchResult, subs map[int]*store.Subscript
 
 // modelCard is a search result card: a showcase-image carousel (NSFW-mode
 // respecting) above the name/creator/stats, with a per-card subscribe control.
-func modelCard(it civitai.ModelListItem, images []galleryImage, subs map[int]*store.Subscription, mode, csrf string, updated time.Time) g.Node {
+func modelCard(it civitai.ModelListItem, images []galleryImage, subs map[int]*store.Subscription, mode, csrf string, updated modelUpdateInfo) g.Node {
 	return modelCardWith(it, images, subs, mode, csrf, updated)
 }
 
@@ -561,7 +561,7 @@ func modelCard(it civitai.ModelListItem, images []galleryImage, subs map[int]*st
 // The control reflects real state from the per-render subs map (subs[it.ID] nil →
 // collapsed "Subscribe"); the map is built ONCE per render (one ListSubscriptions
 // query), never per card.
-func modelCardWith(it civitai.ModelListItem, images []galleryImage, subs map[int]*store.Subscription, mode, csrf string, updated time.Time) g.Node {
+func modelCardWith(it civitai.ModelListItem, images []galleryImage, subs map[int]*store.Subscription, mode, csrf string, updated modelUpdateInfo) g.Node {
 	creator := ""
 	if it.Creator != nil {
 		creator = it.Creator.Username
@@ -584,12 +584,14 @@ func modelCardWith(it civitai.ModelListItem, images []galleryImage, subs map[int
 			h.Class("text-xs text-slate-500"),
 			g.Text(fmt.Sprintf("%s downloads · %s likes", compactCount(it.Stats.DownloadCount), compactCount(it.Stats.ThumbsUpCount))),
 		),
-		// "Updated X ago" from the newest version's publish date (absolute date as a
-		// hover tooltip). Omitted when no parseable date is available.
-		g.If(!updated.IsZero(), h.Div(
-			h.Class("text-xs text-slate-500"),
-			h.Title(updated.Local().Format("2006-01-02 15:04")),
-			g.Text("Updated "+humanSince(updated)),
+		// "Updated X ago" from the newest version's publish date, with a hover/focus
+		// popover (absolute date + latest version name/date). Omitted when no
+		// parseable date is available.
+		g.If(!updated.At.IsZero(), updatedCardLine(
+			humanSince(updated.At),
+			updated.At.Local().Format("2006-01-02 15:04"),
+			updated.Name,
+			updated.At.Local().Format("2006-01-02"),
 		)),
 		h.Div(h.Class("mt-1"), subscribeControl(it.ID, subs[it.ID], csrf)),
 	}

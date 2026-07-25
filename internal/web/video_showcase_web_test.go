@@ -148,57 +148,118 @@ func TestNewestVersionPublishedAt(t *testing.T) {
 	}
 }
 
-func TestNewestPublishedAtByModel(t *testing.T) {
+func TestNewestVersionInfoByModel(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{"items": []any{
 		map[string]any{"id": 10, "modelVersions": []any{
-			map[string]any{"publishedAt": "2022-01-01T00:00:00.000Z"},
-			map[string]any{"publishedAt": "2025-03-03T03:03:03.000Z"}, // newest for 10
+			map[string]any{"name": "v1", "publishedAt": "2022-01-01T00:00:00.000Z"},
+			map[string]any{"name": "v3", "publishedAt": "2025-03-03T03:03:03.000Z"}, // newest for 10
 		}},
 		map[string]any{"id": 20, "modelVersions": []any{
-			map[string]any{"publishedAt": "bad"}, // no parseable date → absent
+			map[string]any{"name": "vX", "publishedAt": "bad"}, // no parseable date → absent
 		}},
 	}})
-	got := newestPublishedAtByModel(raw)
+	got := newestVersionInfoByModel(raw)
 	want, _ := time.Parse(time.RFC3339, "2025-03-03T03:03:03.000Z")
-	if !got[10].Equal(want) {
-		t.Errorf("model 10: want %v, got %v", want, got[10])
+	if !got[10].At.Equal(want) {
+		t.Errorf("model 10: want %v, got %v", want, got[10].At)
+	}
+	// The newest version's NAME is captured alongside its date.
+	if got[10].Name != "v3" {
+		t.Errorf("model 10: want newest version name v3, got %q", got[10].Name)
 	}
 	if _, ok := got[20]; ok {
 		t.Error("model 20 has no parseable date and should be absent")
 	}
-	if got := newestPublishedAtByModel(nil); got == nil || len(got) != 0 {
+	if got := newestVersionInfoByModel(nil); got == nil || len(got) != 0 {
 		t.Errorf("nil raw should give a non-nil empty map, got %v", got)
 	}
 }
 
 // TestModelHeaderUpdatedStat proves the detail header renders "Updated X ago"
-// only when a last-updated time is present, and omits it when zero.
+// with a hover popover (absolute date + latest version name/date) when a
+// last-updated time is present, and omits it when zero.
 func TestModelHeaderUpdatedStat(t *testing.T) {
 	m := &civitai.ModelDetail{ID: 1, Name: "M", Type: "LORA"}
 
-	set := renderString(t, modelHeaderCard(m, "", "csrf", "https://civitai.com/models/1", nil, time.Now().Add(-3*time.Hour)))
+	set := renderString(t, modelHeaderCard(m, "", "csrf", "https://civitai.com/models/1", nil,
+		time.Now().Add(-3*time.Hour), "v2", "2026-01-15"))
 	if !strings.Contains(set, "Updated") || !strings.Contains(set, "3h ago") {
 		t.Errorf("header should render \"Updated 3h ago\" when set; html:\n%s", set)
 	}
+	// The hover popover: the reusable class + the latest version name + publish date.
+	for _, want := range []string{"cm-updated-pop", "Latest version: v2", "Published 2026-01-15"} {
+		if !strings.Contains(set, want) {
+			t.Errorf("header updated popover missing %q; html:\n%s", want, set)
+		}
+	}
 
-	zero := renderString(t, modelHeaderCard(m, "", "csrf", "https://civitai.com/models/1", nil, time.Time{}))
+	zero := renderString(t, modelHeaderCard(m, "", "csrf", "https://civitai.com/models/1", nil,
+		time.Time{}, "v2", "2026-01-15"))
 	if strings.Contains(zero, "Updated") {
 		t.Errorf("header should omit \"Updated\" when the time is zero; html:\n%s", zero)
 	}
 }
 
-// TestSearchCardUpdated proves a search result card renders "Updated X ago" for a
-// model with a version publish date, and omits it when zero.
+// TestModelHeaderUpdatedDegradesAndEscapes proves the popover omits the version
+// name/date lines when they are absent (no crash), and escapes a malicious version
+// name (untrusted civitai string).
+func TestModelHeaderUpdatedDegradesAndEscapes(t *testing.T) {
+	m := &civitai.ModelDetail{ID: 1, Name: "M", Type: "LORA"}
+
+	// No version name/date → the popover renders only the "Updated {date}" line.
+	bare := renderString(t, modelHeaderCard(m, "", "csrf", "https://civitai.com/models/1", nil,
+		time.Now().Add(-1*time.Hour), "", ""))
+	if !strings.Contains(bare, "cm-updated-pop") {
+		t.Error("popover should still render with only the date line")
+	}
+	if strings.Contains(bare, "Latest version:") || strings.Contains(bare, "Published ") {
+		t.Errorf("absent version name/date lines should be omitted; html:\n%s", bare)
+	}
+
+	// A malicious version name must be escaped, not rendered as live markup.
+	evil := renderString(t, modelHeaderCard(m, "", "csrf", "https://civitai.com/models/1", nil,
+		time.Now().Add(-1*time.Hour), `<script>alert(1)</script>`, "2026-01-15"))
+	if strings.Contains(evil, "<script>alert(1)</script>") {
+		t.Errorf("version name must be escaped; html:\n%s", evil)
+	}
+	if !strings.Contains(evil, "&lt;script&gt;") {
+		t.Errorf("version name should be HTML-escaped; html:\n%s", evil)
+	}
+}
+
+// TestSearchCardUpdated proves a search result card renders "Updated X ago" with a
+// hover popover (version name/date) for a model with a version publish date, and
+// omits the whole thing when zero.
 func TestSearchCardUpdated(t *testing.T) {
 	it := civitai.ModelListItem{ID: 9, Name: "Vid Model", Type: "Checkpoint"}
 
-	set := renderString(t, modelCard(it, nil, nil, NSFWShow, "csrf", time.Now().Add(-2*24*time.Hour)))
+	set := renderString(t, modelCard(it, nil, nil, NSFWShow, "csrf",
+		modelUpdateInfo{At: time.Now().Add(-2 * 24 * time.Hour), Name: "v9"}))
 	if !strings.Contains(set, "Updated 2 days ago") {
 		t.Errorf("search card should render \"Updated 2 days ago\"; html:\n%s", set)
 	}
+	for _, want := range []string{"cm-updated-pop", "Latest version: v9"} {
+		if !strings.Contains(set, want) {
+			t.Errorf("search card updated popover missing %q; html:\n%s", want, set)
+		}
+	}
 
-	zero := renderString(t, modelCard(it, nil, nil, NSFWShow, "csrf", time.Time{}))
+	zero := renderString(t, modelCard(it, nil, nil, NSFWShow, "csrf", modelUpdateInfo{}))
 	if strings.Contains(zero, "Updated") {
 		t.Errorf("search card should omit \"Updated\" when zero; html:\n%s", zero)
+	}
+}
+
+// TestSearchCardUpdatedEscapesVersionName proves a malicious version name threaded
+// into a search card's updated popover is escaped.
+func TestSearchCardUpdatedEscapesVersionName(t *testing.T) {
+	it := civitai.ModelListItem{ID: 9, Name: "Vid Model", Type: "Checkpoint"}
+	out := renderString(t, modelCard(it, nil, nil, NSFWShow, "csrf",
+		modelUpdateInfo{At: time.Now().Add(-1 * time.Hour), Name: `<img src=x onerror=alert(1)>`}))
+	if strings.Contains(out, "<img src=x onerror=alert(1)>") {
+		t.Errorf("version name must be escaped in the search card popover; html:\n%s", out)
+	}
+	if strings.Contains(out, "onerror=alert(1)") && !strings.Contains(out, "&lt;img") {
+		t.Errorf("version name should be HTML-escaped; html:\n%s", out)
 	}
 }

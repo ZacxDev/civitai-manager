@@ -68,8 +68,8 @@ func TestHandleModelCardEnrichesAndCaches(t *testing.T) {
 	for _, want := range []string{
 		"Great Model",  // name (not "#id")
 		"LORA", "SDXL", // type + base model details
-		"cm-carousel", // the carousel
-		"safe.jpeg",   // showcase images rendered
+		"cm-carousel",                            // the carousel
+		"safe.jpeg",                              // showcase images rendered
 		"Versions in your library", "Total size", // version breakdown
 		"Subscribe", // subscribe toggle
 		"/models/7", // link to the model page
@@ -125,8 +125,9 @@ func TestBuildMatchedCardViewResolvesCreator(t *testing.T) {
 }
 
 // TestModelCardCarouselRespectsNSFW proves the carousel honors the persisted
-// display mode: blur obscures the NSFW image behind click-to-reveal, hide omits
-// it, show reveals it — never re-flagging or exposing NSFW.
+// display mode: blur obscures the NSFW image behind click-to-reveal, a stored
+// hide migrates to blur (present + blurred, not omitted), show reveals it — never
+// re-flagging or exposing NSFW.
 func TestModelCardCarouselRespectsNSFW(t *testing.T) {
 	imgs := []galleryImage{
 		{URL: "https://image.civitai.com/safe.jpeg", NSFWLevel: 1},
@@ -134,22 +135,23 @@ func TestModelCardCarouselRespectsNSFW(t *testing.T) {
 	}
 
 	blur := renderString(t, modelCardCarousel(7, imgs, NSFWBlur))
-	if !strings.Contains(blur, "nsfw.jpeg") || !strings.Contains(blur, `data-blurred="1"`) || !strings.Contains(blur, "blur-xl") {
+	if !strings.Contains(blur, "nsfw.jpeg") || !strings.Contains(blur, `data-blurred="1"`) || !strings.Contains(blur, "cm-blur") {
 		t.Error("blur mode: NSFW image should be present but blurred")
 	}
-	if !strings.Contains(blur, "click to reveal") {
+	if !strings.Contains(blur, "reveal") {
 		t.Error("blur mode: blurred image should offer click-to-reveal")
 	}
 	if !strings.Contains(blur, "safe.jpeg") {
 		t.Error("blur mode: safe image should be present")
 	}
 
+	// A stored hide migrates to blur: the NSFW image is present and blurred.
 	hide := renderString(t, modelCardCarousel(7, imgs, NSFWHide))
-	if strings.Contains(hide, "nsfw.jpeg") {
-		t.Error("hide mode: NSFW image must be omitted")
+	if !strings.Contains(hide, "nsfw.jpeg") || !strings.Contains(hide, `data-blurred="1"`) {
+		t.Error("migrated hide (→blur): NSFW image should be present but blurred, not omitted")
 	}
 	if !strings.Contains(hide, "safe.jpeg") {
-		t.Error("hide mode: safe image should still show")
+		t.Error("migrated hide (→blur): safe image should still show")
 	}
 
 	show := renderString(t, modelCardCarousel(7, imgs, NSFWShow))
@@ -162,20 +164,23 @@ func TestModelCardCarouselRespectsNSFW(t *testing.T) {
 }
 
 // TestHandleModelCardCarouselHonorsPersistedNSFW proves the endpoint reads the
-// persisted nsfw_display setting (hide) rather than defaulting.
+// persisted nsfw_display setting (show) rather than defaulting.
 func TestHandleModelCardCarouselHonorsPersistedNSFW(t *testing.T) {
 	var calls int32
 	reader := countingModelReader{calls: &calls, raw: modelCardRawJSON(t)}
 	srv := newModelServer(t, reader)
-	if err := srv.store.SetSetting(nsfwSettingKey, NSFWHide); err != nil {
+	if err := srv.store.SetSetting(nsfwSettingKey, NSFWShow); err != nil {
 		t.Fatal(err)
 	}
 	body := getModelPage(t, srv, "/library/model-card/7")
-	if strings.Contains(body, "nsfw.jpeg") {
-		t.Error("hide mode: the endpoint must omit the NSFW showcase image")
+	if !strings.Contains(body, "nsfw.jpeg") {
+		t.Error("show mode: the endpoint should render the NSFW showcase image")
+	}
+	if strings.Contains(body, `data-blurred="1"`) {
+		t.Error("show mode: the endpoint must not blur any showcase image")
 	}
 	if !strings.Contains(body, "safe.jpeg") {
-		t.Error("hide mode: the safe showcase image should still render")
+		t.Error("show mode: the safe showcase image should still render")
 	}
 }
 
