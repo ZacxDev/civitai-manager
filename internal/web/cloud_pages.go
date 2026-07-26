@@ -157,7 +157,10 @@ type cloudEstimateView struct {
 	cost             float64
 	insufficientBuzz bool
 	urns             []string
-	err              string // untrusted remote error text (escaped)
+	// affordability marks a gated-whatif 400 (affordability gate rejection): render
+	// the escaped detail + a "run anyway" button rather than a generic estimate error.
+	affordability bool
+	err           string // untrusted remote error text (escaped)
 }
 
 // cloudEstimateFragment renders the whatif result + the "Run for real" button.
@@ -169,6 +172,11 @@ type cloudEstimateView struct {
 // the request was accepted, show the per-second billing reality plainly, and only
 // surface a fixed number if the API ever actually returns one (>0).
 func cloudEstimateFragment(v cloudEstimateView, csrf string) g.Node {
+	if v.affordability {
+		// The gated whatif was rejected (400) — treat it as an affordability warning
+		// (escaped detail) + "run anyway", NOT a generic "Estimate failed".
+		return cloudAffordabilityFragment(v.err, v.wfID, v.urns, csrf)
+	}
 	if v.err != "" {
 		return alert("error", "Estimate failed", g.Text(v.err))
 	}
@@ -213,6 +221,42 @@ func cloudRunForRealButton(wfID int64, urns []string, csrf string) g.Node {
 	)
 }
 
+// cloudAffordabilityFragment renders the submit-time affordability-gate rejection:
+// an amber alert with the API's (untrusted, escaped) ProblemDetails detail — which
+// explains how much generation the user can afford — plus a "run anyway" button that
+// resubmits with the 5-minute gate skipped. Shared by the whatif preview and the
+// real-run terminal state.
+func cloudAffordabilityFragment(detail string, wfID int64, urns []string, csrf string) g.Node {
+	body := []g.Node{}
+	if strings.TrimSpace(detail) != "" {
+		body = append(body, g.Text(detail))
+	} else {
+		body = append(body, g.Text("CivitAI rejected this run because you cannot afford "+
+			"the 5-minute minimum generation time."))
+	}
+	return h.Div(h.Class("space-y-2"),
+		alert("warning", "Not enough Buzz for the 5-minute minimum", body...),
+		cloudRunAnywayButton(wfID, urns, csrf),
+	)
+}
+
+// cloudRunAnywayButton posts the (edited) URNs to the real-run endpoint with
+// run_anyway=1 so the submit-time affordability gate is SKIPPED, driving the
+// #cloud-status container. Mirrors cloudRunForRealButton but adds the skip flag.
+func cloudRunAnywayButton(wfID int64, urns []string, csrf string) g.Node {
+	id := strconv.FormatInt(wfID, 10)
+	return h.Form(
+		hx("post", "/workflows/"+id+"/cloud/run"),
+		hx("target", "#"+cloudStatusContainerID),
+		hx("swap", "innerHTML"),
+		csrfInput(csrf),
+		h.Input(h.Type("hidden"), h.Name("resources"), h.Value(strings.Join(urns, "\n"))),
+		h.Input(h.Type("hidden"), h.Name("run_anyway"), h.Value("1")),
+		civButton("filled", "md", []g.Node{h.Type("submit"), hx("disabled-elt", "this")},
+			g.Text("Run anyway (skip the 5-min affordability check)")),
+	)
+}
+
 // cloudStatusFragment dispatches the cloud run job's state into #cloud-status: the
 // running fragment (poller + Stop) while in flight, else the terminal result. A run
 // belonging to a DIFFERENT workflow is not shown here.
@@ -236,7 +280,7 @@ func cloudStatusFragment(snap cloudSnapshot, wfID int64, csrf string) g.Node {
 	if snap.Running {
 		return cloudRunning(snap, wfID, csrf)
 	}
-	return cloudTerminal(snap)
+	return cloudTerminal(snap, wfID, csrf)
 }
 
 // cloudPoller is the one-shot re-arming poll element driving the running view to
@@ -274,15 +318,19 @@ func cloudRunning(snap cloudSnapshot, wfID int64, csrf string) g.Node {
 	)
 }
 
-// cloudTerminal renders the settled cloud run: a result gallery on success, or the
-// failure message.
-func cloudTerminal(snap cloudSnapshot) g.Node {
+// cloudTerminal renders the settled cloud run: a result gallery on success, the
+// affordability-rejection state (escaped detail + "run anyway") when the gated
+// submit was rejected, or the plain failure message otherwise.
+func cloudTerminal(snap cloudSnapshot, wfID int64, csrf string) g.Node {
 	if snap.Phase == cloudPhaseDone {
 		body := []g.Node{h.P(h.Class("text-sm text-emerald-400"), g.Text(snap.Message))}
 		if gal := cloudGallery(snap.BlobURLs); gal != nil {
 			body = append(body, gal)
 		}
 		return h.Div(h.Class("space-y-3"), g.Group(body))
+	}
+	if snap.Affordability {
+		return cloudAffordabilityFragment(snap.Message, wfID, snap.URNs, csrf)
 	}
 	return alert("error", "Cloud run failed", g.Text(snap.Message))
 }
