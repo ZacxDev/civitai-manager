@@ -29,7 +29,9 @@ import (
 // onsite fields (liveUrl) OR the offsite fields (externalUrl/subKind) are
 // populated per Kind.
 type App struct {
-	ID            int          `json:"id"`
+	// ID is the app-listing id — a ULID-style STRING (e.g. "apl_01KYAZSZ…"),
+	// NOT an int (verified live against /api/v1/apps). Creator.id IS an int.
+	ID            string       `json:"id"`
 	Slug          string       `json:"slug"`
 	Kind          string       `json:"kind"` // "onsite" | "offsite"
 	Name          string       `json:"name"`

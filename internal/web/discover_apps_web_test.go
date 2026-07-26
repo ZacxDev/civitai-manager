@@ -51,7 +51,7 @@ func sampleAppsPage() *civitai.AppsPage {
 	return &civitai.AppsPage{
 		Items: []civitai.App{
 			{
-				ID: 1, Slug: "cool-offsite", Kind: "offsite",
+				ID: "1", Slug: "cool-offsite", Kind: "offsite",
 				Name: "Cool Offsite App", Tagline: "does cool things",
 				Category: "utility", ContentRating: "PG",
 				CoverURL: "https://cdn/cover1.png", IconURL: "https://cdn/icon1.png",
@@ -61,7 +61,7 @@ func sampleAppsPage() *civitai.AppsPage {
 				KindData:    civitai.AppKindData{ExternalURL: "https://example.com/app"},
 			},
 			{
-				ID: 2, Slug: "neat-onsite", Kind: "onsite",
+				ID: "2", Slug: "neat-onsite", Kind: "onsite",
 				Name: "Neat Onsite App", Tagline: "runs on civitai",
 				Category: "image", ContentRating: "PG",
 				IconURL:  "https://cdn/icon2.png",
@@ -69,7 +69,7 @@ func sampleAppsPage() *civitai.AppsPage {
 				KindData: civitai.AppKindData{LiveURL: "https://neat.civitai.com"},
 			},
 			{
-				ID: 3, Slug: "no-live", Kind: "onsite",
+				ID: "3", Slug: "no-live", Kind: "onsite",
 				Name: "No Live URL App", Tagline: "falls back to detail page",
 				Creator:  civitai.AppCreator{Username: "carol"},
 				KindData: civitai.AppKindData{},
@@ -176,7 +176,7 @@ func TestAppsPageRendersCards(t *testing.T) {
 func TestAppsXSSPlayURLRejected(t *testing.T) {
 	fake := &fakeAppsClient{page: &civitai.AppsPage{Items: []civitai.App{
 		{
-			ID: 9, Slug: "evil", Kind: "offsite", Name: "Evil App",
+			ID: "9", Slug: "evil", Kind: "offsite", Name: "Evil App",
 			KindData: civitai.AppKindData{ExternalURL: "javascript:alert(1)"},
 		},
 	}}}
@@ -202,7 +202,7 @@ func TestAppsXSSPlayURLRejected(t *testing.T) {
 func TestAppsDataURLRejected(t *testing.T) {
 	fake := &fakeAppsClient{page: &civitai.AppsPage{Items: []civitai.App{
 		{
-			ID: 9, Slug: "d", Kind: "offsite", Name: "Data App",
+			ID: "9", Slug: "d", Kind: "offsite", Name: "Data App",
 			KindData: civitai.AppKindData{ExternalURL: "data:text/html,<script>alert(1)</script>"},
 		},
 	}}}
@@ -303,7 +303,7 @@ func TestAppsNoNextWhenNoCursor(t *testing.T) {
 func TestAppsEscapesUntrustedText(t *testing.T) {
 	fake := &fakeAppsClient{page: &civitai.AppsPage{Items: []civitai.App{
 		{
-			ID: 5, Slug: "x", Kind: "offsite",
+			ID: "5", Slug: "x", Kind: "offsite",
 			Name:     "<script>alert('xss')</script>",
 			Tagline:  "<img src=x onerror=alert(1)>",
 			Creator:  civitai.AppCreator{Username: "<b>evil</b>"},

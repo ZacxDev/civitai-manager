@@ -16,7 +16,7 @@ import (
 const appsBody = `{
   "items": [
     {
-      "id": 1, "slug": "cool-offsite", "kind": "offsite",
+      "id": "apl_1", "slug": "cool-offsite", "kind": "offsite",
       "name": "Cool Offsite App", "tagline": "does cool things",
       "category": "utility", "contentRating": "PG",
       "iconUrl": "https://cdn/icon1.png", "coverUrl": "https://cdn/cover1.png",
@@ -26,7 +26,7 @@ const appsBody = `{
       "kindData": {"subKind": "web", "externalUrl": "https://example.com/app"}
     },
     {
-      "id": 2, "slug": "neat-onsite", "kind": "onsite",
+      "id": "apl_2", "slug": "neat-onsite", "kind": "onsite",
       "name": "Neat Onsite App", "tagline": "runs on civitai",
       "category": "image", "contentRating": "PG",
       "iconUrl": "https://cdn/icon2.png", "coverUrl": "",
