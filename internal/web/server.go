@@ -154,6 +154,13 @@ type Server struct {
 	// the first.
 	cloudJob *cloudJob
 
+	// downloaderFn builds the CivitAI downloader used by the workflow-discovery
+	// import to fetch a Workflows model's zip (with the user's token resolving
+	// gated-file auth). Nil (production) builds a live civitai client from
+	// cfg.BaseURL/cfg.Token; tests inject a fake that serves a canned zip without
+	// touching civitai.com.
+	downloaderFn func() civitai.Downloader
+
 	// popularMu guards the in-process TTL cache of the "recent popular" feed shown
 	// as the empty-query search default. The feed is keyed by the NSFW flag
 	// (true=include NSFW+images, false=SFW-only) so a mode flip never serves the
@@ -271,6 +278,17 @@ func (s *Server) extraPathsAllowed() bool {
 	return config.IsLoopbackAddr(s.cfg.Addr)
 }
 
+// downloader returns the CivitAI downloader for the workflow-import fetch: the
+// test seam when set, otherwise a live client built from the configured base URL
+// and token (the token resolves gated-file auth). It is built per call (cheap);
+// callers must have already verified a token is configured.
+func (s *Server) downloader() civitai.Downloader {
+	if s.downloaderFn != nil {
+		return s.downloaderFn()
+	}
+	return civitai.New(s.cfg.BaseURL, s.cfg.Token)
+}
+
 // webScanTimeout returns the deadline for a web-triggered scan, falling back to
 // the config default when unset.
 func (s *Server) webScanTimeout() time.Duration {
@@ -371,6 +389,9 @@ func (s *Server) Handler() http.Handler {
 	// Browse-only workflow discovery (Slice D1). Registered before the {id} route;
 	// ServeMux prefers this more-specific literal path over /workflows/{id}.
 	mux.HandleFunc("GET /workflows/discover", s.handleDiscoverWorkflows)
+	// D2 import: download → unzip → store N workflows. A 4-segment literal-prefixed
+	// path so it never collides with the /workflows/{id}/… POST controls below.
+	mux.HandleFunc("POST /workflows/discover/{modelId}/import", s.handleWorkflowDiscoverImport)
 	mux.HandleFunc("GET /workflows/{id}", s.handleWorkflowDetail)
 	mux.HandleFunc("POST /workflows/import", s.handleWorkflowImport)
 	mux.HandleFunc("POST /workflows/import-png", s.handleWorkflowImportPNG)
