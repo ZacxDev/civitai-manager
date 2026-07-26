@@ -394,6 +394,10 @@ func newestVersionPublishedAt(raw []byte) time.Time {
 type modelUpdateInfo struct {
 	At   time.Time
 	Name string
+	// VersionID is the newest version's id, used to deeplink the popover's
+	// "Latest version: {name}" line to /models/{id}?version={VersionID}. Zero when
+	// unknown (the line then renders as plain text, not a link).
+	VersionID int
 }
 
 // newestVersionInfoByModel scans a SearchModels raw body and returns, per model
@@ -409,6 +413,7 @@ func newestVersionInfoByModel(raw []byte) map[int]modelUpdateInfo {
 		Items []struct {
 			ID            int `json:"id"`
 			ModelVersions []struct {
+				ID          int    `json:"id"`
 				Name        string `json:"name"`
 				PublishedAt string `json:"publishedAt"`
 			} `json:"modelVersions"`
@@ -420,6 +425,7 @@ func newestVersionInfoByModel(raw []byte) map[int]modelUpdateInfo {
 	for _, it := range body.Items {
 		var newest time.Time
 		var name string
+		var versionID int
 		for _, v := range it.ModelVersions {
 			s := strings.TrimSpace(v.PublishedAt)
 			if s == "" {
@@ -432,10 +438,11 @@ func newestVersionInfoByModel(raw []byte) map[int]modelUpdateInfo {
 			if t.After(newest) {
 				newest = t
 				name = v.Name
+				versionID = v.ID
 			}
 		}
 		if !newest.IsZero() {
-			out[it.ID] = modelUpdateInfo{At: newest, Name: name}
+			out[it.ID] = modelUpdateInfo{At: newest, Name: name, VersionID: versionID}
 		}
 	}
 	return out
@@ -457,12 +464,25 @@ func isoDatePrefix(s string) string {
 // "Latest version: {name}" and "Published {date}" lines shown only when available
 // (each omitted gracefully when empty). versionName/versionDate are untrusted
 // civitai strings — g.Text escapes every one; absDate is server-formatted (trusted).
-func updatedPopBody(absDate, versionName, versionDate string) g.Node {
+// When modelID and versionID are both > 0 the "Latest version: {name}" line is a
+// deeplink to that version's detail page (/models/{id}?version={vid}); otherwise it
+// is plain text. The link stops click propagation so it navigates even though it
+// lives inside the JS-hover-controlled popover wrapper.
+func updatedPopBody(modelID, versionID int, absDate, versionName, versionDate string) g.Node {
 	rows := []g.Node{
 		h.Div(h.Class("cm-updated-title"), g.Text("Updated "+absDate)),
 	}
 	if strings.TrimSpace(versionName) != "" {
-		rows = append(rows, h.Div(g.Text("Latest version: "+versionName)))
+		if modelID > 0 && versionID > 0 {
+			rows = append(rows, h.Div(h.A(
+				h.Href(fmt.Sprintf("/models/%d?version=%d", modelID, versionID)),
+				h.Class("text-indigo-300 hover:text-indigo-200"),
+				g.Attr("onclick", "event.stopPropagation()"),
+				g.Text("Latest version: "+versionName),
+			)))
+		} else {
+			rows = append(rows, h.Div(g.Text("Latest version: "+versionName)))
+		}
 	}
 	if strings.TrimSpace(versionDate) != "" {
 		rows = append(rows, h.Div(h.Class("cm-updated-date"), g.Text("Published "+versionDate)))
@@ -473,26 +493,26 @@ func updatedPopBody(absDate, versionName, versionDate string) g.Node {
 // updatedHeaderStat renders the model header's "Updated: X ago" stat as a
 // hover/focus popover trigger (mirroring statInline's look) carrying updatedPopBody.
 // A plain title= tooltip is kept as a harmless fallback for AT / non-hover users.
-func updatedHeaderStat(rel, absDate, versionName, versionDate string) g.Node {
+func updatedHeaderStat(modelID, versionID int, rel, absDate, versionName, versionDate string) g.Node {
 	return h.Div(
 		h.Class("cm-updated"),
 		g.Attr("tabindex", "0"),
 		h.Title("Updated "+absDate),
 		h.Span(h.Class("text-slate-500"), g.Text("Updated: ")),
 		h.Span(h.Class("font-medium text-slate-200"), g.Text(rel)),
-		updatedPopBody(absDate, versionName, versionDate),
+		updatedPopBody(modelID, versionID, absDate, versionName, versionDate),
 	)
 }
 
 // updatedCardLine renders a search card's "Updated X ago" line as a hover/focus
 // popover trigger carrying updatedPopBody, with a title= fallback.
-func updatedCardLine(rel, absDate, versionName, versionDate string) g.Node {
+func updatedCardLine(modelID, versionID int, rel, absDate, versionName, versionDate string) g.Node {
 	return h.Div(
 		h.Class("cm-updated text-xs text-slate-500"),
 		g.Attr("tabindex", "0"),
 		h.Title("Updated "+absDate),
 		h.Span(g.Text("Updated "+rel)),
-		updatedPopBody(absDate, versionName, versionDate),
+		updatedPopBody(modelID, versionID, absDate, versionName, versionDate),
 	)
 }
 
@@ -517,7 +537,7 @@ func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, ba
 	}
 
 	return page(m.Name, theme, csrf, mode,
-		modelHeaderCard(m, creator, csrf, modelURL, sub, v.LastUpdated, verName, verDate),
+		modelHeaderCard(m, creator, csrf, modelURL, sub, v.LastUpdated, v.SelectedVersionID, verName, verDate),
 		g.If(strings.TrimSpace(v.Description) != "", modelDescriptionCard(v.Description)),
 		// Tags are a compact, de-emphasized inline chip row under the description
 		// (not a standalone "Tags" card).
@@ -588,7 +608,7 @@ func communityFeedContainer(modelID, versionID int) g.Node {
 // modelHeaderCard renders the model header: name/type/creator, key stats, the
 // Subscribe affordance, and the "View on CivitAI" link. The showcase carousel is
 // NOT here — it lives in the version region so it re-renders on a version change.
-func modelHeaderCard(m *civitai.ModelDetail, creator, csrf, modelURL string, sub *store.Subscription, lastUpdated time.Time, versionName, versionDate string) g.Node {
+func modelHeaderCard(m *civitai.ModelDetail, creator, csrf, modelURL string, sub *store.Subscription, lastUpdated time.Time, latestVersionID int, versionName, versionDate string) g.Node {
 	return card(
 		h.Div(
 			h.Class("flex flex-wrap items-start justify-between gap-4"),
@@ -610,6 +630,7 @@ func modelHeaderCard(m *civitai.ModelDetail, creator, csrf, modelURL string, sub
 					// hover/focus popover (absolute date + latest version name/date).
 					// Omitted when no parseable date.
 					g.If(!lastUpdated.IsZero(), updatedHeaderStat(
+						m.ID, latestVersionID,
 						humanSince(lastUpdated),
 						lastUpdated.Local().Format("2006-01-02 15:04"),
 						versionName, versionDate)),

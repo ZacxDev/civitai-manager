@@ -67,6 +67,33 @@ func TestVersionStatusUpdateAvailable(t *testing.T) {
 	}
 }
 
+// TestVersionStatusDeeplink proves the popover's "Latest: {name}" line is a
+// deeplink to that version's in-app detail page (/models/{id}?version={LatestID}),
+// with the (untrusted) version name escaped inside the link.
+func TestVersionStatusDeeplink(t *testing.T) {
+	raw := versionStatusRaw(t, []map[string]any{
+		{"id": 20, "name": "<b>v2</b>", "publishedAt": "2024-01-15T12:00:00.000Z"},
+		{"id": 10, "name": "v1"},
+	})
+	srv := seedVersionStatus(t, raw, 10) // latest is v2 (id 20), not in library
+
+	body := getModelPage(t, srv, "/models/7/version-status")
+	if !strings.Contains(body, `href="/models/7?version=20"`) {
+		t.Errorf("latest line should deeplink to the version detail page:\n%s", body)
+	}
+	// The name is escaped inside the link, never emitted as live markup.
+	if strings.Contains(body, "<b>v2</b>") {
+		t.Errorf("version name must be escaped inside the deeplink:\n%s", body)
+	}
+	if !strings.Contains(body, "Latest: &lt;b&gt;v2&lt;/b&gt;") {
+		t.Errorf("escaped latest name should appear inside the link:\n%s", body)
+	}
+	// The publish-date suffix stays OUTSIDE the link.
+	if !strings.Contains(body, "· Published 2024-01-15") {
+		t.Errorf("publish-date suffix should follow the link:\n%s", body)
+	}
+}
+
 // TestVersionStatusUpToDate proves a model whose latest version is already local
 // renders NOTHING (an empty fragment) — keeping the suggestion grid clean.
 func TestVersionStatusUpToDate(t *testing.T) {
@@ -179,8 +206,10 @@ func TestVersionStatusOmitsMissingLocalDate(t *testing.T) {
 	if strings.Contains(body, "You have: Version #99 · Published") {
 		t.Error("an unknown local version must not fabricate a publish date")
 	}
-	if !strings.Contains(body, "Latest: v2 · Published 2024-03-10") {
-		t.Errorf("the latest line should still carry its date:\n%s", body)
+	// The latest name is now a deeplink; its "· Published {date}" suffix follows
+	// the link, so assert the two adjacent parts rather than one contiguous string.
+	if !strings.Contains(body, "Latest: v2</a> · Published 2024-03-10") {
+		t.Errorf("the latest line should still carry its date after the link:\n%s", body)
 	}
 }
 
@@ -227,7 +256,7 @@ func TestSuggestionVersionStatusOnOwnRow(t *testing.T) {
 // fragment renders nothing (no stray pill), keeping the own-row container empty
 // (and thus collapsed by CSS).
 func TestSuggestionUpToDateNoStrayBadge(t *testing.T) {
-	out := renderString(t, versionStatusFragment(versionBreakdown{UpdateAvailable: false}, nil))
+	out := renderString(t, versionStatusFragment(1, versionBreakdown{UpdateAvailable: false}, nil))
 	if strings.TrimSpace(out) != "" || strings.Contains(out, "cm-vstatus") {
 		t.Errorf("up-to-date fragment should render nothing, got %q", out)
 	}

@@ -342,7 +342,7 @@ func (s *Server) handleModelVersionStatus(w http.ResponseWriter, r *http.Request
 		return
 	}
 	bd := buildVersionBreakdown(m.ModelVersions, files)
-	s.render(w, http.StatusOK, versionStatusFragment(bd, raw))
+	s.render(w, http.StatusOK, versionStatusFragment(id, bd, raw))
 }
 
 func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {

@@ -182,7 +182,7 @@ func TestModelHeaderUpdatedStat(t *testing.T) {
 	m := &civitai.ModelDetail{ID: 1, Name: "M", Type: "LORA"}
 
 	set := renderString(t, modelHeaderCard(m, "", "csrf", "https://civitai.com/models/1", nil,
-		time.Now().Add(-3*time.Hour), "v2", "2026-01-15"))
+		time.Now().Add(-3*time.Hour), 2, "v2", "2026-01-15"))
 	if !strings.Contains(set, "Updated") || !strings.Contains(set, "3h ago") {
 		t.Errorf("header should render \"Updated 3h ago\" when set; html:\n%s", set)
 	}
@@ -194,7 +194,7 @@ func TestModelHeaderUpdatedStat(t *testing.T) {
 	}
 
 	zero := renderString(t, modelHeaderCard(m, "", "csrf", "https://civitai.com/models/1", nil,
-		time.Time{}, "v2", "2026-01-15"))
+		time.Time{}, 2, "v2", "2026-01-15"))
 	if strings.Contains(zero, "Updated") {
 		t.Errorf("header should omit \"Updated\" when the time is zero; html:\n%s", zero)
 	}
@@ -208,7 +208,7 @@ func TestModelHeaderUpdatedDegradesAndEscapes(t *testing.T) {
 
 	// No version name/date → the popover renders only the "Updated {date}" line.
 	bare := renderString(t, modelHeaderCard(m, "", "csrf", "https://civitai.com/models/1", nil,
-		time.Now().Add(-1*time.Hour), "", ""))
+		time.Now().Add(-1*time.Hour), 2, "", ""))
 	if !strings.Contains(bare, "cm-updated-pop") {
 		t.Error("popover should still render with only the date line")
 	}
@@ -218,7 +218,7 @@ func TestModelHeaderUpdatedDegradesAndEscapes(t *testing.T) {
 
 	// A malicious version name must be escaped, not rendered as live markup.
 	evil := renderString(t, modelHeaderCard(m, "", "csrf", "https://civitai.com/models/1", nil,
-		time.Now().Add(-1*time.Hour), `<script>alert(1)</script>`, "2026-01-15"))
+		time.Now().Add(-1*time.Hour), 2, `<script>alert(1)</script>`, "2026-01-15"))
 	if strings.Contains(evil, "<script>alert(1)</script>") {
 		t.Errorf("version name must be escaped; html:\n%s", evil)
 	}
@@ -247,6 +247,34 @@ func TestSearchCardUpdated(t *testing.T) {
 	zero := renderString(t, modelCard(it, nil, nil, NSFWShow, "csrf", modelUpdateInfo{}))
 	if strings.Contains(zero, "Updated") {
 		t.Errorf("search card should omit \"Updated\" when zero; html:\n%s", zero)
+	}
+}
+
+// TestSearchCardUpdatedDeeplink proves the search card's "Latest version: {name}"
+// popover line deeplinks to that version's in-app detail page
+// (/models/{id}?version={vid}) when the version id is known.
+func TestSearchCardUpdatedDeeplink(t *testing.T) {
+	it := civitai.ModelListItem{ID: 9, Name: "Vid Model", Type: "Checkpoint"}
+	out := renderString(t, modelCard(it, nil, nil, NSFWShow, "csrf",
+		modelUpdateInfo{At: time.Now().Add(-2 * 24 * time.Hour), Name: "v9", VersionID: 42}))
+	if !strings.Contains(out, `href="/models/9?version=42"`) {
+		t.Errorf("search card latest-version line should deeplink to the version page; html:\n%s", out)
+	}
+	if !strings.Contains(out, "Latest version: v9") {
+		t.Errorf("latest-version link text should be present; html:\n%s", out)
+	}
+}
+
+// TestUpdatedPopBodyPlainWithoutVersionID proves the popover renders the latest
+// line as PLAIN TEXT (no link) when the version id is unknown (0), so a missing id
+// never produces a broken /models/{id}?version=0 link.
+func TestUpdatedPopBodyPlainWithoutVersionID(t *testing.T) {
+	out := renderString(t, updatedPopBody(9, 0, "2026-01-15 10:00", "v9", "2026-01-15"))
+	if strings.Contains(out, "href=") {
+		t.Errorf("no version id → the latest line must not be a link; html:\n%s", out)
+	}
+	if !strings.Contains(out, "Latest version: v9") {
+		t.Errorf("latest-version line should still render as text; html:\n%s", out)
 	}
 }
 

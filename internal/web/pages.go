@@ -588,6 +588,7 @@ func modelCardWith(it civitai.ModelListItem, images []galleryImage, subs map[int
 		// popover (absolute date + latest version name/date). Omitted when no
 		// parseable date is available.
 		g.If(!updated.At.IsZero(), updatedCardLine(
+			it.ID, updated.VersionID,
 			humanSince(updated.At),
 			updated.At.Local().Format("2006-01-02 15:04"),
 			updated.Name,
