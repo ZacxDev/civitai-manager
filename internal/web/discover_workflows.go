@@ -40,10 +40,10 @@ func (s *Server) handleDiscoverWorkflows(w http.ResponseWriter, r *http.Request)
 	if query == "" {
 		// Empty state: no fetch, no egress — just the prompt.
 		if isHX {
-			s.render(w, http.StatusOK, workflowDiscoverResults(nil, mode, ""))
+			s.render(w, http.StatusOK, workflowDiscoverResults(nil, mode, "", s.csrf))
 			return
 		}
-		s.render(w, http.StatusOK, workflowDiscoverPage("", nil, s.currentTheme(), mode, sortSel, periodSel))
+		s.render(w, http.StatusOK, workflowDiscoverPage("", nil, s.currentTheme(), mode, sortSel, periodSel, s.csrf))
 		return
 	}
 
@@ -70,26 +70,27 @@ func (s *Server) handleDiscoverWorkflows(w http.ResponseWriter, r *http.Request)
 			s.render(w, http.StatusOK, errorNote("Search failed: "+err.Error()))
 			return
 		}
-		s.render(w, http.StatusOK, workflowDiscoverPage(query, nil, s.currentTheme(), mode, sortSel, periodSel))
+		s.render(w, http.StatusOK, workflowDiscoverPage(query, nil, s.currentTheme(), mode, sortSel, periodSel, s.csrf))
 		return
 	}
 	if isHX {
-		s.render(w, http.StatusOK, workflowDiscoverResults(res, mode, ""))
+		s.render(w, http.StatusOK, workflowDiscoverResults(res, mode, "", s.csrf))
 		return
 	}
-	s.render(w, http.StatusOK, workflowDiscoverPage(query, res, s.currentTheme(), mode, sortSel, periodSel))
+	s.render(w, http.StatusOK, workflowDiscoverPage(query, res, s.currentTheme(), mode, sortSel, periodSel, s.csrf))
 }
 
 // discoverPage renders the full "Discover workflows" page: the search form (query
 // + sort/period dropdowns, wired to GET /workflows/discover) and the results
 // container. It reuses the same lightbox + carousel scripts the search page uses.
-func workflowDiscoverPage(query string, res *civitai.ModelSearchResult, theme, mode, sortSel, periodSel string) g.Node {
-	// No CSRF token is needed (the page has no state-changing controls); pass "".
-	return page("Discover workflows", theme, "", mode,
+func workflowDiscoverPage(query string, res *civitai.ModelSearchResult, theme, mode, sortSel, periodSel, csrf string) g.Node {
+	// The cards now carry a state-changing "Import workflow(s)" control (D2), so the
+	// page + its results need the CSRF token threaded through.
+	return page("Discover workflows", theme, csrf, mode,
 		card(
 			sectionTitle("Discover workflows"),
 			h.P(h.Class("text-sm text-slate-400 mb-3"),
-				g.Text("Browse ComfyUI workflows on CivitAI. Your search query is sent to civitai.com. Each result links to its model page.")),
+				g.Text("Browse ComfyUI workflows on CivitAI. Your search query is sent to civitai.com. Importing downloads the workflow zip with your token and stores each workflow locally.")),
 			h.Form(
 				h.Class("flex flex-wrap items-end gap-3"),
 				hx("get", "/workflows/discover"),
@@ -107,7 +108,7 @@ func workflowDiscoverPage(query string, res *civitai.ModelSearchResult, theme, m
 				btnPrimary(g.Text("Search")),
 			),
 		),
-		h.Div(h.ID("discover-results"), workflowDiscoverResults(res, mode, "")),
+		h.Div(h.ID("discover-results"), workflowDiscoverResults(res, mode, "", csrf)),
 		lightboxOverlay(),
 		modelPageScript(),
 		libraryCarouselScript(),
@@ -120,7 +121,7 @@ func workflowDiscoverPage(query string, res *civitai.ModelSearchResult, theme, m
 // uses — via modelCardCore with a nil action, so each card is link-only (name →
 // /models/{id}) with NO subscribe/download/import control. mode is the NSFW
 // display mode threaded to the carousels.
-func workflowDiscoverResults(res *civitai.ModelSearchResult, mode, heading string) g.Node {
+func workflowDiscoverResults(res *civitai.ModelSearchResult, mode, heading, csrf string) g.Node {
 	if res == nil {
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("Search for workflows to discover on CivitAI."))
 	}
@@ -132,8 +133,8 @@ func workflowDiscoverResults(res *civitai.ModelSearchResult, mode, heading strin
 	grid := h.Div(
 		h.Class("grid gap-4 sm:grid-cols-2 lg:grid-cols-3"),
 		g.Map(res.Items, func(it civitai.ModelListItem) g.Node {
-			// nil action → browse-only card (no state-changing controls).
-			return modelCardCore(it, images[it.ID], mode, updated[it.ID], nil)
+			// The card's action is the D2 "Import workflow(s)" control.
+			return modelCardCore(it, images[it.ID], mode, updated[it.ID], workflowImportAction(it.ID, csrf))
 		}),
 	)
 	if heading == "" {

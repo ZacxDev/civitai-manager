@@ -160,8 +160,16 @@ type Workflow struct {
 	Format string
 	// Graph is the workflow JSON exactly as stored.
 	Graph string
+	// GraphHash is a SHA-256 (hex) over the CANONICALIZED graph JSON (keys sorted,
+	// whitespace normalized) used for content-based dedup of imported workflows.
+	// Empty on legacy rows written before migration 0011 (no backfill); populated
+	// by every insert path going forward. Never a UNIQUE key — dedup is a
+	// lookup-based skip (WorkflowExistsByGraphHash), so a collision cannot break
+	// the paste/PNG/scan insert paths.
+	GraphHash string
 	// Source is how it entered the library: WorkflowSourceImported,
-	// WorkflowSourceExtractedPNG, or WorkflowSourceAuthored.
+	// WorkflowSourceExtractedPNG, WorkflowSourceAuthored, WorkflowSourceScanned,
+	// or WorkflowSourceCivitai (discovered + imported from a CivitAI Workflows model).
 	Source string
 	// ModelID / VersionID are the optional civitai linkage (same nullable-integer
 	// convention as LocalFile). A workflow can only be golden when VersionID is set.
@@ -199,6 +207,10 @@ const (
 	WorkflowSourceExtractedPNG = "extracted-png"
 	WorkflowSourceAuthored     = "authored"
 	WorkflowSourceScanned      = "scanned"
+	// WorkflowSourceCivitai marks a workflow discovered on CivitAI (a Workflows-type
+	// model's zip) and imported into the local library. Unlike the scan path it is
+	// pre-linked to its source model/version deterministically.
+	WorkflowSourceCivitai = "civitai"
 )
 
 // Runnable reports whether the workflow can be submitted to ComfyUI (only

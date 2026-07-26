@@ -173,12 +173,12 @@ func TestDiscoverHXPartialReturnsFragmentOnly(t *testing.T) {
 	}
 }
 
-// TestDiscoverCardsHaveNoStateChangingControls proves discover cards are browse-
-// only: no Subscribe/Download/Import controls and no CSRF-bearing controls. It
-// asserts against the HX results FRAGMENT (pure cards) so navbar chrome — whose
-// theme/NSFW toggles legitimately carry a csrf_token — cannot mask a card-level
-// control leaking in.
-func TestDiscoverCardsHaveNoStateChangingControls(t *testing.T) {
+// TestDiscoverCardsHaveImportControlOnly proves the D2 discover card carries the
+// "Import workflow(s)" control (a CSRF-bearing POST to the import endpoint) but
+// still NOT the model-search Subscribe/Download controls — import is the only
+// state-changing affordance on a discover card. It asserts against the HX results
+// FRAGMENT (pure cards) so navbar chrome cannot mask what leaks in.
+func TestDiscoverCardsHaveImportControlOnly(t *testing.T) {
 	reader := &recordingSearchReader{result: workflowResult(t)}
 	srv := newModelServer(t, reader)
 
@@ -193,16 +193,24 @@ func TestDiscoverCardsHaveNoStateChangingControls(t *testing.T) {
 	if !strings.Contains(body, "WAN 2.2 Workflow T2V-I2V-T2I") {
 		t.Fatal("fragment should contain the result card (guards against an empty false-pass)")
 	}
-	// The subscribe control renders a "Subscribe" button that GETs the options panel;
-	// none of those markers may appear on a browse-only card.
+	// The import control's POST target + CSRF must be present.
+	for _, want := range []string{
+		"/workflows/discover/1818841/import", // import POST target
+		"Import workflow(s)",                 // import button label
+		"csrf_token",                         // import is CSRF-protected
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("D2 discover card should contain %q:\n%s", want, body)
+		}
+	}
+	// The model-search subscribe/download controls do NOT belong on a discover card.
 	for _, forbidden := range []string{
 		"subscribe-options", // subscribe control's GET target
 		">Subscribe<",       // subscribe button label
 		"/download",         // download action
-		"csrf_token",        // no state-changing controls → no CSRF anywhere on the page
 	} {
 		if strings.Contains(body, forbidden) {
-			t.Errorf("browse-only discover card should NOT contain %q:\n%s", forbidden, body)
+			t.Errorf("discover card should NOT contain %q:\n%s", forbidden, body)
 		}
 	}
 }

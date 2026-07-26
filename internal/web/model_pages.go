@@ -592,8 +592,23 @@ func versionRegionInner(v modelDetailView, csrf string) g.Node {
 		modelVersionTabsCard(v),
 		showcaseCard(m.ID, v.Images, mode),
 		versionDetailCard(v, csrf),
+		// Workflows-type models are zips of ComfyUI workflow .json — offer a one-click
+		// import into the local workflow library (Discover D2). Other model types are
+		// unaffected.
+		g.If(strings.EqualFold(m.Type, "Workflows"), workflowImportDetailCard(m.ID, csrf)),
 		communityFeedContainer(m.ID, v.SelectedVersionID),
 	})
+}
+
+// workflowImportDetailCard renders the "Import workflow(s)" affordance on a
+// Workflows-type model's detail page. It downloads the model's workflow zip(s)
+// from civitai.com (with the user's token) and stores each contained workflow
+// locally; the button swaps to the import result inline.
+func workflowImportDetailCard(modelID int, csrf string) g.Node {
+	return card(
+		h.H2(h.Class("text-sm font-semibold text-slate-300 mb-2"), g.Text("Import workflows")),
+		workflowImportAction(modelID, csrf),
+	)
 }
 
 // showcaseCard renders the selected version's showcase carousel (moved out of the
