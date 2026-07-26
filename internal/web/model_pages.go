@@ -552,15 +552,16 @@ func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, ba
 
 	return page(m.Name, theme, csrf, mode,
 		modelHeaderCard(m, creator, csrf, modelURL, sub, v.LastUpdated, v.SelectedVersionID, verName, verDate),
+		// The version-DEPENDENT region sits directly under the header, ABOVE the
+		// description: version tabs → larger showcase → files/metadata → community.
+		// Selecting a version htmx-swaps this container's innerHTML (see
+		// modelVersionTabsCard / handleModel's HX path) so the URL updates
+		// (hx-push-url) and scroll is preserved, without a full reload.
+		h.Div(h.ID(versionRegionID), versionRegionInner(v, csrf)),
 		g.If(strings.TrimSpace(v.Description) != "", modelDescriptionCard(v.Description)),
 		// Tags are a compact, de-emphasized inline chip row under the description
 		// (not a standalone "Tags" card).
 		g.If(len(m.Tags) > 0, modelTagChips(m.Tags)),
-		// The version-DEPENDENT region: showcase carousel + version list/detail +
-		// the community feed. Selecting a version htmx-swaps this container's
-		// innerHTML (see versionLinkAttrs / handleModel's HX path) so the URL
-		// updates (hx-push-url) and scroll is preserved, without a full reload.
-		h.Div(h.ID(versionRegionID), versionRegionInner(v, csrf)),
 		lightboxOverlay(),
 		modelPageScript(),
 		// The showcase/community carousels' prev/next buttons call cmCarouselScroll.
@@ -583,9 +584,14 @@ const versionRegionID = "version-region"
 func versionRegionInner(v modelDetailView, csrf string) g.Node {
 	m := v.Model
 	mode := normalizeNSFWMode(v.NSFWMode)
+	// Order (community moves up with the region so the whole unit stays a single
+	// innerHTML swap): version tabs → larger showcase → files/metadata → community.
+	// The tab bar lives INSIDE the region so the active-tab highlight re-renders on
+	// every swap.
 	return g.Group([]g.Node{
+		modelVersionTabsCard(v),
 		showcaseCard(m.ID, v.Images, mode),
-		modelVersionsCard(v, csrf),
+		versionDetailCard(v, csrf),
 		communityFeedContainer(m.ID, v.SelectedVersionID),
 	})
 }
@@ -600,7 +606,14 @@ func showcaseCard(modelID int, images []galleryImage, mode string) g.Node {
 			h.Class("mb-2 flex flex-wrap items-center justify-between gap-2"),
 			h.H2(h.Class("text-sm font-semibold text-slate-300"), g.Text("Showcase images")),
 		),
-		modelCardCarousel(modelID, images, mode),
+		// Detail-only enlargement: the .cm-showcase-lg wrapper makes the carousel
+		// items taller (~22rem, see app.css) WITHOUT touching the shared
+		// .cm-carousel-item height used by search/library cards, and the tiles
+		// request the larger detailThumbnailWidth rendition so they stay crisp.
+		h.Div(
+			h.Class("cm-showcase-lg"),
+			modelCardCarouselW(modelID, images, mode, detailThumbnailWidth),
+		),
 	)
 }
 
@@ -730,57 +743,71 @@ func modelTagChips(tags []string) g.Node {
 	)
 }
 
-// modelVersionsCard renders the version list (each a link that reloads the page
-// with that version selected) and the selected version's detail block.
-func modelVersionsCard(v modelDetailView, csrf string) g.Node {
+// modelVersionTabsCard renders the model's versions as a horizontal TAB BAR (a
+// single scrollable row) — replacing the old vertical list. It lives inside
+// #version-region so the active-tab highlight re-renders on every htmx swap. Each
+// tab keeps the EXACT same htmx contract as the old rows: an <a> that innerHTML-
+// swaps #version-region (hx-push-url so the URL becomes /models/{id}?version={vid}
+// and the plain href is the no-JS fallback).
+func modelVersionTabsCard(v modelDetailView) g.Node {
 	m := v.Model
-	var items []g.Node
+	var tabs []g.Node
 	for _, ver := range m.ModelVersions {
 		selected := ver.ID == v.SelectedVersionID
-		cls := "block rounded-md border border-slate-800 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
+		cls := "cm-version-tab"
 		if selected {
-			cls = "block rounded-md border border-indigo-600 bg-indigo-950/40 px-3 py-1.5 text-sm text-indigo-200"
+			cls = "cm-version-tab cm-version-tab-active"
 		}
-		// Version links do an htmx partial swap of #version-region (with hx-push-url
-		// so the URL still becomes /models/{id}?version={vid} and direct links /
-		// refresh work). The plain href is the no-JS fallback: htmx's hx-get on an
-		// <a> with an href degrades to a normal navigation. innerHTML swap preserves
-		// scroll (no scroll modifier added).
 		versionHref := fmt.Sprintf("/models/%d?version=%d", m.ID, ver.ID)
-		items = append(items, h.A(
+		tab := []g.Node{
 			h.Href(versionHref),
 			hx("get", versionHref),
 			hx("target", "#"+versionRegionID),
 			hx("swap", "innerHTML"),
 			hx("push-url", "true"),
 			h.Class(cls),
-			h.Div(h.Class("flex items-center justify-between gap-2"),
-				h.Span(g.Text(ver.Name)),
-				h.Span(h.Class("flex shrink-0 items-center gap-1.5"),
-					// In-library indicator: a compact green ✓ (not a text badge, not a
-					// button), labeled for AT. Only owned versions carry it.
-					g.If(v.LocalVersionIDs[ver.ID], h.Span(
-						// cm-ok resolves the green from the civitai success token so the
-						// indicator is genuinely green in both themes, independent of the
-						// purged Tailwind build (which omits text-green-*).
-						h.Class("cm-ok font-semibold"),
-						h.Title("In your library"),
-						g.Attr("aria-label", "In your library"),
-						g.Text("✓"),
-					)),
-					g.If(ver.BaseModel != "", badge(ver.BaseModel, "blue")),
-				),
-			),
-		))
+			h.Span(g.Text(ver.Name)),
+		}
+		if selected {
+			tab = append(tab, g.Attr("aria-current", "true"))
+		}
+		if ver.BaseModel != "" {
+			tab = append(tab, badge(ver.BaseModel, "blue"))
+		}
+		// In-library indicator: a compact green ✓ (labeled for AT). cm-ok resolves
+		// the green from the civitai success token so it's genuinely green in both
+		// themes, independent of the purged Tailwind build.
+		if v.LocalVersionIDs[ver.ID] {
+			tab = append(tab, h.Span(
+				h.Class("cm-ok font-semibold"),
+				h.Title("In your library"),
+				g.Attr("aria-label", "In your library"),
+				g.Text("✓"),
+			))
+		}
+		tabs = append(tabs, h.A(tab...))
 	}
 
 	return card(
 		sectionTitle("Versions"),
+		// Single horizontally-scrolling row (never wraps) — see .cm-version-tabs in
+		// app.css. Marked as a tablist for AT.
 		h.Div(
-			h.Class("grid gap-4 md:grid-cols-3"),
-			h.Div(h.Class("space-y-1.5 md:col-span-1"), g.Group(items)),
-			h.Div(h.Class("md:col-span-2"), versionDetail(v, csrf)),
+			h.Class("cm-version-tabs"),
+			g.Attr("role", "tablist"),
+			g.Group(tabs),
 		),
+	)
+}
+
+// versionDetailCard renders the selected version's files & metadata block
+// full-width under the tabs + showcase (moved out of the old 2-column grid). The
+// inner content (base-model badge, published date, trigger words, file list with
+// size + CSRF-protected Download) is unchanged — see versionDetail.
+func versionDetailCard(v modelDetailView, csrf string) g.Node {
+	return card(
+		sectionTitle("Files & metadata"),
+		versionDetail(v, csrf),
 	)
 }
 
