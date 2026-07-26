@@ -225,6 +225,20 @@ func parseVersionImages(versionRaw, modelRaw []byte, versionID int) []galleryIma
 	return parseModelVersionImages(modelRaw, versionID)
 }
 
+// cardCarouselImages extracts a suggestion card's showcase images from a cached
+// GetModel raw body, using the SAME inline-image path the model DETAIL page uses
+// (parseVersionImages against the model raw with versionID 0 → the primary
+// version's images). The result is capped at searchImageCap so a card renders the
+// same number of tiles a search card does. Returns nil (never an error) when the
+// model carries no inline images.
+func cardCarouselImages(modelRaw []byte) []galleryImage {
+	imgs := parseVersionImages(nil, modelRaw, 0)
+	if len(imgs) > searchImageCap {
+		imgs = imgs[:searchImageCap]
+	}
+	return imgs
+}
+
 // parseInlineImages extracts a top-level images[] array from a raw JSON body
 // (a version detail body). Returns nil when absent/unparseable.
 func parseInlineImages(raw []byte) []galleryImage {
