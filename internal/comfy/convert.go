@@ -64,8 +64,11 @@ type uiConvInput struct {
 
 // uiConvGraph is the UI-format top level the converter parses.
 type uiConvGraph struct {
-	Nodes []uiConvNode      `json:"nodes"`
-	Links []json.RawMessage `json:"links"`
+	Nodes       []uiConvNode      `json:"nodes"`
+	Links       []json.RawMessage `json:"links"`
+	Definitions struct {
+		Subgraphs []subgraphDef `json:"subgraphs"`
+	} `json:"definitions"`
 }
 
 // uiLink is a parsed link: [link_id, origin_node_id, origin_slot, target_node_id,
@@ -109,11 +112,7 @@ func ConvertUIToAPI(uiGraph json.RawMessage, info ObjectInfo) (apiGraph json.Raw
 		return nil, nil, fmt.Errorf("parse ui graph: %w", err)
 	}
 
-	// Index nodes by id and links by id.
-	byID := make(map[string]*uiConvNode, len(g.Nodes))
-	for i := range g.Nodes {
-		byID[idToString(g.Nodes[i].ID)] = &g.Nodes[i]
-	}
+	// Index links by id.
 	linkByID := make(map[int64]uiLink, len(g.Links))
 	for _, raw := range g.Links {
 		if l, ok := parseLink(raw); ok {
@@ -121,15 +120,35 @@ func ConvertUIToAPI(uiGraph json.RawMessage, info ObjectInfo) (apiGraph json.Raw
 		}
 	}
 
-	// Index SetNode captures by constant name so GetNode teleports can be spliced
-	// through during link resolution.
-	setByName := buildSetNodeIndex(g.Nodes, linkByID)
+	// Expand subgraph group-nodes (definitions.subgraphs[]) into a flat node list
+	// BEFORE the rest of conversion. When there are no subgraph definitions this is
+	// a no-op and the node list / links are used unchanged (the 41-clean-workflow
+	// path is byte-identical). sgRedirect maps a removed instance id -> its output
+	// boundary sources, consulted during link resolution.
+	nodes := g.Nodes
+	var sgRedirect map[string]map[int]origin
+	var expandWarnings []string
+	if len(g.Definitions.Subgraphs) > 0 {
+		nodes, linkByID, sgRedirect, expandWarnings = flattenSubgraphs(&g, linkByID)
+	}
 
-	r := &converter{byID: byID, linkByID: linkByID, info: info, setByName: setByName}
+	// Index nodes by id.
+	byID := make(map[string]*uiConvNode, len(nodes))
+	for i := range nodes {
+		byID[idToString(nodes[i].ID)] = &nodes[i]
+	}
+
+	// Index SetNode captures by constant name so GetNode teleports can be spliced
+	// through during link resolution (built from the flattened node list so Set/Get
+	// nodes living inside subgraphs are indexed too).
+	setByName := buildSetNodeIndex(nodes, linkByID)
+
+	r := &converter{byID: byID, linkByID: linkByID, info: info, setByName: setByName, sgRedirect: sgRedirect}
+	r.warnings = append(r.warnings, expandWarnings...)
 	result := make(map[string]apiOutNode)
 
-	for i := range g.Nodes {
-		n := &g.Nodes[i]
+	for i := range nodes {
+		n := &nodes[i]
 		id := idToString(n.ID)
 
 		// Virtual nodes (reroute/note/primitive) never become api nodes.
@@ -170,11 +189,12 @@ func ConvertUIToAPI(uiGraph json.RawMessage, info ObjectInfo) (apiGraph json.Raw
 
 // converter holds the per-conversion indexes + accumulated warnings.
 type converter struct {
-	byID      map[string]*uiConvNode
-	linkByID  map[int64]uiLink
-	info      ObjectInfo
-	setByName map[string]teleportSrc
-	warnings  []string
+	byID       map[string]*uiConvNode
+	linkByID   map[int64]uiLink
+	info       ObjectInfo
+	setByName  map[string]teleportSrc
+	sgRedirect map[string]map[int]origin
+	warnings   []string
 }
 
 // teleportSrc is the source (origin node + output slot) a SetNode captured,
@@ -320,6 +340,15 @@ func (c *converter) buildInputs(n *uiConvNode, sch NodeSchema) (map[string]json.
 func (c *converter) resolveOrigin(nodeID string, slot, depth int) (id string, outSlot int, ok bool, warn string) {
 	if depth > maxResolveDepth {
 		return "", 0, false, fmt.Sprintf("link resolution too deep at node %s", nodeID)
+	}
+	// A removed subgraph instance: redirect the requested output slot to the
+	// internal source that fed that boundary output during expansion.
+	if red, ok := c.sgRedirect[nodeID]; ok {
+		src, has := red[slot]
+		if !has || !src.ok {
+			return "", 0, false, "" // boundary output unconnected — leave unset
+		}
+		return c.resolveOrigin(src.id, src.slot, depth+1)
 	}
 	n := c.byID[nodeID]
 	if n == nil {

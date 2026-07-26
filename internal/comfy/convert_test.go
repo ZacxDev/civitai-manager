@@ -348,6 +348,178 @@ func TestConvertGetNodeAmbiguous(t *testing.T) {
 	}
 }
 
+// subgraphTestInfo is the object_info used by the subgraph tests: a checkpoint
+// loader, a pass-through node (one MODEL link input, no widgets), and a consumer.
+func subgraphTestInfo(t *testing.T) ObjectInfo {
+	return buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
+		"PassModel": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}},
+		"BasicScheduler": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}}
+	}`)
+}
+
+// TestConvertSubgraphSingle expands a single subgraph instance. It exercises a
+// boundary input (external -> interior), an interior node, and an internal->external
+// output boundary link (interior -> boundary output -> external consumer).
+func TestConvertSubgraphSingle(t *testing.T) {
+	info := subgraphTestInfo(t)
+	ui := `{
+		"nodes":[
+			{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+			{"id":100,"type":"SG","mode":0,"inputs":[{"name":"model","type":"MODEL","link":1}]},
+			{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":2}]}
+		],
+		"links":[[1,4,0,100,0,"MODEL"],[2,100,0,17,0,"MODEL"]],
+		"definitions":{"subgraphs":[
+			{"id":"SG","name":"Passer",
+			 "inputNode":{"id":-10},"outputNode":{"id":-20},
+			 "inputs":[{"id":"i0","name":"model","type":"MODEL"}],
+			 "outputs":[{"id":"o0","name":"MODEL","type":"MODEL"}],
+			 "nodes":[{"id":1,"type":"PassModel","mode":0,"inputs":[{"name":"model","type":"MODEL","link":11}]}],
+			 "links":[[11,-10,0,1,0,"MODEL"],[12,1,0,-20,0,"MODEL"]]}
+		]}
+	}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	if _, has := nodes["100"]; has {
+		t.Error("subgraph instance node 100 should be removed")
+	}
+	if _, has := nodes["SG"]; has {
+		t.Error("subgraph definition should not appear as a node")
+	}
+	pm, ok := nodes["100:1"]
+	if !ok {
+		t.Fatalf("inlined interior node 100:1 missing: %v", keysOf(nodes))
+	}
+	if pm.ClassType != "PassModel" {
+		t.Errorf("interior node class_type = %q", pm.ClassType)
+	}
+	// interior node's model comes from the external checkpoint (boundary input).
+	assertLinkRef(t, pm.Inputs["model"], "4", 0)
+	// external consumer resolves through the boundary output to the interior node.
+	assertLinkRef(t, nodes["17"].Inputs["model"], "100:1", 0)
+}
+
+// TestConvertSubgraphPassthrough covers a subgraph whose boundary input is wired
+// DIRECTLY to its boundary output (no interior node between them): the external
+// consumer must resolve straight to the external input source.
+func TestConvertSubgraphPassthrough(t *testing.T) {
+	info := subgraphTestInfo(t)
+	ui := `{
+		"nodes":[
+			{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+			{"id":100,"type":"SG","mode":0,"inputs":[{"name":"model","type":"MODEL","link":1}]},
+			{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":2}]}
+		],
+		"links":[[1,4,0,100,0,"MODEL"],[2,100,0,17,0,"MODEL"]],
+		"definitions":{"subgraphs":[
+			{"id":"SG","name":"Wire",
+			 "inputNode":{"id":-10},"outputNode":{"id":-20},
+			 "inputs":[{"id":"i0","name":"model","type":"MODEL"}],
+			 "outputs":[{"id":"o0","name":"MODEL","type":"MODEL"}],
+			 "nodes":[],
+			 "links":[[11,-10,0,-20,0,"MODEL"]]}
+		]}
+	}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	// consumer.model resolves straight through the empty subgraph to the checkpoint.
+	assertLinkRef(t, nodes["17"].Inputs["model"], "4", 0)
+}
+
+// TestConvertSubgraphNested expands a subgraph that itself instantiates another
+// subgraph, asserting unique prefixed ids and end-to-end wiring across two
+// boundary crossings.
+func TestConvertSubgraphNested(t *testing.T) {
+	info := subgraphTestInfo(t)
+	ui := `{
+		"nodes":[
+			{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+			{"id":200,"type":"OUTER","mode":0,"inputs":[{"name":"model","type":"MODEL","link":1}]},
+			{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":2}]}
+		],
+		"links":[[1,4,0,200,0,"MODEL"],[2,200,0,17,0,"MODEL"]],
+		"definitions":{"subgraphs":[
+			{"id":"OUTER","name":"Outer",
+			 "inputNode":{"id":-10},"outputNode":{"id":-20},
+			 "inputs":[{"id":"i0","name":"model","type":"MODEL"}],
+			 "outputs":[{"id":"o0","name":"MODEL","type":"MODEL"}],
+			 "nodes":[{"id":1,"type":"INNER","mode":0,"inputs":[{"name":"model","type":"MODEL","link":21}]}],
+			 "links":[[21,-10,0,1,0,"MODEL"],[22,1,0,-20,0,"MODEL"]]},
+			{"id":"INNER","name":"Inner",
+			 "inputNode":{"id":-10},"outputNode":{"id":-20},
+			 "inputs":[{"id":"i0","name":"model","type":"MODEL"}],
+			 "outputs":[{"id":"o0","name":"MODEL","type":"MODEL"}],
+			 "nodes":[{"id":1,"type":"PassModel","mode":0,"inputs":[{"name":"model","type":"MODEL","link":31}]}],
+			 "links":[[31,-10,0,1,0,"MODEL"],[32,1,0,-20,0,"MODEL"]]}
+		]}
+	}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	pm, ok := nodes["200:1:1"]
+	if !ok {
+		t.Fatalf("doubly-nested interior node 200:1:1 missing: %v", keysOf(nodes))
+	}
+	if pm.ClassType != "PassModel" {
+		t.Errorf("nested interior class_type = %q", pm.ClassType)
+	}
+	// The deep interior node's model comes from the top-level checkpoint.
+	assertLinkRef(t, pm.Inputs["model"], "4", 0)
+	// The top-level consumer resolves through both boundaries to the deep interior.
+	assertLinkRef(t, nodes["17"].Inputs["model"], "200:1:1", 0)
+}
+
+// TestConvertSubgraphDepthBounded guards against a self-instantiating subgraph
+// (cycle): expansion must stop at the depth bound and warn rather than loop.
+func TestConvertSubgraphDepthBounded(t *testing.T) {
+	info := subgraphTestInfo(t)
+	// A subgraph that instantiates ITSELF — expansion must be depth-bounded.
+	ui := `{
+		"nodes":[
+			{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+			{"id":100,"type":"LOOP","mode":0,"inputs":[{"name":"model","type":"MODEL","link":1}]}
+		],
+		"links":[[1,4,0,100,0,"MODEL"]],
+		"definitions":{"subgraphs":[
+			{"id":"LOOP","name":"Loop",
+			 "inputNode":{"id":-10},"outputNode":{"id":-20},
+			 "inputs":[{"id":"i0","name":"model","type":"MODEL"}],
+			 "outputs":[{"id":"o0","name":"MODEL","type":"MODEL"}],
+			 "nodes":[{"id":1,"type":"LOOP","mode":0,"inputs":[{"name":"model","type":"MODEL","link":11}]}],
+			 "links":[[11,-10,0,1,0,"MODEL"]]}
+		]}
+	}`
+	// Must not hang or panic; the checkpoint still converts.
+	api, warns, err := ConvertUIToAPI(json.RawMessage(ui), info)
+	if err != nil {
+		t.Fatalf("ConvertUIToAPI: %v", err)
+	}
+	if !containsSubstr(warns, "nested deeper than") {
+		t.Errorf("expected a depth-bound warning, got %v", warns)
+	}
+	var nodes map[string]apiOutNode
+	if err := json.Unmarshal(api, &nodes); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, has := nodes["4"]; !has {
+		t.Error("checkpoint node 4 should still convert")
+	}
+}
+
+func keysOf(m map[string]apiOutNode) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 // TestConvertRealFluxWorkflow converts the REAL 17-node civitai UI workflow against
 // the REAL /object_info subset and asserts structural + key-preservation properties
 // (not a brittle whole-graph equality).
