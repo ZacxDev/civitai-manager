@@ -252,6 +252,64 @@ func TestNewCloudClient_DefaultBaseURL(t *testing.T) {
 	}
 }
 
+// TestWithMinimumDuration_Serialization asserts a gated template serializes the
+// minimumDurationSeconds field while the plain template OMITS it entirely, and that
+// WithMinimumDuration does not mutate the receiver.
+func TestWithMinimumDuration_Serialization(t *testing.T) {
+	graph := json.RawMessage(`{"3":{"class_type":"KSampler","inputs":{}}}`)
+	base := NewCustomComfyTemplate(graph, []string{"urn:air:sdxl:checkpoint:civitai:1@2"})
+
+	// Plain template: the field must be absent from the JSON.
+	plainJSON, err := json.Marshal(base)
+	if err != nil {
+		t.Fatalf("marshal plain: %v", err)
+	}
+	if strings.Contains(string(plainJSON), "minimumDurationSeconds") {
+		t.Errorf("plain template must OMIT minimumDurationSeconds:\n%s", plainJSON)
+	}
+
+	// Gated template: the field serializes with the integer value.
+	gated := base.WithMinimumDuration(300)
+	gatedJSON, err := json.Marshal(gated)
+	if err != nil {
+		t.Fatalf("marshal gated: %v", err)
+	}
+	if !strings.Contains(string(gatedJSON), `"minimumDurationSeconds":300`) {
+		t.Errorf(`gated template must serialize "minimumDurationSeconds":300:\n%s`, gatedJSON)
+	}
+
+	// WithMinimumDuration must not mutate the receiver.
+	if base.Steps[0].Input.MinimumDurationSeconds != nil {
+		t.Error("WithMinimumDuration mutated the receiver's step input")
+	}
+
+	// Round-trip: the value decodes back to 300.
+	var back CloudTemplate
+	if err := json.Unmarshal(gatedJSON, &back); err != nil {
+		t.Fatalf("unmarshal gated: %v", err)
+	}
+	if len(back.Steps) != 1 || back.Steps[0].Input.MinimumDurationSeconds == nil {
+		t.Fatalf("round-trip lost the field: %+v", back)
+	}
+	if got := *back.Steps[0].Input.MinimumDurationSeconds; got != 300 {
+		t.Errorf("round-trip value = %d, want 300", got)
+	}
+}
+
+// TestCloudProblem_IsBadRequest asserts the 400 predicate.
+func TestCloudProblem_IsBadRequest(t *testing.T) {
+	if !(&CloudProblem{StatusCode: 400}).IsBadRequest() {
+		t.Error("400 should be a bad request")
+	}
+	if (&CloudProblem{StatusCode: 403}).IsBadRequest() {
+		t.Error("403 should not be a bad request")
+	}
+	var nilp *CloudProblem
+	if nilp.IsBadRequest() {
+		t.Error("nil problem should not be a bad request")
+	}
+}
+
 // asCloudProblem is a tiny errors.As helper kept local to avoid importing errors
 // in the assertions above repeatedly.
 func asCloudProblem(err error, target **CloudProblem) bool {

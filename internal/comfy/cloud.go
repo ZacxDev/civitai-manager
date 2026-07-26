@@ -47,6 +47,12 @@ type CloudComfyInput struct {
 	Workflow json.RawMessage `json:"workflow"`
 	// Trace is one of "none"|"logs"|"binary"; C1 always sends "none".
 	Trace string `json:"trace"`
+	// MinimumDurationSeconds is the orchestrator's submit-time affordability gate:
+	// when set, the workflow is rejected at submit (→ HTTP 400) unless the user can
+	// afford at least this many seconds of generation. A nil pointer OMITS the field
+	// entirely (no gate — the "run anyway" case); a set pointer serializes the int.
+	// The live-balance guard still cancels mid-run if the balance later goes negative.
+	MinimumDurationSeconds *int `json:"minimumDurationSeconds,omitempty"`
 }
 
 // NewCustomComfyTemplate builds a single-step customComfy template from an
@@ -66,6 +72,21 @@ func NewCustomComfyTemplate(apiGraph json.RawMessage, resources []string) CloudT
 			},
 		}},
 	}
+}
+
+// WithMinimumDuration returns a COPY of the template whose customComfy step(s)
+// carry the submit-time affordability gate set to sec seconds. The receiver is
+// left unmodified (its Input.MinimumDurationSeconds stays nil → omitted), so a
+// caller can build both a gated and an un-gated template from one base. Callers
+// that want no gate simply skip this (the field stays nil and is omitted).
+func (t CloudTemplate) WithMinimumDuration(sec int) CloudTemplate {
+	steps := make([]CloudStep, len(t.Steps))
+	copy(steps, t.Steps)
+	for i := range steps {
+		v := sec
+		steps[i].Input.MinimumDurationSeconds = &v
+	}
+	return CloudTemplate{Steps: steps}
 }
 
 // --- response types ---
@@ -183,6 +204,13 @@ type CloudProblem struct {
 	Title      string `json:"title"`
 	Detail     string `json:"detail"`
 	Status     int    `json:"status"`
+}
+
+// IsBadRequest reports whether the problem is an HTTP 400. The orchestrator
+// rejects a submit that fails the minimumDurationSeconds affordability gate with a
+// 400; callers use this to offer a "run anyway" (gate-skipped) retry.
+func (p *CloudProblem) IsBadRequest() bool {
+	return p != nil && p.StatusCode == http.StatusBadRequest
 }
 
 func (e *CloudProblem) Error() string {
