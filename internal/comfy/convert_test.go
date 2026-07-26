@@ -207,6 +207,40 @@ func TestConvertUnknownNodeOmitted(t *testing.T) {
 	}
 }
 
+// TestConvertRgthreeUIHelpersDropped asserts the three rgthree UI-only helper
+// nodes (Fast Groups Muter / Fast Bypasser / Bookmark) are dropped SILENTLY (no
+// warning, like Note) and that dropping them does not strand any link a kept node
+// depends on. A real rgthree node present in object_info must still convert.
+func TestConvertRgthreeUIHelpersDropped(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
+		"BasicScheduler": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}}
+	}`)
+	// checkpoint -> scheduler.model (a real link that must survive), plus three
+	// rgthree UI helpers that carry no execution links.
+	ui := `{"nodes":[
+		{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+		{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":1}]},
+		{"id":90,"type":"Fast Groups Muter (rgthree)","mode":0},
+		{"id":91,"type":"Fast Bypasser (rgthree)","mode":0},
+		{"id":92,"type":"Bookmark (rgthree)","mode":0,"widgets_values":["1"]}
+	],"links":[[1,4,0,17,0,"MODEL"]]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("rgthree UI helpers must be dropped silently, got warnings: %v", warns)
+	}
+	for _, id := range []string{"90", "91", "92"} {
+		if _, has := nodes[id]; has {
+			t.Errorf("rgthree UI helper node %s should be dropped", id)
+		}
+	}
+	// The real link is not stranded: scheduler.model resolves to the checkpoint.
+	assertLinkRef(t, nodes["17"].Inputs["model"], "4", 0)
+	if _, has := nodes["4"]; !has {
+		t.Error("checkpoint node 4 should still convert")
+	}
+}
+
 // TestConvertRealFluxWorkflow converts the REAL 17-node civitai UI workflow against
 // the REAL /object_info subset and asserts structural + key-preservation properties
 // (not a brittle whole-graph equality).

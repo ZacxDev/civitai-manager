@@ -9,13 +9,22 @@ import (
 // virtualNodeTypes are UI-graph node types that are NOT executed nodes and carry
 // no /object_info class_type: they are dropped from the api graph. Reroute is also
 // spliced THROUGH during link resolution (its output resolves to its input's
-// origin); the others (notes / primitive) simply vanish.
+// origin); the others (notes / primitive / rgthree UI-only helpers) simply vanish.
+//
+// The rgthree "Fast Groups Muter", "Fast Bypasser" and "Bookmark" nodes are
+// pure client-side helpers: they have NO backend class in /object_info and carry
+// no execution links, so — like Note — they are dropped silently rather than
+// warned as "type not available". Only these three UI-only helpers are dropped;
+// real rgthree nodes (e.g. "Power Lora Loader (rgthree)") still convert normally.
 var virtualNodeTypes = map[string]bool{
-	"Reroute":       true,
-	"Note":          true,
-	"MarkdownNote":  true,
-	"PrimitiveNode": true,
-	"Primitive":     true,
+	"Reroute":                     true,
+	"Note":                        true,
+	"MarkdownNote":                true,
+	"PrimitiveNode":               true,
+	"Primitive":                   true,
+	"Fast Groups Muter (rgthree)": true,
+	"Fast Bypasser (rgthree)":     true,
+	"Bookmark (rgthree)":          true,
 }
 
 // UI-graph node modes.
