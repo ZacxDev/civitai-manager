@@ -9,13 +9,28 @@ import (
 // virtualNodeTypes are UI-graph node types that are NOT executed nodes and carry
 // no /object_info class_type: they are dropped from the api graph. Reroute is also
 // spliced THROUGH during link resolution (its output resolves to its input's
-// origin); the others (notes / primitive) simply vanish.
+// origin); the others (notes / primitive / rgthree UI-only helpers) simply vanish.
+//
+// The rgthree "Fast Groups Muter", "Fast Bypasser" and "Bookmark" nodes are
+// pure client-side helpers: they have NO backend class in /object_info and carry
+// no execution links, so — like Note — they are dropped silently rather than
+// warned as "type not available". Only these three UI-only helpers are dropped;
+// real rgthree nodes (e.g. "Power Lora Loader (rgthree)") still convert normally.
 var virtualNodeTypes = map[string]bool{
-	"Reroute":       true,
-	"Note":          true,
-	"MarkdownNote":  true,
-	"PrimitiveNode": true,
-	"Primitive":     true,
+	"Reroute":                     true,
+	"Note":                        true,
+	"MarkdownNote":                true,
+	"PrimitiveNode":               true,
+	"Primitive":                   true,
+	"Fast Groups Muter (rgthree)": true,
+	"Fast Bypasser (rgthree)":     true,
+	"Bookmark (rgthree)":          true,
+	// GetNode/SetNode are virtual "teleport" nodes (KJNodes/rgthree-style): they
+	// never become api nodes, but unlike a plain Note they are spliced THROUGH
+	// during link resolution — a GetNode re-emits the source a same-named SetNode
+	// captured (see resolveOrigin). Listed here so the top loop skips emitting them.
+	"SetNode": true,
+	"GetNode": true,
 }
 
 // UI-graph node modes.
@@ -49,8 +64,11 @@ type uiConvInput struct {
 
 // uiConvGraph is the UI-format top level the converter parses.
 type uiConvGraph struct {
-	Nodes []uiConvNode      `json:"nodes"`
-	Links []json.RawMessage `json:"links"`
+	Nodes       []uiConvNode      `json:"nodes"`
+	Links       []json.RawMessage `json:"links"`
+	Definitions struct {
+		Subgraphs []subgraphDef `json:"subgraphs"`
+	} `json:"definitions"`
 }
 
 // uiLink is a parsed link: [link_id, origin_node_id, origin_slot, target_node_id,
@@ -94,11 +112,7 @@ func ConvertUIToAPI(uiGraph json.RawMessage, info ObjectInfo) (apiGraph json.Raw
 		return nil, nil, fmt.Errorf("parse ui graph: %w", err)
 	}
 
-	// Index nodes by id and links by id.
-	byID := make(map[string]*uiConvNode, len(g.Nodes))
-	for i := range g.Nodes {
-		byID[idToString(g.Nodes[i].ID)] = &g.Nodes[i]
-	}
+	// Index links by id.
 	linkByID := make(map[int64]uiLink, len(g.Links))
 	for _, raw := range g.Links {
 		if l, ok := parseLink(raw); ok {
@@ -106,11 +120,35 @@ func ConvertUIToAPI(uiGraph json.RawMessage, info ObjectInfo) (apiGraph json.Raw
 		}
 	}
 
-	r := &converter{byID: byID, linkByID: linkByID, info: info}
+	// Expand subgraph group-nodes (definitions.subgraphs[]) into a flat node list
+	// BEFORE the rest of conversion. When there are no subgraph definitions this is
+	// a no-op and the node list / links are used unchanged (the 41-clean-workflow
+	// path is byte-identical). sgRedirect maps a removed instance id -> its output
+	// boundary sources, consulted during link resolution.
+	nodes := g.Nodes
+	var sgRedirect map[string]map[int]origin
+	var expandWarnings []string
+	if len(g.Definitions.Subgraphs) > 0 {
+		nodes, linkByID, sgRedirect, expandWarnings = flattenSubgraphs(&g, linkByID)
+	}
+
+	// Index nodes by id.
+	byID := make(map[string]*uiConvNode, len(nodes))
+	for i := range nodes {
+		byID[idToString(nodes[i].ID)] = &nodes[i]
+	}
+
+	// Index SetNode captures by constant name so GetNode teleports can be spliced
+	// through during link resolution (built from the flattened node list so Set/Get
+	// nodes living inside subgraphs are indexed too).
+	setByName := buildSetNodeIndex(nodes, linkByID)
+
+	r := &converter{byID: byID, linkByID: linkByID, info: info, setByName: setByName, sgRedirect: sgRedirect}
+	r.warnings = append(r.warnings, expandWarnings...)
 	result := make(map[string]apiOutNode)
 
-	for i := range g.Nodes {
-		n := &g.Nodes[i]
+	for i := range nodes {
+		n := &nodes[i]
 		id := idToString(n.ID)
 
 		// Virtual nodes (reroute/note/primitive) never become api nodes.
@@ -151,10 +189,71 @@ func ConvertUIToAPI(uiGraph json.RawMessage, info ObjectInfo) (apiGraph json.Raw
 
 // converter holds the per-conversion indexes + accumulated warnings.
 type converter struct {
-	byID     map[string]*uiConvNode
-	linkByID map[int64]uiLink
-	info     ObjectInfo
-	warnings []string
+	byID       map[string]*uiConvNode
+	linkByID   map[int64]uiLink
+	info       ObjectInfo
+	setByName  map[string]teleportSrc
+	sgRedirect map[string]map[int]origin
+	warnings   []string
+}
+
+// teleportSrc is the source (origin node + output slot) a SetNode captured,
+// keyed by its constant name. ambiguous is set when more than one SetNode
+// declares the same name (an invalid graph we refuse to resolve).
+type teleportSrc struct {
+	originID   string
+	originSlot int
+	ok         bool
+	ambiguous  bool
+}
+
+// buildSetNodeIndex maps each SetNode's constant name to the source feeding its
+// input. Duplicate names are marked ambiguous. A SetNode with no connected input
+// (or no name) contributes nothing resolvable.
+func buildSetNodeIndex(nodes []uiConvNode, linkByID map[int64]uiLink) map[string]teleportSrc {
+	idx := make(map[string]teleportSrc)
+	for i := range nodes {
+		n := &nodes[i]
+		if n.Type != "SetNode" {
+			continue
+		}
+		name := getSetNodeName(n)
+		if name == "" {
+			continue
+		}
+		src := teleportSrc{}
+		if in := firstLinkedInput(n); in >= 0 {
+			if l, ok := linkByID[*n.Inputs[in].Link]; ok {
+				src = teleportSrc{originID: l.OriginID, originSlot: l.OriginSlot, ok: true}
+			}
+		}
+		if existing, dup := idx[name]; dup {
+			existing.ambiguous = true
+			idx[name] = existing
+			continue
+		}
+		idx[name] = src
+	}
+	return idx
+}
+
+// getSetNodeName extracts the constant name a Set/GetNode teleports by. The name
+// is the first string element of widgets_values; failing that, the node title
+// with a leading "Set_/Get_/Set /Get " stripped.
+func getSetNodeName(n *uiConvNode) string {
+	if arr, ok := asJSONArray(n.WidgetsValues); ok && len(arr) > 0 {
+		var s string
+		if json.Unmarshal(arr[0], &s) == nil && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	t := strings.TrimSpace(n.Title)
+	for _, pfx := range []string{"Set_", "Get_", "Set ", "Get "} {
+		if strings.HasPrefix(t, pfx) {
+			return strings.TrimSpace(t[len(pfx):])
+		}
+	}
+	return t
 }
 
 func (c *converter) warnf(format string, args ...any) {
@@ -192,12 +291,11 @@ func (c *converter) buildInputs(n *uiConvNode, sch NodeSchema) (map[string]json.
 	// 2. Widget values.
 	wv, isArray := asJSONArray(n.WidgetsValues)
 	if !isArray {
-		// Some custom nodes serialize widgets_values as an object; we cannot map an
-		// unordered object onto ordered inputs. Emit a warning only when there was
-		// something to map.
-		if isJSONObjectNonEmpty(n.WidgetsValues) {
-			warns = append(warns, fmt.Sprintf("node %s uses object-form widgets_values; widget values not mapped", idToString(n.ID)))
-		}
+		// Object-form widgets_values: some custom nodes (e.g. rgthree Power Lora
+		// Loader) serialize widget values as a KEYED object rather than an ordered
+		// array. Map each entry onto the api input of the same name — no cursor / no
+		// control-after-generate off-by-one, since the keys are explicit.
+		mapObjectWidgets(n.WidgetsValues, sch, linked, inputs)
 		return inputs, warns
 	}
 
@@ -234,6 +332,29 @@ func (c *converter) buildInputs(n *uiConvNode, sch NodeSchema) (map[string]json.
 	return inputs, warns
 }
 
+// mapObjectWidgets lowers an object-form widgets_values onto a node's api inputs.
+// For each key it copies the value to inputs[key] UNLESS the input is already
+// satisfied by a link, or the key names a NON-widget (link-type) schema input —
+// a link input must never receive a raw widget value. Keys absent from the schema
+// are passed through verbatim: nodes with dynamic widgets (rgthree Power Lora
+// Loader's lora_1/lora_2/… entries) carry their config in exactly such keys, and
+// the frontend's api graph passes them through the same way.
+func mapObjectWidgets(raw json.RawMessage, sch NodeSchema, linked map[string]bool, inputs map[string]json.RawMessage) {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(raw, &m) != nil {
+		return
+	}
+	for key, val := range m {
+		if linked[key] {
+			continue // value comes from a connected link
+		}
+		if spec, ok := lookupSpec(sch, key); ok && !spec.IsWidget() {
+			continue // a link-type input must not take a widget value
+		}
+		inputs[key] = val
+	}
+}
+
 // resolveOrigin resolves a link's (origin node, output slot) to a concrete
 // executed node, splicing through Reroute and bypassed nodes. It returns the
 // resolved node id + output slot, ok=false when the origin cannot be resolved
@@ -241,6 +362,15 @@ func (c *converter) buildInputs(n *uiConvNode, sch NodeSchema) (map[string]json.
 func (c *converter) resolveOrigin(nodeID string, slot, depth int) (id string, outSlot int, ok bool, warn string) {
 	if depth > maxResolveDepth {
 		return "", 0, false, fmt.Sprintf("link resolution too deep at node %s", nodeID)
+	}
+	// A removed subgraph instance: redirect the requested output slot to the
+	// internal source that fed that boundary output during expansion.
+	if red, ok := c.sgRedirect[nodeID]; ok {
+		src, has := red[slot]
+		if !has || !src.ok {
+			return "", 0, false, "" // boundary output unconnected — leave unset
+		}
+		return c.resolveOrigin(src.id, src.slot, depth+1)
 	}
 	n := c.byID[nodeID]
 	if n == nil {
@@ -254,6 +384,30 @@ func (c *converter) resolveOrigin(nodeID string, slot, depth int) (id string, ou
 			return c.resolveOrigin(l.OriginID, l.OriginSlot, depth+1)
 		}
 		return "", 0, false, fmt.Sprintf("reroute node %s has no input", nodeID)
+	}
+
+	// SetNode: splice through the input it captured (its output mirrors its input),
+	// regardless of mode — same posture as a Reroute.
+	if n.Type == "SetNode" {
+		if idx := firstLinkedInput(n); idx >= 0 {
+			if l, ok := c.linkByID[*n.Inputs[idx].Link]; ok {
+				return c.resolveOrigin(l.OriginID, l.OriginSlot, depth+1)
+			}
+		}
+		return "", 0, false, fmt.Sprintf("SetNode %s has no connected input", nodeID)
+	}
+
+	// GetNode: teleport to the source the same-named SetNode captured.
+	if n.Type == "GetNode" {
+		name := getSetNodeName(n)
+		src, found := c.setByName[name]
+		if !found || !src.ok {
+			return "", 0, false, fmt.Sprintf("GetNode %s references SetNode name %q with no resolvable source", nodeID, name)
+		}
+		if src.ambiguous {
+			return "", 0, false, fmt.Sprintf("GetNode %s name %q is ambiguous (multiple SetNodes)", nodeID, name)
+		}
+		return c.resolveOrigin(src.originID, src.originSlot, depth+1)
 	}
 
 	switch n.Mode {

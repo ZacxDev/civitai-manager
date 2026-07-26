@@ -207,6 +207,407 @@ func TestConvertUnknownNodeOmitted(t *testing.T) {
 	}
 }
 
+// TestConvertRgthreeUIHelpersDropped asserts the three rgthree UI-only helper
+// nodes (Fast Groups Muter / Fast Bypasser / Bookmark) are dropped SILENTLY (no
+// warning, like Note) and that dropping them does not strand any link a kept node
+// depends on. A real rgthree node present in object_info must still convert.
+func TestConvertRgthreeUIHelpersDropped(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
+		"BasicScheduler": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}}
+	}`)
+	// checkpoint -> scheduler.model (a real link that must survive), plus three
+	// rgthree UI helpers that carry no execution links.
+	ui := `{"nodes":[
+		{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+		{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":1}]},
+		{"id":90,"type":"Fast Groups Muter (rgthree)","mode":0},
+		{"id":91,"type":"Fast Bypasser (rgthree)","mode":0},
+		{"id":92,"type":"Bookmark (rgthree)","mode":0,"widgets_values":["1"]}
+	],"links":[[1,4,0,17,0,"MODEL"]]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("rgthree UI helpers must be dropped silently, got warnings: %v", warns)
+	}
+	for _, id := range []string{"90", "91", "92"} {
+		if _, has := nodes[id]; has {
+			t.Errorf("rgthree UI helper node %s should be dropped", id)
+		}
+	}
+	// The real link is not stranded: scheduler.model resolves to the checkpoint.
+	assertLinkRef(t, nodes["17"].Inputs["model"], "4", 0)
+	if _, has := nodes["4"]; !has {
+		t.Error("checkpoint node 4 should still convert")
+	}
+}
+
+// TestConvertGetSetTeleport verifies a link routed source -> SetNode("x") ...
+// GetNode("x") -> consumer lowers to source -> consumer directly, and the Get/Set
+// nodes are dropped with no warnings.
+func TestConvertGetSetTeleport(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
+		"BasicScheduler": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}}
+	}`)
+	// checkpoint(out 0) -> SetNode("themodel") ; GetNode("themodel") -> scheduler.model
+	ui := `{"nodes":[
+		{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+		{"id":70,"type":"SetNode","mode":0,"title":"Set_themodel","widgets_values":["themodel"],
+		 "inputs":[{"name":"MODEL","type":"MODEL","link":1}]},
+		{"id":71,"type":"GetNode","mode":0,"title":"Get_themodel","widgets_values":["themodel"]},
+		{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":2}]}
+	],"links":[
+		[1,4,0,70,0,"MODEL"],
+		[2,71,0,17,0,"MODEL"]
+	]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	if _, has := nodes["70"]; has {
+		t.Error("SetNode should not appear in api graph")
+	}
+	if _, has := nodes["71"]; has {
+		t.Error("GetNode should not appear in api graph")
+	}
+	// scheduler.model must resolve THROUGH Get/Set back to the checkpoint slot 0.
+	assertLinkRef(t, nodes["17"].Inputs["model"], "4", 0)
+}
+
+// TestConvertGetSetTeleportWidgetOnlyName verifies the name is read from
+// widgets_values when the title carries no Set_/Get_ prefix, and that a teleport
+// chained through a Reroute still resolves.
+func TestConvertGetSetTeleportThroughReroute(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
+		"BasicScheduler": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}}
+	}`)
+	// checkpoint -> reroute -> SetNode("m") ; GetNode("m") -> scheduler
+	ui := `{"nodes":[
+		{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+		{"id":50,"type":"Reroute","mode":0,"inputs":[{"name":"","type":"*","link":1}]},
+		{"id":70,"type":"SetNode","mode":0,"widgets_values":["m"],"inputs":[{"name":"MODEL","type":"MODEL","link":2}]},
+		{"id":71,"type":"GetNode","mode":0,"widgets_values":["m"]},
+		{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":3}]}
+	],"links":[
+		[1,4,0,50,0,"MODEL"],
+		[2,50,0,70,0,"MODEL"],
+		[3,71,0,17,0,"MODEL"]
+	]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	assertLinkRef(t, nodes["17"].Inputs["model"], "4", 0)
+}
+
+// TestConvertGetNodeMissingSet verifies a GetNode with no matching SetNode warns
+// and leaves the consumer input unset (rather than panicking or mis-wiring).
+func TestConvertGetNodeMissingSet(t *testing.T) {
+	info := buildInfo(t, `{
+		"BasicScheduler": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}}
+	}`)
+	ui := `{"nodes":[
+		{"id":71,"type":"GetNode","mode":0,"widgets_values":["ghost"]},
+		{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":3}]}
+	],"links":[[3,71,0,17,0,"MODEL"]]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if _, has := nodes["17"].Inputs["model"]; has {
+		t.Error("scheduler.model should be unset (GetNode has no SetNode)")
+	}
+	if !containsSubstr(warns, `SetNode name "ghost"`) {
+		t.Errorf("expected an unresolved-GetNode warning, got %v", warns)
+	}
+}
+
+// TestConvertGetNodeAmbiguous verifies two SetNodes sharing a name make a GetNode
+// resolution refuse (warn + unset) rather than pick a wrong source.
+func TestConvertGetNodeAmbiguous(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
+		"BasicScheduler": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}}
+	}`)
+	ui := `{"nodes":[
+		{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+		{"id":5,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["b.safetensors"]},
+		{"id":70,"type":"SetNode","mode":0,"widgets_values":["dup"],"inputs":[{"name":"MODEL","type":"MODEL","link":1}]},
+		{"id":72,"type":"SetNode","mode":0,"widgets_values":["dup"],"inputs":[{"name":"MODEL","type":"MODEL","link":2}]},
+		{"id":71,"type":"GetNode","mode":0,"widgets_values":["dup"]},
+		{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":3}]}
+	],"links":[
+		[1,4,0,70,0,"MODEL"],
+		[2,5,0,72,0,"MODEL"],
+		[3,71,0,17,0,"MODEL"]
+	]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if _, has := nodes["17"].Inputs["model"]; has {
+		t.Error("scheduler.model should be unset (ambiguous SetNode name)")
+	}
+	if !containsSubstr(warns, "ambiguous") {
+		t.Errorf("expected an ambiguity warning, got %v", warns)
+	}
+}
+
+// subgraphTestInfo is the object_info used by the subgraph tests: a checkpoint
+// loader, a pass-through node (one MODEL link input, no widgets), and a consumer.
+func subgraphTestInfo(t *testing.T) ObjectInfo {
+	return buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
+		"PassModel": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}},
+		"BasicScheduler": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}}
+	}`)
+}
+
+// TestConvertSubgraphSingle expands a single subgraph instance. It exercises a
+// boundary input (external -> interior), an interior node, and an internal->external
+// output boundary link (interior -> boundary output -> external consumer).
+func TestConvertSubgraphSingle(t *testing.T) {
+	info := subgraphTestInfo(t)
+	ui := `{
+		"nodes":[
+			{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+			{"id":100,"type":"SG","mode":0,"inputs":[{"name":"model","type":"MODEL","link":1}]},
+			{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":2}]}
+		],
+		"links":[[1,4,0,100,0,"MODEL"],[2,100,0,17,0,"MODEL"]],
+		"definitions":{"subgraphs":[
+			{"id":"SG","name":"Passer",
+			 "inputNode":{"id":-10},"outputNode":{"id":-20},
+			 "inputs":[{"id":"i0","name":"model","type":"MODEL"}],
+			 "outputs":[{"id":"o0","name":"MODEL","type":"MODEL"}],
+			 "nodes":[{"id":1,"type":"PassModel","mode":0,"inputs":[{"name":"model","type":"MODEL","link":11}]}],
+			 "links":[[11,-10,0,1,0,"MODEL"],[12,1,0,-20,0,"MODEL"]]}
+		]}
+	}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	if _, has := nodes["100"]; has {
+		t.Error("subgraph instance node 100 should be removed")
+	}
+	if _, has := nodes["SG"]; has {
+		t.Error("subgraph definition should not appear as a node")
+	}
+	pm, ok := nodes["100:1"]
+	if !ok {
+		t.Fatalf("inlined interior node 100:1 missing: %v", keysOf(nodes))
+	}
+	if pm.ClassType != "PassModel" {
+		t.Errorf("interior node class_type = %q", pm.ClassType)
+	}
+	// interior node's model comes from the external checkpoint (boundary input).
+	assertLinkRef(t, pm.Inputs["model"], "4", 0)
+	// external consumer resolves through the boundary output to the interior node.
+	assertLinkRef(t, nodes["17"].Inputs["model"], "100:1", 0)
+}
+
+// TestConvertSubgraphPassthrough covers a subgraph whose boundary input is wired
+// DIRECTLY to its boundary output (no interior node between them): the external
+// consumer must resolve straight to the external input source.
+func TestConvertSubgraphPassthrough(t *testing.T) {
+	info := subgraphTestInfo(t)
+	ui := `{
+		"nodes":[
+			{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+			{"id":100,"type":"SG","mode":0,"inputs":[{"name":"model","type":"MODEL","link":1}]},
+			{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":2}]}
+		],
+		"links":[[1,4,0,100,0,"MODEL"],[2,100,0,17,0,"MODEL"]],
+		"definitions":{"subgraphs":[
+			{"id":"SG","name":"Wire",
+			 "inputNode":{"id":-10},"outputNode":{"id":-20},
+			 "inputs":[{"id":"i0","name":"model","type":"MODEL"}],
+			 "outputs":[{"id":"o0","name":"MODEL","type":"MODEL"}],
+			 "nodes":[],
+			 "links":[[11,-10,0,-20,0,"MODEL"]]}
+		]}
+	}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	// consumer.model resolves straight through the empty subgraph to the checkpoint.
+	assertLinkRef(t, nodes["17"].Inputs["model"], "4", 0)
+}
+
+// TestConvertSubgraphNested expands a subgraph that itself instantiates another
+// subgraph, asserting unique prefixed ids and end-to-end wiring across two
+// boundary crossings.
+func TestConvertSubgraphNested(t *testing.T) {
+	info := subgraphTestInfo(t)
+	ui := `{
+		"nodes":[
+			{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+			{"id":200,"type":"OUTER","mode":0,"inputs":[{"name":"model","type":"MODEL","link":1}]},
+			{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":2}]}
+		],
+		"links":[[1,4,0,200,0,"MODEL"],[2,200,0,17,0,"MODEL"]],
+		"definitions":{"subgraphs":[
+			{"id":"OUTER","name":"Outer",
+			 "inputNode":{"id":-10},"outputNode":{"id":-20},
+			 "inputs":[{"id":"i0","name":"model","type":"MODEL"}],
+			 "outputs":[{"id":"o0","name":"MODEL","type":"MODEL"}],
+			 "nodes":[{"id":1,"type":"INNER","mode":0,"inputs":[{"name":"model","type":"MODEL","link":21}]}],
+			 "links":[[21,-10,0,1,0,"MODEL"],[22,1,0,-20,0,"MODEL"]]},
+			{"id":"INNER","name":"Inner",
+			 "inputNode":{"id":-10},"outputNode":{"id":-20},
+			 "inputs":[{"id":"i0","name":"model","type":"MODEL"}],
+			 "outputs":[{"id":"o0","name":"MODEL","type":"MODEL"}],
+			 "nodes":[{"id":1,"type":"PassModel","mode":0,"inputs":[{"name":"model","type":"MODEL","link":31}]}],
+			 "links":[[31,-10,0,1,0,"MODEL"],[32,1,0,-20,0,"MODEL"]]}
+		]}
+	}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	pm, ok := nodes["200:1:1"]
+	if !ok {
+		t.Fatalf("doubly-nested interior node 200:1:1 missing: %v", keysOf(nodes))
+	}
+	if pm.ClassType != "PassModel" {
+		t.Errorf("nested interior class_type = %q", pm.ClassType)
+	}
+	// The deep interior node's model comes from the top-level checkpoint.
+	assertLinkRef(t, pm.Inputs["model"], "4", 0)
+	// The top-level consumer resolves through both boundaries to the deep interior.
+	assertLinkRef(t, nodes["17"].Inputs["model"], "200:1:1", 0)
+}
+
+// TestConvertSubgraphDepthBounded guards against a self-instantiating subgraph
+// (cycle): expansion must stop at the depth bound and warn rather than loop.
+func TestConvertSubgraphDepthBounded(t *testing.T) {
+	info := subgraphTestInfo(t)
+	// A subgraph that instantiates ITSELF — expansion must be depth-bounded.
+	ui := `{
+		"nodes":[
+			{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+			{"id":100,"type":"LOOP","mode":0,"inputs":[{"name":"model","type":"MODEL","link":1}]}
+		],
+		"links":[[1,4,0,100,0,"MODEL"]],
+		"definitions":{"subgraphs":[
+			{"id":"LOOP","name":"Loop",
+			 "inputNode":{"id":-10},"outputNode":{"id":-20},
+			 "inputs":[{"id":"i0","name":"model","type":"MODEL"}],
+			 "outputs":[{"id":"o0","name":"MODEL","type":"MODEL"}],
+			 "nodes":[{"id":1,"type":"LOOP","mode":0,"inputs":[{"name":"model","type":"MODEL","link":11}]}],
+			 "links":[[11,-10,0,1,0,"MODEL"]]}
+		]}
+	}`
+	// Must not hang or panic; the checkpoint still converts.
+	api, warns, err := ConvertUIToAPI(json.RawMessage(ui), info)
+	if err != nil {
+		t.Fatalf("ConvertUIToAPI: %v", err)
+	}
+	if !containsSubstr(warns, "nested deeper than") {
+		t.Errorf("expected a depth-bound warning, got %v", warns)
+	}
+	var nodes map[string]apiOutNode
+	if err := json.Unmarshal(api, &nodes); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, has := nodes["4"]; !has {
+		t.Error("checkpoint node 4 should still convert")
+	}
+}
+
+func keysOf(m map[string]apiOutNode) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+// TestConvertObjectFormWidgetsPowerLora lowers the rgthree Power Lora Loader
+// shape: its widgets_values is an object whose lora_N entries (dynamic widgets
+// absent from object_info) must pass through as inputs, while the model link is
+// honored and the object key that names a non-widget input is not clobbered.
+func TestConvertObjectFormWidgetsPowerLora(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
+		"Power Lora Loader (rgthree)": {"input":{"required":{"model":["MODEL",{}]},"optional":{"clip":["CLIP",{}]}},"input_order":{"required":["model"],"optional":["clip"]}}
+	}`)
+	ui := `{"nodes":[
+		{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+		{"id":50,"type":"Power Lora Loader (rgthree)","mode":0,
+		 "inputs":[{"name":"model","type":"MODEL","link":1},{"name":"clip","type":"CLIP","link":null}],
+		 "widgets_values":{"PowerLoraLoaderHeaderWidget":{"type":"header"},"lora_1":{"on":true,"lora":"cool.safetensors","strength":0.8}}}
+	],"links":[[1,4,0,50,0,"MODEL"]]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("object-form widgets should map without warnings, got %v", warns)
+	}
+	n := nodes["50"]
+	assertLinkRef(t, n.Inputs["model"], "4", 0)
+	if _, has := n.Inputs["clip"]; has {
+		t.Error("clip (unconnected link input, no widget key) should be unset")
+	}
+	lj, has := n.Inputs["lora_1"]
+	if !has {
+		t.Fatal("lora_1 dynamic-widget entry should be mapped into inputs")
+	}
+	var lora struct {
+		On   bool   `json:"on"`
+		Lora string `json:"lora"`
+	}
+	if err := json.Unmarshal(lj, &lora); err != nil {
+		t.Fatalf("lora_1 payload not preserved as object: %v", err)
+	}
+	if !lora.On || lora.Lora != "cool.safetensors" {
+		t.Errorf("lora_1 payload wrong: %s", lj)
+	}
+}
+
+// TestConvertObjectFormWidgetsSchemaMapped covers the general object-form case:
+// keys matching widget inputs are mapped; a key naming a LINK input carrying a
+// stray value is refused (not stuffed onto the link input).
+func TestConvertObjectFormWidgetsSchemaMapped(t *testing.T) {
+	info := buildInfo(t, `{
+		"Widgety": {"input":{"required":{"text":["STRING",{}],"count":["INT",{}],"model":["MODEL",{}]}},"input_order":{"required":["text","count","model"]}}
+	}`)
+	ui := `{"nodes":[
+		{"id":9,"type":"Widgety","mode":0,"widgets_values":{"text":"hello","count":5,"model":"junk"}}
+	],"links":[]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	n := nodes["9"]
+	if got := scalarString(t, n.Inputs["text"]); got != "hello" {
+		t.Errorf("text = %q", got)
+	}
+	if got := string(n.Inputs["count"]); got != "5" {
+		t.Errorf("count = %s", got)
+	}
+	if _, has := n.Inputs["model"]; has {
+		t.Error("model is a link input; an object widget value must not be mapped onto it")
+	}
+}
+
+// TestConvertArrayFormWidgetsUnchanged is the regression guard: the array-form
+// widget path (the 41-clean-workflow shape) still maps positionally as before.
+func TestConvertArrayFormWidgetsUnchanged(t *testing.T) {
+	info := buildInfo(t, `{
+		"KSampler": {"input":{"required":{"seed":["INT",{"control_after_generate":true}],"steps":["INT",{}]}},"input_order":{"required":["seed","steps"]}}
+	}`)
+	ui := `{"nodes":[
+		{"id":3,"type":"KSampler","mode":0,"widgets_values":[42,"randomize",20]}
+	],"links":[]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	n := nodes["3"]
+	if got := string(n.Inputs["seed"]); got != "42" {
+		t.Errorf("seed = %s", got)
+	}
+	if got := string(n.Inputs["steps"]); got != "20" {
+		t.Errorf("steps = %s (array-form control off-by-one regressed)", got)
+	}
+}
+
 // TestConvertRealFluxWorkflow converts the REAL 17-node civitai UI workflow against
 // the REAL /object_info subset and asserts structural + key-preservation properties
 // (not a brittle whole-graph equality).
