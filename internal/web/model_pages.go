@@ -1146,6 +1146,39 @@ function cmToggleDesc(btn){
   btn.textContent = collapsed ? 'Show less' : 'Read more';
 }
 document.addEventListener('keydown', function(e){ if (e.key === 'Escape'){ cmCloseLightbox(); } });
+// cm popover hover controller: keeps the .cm-vstatus / .cm-updated popovers open
+// while the mouse is over EITHER the trigger or the popover (the popover is a child
+// of the trigger, so a single wrapper covers both), with a ~200ms grace delay after
+// the mouse leaves both — so the now-deeplinked popover contents are reliably
+// hoverable/clickable. Event delegation on document is required because these
+// popovers are inserted LAZILY via htmx after page load (direct binding would miss
+// them). The CSS :hover/:focus-within rules remain as fallback (keyboard a11y).
+(function(){
+  var timers = new WeakMap();
+  function trigOf(el){ return (el && el.closest) ? el.closest('.cm-vstatus, .cm-updated') : null; }
+  function openPop(trig){
+    var t = timers.get(trig);
+    if (t){ clearTimeout(t); timers.delete(trig); }
+    trig.classList.add('cm-pop-open');
+  }
+  function closeSoon(trig){
+    var t = timers.get(trig);
+    if (t){ clearTimeout(t); }
+    timers.set(trig, setTimeout(function(){ trig.classList.remove('cm-pop-open'); timers.delete(trig); }, 200));
+  }
+  document.addEventListener('mouseover', function(e){
+    var trig = trigOf(e.target);
+    if (trig){ openPop(trig); }
+  });
+  document.addEventListener('mouseout', function(e){
+    var trig = trigOf(e.target);
+    if (!trig){ return; }
+    // Moving to another node still inside the trigger (incl. the popover) → stay open.
+    var to = e.relatedTarget;
+    if (to && trig.contains(to)){ return; }
+    closeSoon(trig);
+  });
+})();
 `
 	return h.Script(g.Raw(js))
 }
