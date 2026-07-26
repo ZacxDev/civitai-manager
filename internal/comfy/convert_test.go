@@ -520,6 +520,94 @@ func keysOf(m map[string]apiOutNode) []string {
 	return out
 }
 
+// TestConvertObjectFormWidgetsPowerLora lowers the rgthree Power Lora Loader
+// shape: its widgets_values is an object whose lora_N entries (dynamic widgets
+// absent from object_info) must pass through as inputs, while the model link is
+// honored and the object key that names a non-widget input is not clobbered.
+func TestConvertObjectFormWidgetsPowerLora(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
+		"Power Lora Loader (rgthree)": {"input":{"required":{"model":["MODEL",{}]},"optional":{"clip":["CLIP",{}]}},"input_order":{"required":["model"],"optional":["clip"]}}
+	}`)
+	ui := `{"nodes":[
+		{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+		{"id":50,"type":"Power Lora Loader (rgthree)","mode":0,
+		 "inputs":[{"name":"model","type":"MODEL","link":1},{"name":"clip","type":"CLIP","link":null}],
+		 "widgets_values":{"PowerLoraLoaderHeaderWidget":{"type":"header"},"lora_1":{"on":true,"lora":"cool.safetensors","strength":0.8}}}
+	],"links":[[1,4,0,50,0,"MODEL"]]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("object-form widgets should map without warnings, got %v", warns)
+	}
+	n := nodes["50"]
+	assertLinkRef(t, n.Inputs["model"], "4", 0)
+	if _, has := n.Inputs["clip"]; has {
+		t.Error("clip (unconnected link input, no widget key) should be unset")
+	}
+	lj, has := n.Inputs["lora_1"]
+	if !has {
+		t.Fatal("lora_1 dynamic-widget entry should be mapped into inputs")
+	}
+	var lora struct {
+		On   bool   `json:"on"`
+		Lora string `json:"lora"`
+	}
+	if err := json.Unmarshal(lj, &lora); err != nil {
+		t.Fatalf("lora_1 payload not preserved as object: %v", err)
+	}
+	if !lora.On || lora.Lora != "cool.safetensors" {
+		t.Errorf("lora_1 payload wrong: %s", lj)
+	}
+}
+
+// TestConvertObjectFormWidgetsSchemaMapped covers the general object-form case:
+// keys matching widget inputs are mapped; a key naming a LINK input carrying a
+// stray value is refused (not stuffed onto the link input).
+func TestConvertObjectFormWidgetsSchemaMapped(t *testing.T) {
+	info := buildInfo(t, `{
+		"Widgety": {"input":{"required":{"text":["STRING",{}],"count":["INT",{}],"model":["MODEL",{}]}},"input_order":{"required":["text","count","model"]}}
+	}`)
+	ui := `{"nodes":[
+		{"id":9,"type":"Widgety","mode":0,"widgets_values":{"text":"hello","count":5,"model":"junk"}}
+	],"links":[]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	n := nodes["9"]
+	if got := scalarString(t, n.Inputs["text"]); got != "hello" {
+		t.Errorf("text = %q", got)
+	}
+	if got := string(n.Inputs["count"]); got != "5" {
+		t.Errorf("count = %s", got)
+	}
+	if _, has := n.Inputs["model"]; has {
+		t.Error("model is a link input; an object widget value must not be mapped onto it")
+	}
+}
+
+// TestConvertArrayFormWidgetsUnchanged is the regression guard: the array-form
+// widget path (the 41-clean-workflow shape) still maps positionally as before.
+func TestConvertArrayFormWidgetsUnchanged(t *testing.T) {
+	info := buildInfo(t, `{
+		"KSampler": {"input":{"required":{"seed":["INT",{"control_after_generate":true}],"steps":["INT",{}]}},"input_order":{"required":["seed","steps"]}}
+	}`)
+	ui := `{"nodes":[
+		{"id":3,"type":"KSampler","mode":0,"widgets_values":[42,"randomize",20]}
+	],"links":[]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	n := nodes["3"]
+	if got := string(n.Inputs["seed"]); got != "42" {
+		t.Errorf("seed = %s", got)
+	}
+	if got := string(n.Inputs["steps"]); got != "20" {
+		t.Errorf("steps = %s (array-form control off-by-one regressed)", got)
+	}
+}
+
 // TestConvertRealFluxWorkflow converts the REAL 17-node civitai UI workflow against
 // the REAL /object_info subset and asserts structural + key-preservation properties
 // (not a brittle whole-graph equality).

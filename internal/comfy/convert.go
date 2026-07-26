@@ -291,12 +291,11 @@ func (c *converter) buildInputs(n *uiConvNode, sch NodeSchema) (map[string]json.
 	// 2. Widget values.
 	wv, isArray := asJSONArray(n.WidgetsValues)
 	if !isArray {
-		// Some custom nodes serialize widgets_values as an object; we cannot map an
-		// unordered object onto ordered inputs. Emit a warning only when there was
-		// something to map.
-		if isJSONObjectNonEmpty(n.WidgetsValues) {
-			warns = append(warns, fmt.Sprintf("node %s uses object-form widgets_values; widget values not mapped", idToString(n.ID)))
-		}
+		// Object-form widgets_values: some custom nodes (e.g. rgthree Power Lora
+		// Loader) serialize widget values as a KEYED object rather than an ordered
+		// array. Map each entry onto the api input of the same name — no cursor / no
+		// control-after-generate off-by-one, since the keys are explicit.
+		mapObjectWidgets(n.WidgetsValues, sch, linked, inputs)
 		return inputs, warns
 	}
 
@@ -331,6 +330,29 @@ func (c *converter) buildInputs(n *uiConvNode, sch NodeSchema) (map[string]json.
 		}
 	}
 	return inputs, warns
+}
+
+// mapObjectWidgets lowers an object-form widgets_values onto a node's api inputs.
+// For each key it copies the value to inputs[key] UNLESS the input is already
+// satisfied by a link, or the key names a NON-widget (link-type) schema input —
+// a link input must never receive a raw widget value. Keys absent from the schema
+// are passed through verbatim: nodes with dynamic widgets (rgthree Power Lora
+// Loader's lora_1/lora_2/… entries) carry their config in exactly such keys, and
+// the frontend's api graph passes them through the same way.
+func mapObjectWidgets(raw json.RawMessage, sch NodeSchema, linked map[string]bool, inputs map[string]json.RawMessage) {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(raw, &m) != nil {
+		return
+	}
+	for key, val := range m {
+		if linked[key] {
+			continue // value comes from a connected link
+		}
+		if spec, ok := lookupSpec(sch, key); ok && !spec.IsWidget() {
+			continue // a link-type input must not take a widget value
+		}
+		inputs[key] = val
+	}
 }
 
 // resolveOrigin resolves a link's (origin node, output slot) to a concrete
