@@ -25,6 +25,12 @@ var virtualNodeTypes = map[string]bool{
 	"Fast Groups Muter (rgthree)": true,
 	"Fast Bypasser (rgthree)":     true,
 	"Bookmark (rgthree)":          true,
+	// GetNode/SetNode are virtual "teleport" nodes (KJNodes/rgthree-style): they
+	// never become api nodes, but unlike a plain Note they are spliced THROUGH
+	// during link resolution — a GetNode re-emits the source a same-named SetNode
+	// captured (see resolveOrigin). Listed here so the top loop skips emitting them.
+	"SetNode": true,
+	"GetNode": true,
 }
 
 // UI-graph node modes.
@@ -115,7 +121,11 @@ func ConvertUIToAPI(uiGraph json.RawMessage, info ObjectInfo) (apiGraph json.Raw
 		}
 	}
 
-	r := &converter{byID: byID, linkByID: linkByID, info: info}
+	// Index SetNode captures by constant name so GetNode teleports can be spliced
+	// through during link resolution.
+	setByName := buildSetNodeIndex(g.Nodes, linkByID)
+
+	r := &converter{byID: byID, linkByID: linkByID, info: info, setByName: setByName}
 	result := make(map[string]apiOutNode)
 
 	for i := range g.Nodes {
@@ -160,10 +170,70 @@ func ConvertUIToAPI(uiGraph json.RawMessage, info ObjectInfo) (apiGraph json.Raw
 
 // converter holds the per-conversion indexes + accumulated warnings.
 type converter struct {
-	byID     map[string]*uiConvNode
-	linkByID map[int64]uiLink
-	info     ObjectInfo
-	warnings []string
+	byID      map[string]*uiConvNode
+	linkByID  map[int64]uiLink
+	info      ObjectInfo
+	setByName map[string]teleportSrc
+	warnings  []string
+}
+
+// teleportSrc is the source (origin node + output slot) a SetNode captured,
+// keyed by its constant name. ambiguous is set when more than one SetNode
+// declares the same name (an invalid graph we refuse to resolve).
+type teleportSrc struct {
+	originID   string
+	originSlot int
+	ok         bool
+	ambiguous  bool
+}
+
+// buildSetNodeIndex maps each SetNode's constant name to the source feeding its
+// input. Duplicate names are marked ambiguous. A SetNode with no connected input
+// (or no name) contributes nothing resolvable.
+func buildSetNodeIndex(nodes []uiConvNode, linkByID map[int64]uiLink) map[string]teleportSrc {
+	idx := make(map[string]teleportSrc)
+	for i := range nodes {
+		n := &nodes[i]
+		if n.Type != "SetNode" {
+			continue
+		}
+		name := getSetNodeName(n)
+		if name == "" {
+			continue
+		}
+		src := teleportSrc{}
+		if in := firstLinkedInput(n); in >= 0 {
+			if l, ok := linkByID[*n.Inputs[in].Link]; ok {
+				src = teleportSrc{originID: l.OriginID, originSlot: l.OriginSlot, ok: true}
+			}
+		}
+		if existing, dup := idx[name]; dup {
+			existing.ambiguous = true
+			idx[name] = existing
+			continue
+		}
+		idx[name] = src
+	}
+	return idx
+}
+
+// getSetNodeName extracts the constant name a Set/GetNode teleports by. The name
+// is the first string element of widgets_values; failing that, the node title
+// with a leading "Set_/Get_/Set /Get " stripped.
+func getSetNodeName(n *uiConvNode) string {
+	if arr, ok := asJSONArray(n.WidgetsValues); ok && len(arr) > 0 {
+		var s string
+		if json.Unmarshal(arr[0], &s) == nil && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	t := strings.TrimSpace(n.Title)
+	for _, pfx := range []string{"Set_", "Get_", "Set ", "Get "} {
+		if strings.HasPrefix(t, pfx) {
+			return strings.TrimSpace(t[len(pfx):])
+		}
+	}
+	return t
 }
 
 func (c *converter) warnf(format string, args ...any) {
@@ -263,6 +333,30 @@ func (c *converter) resolveOrigin(nodeID string, slot, depth int) (id string, ou
 			return c.resolveOrigin(l.OriginID, l.OriginSlot, depth+1)
 		}
 		return "", 0, false, fmt.Sprintf("reroute node %s has no input", nodeID)
+	}
+
+	// SetNode: splice through the input it captured (its output mirrors its input),
+	// regardless of mode — same posture as a Reroute.
+	if n.Type == "SetNode" {
+		if idx := firstLinkedInput(n); idx >= 0 {
+			if l, ok := c.linkByID[*n.Inputs[idx].Link]; ok {
+				return c.resolveOrigin(l.OriginID, l.OriginSlot, depth+1)
+			}
+		}
+		return "", 0, false, fmt.Sprintf("SetNode %s has no connected input", nodeID)
+	}
+
+	// GetNode: teleport to the source the same-named SetNode captured.
+	if n.Type == "GetNode" {
+		name := getSetNodeName(n)
+		src, found := c.setByName[name]
+		if !found || !src.ok {
+			return "", 0, false, fmt.Sprintf("GetNode %s references SetNode name %q with no resolvable source", nodeID, name)
+		}
+		if src.ambiguous {
+			return "", 0, false, fmt.Sprintf("GetNode %s name %q is ambiguous (multiple SetNodes)", nodeID, name)
+		}
+		return c.resolveOrigin(src.originID, src.originSlot, depth+1)
 	}
 
 	switch n.Mode {

@@ -241,6 +241,113 @@ func TestConvertRgthreeUIHelpersDropped(t *testing.T) {
 	}
 }
 
+// TestConvertGetSetTeleport verifies a link routed source -> SetNode("x") ...
+// GetNode("x") -> consumer lowers to source -> consumer directly, and the Get/Set
+// nodes are dropped with no warnings.
+func TestConvertGetSetTeleport(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
+		"BasicScheduler": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}}
+	}`)
+	// checkpoint(out 0) -> SetNode("themodel") ; GetNode("themodel") -> scheduler.model
+	ui := `{"nodes":[
+		{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+		{"id":70,"type":"SetNode","mode":0,"title":"Set_themodel","widgets_values":["themodel"],
+		 "inputs":[{"name":"MODEL","type":"MODEL","link":1}]},
+		{"id":71,"type":"GetNode","mode":0,"title":"Get_themodel","widgets_values":["themodel"]},
+		{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":2}]}
+	],"links":[
+		[1,4,0,70,0,"MODEL"],
+		[2,71,0,17,0,"MODEL"]
+	]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	if _, has := nodes["70"]; has {
+		t.Error("SetNode should not appear in api graph")
+	}
+	if _, has := nodes["71"]; has {
+		t.Error("GetNode should not appear in api graph")
+	}
+	// scheduler.model must resolve THROUGH Get/Set back to the checkpoint slot 0.
+	assertLinkRef(t, nodes["17"].Inputs["model"], "4", 0)
+}
+
+// TestConvertGetSetTeleportWidgetOnlyName verifies the name is read from
+// widgets_values when the title carries no Set_/Get_ prefix, and that a teleport
+// chained through a Reroute still resolves.
+func TestConvertGetSetTeleportThroughReroute(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
+		"BasicScheduler": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}}
+	}`)
+	// checkpoint -> reroute -> SetNode("m") ; GetNode("m") -> scheduler
+	ui := `{"nodes":[
+		{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+		{"id":50,"type":"Reroute","mode":0,"inputs":[{"name":"","type":"*","link":1}]},
+		{"id":70,"type":"SetNode","mode":0,"widgets_values":["m"],"inputs":[{"name":"MODEL","type":"MODEL","link":2}]},
+		{"id":71,"type":"GetNode","mode":0,"widgets_values":["m"]},
+		{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":3}]}
+	],"links":[
+		[1,4,0,50,0,"MODEL"],
+		[2,50,0,70,0,"MODEL"],
+		[3,71,0,17,0,"MODEL"]
+	]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	assertLinkRef(t, nodes["17"].Inputs["model"], "4", 0)
+}
+
+// TestConvertGetNodeMissingSet verifies a GetNode with no matching SetNode warns
+// and leaves the consumer input unset (rather than panicking or mis-wiring).
+func TestConvertGetNodeMissingSet(t *testing.T) {
+	info := buildInfo(t, `{
+		"BasicScheduler": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}}
+	}`)
+	ui := `{"nodes":[
+		{"id":71,"type":"GetNode","mode":0,"widgets_values":["ghost"]},
+		{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":3}]}
+	],"links":[[3,71,0,17,0,"MODEL"]]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if _, has := nodes["17"].Inputs["model"]; has {
+		t.Error("scheduler.model should be unset (GetNode has no SetNode)")
+	}
+	if !containsSubstr(warns, `SetNode name "ghost"`) {
+		t.Errorf("expected an unresolved-GetNode warning, got %v", warns)
+	}
+}
+
+// TestConvertGetNodeAmbiguous verifies two SetNodes sharing a name make a GetNode
+// resolution refuse (warn + unset) rather than pick a wrong source.
+func TestConvertGetNodeAmbiguous(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
+		"BasicScheduler": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}}
+	}`)
+	ui := `{"nodes":[
+		{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+		{"id":5,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["b.safetensors"]},
+		{"id":70,"type":"SetNode","mode":0,"widgets_values":["dup"],"inputs":[{"name":"MODEL","type":"MODEL","link":1}]},
+		{"id":72,"type":"SetNode","mode":0,"widgets_values":["dup"],"inputs":[{"name":"MODEL","type":"MODEL","link":2}]},
+		{"id":71,"type":"GetNode","mode":0,"widgets_values":["dup"]},
+		{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":3}]}
+	],"links":[
+		[1,4,0,70,0,"MODEL"],
+		[2,5,0,72,0,"MODEL"],
+		[3,71,0,17,0,"MODEL"]
+	]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if _, has := nodes["17"].Inputs["model"]; has {
+		t.Error("scheduler.model should be unset (ambiguous SetNode name)")
+	}
+	if !containsSubstr(warns, "ambiguous") {
+		t.Errorf("expected an ambiguity warning, got %v", warns)
+	}
+}
+
 // TestConvertRealFluxWorkflow converts the REAL 17-node civitai UI workflow against
 // the REAL /object_info subset and asserts structural + key-preservation properties
 // (not a brittle whole-graph equality).
