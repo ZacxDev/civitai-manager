@@ -286,11 +286,12 @@ func TestCloudWhatifInsufficientBuzz(t *testing.T) {
 	}
 }
 
-// TestCloudWhatifErrorEscaped asserts a ProblemDetails error is surfaced and
-// HTML-escaped.
+// TestCloudWhatifErrorEscaped asserts a NON-400 ProblemDetails error is surfaced as
+// a generic estimate failure and HTML-escaped. (A 400 is the affordability path,
+// covered separately.)
 func TestCloudWhatifErrorEscaped(t *testing.T) {
 	fake := &fakeCloud{whatifErr: &comfy.CloudProblem{
-		StatusCode: 400, Title: "Bad Request", Detail: `resource <script>x</script> missing`,
+		StatusCode: 500, Title: "Server Error", Detail: `resource <script>x</script> missing`,
 	}}
 	srv := newCloudTestServer(t, fake)
 	id := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"1":{"class_type":"X","inputs":{}}}`)
@@ -304,6 +305,173 @@ func TestCloudWhatifErrorEscaped(t *testing.T) {
 	}
 	if !strings.Contains(body, "&lt;script&gt;") {
 		t.Errorf("error detail should be HTML-escaped:\n%s", body)
+	}
+}
+
+// gateOf returns the submitted template's minimumDurationSeconds (nil-safe: -1 when
+// the template has no step, -2 when the gate is unset/nil).
+func gateOf(tmpl comfy.CloudTemplate) int {
+	if len(tmpl.Steps) == 0 {
+		return -1
+	}
+	p := tmpl.Steps[0].Input.MinimumDurationSeconds
+	if p == nil {
+		return -2
+	}
+	return *p
+}
+
+// TestCloudWhatifAppliesGate asserts the whatif preview submits WITH the 5-min
+// affordability gate so the user gets a free affordability preview.
+func TestCloudWhatifAppliesGate(t *testing.T) {
+	fake := &fakeCloud{whatifResp: &comfy.CloudWorkflow{ID: "wf-1", Status: "unassigned", Cost: &comfy.CloudCost{Base: 0}}}
+	srv := newCloudTestServer(t, fake)
+	id := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"1":{"class_type":"X","inputs":{}}}`)
+	rec := post(t, srv, "/workflows/"+id+"/cloud/whatif", url.Values{"resources": {"u"}}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("whatif = %d", rec.Code)
+	}
+	if !fake.lastWhatif {
+		t.Error("whatif=true expected")
+	}
+	if got := gateOf(fake.lastTemplate); got != 300 {
+		t.Errorf("whatif template gate = %d, want 300", got)
+	}
+}
+
+// TestCloudWhatifAffordabilityRejection covers a gated whatif that returns a 400
+// affordability problem: the fragment must render the (escaped) detail + a Run-anyway
+// button, NOT a generic "Estimate failed".
+func TestCloudWhatifAffordabilityRejection(t *testing.T) {
+	fake := &fakeCloud{whatifErr: &comfy.CloudProblem{
+		StatusCode: 400, Title: "Bad Request",
+		Detail: `You can only afford 42s <script>x</script> of the 300s minimum`,
+	}}
+	srv := newCloudTestServer(t, fake)
+	id := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"1":{"class_type":"X","inputs":{}}}`)
+	rec := post(t, srv, "/workflows/"+id+"/cloud/whatif", url.Values{"resources": {"u"}}, true)
+	body := rec.Body.String()
+	if strings.Contains(body, "Estimate failed") {
+		t.Errorf("400 affordability must NOT be a generic estimate failure:\n%s", body)
+	}
+	if !strings.Contains(body, "You can only afford 42s") {
+		t.Errorf("affordability detail missing:\n%s", body)
+	}
+	if strings.Contains(body, "<script>x</script>") {
+		t.Errorf("untrusted detail not escaped:\n%s", body)
+	}
+	if !strings.Contains(body, "&lt;script&gt;") {
+		t.Errorf("detail should be HTML-escaped:\n%s", body)
+	}
+	if !strings.Contains(body, "run_anyway") || !strings.Contains(body, "Run anyway") {
+		t.Errorf("affordability preview must offer a Run-anyway button:\n%s", body)
+	}
+}
+
+// TestCloudRunDefaultAppliesGate asserts a default real run (no run_anyway) submits
+// WITH minimumDurationSeconds=300.
+func TestCloudRunDefaultAppliesGate(t *testing.T) {
+	fake := &fakeCloud{runResp: &comfy.CloudWorkflow{ID: "wf-done", Status: "succeeded"}}
+	srv := newCloudTestServer(t, fake)
+	id := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"1":{"class_type":"X","inputs":{}}}`)
+	if rec := post(t, srv, "/workflows/"+id+"/cloud/run", url.Values{"resources": {"u"}}, true); rec.Code != http.StatusOK {
+		t.Fatalf("cloud run = %d", rec.Code)
+	}
+	pollCloudUntilDone(t, srv, id)
+	if fake.lastWhatif {
+		t.Error("real run must submit whatif=false")
+	}
+	if got := gateOf(fake.lastTemplate); got != 300 {
+		t.Errorf("default run template gate = %d, want 300", got)
+	}
+}
+
+// TestCloudRunAnywaySkipsGate asserts run_anyway=1 submits WITHOUT the gate (nil) and
+// the run still starts and polls to completion.
+func TestCloudRunAnywaySkipsGate(t *testing.T) {
+	fake := &fakeCloud{runResp: &comfy.CloudWorkflow{
+		ID: "wf-done", Status: "succeeded",
+		Steps: []comfy.CloudWorkflowStep{{Name: "comfy", Status: "succeeded", Output: &comfy.CloudStepOutput{
+			Blobs: []comfy.CloudBlob{{ID: "b1", URL: "https://image.civitai.com/ok.jpeg", Available: true}},
+		}}},
+	}}
+	srv := newCloudTestServer(t, fake)
+	id := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"1":{"class_type":"X","inputs":{}}}`)
+	rec := post(t, srv, "/workflows/"+id+"/cloud/run",
+		url.Values{"resources": {"u"}, "run_anyway": {"1"}}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cloud run = %d", rec.Code)
+	}
+	body := pollCloudUntilDone(t, srv, id)
+	if !strings.Contains(body, "Cloud run complete") {
+		t.Errorf("run-anyway happy path should complete:\n%s", body)
+	}
+	if got := gateOf(fake.lastTemplate); got != -2 {
+		t.Errorf("run_anyway template must OMIT the gate (nil), got %d", got)
+	}
+}
+
+// TestCloudRunAffordabilityRejection covers a gated real submit returning a 400
+// affordability problem: the terminal state renders the (escaped) detail + a
+// Run-anyway button, NOT a plain "Cloud run failed".
+func TestCloudRunAffordabilityRejection(t *testing.T) {
+	fake := &fakeCloud{runErr: &comfy.CloudProblem{
+		StatusCode: 400, Detail: `Only 10s affordable <script>y</script>, need 300s`,
+	}}
+	srv := newCloudTestServer(t, fake)
+	id := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"1":{"class_type":"X","inputs":{}}}`)
+	if rec := post(t, srv, "/workflows/"+id+"/cloud/run", url.Values{"resources": {"u"}}, true); rec.Code != http.StatusOK {
+		t.Fatalf("cloud run = %d", rec.Code)
+	}
+	body := pollCloudUntilDone(t, srv, id)
+	if strings.Contains(body, "Cloud run failed") {
+		t.Errorf("affordability 400 must NOT be a plain failure:\n%s", body)
+	}
+	if !strings.Contains(body, "Only 10s affordable") {
+		t.Errorf("affordability detail missing:\n%s", body)
+	}
+	if strings.Contains(body, "<script>y</script>") {
+		t.Errorf("untrusted detail not escaped:\n%s", body)
+	}
+	if !strings.Contains(body, "run_anyway") || !strings.Contains(body, "Run anyway") {
+		t.Errorf("affordability terminal must offer a Run-anyway button:\n%s", body)
+	}
+}
+
+// TestCloudRunNon400StaysPlainFailure asserts a non-400 gated submit error stays a
+// generic failure (no Run-anyway button).
+func TestCloudRunNon400StaysPlainFailure(t *testing.T) {
+	fake := &fakeCloud{runErr: &comfy.CloudProblem{StatusCode: 500, Detail: "internal error"}}
+	srv := newCloudTestServer(t, fake)
+	id := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"1":{"class_type":"X","inputs":{}}}`)
+	if rec := post(t, srv, "/workflows/"+id+"/cloud/run", url.Values{"resources": {"u"}}, true); rec.Code != http.StatusOK {
+		t.Fatalf("cloud run = %d", rec.Code)
+	}
+	body := pollCloudUntilDone(t, srv, id)
+	if !strings.Contains(body, "Cloud run failed") {
+		t.Errorf("non-400 error should be a plain failure:\n%s", body)
+	}
+	if strings.Contains(body, "Run anyway") {
+		t.Errorf("non-400 failure must NOT offer Run-anyway:\n%s", body)
+	}
+}
+
+// TestCloudRunAnywayNon400NoSecondRunAnyway asserts a run_anyway (gate-skipped) submit
+// that STILL 400s is a plain failure (no infinite run-anyway loop).
+func TestCloudRunAnywayNon400NoSecondRunAnyway(t *testing.T) {
+	fake := &fakeCloud{runErr: &comfy.CloudProblem{StatusCode: 400, Detail: "bad graph"}}
+	srv := newCloudTestServer(t, fake)
+	id := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"1":{"class_type":"X","inputs":{}}}`)
+	if rec := post(t, srv, "/workflows/"+id+"/cloud/run",
+		url.Values{"resources": {"u"}, "run_anyway": {"1"}}, true); rec.Code != http.StatusOK {
+		t.Fatalf("cloud run = %d", rec.Code)
+	}
+	body := pollCloudUntilDone(t, srv, id)
+	if !strings.Contains(body, "Cloud run failed") {
+		t.Errorf("gate-skipped 400 should be a plain failure:\n%s", body)
+	}
+	if strings.Contains(body, "Run anyway") {
+		t.Errorf("gate-skipped 400 must NOT re-offer Run-anyway:\n%s", body)
 	}
 }
 

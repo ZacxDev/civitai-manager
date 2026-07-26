@@ -39,7 +39,14 @@ type cloudJob struct {
 	status string
 	// message is a human status/error line (may embed untrusted remote text →
 	// escaped at render time).
-	message    string
+	message string
+	// affordability is true when the run failed the submit-time minimumDurationSeconds
+	// gate (a 400 on a GATED submit): the terminal state then offers a "run anyway"
+	// (gate-skipped) retry instead of a plain failure.
+	affordability bool
+	// urns is the resource URN list this run used, carried so the affordability
+	// terminal state can re-POST the identical set with the gate skipped.
+	urns       []string
 	blobURLs   []string
 	stopped    bool
 	err        error
@@ -58,7 +65,10 @@ type cloudUpdater struct {
 // startCloudRun launches a background cloud run for wf with the given resource
 // URNs, unless one is already running (idempotent — a re-click starts no second
 // goroutine). Same one-global-run invariant as the local run.
-func (s *Server) startCloudRun(wf *store.Workflow, urns []string) {
+//
+// skipGate omits the submit-time minimumDurationSeconds affordability gate (the
+// "run anyway" path); the default (false) applies the gate.
+func (s *Server) startCloudRun(wf *store.Workflow, urns []string, skipGate bool) {
 	s.cloudMu.Lock()
 	defer s.cloudMu.Unlock()
 	if s.cloudJob != nil && s.cloudJob.running {
@@ -73,6 +83,7 @@ func (s *Server) startCloudRun(wf *store.Workflow, urns []string) {
 	job := &cloudJob{
 		running: true, workflowID: wf.ID, phase: cloudPhasePreparing,
 		message: "Submitting to CivitAI cloud…", startedAt: time.Now(), cancel: cancel,
+		urns: urns,
 	}
 	s.cloudJob = job
 
@@ -102,7 +113,7 @@ func (s *Server) startCloudRun(wf *store.Workflow, urns []string) {
 					err = fmt.Errorf("cloud run panicked: %v", r)
 				}
 			}()
-			urls, err = s.runCloud(ctx, graph, urns, up)
+			urls, err = s.runCloud(ctx, graph, urns, skipGate, up)
 		}()
 		s.cloudMu.Lock()
 		defer s.cloudMu.Unlock()
@@ -111,6 +122,15 @@ func (s *Server) startCloudRun(wf *store.Workflow, urns []string) {
 		switch {
 		case job.stopped:
 			job.phase, job.message = cloudPhaseFailed, "Cloud run canceled."
+		case err != nil && !skipGate && isCloudAffordabilityReject(err):
+			// A 400 on a GATED submit is (very likely) the minimumDurationSeconds
+			// affordability gate rejecting the run. We can't perfectly discriminate an
+			// affordability-400 from a bad-graph-400, but offering "run anyway" is safe:
+			// if it was a graph error it simply fails again with the same detail. Only
+			// do this for a gated submit — a skip-gate run that still 400s is a real
+			// failure (run-anyway already skipped the gate, so retrying cannot help).
+			job.phase, job.err, job.affordability, job.message =
+				cloudPhaseFailed, err, true, cloudErrorMessage(err)
 		case err != nil:
 			job.phase, job.err, job.message = cloudPhaseFailed, err, cloudErrorMessage(err)
 		default:
@@ -126,13 +146,21 @@ func (s *Server) startCloudRun(wf *store.Workflow, urns []string) {
 
 // runCloud submits the template for real and polls the orchestration workflow to a
 // terminal state, returning the result blob URLs on success or an error otherwise.
-func (s *Server) runCloud(ctx context.Context, graph []byte, urns []string, up cloudUpdater) ([]string, error) {
+//
+// Unless skipGate is set, the submit carries the minimumDurationSeconds affordability
+// gate (the real runaway-spend protection — whatif's cost preview is inert for the
+// per-second-metered customComfy step). skipGate omits it (the "run anyway" path).
+// The gate is enforced at THIS real submit; the whatif preview is best-effort.
+func (s *Server) runCloud(ctx context.Context, graph []byte, urns []string, skipGate bool, up cloudUpdater) ([]string, error) {
 	client := s.cloud()
 	if client == nil {
 		return nil, fmt.Errorf("CivitAI cloud is not configured (set a CivitAI token)")
 	}
 
 	tmpl := comfy.NewCustomComfyTemplate(graph, urns)
+	if !skipGate {
+		tmpl = tmpl.WithMinimumDuration(defaultCloudMinDurationSeconds)
+	}
 	wf, err := client.SubmitCloud(ctx, tmpl, false)
 	if err != nil {
 		return nil, err
@@ -224,6 +252,10 @@ type cloudSnapshot struct {
 	Message          string
 	BlobURLs         []string
 	Stopped          bool
+	// Affordability marks a gated-submit 400 (the affordability terminal state); URNs
+	// carries the run's resource list so the "run anyway" button can re-POST it.
+	Affordability bool
+	URNs          []string
 }
 
 // cloudJobState returns a locked snapshot of the current cloud run job.
@@ -236,9 +268,12 @@ func (s *Server) cloudJobState() cloudSnapshot {
 	}
 	urls := make([]string, len(j.blobURLs))
 	copy(urls, j.blobURLs)
+	jurns := make([]string, len(j.urns))
+	copy(jurns, j.urns)
 	return cloudSnapshot{
 		Started: true, Running: j.running, WorkflowID: j.workflowID,
 		CloudID: j.cloudID, Phase: j.phase, Status: j.status, Message: j.message,
 		BlobURLs: urls, Stopped: j.stopped,
+		Affordability: j.affordability, URNs: jurns,
 	}
 }

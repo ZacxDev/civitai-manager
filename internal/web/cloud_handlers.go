@@ -28,6 +28,14 @@ const cloudRunBudget = 30 * time.Minute
 // write, so there is no data race.
 const defaultCloudPollInterval = 3 * time.Second
 
+// defaultCloudMinDurationSeconds is the submit-time affordability floor applied to
+// a cloud run: the orchestrator rejects the submit (HTTP 400) unless the user can
+// afford at least this many seconds of generation. 300s (5 min) mirrors the CivitAI
+// consumer (comfy-cloud) default. This is the REAL runaway-spend protection for the
+// per-second-metered customComfy step (whatif's upfront cost is inert). The user can
+// override it per-run via "run anyway", which resubmits with the gate omitted.
+const defaultCloudMinDurationSeconds = 300
+
 // cloudClient is the CivitAI orchestration surface the cloud handlers need. It is
 // an interface so tests can inject a fake; *comfy.CloudClient satisfies it.
 type cloudClient interface {
@@ -163,12 +171,25 @@ func (s *Server) handleWorkflowCloudWhatif(w http.ResponseWriter, r *http.Reques
 		}, s.csrf))
 		return
 	}
-	tmpl := comfy.NewCustomComfyTemplate([]byte(wf.Graph), urns)
+	// Submit the whatif WITH the affordability gate so the user gets a FREE
+	// affordability preview before spending. It is UNKNOWN whether whatif=true
+	// actually enforces the gate (it may just return the normal cost-0 estimate);
+	// both outcomes are handled — the gate is verified-at-real-submit, this preview
+	// is best-effort. If whatif ignores the gate, the flow still works (Run for real
+	// applies it, and the real-run affordability terminal state offers "run anyway").
+	tmpl := comfy.NewCustomComfyTemplate([]byte(wf.Graph), urns).
+		WithMinimumDuration(defaultCloudMinDurationSeconds)
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	res, err := client.SubmitCloud(ctx, tmpl, true)
 	view := cloudEstimateView{wfID: wf.ID, urns: urns}
 	if err != nil {
+		// A 400 on the gated whatif is (very likely) the affordability gate: surface it
+		// as a distinct affordability warning + "run anyway", NOT a generic estimate
+		// failure. A non-400 stays a normal estimate error.
+		if isCloudAffordabilityReject(err) {
+			view.affordability = true
+		}
 		view.err = cloudErrorMessage(err)
 	} else {
 		view.cost = res.BaseCost()
@@ -203,7 +224,11 @@ func (s *Server) handleWorkflowCloudRun(w http.ResponseWriter, r *http.Request) 
 		}, wf.ID, s.csrf))
 		return
 	}
-	s.startCloudRun(wf, urns)
+	// run_anyway (present/non-empty) skips the submit-time affordability gate — the
+	// "run anyway" retry offered after the gate rejected an earlier submit. Absent ⇒
+	// apply the gate (the default, affordability floor honored).
+	skipGate := strings.TrimSpace(r.FormValue("run_anyway")) != ""
+	s.startCloudRun(wf, urns, skipGate)
 	s.render(w, http.StatusOK, cloudStatusFragment(s.cloudJobState(), wf.ID, s.csrf))
 }
 
@@ -273,6 +298,16 @@ func (s *Server) handleWorkflowCloudStop(w http.ResponseWriter, r *http.Request)
 	s.stopCloudRun()
 	id, _ := strconv.ParseInt(r.FormValue("workflow_id"), 10, 64)
 	s.render(w, http.StatusOK, cloudStatusFragment(s.cloudJobState(), id, s.csrf))
+}
+
+// isCloudAffordabilityReject reports whether err is an orchestration 400 — the
+// status the submit-time minimumDurationSeconds affordability gate rejects with. It
+// cannot perfectly distinguish an affordability-400 from a bad-graph-400, but the
+// caller only uses it to OFFER a gate-skipped "run anyway" retry, which is safe: a
+// genuine graph error simply fails again with the same detail.
+func isCloudAffordabilityReject(err error) bool {
+	var p *comfy.CloudProblem
+	return errors.As(err, &p) && p.IsBadRequest()
 }
 
 // cloudErrorMessage renders a cloud error for display. A *comfy.CloudProblem
