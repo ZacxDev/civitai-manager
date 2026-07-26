@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +20,31 @@ var ErrGoldenNeedsVersion = errors.New("cannot set golden without an attached ve
 
 const workflowCols = `id, name, format, graph, source, model_id, version_id,
 	base_model, is_golden, resources, source_path, size_bytes, mtime,
-	created_at, updated_at`
+	graph_hash, created_at, updated_at`
+
+// GraphHash computes the content dedup hash for a workflow graph: a SHA-256 (hex)
+// over the CANONICALIZED graph JSON. Canonicalization unmarshals then re-marshals
+// the JSON so map keys are sorted and insignificant whitespace is normalized —
+// two graphs that differ only in formatting or key order therefore share a hash
+// and a re-import is idempotent. A graph that does not parse as JSON (should not
+// happen — inserts validate/detect format first) falls back to hashing the raw
+// bytes so the result is still deterministic. An empty graph yields "".
+func GraphHash(graph string) string {
+	if strings.TrimSpace(graph) == "" {
+		return ""
+	}
+	canonical := []byte(graph)
+	var v any
+	if err := json.Unmarshal([]byte(graph), &v); err == nil {
+		// json.Marshal emits object keys in sorted order, giving a stable
+		// canonical form regardless of the source formatting/key order.
+		if b, merr := json.Marshal(v); merr == nil {
+			canonical = b
+		}
+	}
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:])
+}
 
 func scanWorkflow(sc scanner) (Workflow, error) {
 	var (
@@ -30,15 +56,17 @@ func scanWorkflow(sc scanner) (Workflow, error) {
 		resources  sql.NullString
 		sourcePath sql.NullString
 		mtime      sql.NullString
+		graphHash  sql.NullString
 		createdAt  string
 		updatedAt  string
 	)
 	if err := sc.Scan(&wf.ID, &wf.Name, &wf.Format, &wf.Graph, &wf.Source,
 		&modelID, &versionID, &baseModel, &isGolden, &resources,
-		&sourcePath, &wf.SizeBytes, &mtime,
+		&sourcePath, &wf.SizeBytes, &mtime, &graphHash,
 		&createdAt, &updatedAt); err != nil {
 		return Workflow{}, err
 	}
+	wf.GraphHash = graphHash.String
 	if modelID.Valid {
 		v := int(modelID.Int64)
 		wf.ModelID = &v
@@ -91,16 +119,21 @@ func (s *Store) InsertWorkflow(ctx context.Context, wf *Workflow) (int64, error)
 	if wf.UpdatedAt.IsZero() {
 		wf.UpdatedAt = now
 	}
+	// Populate graph_hash on every insert path (paste/PNG/scan/civitai) so dedup is
+	// consistent going forward; honor a caller-supplied hash if already set.
+	if wf.GraphHash == "" {
+		wf.GraphHash = GraphHash(wf.Graph)
+	}
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO workflows
 			(name, format, graph, source, model_id, version_id, base_model,
-			 is_golden, resources, source_path, size_bytes, mtime, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 is_golden, resources, source_path, size_bytes, mtime, graph_hash, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		wf.Name, wf.Format, wf.Graph, wf.Source,
 		nullInt(wf.ModelID), nullInt(wf.VersionID), nullStr(wf.BaseModel),
 		boolToInt(wf.IsGolden), marshalResources(wf.Resources),
 		nullStr(wf.SourcePath), wf.SizeBytes, nullTimeNanoStr(wf.Mtime),
-		formatTime(wf.CreatedAt), formatTime(wf.UpdatedAt))
+		nullStr(wf.GraphHash), formatTime(wf.CreatedAt), formatTime(wf.UpdatedAt))
 	if err != nil {
 		return 0, fmt.Errorf("insert workflow: %w", err)
 	}
@@ -125,6 +158,9 @@ func (s *Store) UpsertWorkflowByPath(ctx context.Context, wf *Workflow) (id int6
 	if wf.UpdatedAt.IsZero() {
 		wf.UpdatedAt = now
 	}
+	if wf.GraphHash == "" {
+		wf.GraphHash = GraphHash(wf.Graph)
+	}
 	// Detect insert-vs-update up front so we can report it (RowsAffected is 1 for
 	// both an insert and an ON CONFLICT update under SQLite, so it cannot tell them
 	// apart). This read + write pair runs against the single-conn WAL store.
@@ -143,13 +179,14 @@ func (s *Store) UpsertWorkflowByPath(ctx context.Context, wf *Workflow) (id int6
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO workflows
 			(name, format, graph, source, model_id, version_id, base_model,
-			 is_golden, resources, source_path, size_bytes, mtime, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 is_golden, resources, source_path, size_bytes, mtime, graph_hash, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(source_path) WHERE source_path IS NOT NULL DO UPDATE SET
 			-- Keep a user-set name; only adopt the derived filename on the first insert.
 			name = CASE WHEN workflows.name = '' THEN excluded.name ELSE workflows.name END,
 			format = excluded.format,
 			graph = excluded.graph,
+			graph_hash = excluded.graph_hash,
 			-- Never clobber a manual attach (or a golden's linkage) with a re-scan's
 			-- auto-link: keep the existing id when present.
 			model_id = COALESCE(workflows.model_id, excluded.model_id),
@@ -162,7 +199,7 @@ func (s *Store) UpsertWorkflowByPath(ctx context.Context, wf *Workflow) (id int6
 		nullInt(wf.ModelID), nullInt(wf.VersionID), nullStr(wf.BaseModel),
 		boolToInt(wf.IsGolden), marshalResources(wf.Resources),
 		nullStr(wf.SourcePath), wf.SizeBytes, nullTimeNanoStr(wf.Mtime),
-		formatTime(wf.CreatedAt), formatTime(wf.UpdatedAt))
+		nullStr(wf.GraphHash), formatTime(wf.CreatedAt), formatTime(wf.UpdatedAt))
 	if err != nil {
 		return 0, false, fmt.Errorf("upsert workflow by path: %w", err)
 	}
@@ -266,6 +303,27 @@ func (s *Store) GetWorkflow(ctx context.Context, id int64) (*Workflow, error) {
 		return nil, err
 	}
 	return &wf, nil
+}
+
+// WorkflowExistsByGraphHash reports whether any workflow row already carries the
+// given content hash. It powers the import-time dedup skip (Discover D2): a
+// discovered workflow whose canonical graph hash already exists is not re-inserted,
+// so a re-import is idempotent. A blank hash is treated as "not present" (never a
+// match) so it can never dedup unhashed legacy rows.
+func (s *Store) WorkflowExistsByGraphHash(ctx context.Context, hash string) (bool, error) {
+	if strings.TrimSpace(hash) == "" {
+		return false, nil
+	}
+	var one int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM workflows WHERE graph_hash = ? LIMIT 1`, hash).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // ListWorkflows returns every workflow, newest first.
