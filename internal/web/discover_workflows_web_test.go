@@ -35,7 +35,8 @@ func workflowResult(t *testing.T) *civitai.ModelSearchResult {
 }
 
 // TestDiscoverPinsTypeWorkflows proves the discover handler builds the SearchModels
-// request with type=Workflows plus the query/limit/sort/period params.
+// request with types=Workflows (PLURAL — the CivitAI API ignores singular "type")
+// plus the query/limit/sort/period params.
 func TestDiscoverPinsTypeWorkflows(t *testing.T) {
 	reader := &recordingSearchReader{result: workflowResult(t)}
 	srv := newModelServer(t, reader)
@@ -51,8 +52,11 @@ func TestDiscoverPinsTypeWorkflows(t *testing.T) {
 	reader.mu.Lock()
 	q := reader.calls[0]
 	reader.mu.Unlock()
-	if q.Get("type") != "Workflows" {
-		t.Errorf("type = %q, want Workflows", q.Get("type"))
+	if q.Get("types") != "Workflows" {
+		t.Errorf("types = %q, want Workflows", q.Get("types"))
+	}
+	if q.Get("type") != "" {
+		t.Errorf("singular type must NOT be set (API ignores it); got %q", q.Get("type"))
 	}
 	if q.Get("query") != "wan" {
 		t.Errorf("query = %q, want wan", q.Get("query"))

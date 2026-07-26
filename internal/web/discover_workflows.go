@@ -47,7 +47,11 @@ func (s *Server) handleDiscoverWorkflows(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Reuse the model-search param assembly verbatim, then pin type=Workflows.
+	// Reuse the model-search param assembly verbatim, then pin the model type.
+	// NOTE: the CivitAI models API filters by "types" (PLURAL) — the singular
+	// "type" is silently ignored and returns mixed/unfiltered results (verified
+	// live: type=Workflows returned Checkpoints/LoRAs; types=Workflows returns
+	// Workflows-type models).
 	q := url.Values{}
 	q.Set("query", query)
 	q.Set("limit", searchLimit)
@@ -56,7 +60,7 @@ func (s *Server) handleDiscoverWorkflows(w http.ResponseWriter, r *http.Request)
 	// Tie nsfw to the display mode so NSFW models return WITH their showcase images
 	// (blur/show) or are excluded (hide) — same posture as the model search.
 	setNSFWParam(q, nsfw)
-	q.Set("type", "Workflows")
+	q.Set("types", "Workflows")
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
