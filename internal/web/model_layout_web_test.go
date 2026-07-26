@@ -1,66 +1,181 @@
 package web
 
 import (
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/ZacxDev/civitai-manager/internal/civitai"
 )
 
-// TestModelHeaderCarouselReplacesGalleryCard proves the showcase carousel now
-// lives INSIDE the header card and the separate gallery card is gone (images are
-// not shown twice), while the description is wrapped in the cm-model-desc
-// container that constrains overflow.
-func TestModelHeaderCarouselReplacesGalleryCard(t *testing.T) {
+// TestModelDetailSectionOrder proves the model detail page renders sections in
+// the new order: Header → version tabs → showcase → files/metadata → community →
+// Description → Tags. Specifically: the version tabs come before the showcase,
+// and both the showcase and the files/metadata block come BEFORE the Description
+// heading (the reorder that moved the version region above the description).
+func TestModelDetailSectionOrder(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
 	body := getModelPage(t, srv, "/models/7")
 
-	// The header region (before the Versions section) must contain the carousel.
-	versionsIdx := strings.Index(body, "Versions")
-	if versionsIdx < 0 {
-		t.Fatal("model page missing Versions section")
+	idx := func(s string) int {
+		i := strings.Index(body, s)
+		if i < 0 {
+			t.Fatalf("model page missing %q", s)
+		}
+		return i
 	}
-	header := body[:versionsIdx]
-	if !strings.Contains(header, "cm-carousel") {
-		t.Error("showcase carousel should render inside the header (before Versions)")
+
+	tabs := idx("cm-version-tabs")
+	showcase := idx("cm-showcase-lg")
+	files := idx("Files &amp; metadata") // sectionTitle escapes the ampersand
+	community := idx(`id="community-feed"`)
+	desc := idx(">Description<")
+	tags := idx("cm-tag-chip")
+
+	if !(tabs < showcase) {
+		t.Errorf("version tabs (%d) should render before the showcase (%d)", tabs, showcase)
 	}
-	// The NSFW control moved into the header too.
-	if !strings.Contains(header, "NSFW:") {
-		t.Error("NSFW display control should be reachable in the header")
+	if !(showcase < files) {
+		t.Errorf("showcase (%d) should render before files/metadata (%d)", showcase, files)
 	}
-	// The old gallery card's grid markup must be gone — images are not shown twice.
+	if !(files < community) {
+		t.Errorf("files/metadata (%d) should render before the community feed (%d)", files, community)
+	}
+	if !(community < desc) {
+		t.Errorf("community feed (%d) should render before the Description (%d)", community, desc)
+	}
+	if !(desc < tags) {
+		t.Errorf("Description (%d) should render before the Tags chips (%d)", desc, tags)
+	}
+	// The old separate gallery grid card must remain gone (images shown once).
 	if strings.Contains(body, "grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4") {
 		t.Error("the separate gallery grid card should be removed (images shown once)")
 	}
-	// The description is wrapped in the overflow-constraining container.
+	// Description still wrapped in the overflow-constraining container.
 	if !strings.Contains(body, "cm-model-desc") {
 		t.Error("description should be wrapped in the cm-model-desc container")
 	}
-	// The carousel still shows both inline images (safe + blurred NSFW under blur).
+	// The showcase still renders the inline images (safe + blurred NSFW under blur).
 	if !strings.Contains(body, "safe.jpeg") || !strings.Contains(body, "nsfw.jpeg") {
-		t.Error("carousel should render the inline showcase images")
+		t.Error("showcase should render the inline showcase images")
 	}
 }
 
-// TestModelPageEmitsLazyCommunityContainer proves modelDetailPage emits the
-// stable lazy #community-feed container wired to load the feed for the SELECTED
-// version.
-func TestModelPageEmitsLazyCommunityContainer(t *testing.T) {
-	srv := newModelServer(t, newModelReader(t))
-	body := getModelPage(t, srv, "/models/7")
+// TestModelVersionTabsMarkup proves the version tab bar renders one tab per model
+// version, marks the SELECTED version's tab active, wires each tab with the exact
+// htmx swap contract (hx-get/hx-target/hx-swap/hx-push-url) + the no-JS href
+// fallback, and shows the ✓ in-library indicator only for owned versions.
+func TestModelVersionTabsMarkup(t *testing.T) {
+	view := modelDetailView{
+		Model: &civitai.ModelDetail{
+			ID: 7, Name: "Great Model",
+			ModelVersions: []civitai.ModelVersionSummary{
+				{ID: 11, Name: "v2", BaseModel: "SDXL"},
+				{ID: 10, Name: "v1", BaseModel: "SD 1.5"},
+			},
+		},
+		SelectedVersionID: 11,
+		LocalVersionIDs:   map[int]bool{10: true}, // user owns v1 only
+	}
+	out := renderString(t, modelVersionTabsCard(view))
 
-	if !strings.Contains(body, `id="community-feed"`) {
-		t.Error("model page should emit the #community-feed lazy container")
+	// One tab per version, each carrying the full htmx contract + href fallback.
+	for _, verID := range []int{11, 10} {
+		href := "/models/7?version=" + strconv.Itoa(verID)
+		for _, want := range []string{
+			`hx-get="` + href + `"`,
+			`hx-target="#version-region"`,
+			`hx-swap="innerHTML"`,
+			`hx-push-url="true"`,
+			`href="` + href + `"`,
+		} {
+			if strings.Count(out, want) < 1 {
+				t.Errorf("version %d tab missing %q:\n%s", verID, want, out)
+			}
+		}
 	}
-	// The selected version is 11 (latest / first listed) for /models/7.
-	if !strings.Contains(body, `hx-get="/models/7/community?versionId=11"`) {
-		t.Errorf("community container should target the selected version:\n%s", body)
+	// Exactly two tabs (two hx-get occurrences).
+	if n := strings.Count(out, "hx-get="); n != 2 {
+		t.Errorf("want 2 version tabs, got %d hx-get attrs", n)
 	}
-	if !strings.Contains(body, `hx-trigger="revealed"`) {
-		t.Error("community container should lazy-load when scrolled into view (trigger=revealed)")
+	// The active (selected) tab carries the active class + aria-current.
+	if !strings.Contains(out, "cm-version-tab-active") {
+		t.Error("selected version tab should carry the active class")
+	}
+	if !strings.Contains(out, `aria-current="true"`) {
+		t.Error("selected version tab should carry aria-current")
+	}
+	// Exactly one active tab.
+	if n := strings.Count(out, "cm-version-tab-active"); n != 1 {
+		t.Errorf("want exactly 1 active tab, got %d", n)
+	}
+	// The ✓ in-library indicator shows once (only v1 is owned).
+	if n := strings.Count(out, `aria-label="In your library"`); n != 1 {
+		t.Errorf("want the ✓ indicator on exactly the 1 owned version, got %d", n)
+	}
+}
+
+// TestDetailShowcaseEnlargedNotCards proves the DETAIL showcase carries the
+// detail-only .cm-showcase-lg modifier and requests the larger thumbnail width
+// (detailThumbnailWidth=800), while the shared search/library card carousel does
+// NOT carry the large class and keeps the 450px default — so cards are unchanged.
+func TestDetailShowcaseEnlargedNotCards(t *testing.T) {
+	// A properly-shaped civitai CDN url so civitaiThumbURL applies the transform.
+	imgs := []galleryImage{{URL: "https://image.civitai.com/bucket/uuid/pic.jpeg", Width: 4096, Height: 2048}}
+
+	detail := renderString(t, showcaseCard(7, imgs, NSFWShow))
+	if !strings.Contains(detail, "cm-showcase-lg") {
+		t.Error("detail showcase should carry the .cm-showcase-lg enlargement modifier")
+	}
+	if !strings.Contains(detail, "width=800") {
+		t.Errorf("detail showcase should request the larger thumbnail width (800):\n%s", detail)
 	}
 
-	// Selecting an older version reloads the feed for THAT version.
-	body = getModelPage(t, srv, "/models/7?version=10")
-	if !strings.Contains(body, `hx-get="/models/7/community?versionId=10"`) {
-		t.Error("selecting version 10 should point the feed at versionId=10")
+	card := renderString(t, modelCardCarousel(7, imgs, NSFWShow))
+	if strings.Contains(card, "cm-showcase-lg") {
+		t.Error("the shared card carousel must NOT carry the detail-only large class")
+	}
+	if !strings.Contains(card, "width=450") {
+		t.Errorf("the shared card carousel should keep the 450px default width:\n%s", card)
+	}
+	if strings.Contains(card, "width=800") {
+		t.Error("the shared card carousel must NOT request the enlarged detail width")
+	}
+}
+
+// TestModelVersionTabsEscaping proves untrusted version names AND file names are
+// escaped (g.Text), so a <script>-bearing name cannot inject markup.
+func TestModelVersionTabsEscaping(t *testing.T) {
+	verID := 11
+	view := modelDetailView{
+		Model: &civitai.ModelDetail{
+			ID: 7, Name: "m",
+			ModelVersions: []civitai.ModelVersionSummary{
+				{ID: verID, Name: "<script>alert('ver')</script>", BaseModel: "SDXL"},
+			},
+		},
+		SelectedVersionID: verID,
+		Version: &civitai.ModelVersionDetail{
+			ID: verID, ModelID: 7, BaseModel: "SDXL",
+			Files: []civitai.ModelVersionFile{
+				{ID: 1, Name: "<script>alert('file')</script>.safetensors", Type: "Model", SizeKB: 1024},
+			},
+		},
+	}
+
+	tabs := renderString(t, modelVersionTabsCard(view))
+	if strings.Contains(tabs, "<script>alert('ver')") {
+		t.Errorf("version name must be escaped in the tab bar:\n%s", tabs)
+	}
+	if !strings.Contains(tabs, "&lt;script&gt;") {
+		t.Error("version name should appear HTML-escaped")
+	}
+
+	files := renderString(t, versionDetailCard(view, "csrf-token"))
+	if strings.Contains(files, "<script>alert('file')") {
+		t.Errorf("file name must be escaped in the file list:\n%s", files)
+	}
+	if !strings.Contains(files, "&lt;script&gt;") {
+		t.Error("file name should appear HTML-escaped")
 	}
 }

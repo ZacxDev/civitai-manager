@@ -638,6 +638,15 @@ func modelCardError(id, fileCount int, total int64, msg string) g.Node {
 // (and thus the shared lightbox on the results page) with a per-model-namespaced
 // meta id so multiple carousels don't collide.
 func modelCardCarousel(modelID int, images []galleryImage, mode string) g.Node {
+	return modelCardCarouselW(modelID, images, mode, thumbnailWidth)
+}
+
+// modelCardCarouselW is modelCardCarousel with an explicit tile thumbnail width.
+// The shared search/library card carousel calls modelCardCarousel (450px); the
+// model DETAIL showcase calls this with detailThumbnailWidth so its enlarged
+// tiles stay crisp — the markup is otherwise identical (same .cm-carousel strip,
+// NSFW handling, and lightbox), so the card carousel is unaffected.
+func modelCardCarouselW(modelID int, images []galleryImage, mode string, tileWidth int) g.Node {
 	mode = normalizeNSFWMode(mode)
 	var tiles []g.Node
 	shown := 0
@@ -649,7 +658,7 @@ func modelCardCarousel(modelID int, images []galleryImage, mode string) g.Node {
 		blur := nsfw && mode == NSFWBlur
 		tiles = append(tiles, h.Div(
 			h.Class("cm-carousel-item"),
-			galleryTile(im, fmt.Sprintf("cm-meta-m%d-%d", modelID, i), blur),
+			galleryTileW(im, fmt.Sprintf("cm-meta-m%d-%d", modelID, i), blur, tileWidth),
 		))
 		shown++
 	}

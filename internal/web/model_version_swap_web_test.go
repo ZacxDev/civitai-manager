@@ -35,17 +35,29 @@ func TestModelVersionSwapHXFragment(t *testing.T) {
 	if strings.Contains(body, ">civitai-manager<") {
 		t.Errorf("HX swap must not include the navbar:\n%s", body)
 	}
-	// Contains the region content: showcase, version detail, community container.
+	// Contains the region content: version tabs, showcase, version detail (files/
+	// metadata), community container.
 	for _, want := range []string{
+		"cm-version-tabs",            // the version tab bar re-renders inside the region
+		"cm-version-tab-active",      // an active tab is present after the swap
 		"Showcase images",
-		"Versions",
-		"great-model.safetensors", // the selected version's file list
+		"cm-showcase-lg",             // the enlarged detail showcase
+		"Files &amp; metadata",       // the files/metadata section
+		"great-model.safetensors",    // the selected version's file list
 		`id="community-feed"`,
 		"versionId=11", // community feed keyed to the swapped version
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("region fragment missing %q:\n%s", want, body)
 		}
+	}
+	// The active tab moved to the swapped-in version (11), and only one tab is
+	// active — proving the tab-bar highlight re-renders with the region.
+	if strings.Count(body, "cm-version-tab-active") != 1 {
+		t.Errorf("exactly one tab should be active after the swap:\n%s", body)
+	}
+	if !strings.Contains(body, `hx-get="/models/7?version=11"`) || !strings.Contains(body, `aria-current="true"`) {
+		t.Errorf("the swapped-in version's tab should be the active one:\n%s", body)
 	}
 }
 
