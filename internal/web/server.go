@@ -368,6 +368,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /library/workflow-scan/stop", s.handleWorkflowScanStop)
 
 	mux.HandleFunc("GET /workflows", s.handleWorkflows)
+	// Browse-only workflow discovery (Slice D1). Registered before the {id} route;
+	// ServeMux prefers this more-specific literal path over /workflows/{id}.
+	mux.HandleFunc("GET /workflows/discover", s.handleDiscoverWorkflows)
 	mux.HandleFunc("GET /workflows/{id}", s.handleWorkflowDetail)
 	mux.HandleFunc("POST /workflows/import", s.handleWorkflowImport)
 	mux.HandleFunc("POST /workflows/import-png", s.handleWorkflowImportPNG)

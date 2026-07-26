@@ -583,6 +583,18 @@ func modelCard(it civitai.ModelListItem, images []galleryImage, subs map[int]*st
 // collapsed "Subscribe"); the map is built ONCE per render (one ListSubscriptions
 // query), never per card.
 func modelCardWith(it civitai.ModelListItem, images []galleryImage, subs map[int]*store.Subscription, mode, csrf string, updated modelUpdateInfo) g.Node {
+	return modelCardCore(it, images, mode, updated,
+		h.Div(h.Class("mt-1"), subscribeControl(it.ID, subs[it.ID], csrf)))
+}
+
+// modelCardCore renders the shared result-card body (showcase carousel, name link
+// to the in-app model detail page, type/NSFW/creator row, stats, and the "Updated
+// X ago" popover) and appends `action` — the trailing per-card control — when it is
+// non-nil. The search cards pass the subscribe control; the browse-only Discover
+// cards pass nil so no state-changing control appears. Passing nil yields byte-for-
+// byte the same body the search cards render minus that final action div, so the
+// two surfaces share one card implementation and cannot drift.
+func modelCardCore(it civitai.ModelListItem, images []galleryImage, mode string, updated modelUpdateInfo, action g.Node) g.Node {
 	creator := ""
 	if it.Creator != nil {
 		creator = it.Creator.Username
@@ -615,7 +627,9 @@ func modelCardWith(it civitai.ModelListItem, images []galleryImage, subs map[int
 			updated.Name,
 			updated.At.Local().Format("2006-01-02"),
 		)),
-		h.Div(h.Class("mt-1"), subscribeControl(it.ID, subs[it.ID], csrf)),
+	}
+	if action != nil {
+		children = append(children, action)
 	}
 	return card(children...)
 }

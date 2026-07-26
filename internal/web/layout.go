@@ -67,6 +67,7 @@ func navbar(theme, csrf, nsfwMode string) g.Node {
 			h.A(h.Href("/"), h.Class("font-semibold text-indigo-400"), g.Text("civitai-manager")),
 			navLink("/", "Dashboard"),
 			navLink("/search", "Search"),
+			navLink("/workflows/discover", "Discover"),
 			navLink("/library", "Library"),
 			navLink("/trash", "Trash"),
 			h.Div(h.Class("ml-auto flex items-center gap-2"),
