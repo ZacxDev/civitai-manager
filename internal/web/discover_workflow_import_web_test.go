@@ -365,6 +365,29 @@ func TestImportBadModelID(t *testing.T) {
 	}
 }
 
+// TestImportNonWorkflowsModelRejected proves the import endpoint refuses a
+// non-Workflows model (defence-in-depth for a hand-crafted POST) BEFORE fetching,
+// even if that model happens to carry an Archive file.
+func TestImportNonWorkflowsModelRejected(t *testing.T) {
+	model := &civitai.ModelDetail{
+		ID: 4242, Name: "A Checkpoint", Type: "Checkpoint",
+		ModelVersions: []civitai.ModelVersionSummary{{
+			ID: 5, Files: []civitai.ModelVersionFile{
+				{ID: 1, Name: "bundle.zip", Type: "Archive", DownloadURL: "u"},
+			},
+		}},
+	}
+	dl := &fakeDownloader{}
+	srv := newImportServer(t, model, dl, "tok", "")
+	rec := postImport(srv, 4242, true)
+	if !strings.Contains(rec.Body.String(), "not a Workflows-type model") {
+		t.Fatalf("expected non-Workflows rejection, got: %s", rec.Body.String())
+	}
+	if dl.calls != 0 {
+		t.Errorf("must not download for a non-Workflows model, got %d calls", dl.calls)
+	}
+}
+
 // TestImportNoArchiveFile proves a Workflows model whose primary version has no
 // Archive file yields a clear error (never downloads weights).
 func TestImportNoArchiveFile(t *testing.T) {
