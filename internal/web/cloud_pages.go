@@ -36,11 +36,23 @@ func cloudEntryCard(wfID int64) g.Node {
 
 // cloudPanelView is the resolved state the cloud panel renders.
 type cloudPanelView struct {
-	wfID      int64
-	enabled   bool // comfy_cloud
-	apiFormat bool // the workflow is API-format (cloud-runnable)
-	rows      []comfy.ResolvedResource
-	snap      cloudSnapshot
+	wfID    int64
+	enabled bool // comfy_cloud
+	// runnable is true when a submittable API graph was resolved (either the
+	// workflow is already API-format, or a UI-format graph converted cleanly via the
+	// local ComfyUI). When false, note/warnings explain why.
+	runnable bool
+	// willConvert is true when a UI-format workflow WILL be converted to API format
+	// via the local ComfyUI before submission (surfaced so the user understands it).
+	willConvert bool
+	// note is a human explanation shown when the workflow is not runnable (e.g. the
+	// local ComfyUI is unreachable, or a conversion error). Escaped at render.
+	note string
+	// warnings is the UI→API conversion warning list (unrunnable/bypass/unknown
+	// nodes) shown when a UI-format workflow could not be converted cleanly.
+	warnings []string
+	rows     []comfy.ResolvedResource
+	snap     cloudSnapshot
 }
 
 // cloudEgressWarning is the prominent egress + Buzz-spend affordance, mirroring the
@@ -64,11 +76,15 @@ func cloudPanelFragment(v cloudPanelView, csrf string) g.Node {
 				g.Text("Enable comfy_cloud in your config to run workflows on CivitAI cloud.")),
 		)
 	}
-	if !v.apiFormat {
+	if !v.runnable {
+		// A UI-format workflow that could not be converted cleanly: show the specific
+		// conversion warnings if we have them, else the note (unreachable ComfyUI or a
+		// conversion error).
+		if len(v.warnings) > 0 {
+			return h.Div(cloudConversionWarnings(v.warnings))
+		}
 		return h.Div(
-			alert("warning", "API-format required",
-				g.Text("Cloud run currently requires an API-format workflow. This workflow is "+
-					"stored in UI format; export it to API format (or import the API graph) to run it on cloud.")),
+			alert("warning", "Cloud run needs a runnable graph", g.Text(v.note)),
 		)
 	}
 
@@ -83,6 +99,7 @@ func cloudPanelFragment(v cloudPanelView, csrf string) g.Node {
 	return h.Div(
 		h.Class("space-y-4"),
 		cloudEgressWarning(),
+		g.If(v.willConvert, cloudWillConvertNote()),
 		cloudResourceTable(v.rows),
 		h.Form(
 			hx("post", "/workflows/"+id+"/cloud/whatif"),
@@ -104,6 +121,28 @@ func cloudPanelFragment(v cloudPanelView, csrf string) g.Node {
 		),
 		h.Div(h.ID(cloudEstimateContainerID)),
 		h.Div(h.ID(cloudStatusContainerID), cloudStatusFragment(v.snap, v.wfID, csrf)),
+	)
+}
+
+// cloudWillConvertNote tells the user a UI-format workflow will be converted to API
+// format via the local ComfyUI before it is submitted to CivitAI cloud — so the
+// resolved-resources table below reflects the CONVERTED graph, not the raw UI graph.
+func cloudWillConvertNote() g.Node {
+	return alert("info", "UI-format workflow — converts via local ComfyUI",
+		g.Text("This workflow is stored in UI format. Cloud run converts it to API format "+
+			"using your local ComfyUI before submitting. The resources below are resolved from "+
+			"the converted graph."))
+}
+
+// cloudConversionWarnings renders the UI→API conversion warning list (unrunnable/
+// bypass/unknown nodes) as an error alert, mirroring the local-run abort: a workflow
+// that can't be converted cleanly is NOT submitted (mis-submitting wastes Buzz). Each
+// warning is untrusted (graph-derived) and escaped via g.Text by missingList.
+func cloudConversionWarnings(warnings []string) g.Node {
+	return alert("error", "This workflow could not be converted into a runnable graph",
+		g.Text("Cloud run converts UI-format workflows to API format via your local ComfyUI, "+
+			"but this workflow has nodes that could not be converted. It was not submitted."),
+		missingList("Conversion warnings", warnings),
 	)
 }
 

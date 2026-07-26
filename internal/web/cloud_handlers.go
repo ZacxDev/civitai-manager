@@ -101,16 +101,65 @@ func (l storeResourceLookup) ModelTypeBaseModel(modelID, versionID int) (string,
 	return "", "", false
 }
 
-// resolveWorkflowResources runs the resolution chain for a workflow, returning the
-// resolved-resource rows and whether the graph is usable as-is (API format). A
-// UI-format graph cannot be resolved into a runnable API graph without a live
-// ComfyUI /object_info, so cloud run currently requires API format.
-func (s *Server) resolveWorkflowResources(wf *store.Workflow) (rows []comfy.ResolvedResource, apiFormat bool) {
-	if wf.Format != store.WorkflowFormatAPI {
-		return nil, false
+// cloudObjectInfoTimeout bounds the local-ComfyUI /object_info probe on the cloud
+// path so a hung ComfyUI cannot stall the handler. A run itself may take minutes,
+// but fetching the node schema for a UI→API conversion must be quick.
+const cloudObjectInfoTimeout = 8 * time.Second
+
+// cloudAPIGraph returns the API-format graph to submit to CivitAI cloud for wf.
+//
+//   - API-format workflows are returned unchanged.
+//   - UI-format workflows are converted to API format using the LOCAL ComfyUI's
+//     /object_info (mirroring the local-run path exactly), so cloud run is usable on
+//     the UI-format workflows that make up the real library.
+//
+// ok is false — with a rendered explanation — when the workflow cannot be cloud-run:
+//   - the local ComfyUI is unreachable (note explains how to fix; an EXPECTED
+//     fallback, not a hard error);
+//   - the conversion errored (note carries the escaped error);
+//   - the conversion produced warnings (warnings carries the unrunnable/bypass/
+//     unknown-node list — same abort-rather-than-mis-submit rule as local run, since
+//     mis-submitting a broken graph wastes Buzz).
+func (s *Server) cloudAPIGraph(ctx context.Context, wf *store.Workflow) (apiGraph json.RawMessage, warnings []string, note string, ok bool) {
+	if wf.Format == store.WorkflowFormatAPI {
+		return json.RawMessage(wf.Graph), nil, "", true
 	}
-	rows, _ = comfy.ResolveResources([]byte(wf.Graph), storeResourceLookup{st: s.store})
-	return rows, true
+	client := s.comfy()
+	if client == nil {
+		return nil, nil, s.cloudUnreachableNote(), false
+	}
+	octx, cancel := context.WithTimeout(ctx, cloudObjectInfoTimeout)
+	defer cancel()
+	info, err := client.ObjectInfo(octx)
+	if err != nil {
+		return nil, nil, s.cloudUnreachableNote(), false
+	}
+	g, warns, cerr := comfy.ConvertUIToAPI(json.RawMessage(wf.Graph), info)
+	if cerr != nil {
+		return nil, nil, "Could not convert this UI-format workflow to API format: " + cerr.Error(), false
+	}
+	if len(warns) > 0 {
+		return nil, warns, "", false
+	}
+	return g, nil, "", true
+}
+
+// cloudUnreachableNote explains the UI-format fallback: cloud converts via the local
+// ComfyUI, which isn't reachable. It is an expected state, not an error.
+func (s *Server) cloudUnreachableNote() string {
+	if strings.TrimSpace(s.cfg.ComfyURL) == "" {
+		return "This workflow is in UI format. Cloud run converts it to API format using your local ComfyUI, " +
+			"but ComfyUI isn't configured (set comfy_url). Start ComfyUI (or import an API-format workflow) to run it on cloud."
+	}
+	return "This workflow is in UI format. Cloud run converts it to API format using your local ComfyUI, but " +
+		"ComfyUI isn't reachable at " + s.cfg.ComfyURL + ". Start ComfyUI (or import an API-format workflow) to run it on cloud."
+}
+
+// resolveResources runs the resolution chain over an API-format graph, returning the
+// resolved-resource rows for the cloud panel's table.
+func (s *Server) resolveResources(apiGraph json.RawMessage) []comfy.ResolvedResource {
+	rows, _ := comfy.ResolveResources(apiGraph, storeResourceLookup{st: s.store})
+	return rows
 }
 
 // handleWorkflowCloud renders the cloud-run panel: the resolved-resources table,
@@ -135,13 +184,21 @@ func (s *Server) handleWorkflowCloud(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	rows, apiFormat := s.resolveWorkflowResources(wf)
 	view := cloudPanelView{
-		wfID:      wf.ID,
-		enabled:   s.cfg.ComfyCloud,
-		apiFormat: apiFormat,
-		rows:      rows,
-		snap:      s.cloudJobState(),
+		wfID:    wf.ID,
+		enabled: s.cfg.ComfyCloud,
+		snap:    s.cloudJobState(),
+	}
+	if s.cfg.ComfyCloud {
+		apiGraph, warnings, note, ok := s.cloudAPIGraph(r.Context(), wf)
+		if ok {
+			view.runnable = true
+			view.willConvert = wf.Format != store.WorkflowFormatAPI
+			view.rows = s.resolveResources(apiGraph)
+		} else {
+			view.note = note
+			view.warnings = warnings
+		}
 	}
 	s.render(w, http.StatusOK, cloudPanelFragment(view, s.csrf))
 }
@@ -160,7 +217,7 @@ func (s *Server) handleWorkflowCloudWhatif(w http.ResponseWriter, r *http.Reques
 	if !s.gate(w) {
 		return
 	}
-	wf, urns, ok := s.cloudPrepare(w, r)
+	wf, apiGraph, urns, ok := s.cloudPrepare(w, r)
 	if !ok {
 		return
 	}
@@ -177,7 +234,7 @@ func (s *Server) handleWorkflowCloudWhatif(w http.ResponseWriter, r *http.Reques
 	// both outcomes are handled — the gate is verified-at-real-submit, this preview
 	// is best-effort. If whatif ignores the gate, the flow still works (Run for real
 	// applies it, and the real-run affordability terminal state offers "run anyway").
-	tmpl := comfy.NewCustomComfyTemplate([]byte(wf.Graph), urns).
+	tmpl := comfy.NewCustomComfyTemplate(apiGraph, urns).
 		WithMinimumDuration(defaultCloudMinDurationSeconds)
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
@@ -213,7 +270,7 @@ func (s *Server) handleWorkflowCloudRun(w http.ResponseWriter, r *http.Request) 
 	if !s.gate(w) {
 		return
 	}
-	wf, urns, ok := s.cloudPrepare(w, r)
+	wf, apiGraph, urns, ok := s.cloudPrepare(w, r)
 	if !ok {
 		return
 	}
@@ -228,37 +285,45 @@ func (s *Server) handleWorkflowCloudRun(w http.ResponseWriter, r *http.Request) 
 	// "run anyway" retry offered after the gate rejected an earlier submit. Absent ⇒
 	// apply the gate (the default, affordability floor honored).
 	skipGate := strings.TrimSpace(r.FormValue("run_anyway")) != ""
-	s.startCloudRun(wf, urns, skipGate)
+	s.startCloudRun(wf, apiGraph, urns, skipGate)
 	s.render(w, http.StatusOK, cloudStatusFragment(s.cloudJobState(), wf.ID, s.csrf))
 }
 
-// cloudPrepare loads the workflow, enforces the comfy_cloud gate + API-format
-// requirement, and parses the edited URN textarea. It writes the appropriate
-// fragment and returns ok=false when the request cannot proceed.
-func (s *Server) cloudPrepare(w http.ResponseWriter, r *http.Request) (*store.Workflow, []string, bool) {
+// cloudPrepare loads the workflow, enforces the comfy_cloud gate, resolves the
+// API-format graph to submit (converting a UI-format workflow via the local ComfyUI),
+// and parses the edited URN textarea. It writes the appropriate fragment and returns
+// ok=false when the request cannot proceed (feature off, conversion warnings, or an
+// unreachable-ComfyUI note). The returned apiGraph is what the caller must submit —
+// the CONVERTED graph for a UI-format workflow, not the raw UI graph.
+func (s *Server) cloudPrepare(w http.ResponseWriter, r *http.Request) (*store.Workflow, json.RawMessage, []string, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.Error(w, "bad workflow id", http.StatusBadRequest)
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	wf, err := s.store.GetWorkflow(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	if err != nil {
 		s.renderError(w, "load workflow", err)
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	if !s.cfg.ComfyCloud {
 		s.render(w, http.StatusOK, errorNote("CivitAI cloud run is disabled. Enable comfy_cloud in your config."))
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
-	if wf.Format != store.WorkflowFormatAPI {
-		s.render(w, http.StatusOK, errorNote("Cloud run currently requires an API-format workflow."))
-		return nil, nil, false
+	apiGraph, warnings, note, ok := s.cloudAPIGraph(r.Context(), wf)
+	if !ok {
+		if len(warnings) > 0 {
+			s.render(w, http.StatusOK, cloudConversionWarnings(warnings))
+		} else {
+			s.render(w, http.StatusOK, errorNote(note))
+		}
+		return nil, nil, nil, false
 	}
-	return wf, parseURNs(r.FormValue("resources")), true
+	return wf, apiGraph, parseURNs(r.FormValue("resources")), true
 }
 
 // parseURNs splits the textarea into one URN per line, trimming blanks.

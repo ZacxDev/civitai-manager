@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -134,15 +135,60 @@ func TestCloudPanelDisabledWhenOff(t *testing.T) {
 	}
 }
 
-// TestCloudPanelUIFormatRequiresAPI asserts a UI-format workflow shows the
-// API-format-required limitation instead of the run controls.
-func TestCloudPanelUIFormatRequiresAPI(t *testing.T) {
-	srv := newCloudTestServer(t, &fakeCloud{})
-	ui := `{"nodes":[{"id":4,"type":"CheckpointLoaderSimple","widgets_values":["a.safetensors"]}],"links":[]}`
-	id := seedWorkflow(t, srv, store.WorkflowFormatUI, ui)
+// uiCheckpointGraph + uiCheckpointInfo are a minimal UI-format workflow and the
+// matching /object_info schema that ConvertUIToAPI converts to API format cleanly
+// (no warnings). Shared by the cloud UI→API conversion tests.
+const uiCheckpointGraph = `{"nodes":[{"id":4,"type":"CheckpointLoaderSimple","widgets_values":["good.safetensors"]}],"links":[]}`
+const uiCheckpointInfo = `{"CheckpointLoaderSimple":{"input":{"required":{"ckpt_name":[["good.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}}}`
+
+// TestCloudPanelUIFormatNoComfy asserts a UI-format workflow with NO reachable local
+// ComfyUI shows the reworded reachability note (cloud converts via local ComfyUI),
+// not a flat "API-format required".
+func TestCloudPanelUIFormatNoComfy(t *testing.T) {
+	srv := newCloudTestServer(t, &fakeCloud{}) // no comfyClientFn, ComfyURL empty → s.comfy()==nil
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, uiCheckpointGraph)
 	rec := get(t, srv, "/workflows/"+id+"/cloud")
-	if !strings.Contains(rec.Body.String(), "API-format") {
-		t.Errorf("expected API-format-required note:\n%s", rec.Body.String())
+	body := rec.Body.String()
+	if !strings.Contains(body, "converts it to API format using your local ComfyUI") {
+		t.Errorf("expected the local-ComfyUI conversion reachability note:\n%s", body)
+	}
+}
+
+// TestCloudPanelUIFormatConvertsShowsResources asserts a UI-format workflow with a
+// reachable local ComfyUI whose /object_info yields a clean conversion shows the
+// resolved-resources table (from the CONVERTED graph) + a "will convert" note.
+func TestCloudPanelUIFormatConvertsShowsResources(t *testing.T) {
+	srv := newCloudTestServer(t, &fakeCloud{})
+	srv.comfyClientFn = func() comfyClient {
+		return &fakeComfy{info: mustObjectInfo(t, uiCheckpointInfo)}
+	}
+	// Seed the local file + model cache so the converted graph's ckpt resolves to a URN.
+	if err := srv.store.UpsertLocalFile(store.LocalFile{
+		Path: "/m/checkpoints/good.safetensors", SHA256: "h", ModelID: intp(10), VersionID: intp(20),
+		Kind: store.LocalKindModel, Status: store.LocalStatusMatched,
+	}); err != nil {
+		t.Fatalf("seed local file: %v", err)
+	}
+	if err := srv.store.PutModelCache(10, "Good",
+		[]byte(`{"id":10,"type":"Checkpoint","modelVersions":[{"id":20,"baseModel":"SDXL 1.0"}]}`)); err != nil {
+		t.Fatalf("seed model cache: %v", err)
+	}
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, uiCheckpointGraph)
+
+	rec := get(t, srv, "/workflows/"+id+"/cloud")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cloud panel = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"converts it to API format",             // the will-convert note
+		"good.safetensors",                       // resource filename from the CONVERTED graph
+		"urn:air:sdxl:checkpoint:civitai:10@20",  // derived URN
+		"Estimate cost",                          // run controls present (runnable)
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("converted-panel missing %q:\n%s", want, body)
+		}
 	}
 }
 
@@ -554,5 +600,148 @@ func TestCloudRunRunningThenStop(t *testing.T) {
 	}
 	if !fake.cancelCalled {
 		t.Error("stop should best-effort cancel the remote cloud workflow")
+	}
+}
+
+// uiWarnGraph is a UI-format workflow with one runnable node (CheckpointLoaderSimple)
+// AND one unknown node (FooBarNode). Against uiCheckpointInfo the conversion produces
+// a non-empty graph BUT a warning for the unknown node — the abort-rather-than-submit
+// path.
+const uiWarnGraph = `{"nodes":[{"id":4,"type":"CheckpointLoaderSimple","widgets_values":["good.safetensors"]},{"id":5,"type":"FooBarNode","widgets_values":[]}],"links":[]}`
+
+// TestCloudWhatifUIFormatSubmitsConvertedGraph asserts a whatif on a UI-format
+// workflow (reachable local ComfyUI, clean conversion) submits the CONVERTED API
+// graph — not the raw UI graph.
+func TestCloudWhatifUIFormatSubmitsConvertedGraph(t *testing.T) {
+	fake := &fakeCloud{whatifResp: &comfy.CloudWorkflow{ID: "wf-1", Status: "unassigned", Cost: &comfy.CloudCost{Base: 0}}}
+	srv := newCloudTestServer(t, fake)
+	srv.comfyClientFn = func() comfyClient { return &fakeComfy{info: mustObjectInfo(t, uiCheckpointInfo)} }
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, uiCheckpointGraph)
+
+	rec := post(t, srv, "/workflows/"+id+"/cloud/whatif", url.Values{"resources": {"u"}}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("whatif = %d", rec.Code)
+	}
+	if fake.submitCalls != 1 {
+		t.Fatalf("expected exactly one SubmitCloud, got %d", fake.submitCalls)
+	}
+	submitted := string(fake.lastTemplate.Steps[0].Input.Workflow)
+	if !strings.Contains(submitted, "class_type") {
+		t.Errorf("submitted graph is not API-format (no class_type):\n%s", submitted)
+	}
+	if strings.Contains(submitted, `"nodes"`) {
+		t.Errorf("submitted graph is the RAW UI graph, not the converted API graph:\n%s", submitted)
+	}
+}
+
+// TestCloudRunUIFormatUsesConvertedGraph asserts a real run of a UI-format workflow
+// submits the CONVERTED API graph and completes.
+func TestCloudRunUIFormatUsesConvertedGraph(t *testing.T) {
+	fake := &fakeCloud{runResp: &comfy.CloudWorkflow{ID: "wf-done", Status: "succeeded"}}
+	srv := newCloudTestServer(t, fake)
+	srv.comfyClientFn = func() comfyClient { return &fakeComfy{info: mustObjectInfo(t, uiCheckpointInfo)} }
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, uiCheckpointGraph)
+
+	if rec := post(t, srv, "/workflows/"+id+"/cloud/run", url.Values{"resources": {"u"}}, true); rec.Code != http.StatusOK {
+		t.Fatalf("cloud run = %d", rec.Code)
+	}
+	pollCloudUntilDone(t, srv, id)
+	if fake.submitCalls != 1 {
+		t.Fatalf("expected exactly one SubmitCloud, got %d", fake.submitCalls)
+	}
+	submitted := string(fake.lastTemplate.Steps[0].Input.Workflow)
+	if !strings.Contains(submitted, "class_type") || strings.Contains(submitted, `"nodes"`) {
+		t.Errorf("run must submit the converted API graph, not the raw UI graph:\n%s", submitted)
+	}
+}
+
+// TestCloudWhatifUIFormatWarningsNoSubmit asserts a whatif on a UI-format workflow
+// whose conversion produces warnings surfaces the warnings and does NOT submit.
+func TestCloudWhatifUIFormatWarningsNoSubmit(t *testing.T) {
+	fake := &fakeCloud{}
+	srv := newCloudTestServer(t, fake)
+	srv.comfyClientFn = func() comfyClient { return &fakeComfy{info: mustObjectInfo(t, uiCheckpointInfo)} }
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, uiWarnGraph)
+
+	rec := post(t, srv, "/workflows/"+id+"/cloud/whatif", url.Values{"resources": {"u"}}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("whatif = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "could not be converted") {
+		t.Errorf("expected conversion-warnings alert:\n%s", body)
+	}
+	if !strings.Contains(body, "FooBarNode") {
+		t.Errorf("expected the specific conversion warning:\n%s", body)
+	}
+	if fake.submitCalls != 0 {
+		t.Errorf("conversion warnings must NOT submit to cloud (calls=%d)", fake.submitCalls)
+	}
+}
+
+// TestCloudRunUIFormatWarningsNoSubmit asserts a real run on a UI-format workflow with
+// conversion warnings surfaces them and never submits.
+func TestCloudRunUIFormatWarningsNoSubmit(t *testing.T) {
+	fake := &fakeCloud{}
+	srv := newCloudTestServer(t, fake)
+	srv.comfyClientFn = func() comfyClient { return &fakeComfy{info: mustObjectInfo(t, uiCheckpointInfo)} }
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, uiWarnGraph)
+
+	rec := post(t, srv, "/workflows/"+id+"/cloud/run", url.Values{"resources": {"u"}}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cloud run = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "could not be converted") {
+		t.Errorf("expected conversion-warnings alert:\n%s", body)
+	}
+	if fake.submitCalls != 0 {
+		t.Errorf("conversion warnings must NOT submit to cloud (calls=%d)", fake.submitCalls)
+	}
+	if snap := srv.cloudJobState(); snap.Started {
+		t.Errorf("no cloud job should have started on conversion warnings")
+	}
+}
+
+// TestCloudWhatifUIFormatNoComfyNoSubmit asserts a whatif on a UI-format workflow with
+// no reachable local ComfyUI shows the reachability note and does NOT submit.
+func TestCloudWhatifUIFormatNoComfyNoSubmit(t *testing.T) {
+	fake := &fakeCloud{}
+	srv := newCloudTestServer(t, fake) // s.comfy()==nil
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, uiCheckpointGraph)
+
+	rec := post(t, srv, "/workflows/"+id+"/cloud/whatif", url.Values{"resources": {"u"}}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("whatif = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "converts it to API format using your local ComfyUI") {
+		t.Errorf("expected reachability note:\n%s", rec.Body.String())
+	}
+	if fake.submitCalls != 0 {
+		t.Errorf("unreachable ComfyUI must NOT submit to cloud (calls=%d)", fake.submitCalls)
+	}
+}
+
+// TestCloudRunUIFormatObjectInfoErrorNoSubmit asserts a UI-format run whose local
+// ComfyUI /object_info errors (reachable client but failing probe) falls back to the
+// reachability note and never submits.
+func TestCloudRunUIFormatObjectInfoErrorNoSubmit(t *testing.T) {
+	fake := &fakeCloud{}
+	srv := newCloudTestServer(t, fake)
+	srv.cfg.ComfyURL = "http://127.0.0.1:8188" // so the "isn't reachable at <url>" branch is hit
+	srv.comfyClientFn = func() comfyClient {
+		return &fakeComfy{infoErr: errors.New("connection refused")}
+	}
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, uiCheckpointGraph)
+
+	rec := post(t, srv, "/workflows/"+id+"/cloud/run", url.Values{"resources": {"u"}}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cloud run = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "reachable at http://127.0.0.1:8188") {
+		t.Errorf("expected reachability note on object_info error:\n%s", rec.Body.String())
+	}
+	if fake.submitCalls != 0 {
+		t.Errorf("object_info error must NOT submit to cloud (calls=%d)", fake.submitCalls)
 	}
 }

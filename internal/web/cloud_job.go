@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -66,9 +67,14 @@ type cloudUpdater struct {
 // URNs, unless one is already running (idempotent — a re-click starts no second
 // goroutine). Same one-global-run invariant as the local run.
 //
+// apiGraph is the API-format graph to submit (the CONVERTED graph for a UI-format
+// workflow) — resolved by the caller via cloudAPIGraph so this goroutine never
+// re-reads wf.Graph. It is passed as a value into the goroutine (no shared mutable
+// state).
+//
 // skipGate omits the submit-time minimumDurationSeconds affordability gate (the
 // "run anyway" path); the default (false) applies the gate.
-func (s *Server) startCloudRun(wf *store.Workflow, urns []string, skipGate bool) {
+func (s *Server) startCloudRun(wf *store.Workflow, apiGraph json.RawMessage, urns []string, skipGate bool) {
 	s.cloudMu.Lock()
 	defer s.cloudMu.Unlock()
 	if s.cloudJob != nil && s.cloudJob.running {
@@ -100,7 +106,7 @@ func (s *Server) startCloudRun(wf *store.Workflow, urns []string, skipGate bool)
 		},
 	}
 
-	graph := []byte(wf.Graph)
+	graph := []byte(apiGraph)
 	go func() {
 		defer cancel()
 		var urls []string
