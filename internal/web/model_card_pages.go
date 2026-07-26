@@ -239,7 +239,7 @@ func versionStatusLazy(modelID int) g.Node {
 // known). When up to date it renders NOTHING (g.Text("")) to keep the grid clean.
 // All model/version names + dates are untrusted civitai strings — g.Text escapes
 // every one. raw is the cached GetModel body (for the publish date); it may be nil.
-func versionStatusFragment(bd versionBreakdown, raw []byte) g.Node {
+func versionStatusFragment(modelID int, bd versionBreakdown, raw []byte) g.Node {
 	if !bd.UpdateAvailable || bd.LatestID == 0 {
 		return g.Text("") // up to date (or unknown) → render nothing
 	}
@@ -258,15 +258,27 @@ func versionStatusFragment(bd versionBreakdown, raw []byte) g.Node {
 			haveLine += " · Published " + d
 		}
 	}
-	latestLine := "Latest: " + latest
+	// The latest-version name is a deeplink to that version's detail page
+	// (/models/{id}?version={LatestID}); only the title is inside the link, the
+	// "· Published {date}" suffix follows outside it. onclick stops propagation so
+	// the click navigates even inside the JS-hover-controlled popover. The name is
+	// untrusted → g.Text escapes it.
+	latestChildren := []g.Node{
+		h.A(
+			h.Href(fmt.Sprintf("/models/%d?version=%d", modelID, bd.LatestID)),
+			h.Class("text-indigo-300 hover:text-indigo-200"),
+			g.Attr("onclick", "event.stopPropagation()"),
+			g.Text("Latest: "+latest),
+		),
+	}
 	if d := versionPublishedDate(raw, bd.LatestID); d != "" {
-		latestLine += " · Published " + d
+		latestChildren = append(latestChildren, g.Text(" · Published "+d))
 	}
 
 	pop := []g.Node{
 		h.Div(h.Class("cm-vstatus-title"), g.Text("Update available")),
 		h.Div(g.Text(haveLine)),
-		h.Div(g.Text(latestLine)),
+		h.Div(g.Group(latestChildren)),
 	}
 
 	return h.Span(

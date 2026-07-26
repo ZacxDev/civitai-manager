@@ -392,6 +392,15 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 .cm-vstatus-lazy:empty {
   display: none;
 }
+/*
+ * The suggestion card's lazy showcase-carousel container (see cardImagesLazy):
+ * collapses to nothing while empty — before the lazy fragment loads AND when the
+ * model has no showcase images (empty fragment) — so a card without images
+ * reserves no vertical space above the title.
+ */
+.cm-card-images-lazy:empty {
+  display: none;
+}
 .cm-vstatus {
   position: relative;
   display: inline-flex;
@@ -418,7 +427,8 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
 }
 .cm-vstatus:hover .cm-vstatus-badge,
-.cm-vstatus:focus-within .cm-vstatus-badge {
+.cm-vstatus:focus-within .cm-vstatus-badge,
+.cm-vstatus.cm-pop-open .cm-vstatus-badge {
   background: color-mix(in srgb, var(--civitai-color-primary) 22%, transparent);
   border-color: var(--civitai-color-primary);
   transform: translateY(-1px);
@@ -442,7 +452,8 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
 }
 .cm-vstatus:hover .cm-vstatus-pop,
-.cm-vstatus:focus-within .cm-vstatus-pop {
+.cm-vstatus:focus-within .cm-vstatus-pop,
+.cm-vstatus.cm-pop-open .cm-vstatus-pop {
   display: block;
 }
 .cm-vstatus-title {
@@ -488,7 +499,8 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
 }
 .cm-updated:hover .cm-updated-pop,
-.cm-updated:focus-within .cm-updated-pop {
+.cm-updated:focus-within .cm-updated-pop,
+.cm-updated.cm-pop-open .cm-updated-pop {
   display: block;
 }
 .cm-updated-title {

@@ -185,6 +185,10 @@ func suggestionsList(suggestions []suggestion, csrf string) g.Node {
 		g.Map(suggestions, func(sg suggestion) g.Node {
 			return card(
 				h.Class("flex flex-col gap-2"),
+				// Lazy showcase carousel at the TOP of the card (above the title),
+				// mirroring where the carousel sits on search cards. It loads on
+				// demand (cache-first) so the dashboard render never blocks on civitai.
+				cardImagesLazy(sg.ModelID),
 				h.Div(
 					h.Class("flex items-center justify-between gap-3"),
 					h.Div(
@@ -220,6 +224,23 @@ func suggestionTitle(sg suggestion) g.Node {
 		hx("trigger", "load"),
 		hx("swap", "innerHTML"),
 		g.Text("Loading…"),
+	)
+}
+
+// cardImagesLazy is the STABLE own container a suggestion card renders at its top;
+// it lazy-loads the showcase carousel (hx-get on load, one-shot innerHTML swap —
+// not a poll, so the self-replace rule does not apply) so the dashboard render
+// never blocks on civitai. The endpoint (cache-first) returns either the carousel
+// or an EMPTY fragment (no images / offline). The .cm-card-images-lazy class hides
+// the container while it is empty (before load AND when the fragment is empty), so
+// a card with no showcase images reserves no vertical space.
+func cardImagesLazy(modelID int) g.Node {
+	return h.Div(
+		h.ID(fmt.Sprintf("card-images-%d", modelID)),
+		h.Class("cm-card-images-lazy"),
+		hx("get", fmt.Sprintf("/models/%d/card-images", modelID)),
+		hx("trigger", "load"),
+		hx("swap", "innerHTML"),
 	)
 }
 
@@ -588,6 +609,7 @@ func modelCardWith(it civitai.ModelListItem, images []galleryImage, subs map[int
 		// popover (absolute date + latest version name/date). Omitted when no
 		// parseable date is available.
 		g.If(!updated.At.IsZero(), updatedCardLine(
+			it.ID, updated.VersionID,
 			humanSince(updated.At),
 			updated.At.Local().Format("2006-01-02 15:04"),
 			updated.Name,

@@ -342,7 +342,37 @@ func (s *Server) handleModelVersionStatus(w http.ResponseWriter, r *http.Request
 		return
 	}
 	bd := buildVersionBreakdown(m.ModelVersions, files)
-	s.render(w, http.StatusOK, versionStatusFragment(bd, raw))
+	s.render(w, http.StatusOK, versionStatusFragment(id, bd, raw))
+}
+
+// handleModelCardImages backs the LAZY showcase carousel on the dashboard
+// subscribe-suggestion cards. Like the version-status/title/community lazy
+// endpoints it resolves the model detail CACHE-FIRST (cachedModelDetail: one
+// GetModel on a miss/stale, served from cache otherwise) — so an already-cached
+// model renders its carousel with ZERO network calls. It parses the showcase
+// images from the SAME inline-image path the model detail page uses and renders
+// modelCardCarousel, honoring the persisted NSFW mode (hide/blur/show) exactly as
+// the search cards do. GET-only, read-only (no CSRF), same outbound-proxy posture
+// as its sibling /models/{id}/{version-status,title,community} GETs. On any error
+// or a model with no images it renders an EMPTY node — never an error box — so the
+// card simply shows no carousel.
+func (s *Server) handleModelCardImages(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id <= 0 {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	m, raw, err := s.cachedModelDetail(r.Context(), id)
+	if err != nil || m == nil {
+		s.render(w, http.StatusOK, g.Text("")) // offline/not-found → no carousel
+		return
+	}
+	images := cardCarouselImages(raw)
+	if len(images) == 0 {
+		s.render(w, http.StatusOK, g.Text("")) // no images → no carousel (not an error)
+		return
+	}
+	s.render(w, http.StatusOK, modelCardCarousel(id, images, s.nsfwMode()))
 }
 
 func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
