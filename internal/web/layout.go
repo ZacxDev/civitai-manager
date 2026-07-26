@@ -68,6 +68,7 @@ func navbar(theme, csrf, nsfwMode string) g.Node {
 			navLink("/", "Dashboard"),
 			navLink("/search", "Search"),
 			navLink("/workflows/discover", "Discover"),
+			navLink("/apps/discover", "Apps"),
 			navLink("/library", "Library"),
 			navLink("/trash", "Trash"),
 			h.Div(h.Class("ml-auto flex items-center gap-2"),

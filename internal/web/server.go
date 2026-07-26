@@ -161,6 +161,13 @@ type Server struct {
 	// touching civitai.com.
 	downloaderFn func() civitai.Downloader
 
+	// appsClientFn builds the CivitAI apps-catalog client used by the /apps/discover
+	// browse page. Nil (production) builds a live client from cfg.BaseURL/cfg.Token
+	// (the token is optional — browsing is anon-capable; it only widens the visible
+	// cohort). Tests inject a fake that serves a synthetic catalog without touching
+	// civitai.com.
+	appsClientFn func() appsLister
+
 	// popularMu guards the in-process TTL cache of the "recent popular" feed shown
 	// as the empty-query search default. The feed is keyed by the NSFW flag
 	// (true=include NSFW+images, false=SFW-only) so a mode flip never serves the
@@ -289,6 +296,17 @@ func (s *Server) downloader() civitai.Downloader {
 	return civitai.New(s.cfg.BaseURL, s.cfg.Token)
 }
 
+// appsClient returns the CivitAI apps-catalog client: the test seam when set,
+// otherwise a live client built from the configured base URL and token. The
+// token is optional (browsing is anon-capable); it is sent only to widen the
+// visible cohort for an enrolled user.
+func (s *Server) appsClient() appsLister {
+	if s.appsClientFn != nil {
+		return s.appsClientFn()
+	}
+	return civitai.NewAppsClient(s.cfg.BaseURL, s.cfg.Token)
+}
+
 // webScanTimeout returns the deadline for a web-triggered scan, falling back to
 // the config default when unset.
 func (s *Server) webScanTimeout() time.Duration {
@@ -384,6 +402,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /library/workflow-scan", s.handleWorkflowScan)
 	mux.HandleFunc("GET /library/workflow-scan/status", s.handleWorkflowScanStatus)
 	mux.HandleFunc("POST /library/workflow-scan/stop", s.handleWorkflowScanStop)
+
+	// Apps discovery (Slice A1): a browse + click-to-play page for CivitAI Apps.
+	// GET-only, read-only (no CSRF, not loopback-gated — it is an outbound proxy
+	// GET like the model search, not an arbitrary-path primitive). The same
+	// handler serves the full page and the HX results fragment.
+	mux.HandleFunc("GET /apps/discover", s.handleDiscoverApps)
 
 	mux.HandleFunc("GET /workflows", s.handleWorkflows)
 	// Browse-only workflow discovery (Slice D1). Registered before the {id} route;
