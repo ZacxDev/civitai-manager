@@ -902,13 +902,26 @@ func downloadFeedback(modelID, versionID, fileID int, msg string, ok bool) g.Nod
 // the (many, small) grid tiles pay the reduced-bandwidth path.
 const thumbnailWidth = 450
 
+// detailThumbnailWidth is the LARGER thumbnail requested for the model DETAIL
+// page's enlarged showcase carousel (~22rem tall via .cm-showcase-lg). The 450px
+// card thumb looks soft at that height, so detail tiles request a bigger
+// rendition. This does NOT change the shared search/library card default
+// (thumbnailWidth) — only the detail showcase threads this width in.
+const detailThumbnailWidth = 800
+
 // tileThumbWidth is the width to request for one tile: the thumbnail target,
 // capped to the image's own width so we never upscale a small original.
 func tileThumbWidth(im galleryImage) int {
-	if im.Width > 0 && im.Width < thumbnailWidth {
+	return tileThumbWidthW(im, thumbnailWidth)
+}
+
+// tileThumbWidthW is tileThumbWidth with an explicit target width, so the detail
+// showcase can request a larger rendition than the shared card default.
+func tileThumbWidthW(im galleryImage, target int) int {
+	if im.Width > 0 && im.Width < target {
 		return im.Width
 	}
-	return thumbnailWidth
+	return target
 }
 
 // civitaiThumbURL rewrites an image.civitai.com URL to request an optimized,
@@ -946,6 +959,14 @@ func civitaiThumbURL(rawURL string, width int) string {
 }
 
 func galleryTile(im galleryImage, metaID string, blur bool) g.Node {
+	return galleryTileW(im, metaID, blur, thumbnailWidth)
+}
+
+// galleryTileW is galleryTile with an explicit thumbnail target width, so the
+// detail showcase can request a larger rendition (detailThumbnailWidth) while the
+// shared card carousel keeps the 450px default. Only the requested thumbnail
+// width differs — the ORIGINAL (data-full / lightbox) is untouched.
+func galleryTileW(im galleryImage, metaID string, blur bool, thumbW int) g.Node {
 	imgClass := "h-full w-full cursor-zoom-in object-cover transition"
 	if blur {
 		imgClass += " cm-blur"
@@ -960,7 +981,7 @@ func galleryTile(im galleryImage, metaID string, blur bool) g.Node {
 	img := h.Img(
 		// Video tiles still show a STILL poster thumbnail: civitaiThumbURL forces
 		// anim=false, so the CDN returns a poster frame even for a video source.
-		h.Src(civitaiThumbURL(im.URL, tileThumbWidth(im))),
+		h.Src(civitaiThumbURL(im.URL, tileThumbWidthW(im, thumbW))),
 		h.Alt(altText),
 		h.Loading("lazy"),
 		// data-full is the ORIGINAL url (played as <video> for a video, shown at
