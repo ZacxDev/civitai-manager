@@ -186,17 +186,211 @@ func workflowImportPanel(csrf string, extraAllowed bool) g.Node {
 	)
 }
 
-// workflowList renders the stored workflows as cards, or an empty state.
+// workflowListID is the STABLE container the client-side sort/filter/group script
+// reorders (and inserts group headers into). It is nested INSIDE the swapped
+// #workflow-scan-results container, so the whole controls-bar + list + script
+// fragment is re-emitted (and the script re-runs, re-binding idempotently) after
+// every workflow-scan status swap — see workflowControlsScript.
+const workflowListID = "cm-wf-list"
+
+// workflowSortOptions drives the client-side sort <select>. "Imported" uses each
+// workflow's CreatedAt (data-created epoch); the default (first option) reproduces
+// the current server order (newest imported first).
+var workflowSortOptions = []selectOption{
+	{Value: "created_desc", Label: "Imported (newest first)"},
+	{Value: "created_asc", Label: "Imported (oldest first)"},
+	{Value: "name_asc", Label: "Name A→Z"},
+	{Value: "name_desc", Label: "Name Z→A"},
+}
+
+// workflowSourceFilterOptions narrows the list by store.Workflow.Source. Values are
+// the raw source constants (matched against each card's data-source); labels are the
+// user-facing wording ("Discovered" == the civitai-import source).
+var workflowSourceFilterOptions = []selectOption{
+	{Value: "", Label: "All sources"},
+	{Value: store.WorkflowSourceImported, Label: "Imported"},
+	{Value: store.WorkflowSourceCivitai, Label: "Discovered"},
+	{Value: store.WorkflowSourceScanned, Label: "Scanned"},
+	{Value: store.WorkflowSourceExtractedPNG, Label: "PNG"},
+	{Value: store.WorkflowSourceAuthored, Label: "Authored"},
+}
+
+// workflowFormatFilterOptions narrows by store.Workflow.Format (raw values matched
+// against data-format).
+var workflowFormatFilterOptions = []selectOption{
+	{Value: "", Label: "All formats"},
+	{Value: store.WorkflowFormatAPI, Label: "Runnable API"},
+	{Value: store.WorkflowFormatUI, Label: "UI"},
+}
+
+// workflowList renders the stored workflows as cards, or an empty state. When there
+// are workflows it prepends a read-only controls bar (sort / text filter / source +
+// format filter / group-by-base toggle) that a small INLINE script (no external
+// asset — offline-safe) drives entirely client-side over per-card data-* attributes.
 func workflowList(wfs []store.Workflow, csrf string, resolver workflowResolver) g.Node {
 	if len(wfs) == 0 {
 		return card(h.P(h.Class("text-slate-400 text-center py-6"),
 			g.Text("No workflows yet. Import one above to get started.")))
 	}
-	cards := make([]g.Node, 0, len(wfs))
+	items := make([]g.Node, 0, len(wfs))
 	for _, wf := range wfs {
-		cards = append(cards, workflowCard(wf, csrf, resolver))
+		items = append(items, workflowListItem(wf, csrf, resolver))
 	}
-	return h.Div(h.Class("space-y-4"), g.Group(cards))
+	return h.Div(
+		h.Class("space-y-4"),
+		workflowControlsBar(),
+		h.Div(h.ID(workflowListID), h.Class("space-y-4"), g.Group(items)),
+		workflowControlsScript(),
+	)
+}
+
+// workflowListItem wraps one workflowCard in a data-attributed container the
+// client-side controls script filters, sorts, and groups. workflowCard itself is
+// unchanged. data-name carries the (unescaped-by-g.Attr) display name; data-created
+// is the CreatedAt epoch (sortable); data-base is the base model (empty → grouped
+// under "Unspecified").
+func workflowListItem(wf store.Workflow, csrf string, resolver workflowResolver) g.Node {
+	name := wf.Name
+	if strings.TrimSpace(name) == "" {
+		name = "workflow #" + strconv.FormatInt(wf.ID, 10)
+	}
+	return h.Div(
+		h.Class("cm-wf-item"),
+		dataAttr("name", name),
+		dataAttr("source", wf.Source),
+		dataAttr("format", wf.Format),
+		dataAttr("base", strings.TrimSpace(wf.BaseModel)),
+		dataAttr("created", strconv.FormatInt(wf.CreatedAt.Unix(), 10)),
+		workflowCard(wf, csrf, resolver),
+	)
+}
+
+// wfFilterSelect renders a theme-aware civitai-ui labeled <select> that calls the
+// client-side controls script on change. No form name — the selects are read-only UI
+// state, never submitted.
+func wfFilterSelect(id, label string, opts []selectOption) g.Node {
+	optNodes := make([]g.Node, 0, len(opts))
+	for _, o := range opts {
+		optNodes = append(optNodes, h.Option(h.Value(o.Value), g.Text(o.Label)))
+	}
+	return h.Div(
+		dataAttr("civitai-ui", "text-input"),
+		h.Label(dataFlag("civitai-ui-label"), h.For(id), g.Text(label)),
+		h.Select(append([]g.Node{
+			dataFlag("civitai-ui-control"), h.ID(id),
+			g.Attr("onchange", "cmWfApply()"),
+		}, optNodes...)...),
+	)
+}
+
+// workflowControlsBar is the sort/filter/group controls card above the workflow
+// list. Every control fires cmWfApply() (inline handler → globally (re)defined fn),
+// so it survives htmx swaps with no duplicate listeners (mirrors librarySortScript).
+func workflowControlsBar() g.Node {
+	return card(
+		h.Div(
+			h.Class("flex flex-wrap items-end gap-3"),
+			h.Div(
+				h.Class("min-w-[12rem] flex-1"),
+				textInput("text-input", "cm-wf-q", "Filter",
+					h.Type("text"), h.Placeholder("Filter by name or base model…"),
+					g.Attr("oninput", "cmWfApply()")),
+			),
+			wfFilterSelect("cm-wf-sort", "Sort", workflowSortOptions),
+			wfFilterSelect("cm-wf-source", "Source", workflowSourceFilterOptions),
+			wfFilterSelect("cm-wf-format", "Format", workflowFormatFilterOptions),
+			h.Label(
+				h.Class("flex items-center gap-2 text-sm text-slate-300"),
+				h.Input(h.Type("checkbox"), h.ID("cm-wf-group"),
+					g.Attr("onchange", "cmWfApply()")),
+				g.Text("Group by base model"),
+			),
+		),
+		h.P(h.Class("mt-2 text-xs text-slate-500"), h.Span(h.ID("cm-wf-count"))),
+	)
+}
+
+// workflowControlsScript is the self-contained, vendored (no-CDN) client-side
+// sort/filter/group engine for the workflow list. It (re)defines cmWfApply()
+// idempotently so it survives every htmx swap of the #workflow-scan-results
+// container, then runs it once so the default sort/order applies on (re)render. It
+// attaches NO listeners (the controls use inline oninput/onchange), so re-running
+// after a swap can never duplicate handlers or orphan the scan poller.
+func workflowControlsScript() g.Node {
+	const js = `
+function cmWfApply(){
+  var list = document.getElementById('cm-wf-list');
+  if(!list){ return; }
+  function val(id){ var el = document.getElementById(id); return el ? el.value : ''; }
+  var q = (val('cm-wf-q') || '').trim().toLowerCase();
+  var srcSel = val('cm-wf-source');
+  var fmtSel = val('cm-wf-format');
+  var sortSel = val('cm-wf-sort') || 'created_desc';
+  var groupEl = document.getElementById('cm-wf-group');
+  var group = !!(groupEl && groupEl.checked);
+
+  Array.prototype.slice.call(list.querySelectorAll('.cm-wf-group-header')).forEach(function(h){ h.remove(); });
+
+  var items = Array.prototype.slice.call(list.querySelectorAll('.cm-wf-item'));
+  var shown = 0;
+  items.forEach(function(it){
+    var name = it.getAttribute('data-name') || '';
+    var base = it.getAttribute('data-base') || '';
+    var hay = (name + ' ' + base).toLowerCase();
+    var ok = true;
+    if(q && hay.indexOf(q) < 0){ ok = false; }
+    if(ok && srcSel && it.getAttribute('data-source') !== srcSel){ ok = false; }
+    if(ok && fmtSel && it.getAttribute('data-format') !== fmtSel){ ok = false; }
+    it.style.display = ok ? '' : 'none';
+    if(ok){ shown++; }
+  });
+
+  function nameOf(it){ return (it.getAttribute('data-name') || '').toLowerCase(); }
+  function createdOf(it){ return parseInt(it.getAttribute('data-created') || '0', 10) || 0; }
+  function baseOf(it){ return (it.getAttribute('data-base') || '').trim(); }
+  function cmp(a, b){
+    switch(sortSel){
+      case 'created_asc': return createdOf(a) - createdOf(b);
+      case 'name_asc': { var x=nameOf(a), y=nameOf(b); return x<y?-1:(x>y?1:0); }
+      case 'name_desc': { var x=nameOf(a), y=nameOf(b); return x<y?1:(x>y?-1:0); }
+      default: return createdOf(b) - createdOf(a);
+    }
+  }
+
+  var visible = items.filter(function(it){ return it.style.display !== 'none'; });
+  if(group){
+    visible.sort(function(a, b){
+      var ba = baseOf(a), bb = baseOf(b);
+      var ea = ba === '' ? 1 : 0, eb = bb === '' ? 1 : 0;
+      if(ea !== eb){ return ea - eb; }
+      var la = ba.toLowerCase(), lb = bb.toLowerCase();
+      if(la < lb){ return -1; }
+      if(la > lb){ return 1; }
+      return cmp(a, b);
+    });
+    var lastBase = null;
+    visible.forEach(function(it){
+      var b = baseOf(it) || 'Unspecified';
+      if(b !== lastBase){
+        var hdr = document.createElement('div');
+        hdr.className = 'cm-wf-group-header';
+        hdr.textContent = b;
+        list.appendChild(hdr);
+        lastBase = b;
+      }
+      list.appendChild(it);
+    });
+  } else {
+    visible.sort(cmp);
+    visible.forEach(function(it){ list.appendChild(it); });
+  }
+
+  var countEl = document.getElementById('cm-wf-count');
+  if(countEl){ countEl.textContent = shown + ' of ' + items.length + ' shown'; }
+}
+cmWfApply();
+`
+	return h.Script(g.Raw(js))
 }
 
 // workflowCard renders one stored workflow.
