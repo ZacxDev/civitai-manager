@@ -38,12 +38,15 @@ func (s *Server) handleDiscoverWorkflows(w http.ResponseWriter, r *http.Request)
 	periodSel := normalizeSearchPeriod(q0.Get("period"), "AllTime")
 
 	if query == "" {
-		// Empty state: no fetch, no egress — just the prompt.
+		// Empty state: show the cached "Popular this month" workflows feed (mirrors
+		// the models dashboard). Egress happens ONLY through the TTL cache; on a
+		// fetch error popularWorkflows returns nil and we degrade to the plain prompt.
+		res, heading := s.popularWorkflows(r.Context(), nsfw)
 		if isHX {
-			s.render(w, http.StatusOK, workflowDiscoverResults(nil, mode, "", s.csrf))
+			s.render(w, http.StatusOK, workflowDiscoverResults(res, mode, heading, s.csrf))
 			return
 		}
-		s.render(w, http.StatusOK, workflowDiscoverPage("", nil, s.currentTheme(), mode, sortSel, periodSel, s.csrf))
+		s.render(w, http.StatusOK, workflowDiscoverPage("", res, heading, s.currentTheme(), mode, sortSel, periodSel, s.csrf))
 		return
 	}
 
@@ -70,20 +73,57 @@ func (s *Server) handleDiscoverWorkflows(w http.ResponseWriter, r *http.Request)
 			s.render(w, http.StatusOK, errorNote("Search failed: "+err.Error()))
 			return
 		}
-		s.render(w, http.StatusOK, workflowDiscoverPage(query, nil, s.currentTheme(), mode, sortSel, periodSel, s.csrf))
+		s.render(w, http.StatusOK, workflowDiscoverPage(query, nil, "", s.currentTheme(), mode, sortSel, periodSel, s.csrf))
 		return
 	}
 	if isHX {
 		s.render(w, http.StatusOK, workflowDiscoverResults(res, mode, "", s.csrf))
 		return
 	}
-	s.render(w, http.StatusOK, workflowDiscoverPage(query, res, s.currentTheme(), mode, sortSel, periodSel, s.csrf))
+	s.render(w, http.StatusOK, workflowDiscoverPage(query, res, "", s.currentTheme(), mode, sortSel, periodSel, s.csrf))
+}
+
+// popularWorkflows returns the "Popular this month" WORKFLOWS feed (Most
+// Downloaded, this Month, types=Workflows) shown as the empty-query default on
+// /workflows/discover — served from a ~10 min in-process TTL cache (keyed by the
+// NSFW flag) so repeated loads do not hit civitai.com. It mirrors popularModels
+// exactly, only pinned to Workflows: on success it returns the feed plus the
+// "Popular this month" heading; on any fetch error it returns (nil, "") so the
+// caller degrades to the plain "Search for workflows…" prompt.
+func (s *Server) popularWorkflows(parent context.Context, nsfw bool) (*civitai.ModelSearchResult, string) {
+	s.popularMu.Lock()
+	if v := s.popularWfVal[nsfw]; v != nil && time.Now().Before(s.popularWfExp[nsfw]) {
+		s.popularMu.Unlock()
+		return v, "Popular this month"
+	}
+	s.popularMu.Unlock()
+
+	q := url.Values{}
+	q.Set("types", "Workflows") // PLURAL — the CivitAI API ignores singular "type".
+	q.Set("sort", "Most Downloaded")
+	q.Set("period", "Month")
+	q.Set("limit", searchLimit)
+	// Include NSFW models + their showcase images unless the user is in hide mode
+	// (see setNSFWParam) — same posture as popularModels / the workflow search.
+	setNSFWParam(q, nsfw)
+	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
+	defer cancel()
+	res, err := s.reader.SearchModels(ctx, q)
+	if err != nil {
+		s.log.Warn("popular workflows fetch failed", "err", err)
+		return nil, ""
+	}
+	s.popularMu.Lock()
+	s.popularWfVal[nsfw] = res
+	s.popularWfExp[nsfw] = time.Now().Add(popularTTL)
+	s.popularMu.Unlock()
+	return res, "Popular this month"
 }
 
 // discoverPage renders the full "Discover workflows" page: the search form (query
 // + sort/period dropdowns, wired to GET /workflows/discover) and the results
 // container. It reuses the same lightbox + carousel scripts the search page uses.
-func workflowDiscoverPage(query string, res *civitai.ModelSearchResult, theme, mode, sortSel, periodSel, csrf string) g.Node {
+func workflowDiscoverPage(query string, res *civitai.ModelSearchResult, heading, theme, mode, sortSel, periodSel, csrf string) g.Node {
 	// The cards now carry a state-changing "Import workflow(s)" control (D2), so the
 	// page + its results need the CSRF token threaded through.
 	return page("Discover workflows", theme, csrf, mode,
@@ -108,7 +148,7 @@ func workflowDiscoverPage(query string, res *civitai.ModelSearchResult, theme, m
 				btnPrimary(g.Text("Search")),
 			),
 		),
-		h.Div(h.ID("discover-results"), workflowDiscoverResults(res, mode, "", csrf)),
+		h.Div(h.ID("discover-results"), workflowDiscoverResults(res, mode, heading, csrf)),
 		lightboxOverlay(),
 		modelPageScript(),
 		libraryCarouselScript(),

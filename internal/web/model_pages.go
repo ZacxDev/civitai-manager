@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -758,59 +759,173 @@ func modelTagChips(tags []string) g.Node {
 	)
 }
 
-// modelVersionTabsCard renders the model's versions as a horizontal TAB BAR (a
-// single scrollable row) — replacing the old vertical list. It lives inside
-// #version-region so the active-tab highlight re-renders on every htmx swap. Each
-// tab keeps the EXACT same htmx contract as the old rows: an <a> that innerHTML-
-// swaps #version-region (hx-push-url so the URL becomes /models/{id}?version={vid}
-// and the plain href is the no-JS fallback).
+// versionGroupThreshold is the version count ABOVE which — when the versions span
+// MORE THAN ONE distinct base model — the flat tab strip is replaced by a
+// base-model selector that filters the tabs (grouped path). At or below it, or
+// when every version shares ONE base model (grouping can't break that down), the
+// flat scroll strip renders unchanged.
+const versionGroupThreshold = 8
+
+// versionTab renders ONE version as the tab <a>. It is the single source of the
+// per-version markup shared by BOTH the flat and grouped tab paths, so every tab
+// keeps the IDENTICAL htmx contract (an <a> that innerHTML-swaps #version-region,
+// hx-push-url so the URL becomes /models/{id}?version={vid}, with the plain href
+// as the no-JS fallback), the active highlight (cm-version-tab-active +
+// aria-current), the base-model badge, and the in-library ✓.
+func versionTab(v modelDetailView, ver civitai.ModelVersionSummary) g.Node {
+	m := v.Model
+	selected := ver.ID == v.SelectedVersionID
+	cls := "cm-version-tab"
+	if selected {
+		cls = "cm-version-tab cm-version-tab-active"
+	}
+	versionHref := fmt.Sprintf("/models/%d?version=%d", m.ID, ver.ID)
+	tab := []g.Node{
+		h.Href(versionHref),
+		hx("get", versionHref),
+		hx("target", "#"+versionRegionID),
+		hx("swap", "innerHTML"),
+		hx("push-url", "true"),
+		h.Class(cls),
+		g.Attr("role", "tab"),
+		h.Span(g.Text(ver.Name)),
+	}
+	if selected {
+		tab = append(tab, g.Attr("aria-current", "true"))
+	}
+	if ver.BaseModel != "" {
+		tab = append(tab, badge(ver.BaseModel, "blue"))
+	}
+	// In-library indicator: a compact green ✓ (labeled for AT). cm-ok resolves
+	// the green from the civitai success token so it's genuinely green in both
+	// themes, independent of the purged Tailwind build.
+	if v.LocalVersionIDs[ver.ID] {
+		tab = append(tab, h.Span(
+			h.Class("cm-ok font-semibold"),
+			h.Title("In your library"),
+			g.Attr("aria-label", "In your library"),
+			g.Text("✓"),
+		))
+	}
+	return h.A(tab...)
+}
+
+// modelVersionTabsCard renders the model's versions as a horizontal TAB BAR. It
+// lives inside #version-region so the active-tab highlight re-renders on every
+// htmx swap. Two layouts:
+//
+//   - FLAT (default): a single scrollable row of version tabs. Used when there
+//     are few versions (<= versionGroupThreshold) OR all versions share one base
+//     model (grouping can't help).
+//   - GROUPED: when there are MANY versions (> versionGroupThreshold) AND more
+//     than one distinct base model, a base-model selector (pills — one per
+//     EXACT-string base model) filters the tabs; only one group's tabs show at a
+//     time. The default-visible group is the one containing the active version,
+//     set SERVER-SIDE (no JS needed to pick the default); pill switching is
+//     client-side (cmVGroup) so the version tabs stay inside #version-region and
+//     only a version click swaps the server fragment.
 func modelVersionTabsCard(v modelDetailView) g.Node {
 	m := v.Model
-	var tabs []g.Node
+
+	// Bucket versions by EXACT base-model string, preserving first-seen order for
+	// both the group order and the versions within each group.
+	var order []string
+	groups := map[string][]civitai.ModelVersionSummary{}
 	for _, ver := range m.ModelVersions {
-		selected := ver.ID == v.SelectedVersionID
-		cls := "cm-version-tab"
-		if selected {
-			cls = "cm-version-tab cm-version-tab-active"
+		if _, seen := groups[ver.BaseModel]; !seen {
+			order = append(order, ver.BaseModel)
 		}
-		versionHref := fmt.Sprintf("/models/%d?version=%d", m.ID, ver.ID)
-		tab := []g.Node{
-			h.Href(versionHref),
-			hx("get", versionHref),
-			hx("target", "#"+versionRegionID),
-			hx("swap", "innerHTML"),
-			hx("push-url", "true"),
-			h.Class(cls),
-			h.Span(g.Text(ver.Name)),
+		groups[ver.BaseModel] = append(groups[ver.BaseModel], ver)
+	}
+
+	// Flat strip (unchanged) unless MANY versions AND > 1 distinct base model.
+	if len(m.ModelVersions) <= versionGroupThreshold || len(order) <= 1 {
+		var tabs []g.Node
+		for _, ver := range m.ModelVersions {
+			tabs = append(tabs, versionTab(v, ver))
 		}
-		if selected {
-			tab = append(tab, g.Attr("aria-current", "true"))
+		return card(
+			sectionTitle("Versions"),
+			// Single horizontally-scrolling row (never wraps) — see .cm-version-tabs in
+			// app.css. Marked as a tablist for AT.
+			h.Div(
+				h.Class("cm-version-tabs"),
+				g.Attr("role", "tablist"),
+				g.Group(tabs),
+			),
+		)
+	}
+
+	// Grouped path. Default-visible group = the group containing the active
+	// version (falls back to the first group when the selected version isn't in
+	// the list). Set server-side so the correct group shows on load AND after a
+	// version swap re-renders this card.
+	activeGroup := order[0]
+	for _, ver := range m.ModelVersions {
+		if ver.ID == v.SelectedVersionID {
+			activeGroup = ver.BaseModel
+			break
 		}
-		if ver.BaseModel != "" {
-			tab = append(tab, badge(ver.BaseModel, "blue"))
+	}
+
+	var pills []g.Node
+	var panels []g.Node
+	for i, bm := range order {
+		key := strconv.Itoa(i)
+		vers := groups[bm]
+		isActive := bm == activeGroup
+
+		label := bm
+		if label == "" {
+			label = "Other"
 		}
-		// In-library indicator: a compact green ✓ (labeled for AT). cm-ok resolves
-		// the green from the civitai success token so it's genuinely green in both
-		// themes, independent of the purged Tailwind build.
-		if v.LocalVersionIDs[ver.ID] {
-			tab = append(tab, h.Span(
-				h.Class("cm-ok font-semibold"),
-				h.Title("In your library"),
-				g.Attr("aria-label", "In your library"),
-				g.Text("✓"),
-			))
+		pressed := "false"
+		pillCls := "cm-vgroup-pill"
+		if isActive {
+			pillCls = "cm-vgroup-pill cm-vgroup-pill-active"
+			pressed = "true"
 		}
-		tabs = append(tabs, h.A(tab...))
+		pills = append(pills, h.Button(
+			h.Type("button"),
+			h.Class(pillCls),
+			dataAttr("cm-vgroup", key),
+			g.Attr("aria-pressed", pressed),
+			g.Attr("onclick", "cmVGroup(this)"),
+			h.Span(g.Text(label)),
+			h.Span(h.Class("cm-vgroup-pill-count"), g.Text(strconv.Itoa(len(vers)))),
+		))
+
+		var tabs []g.Node
+		for _, ver := range vers {
+			tabs = append(tabs, versionTab(v, ver))
+		}
+		panelAttrs := []g.Node{
+			h.Class("cm-version-tabs cm-vgroup"),
+			dataAttr("cm-vgroup", key),
+			g.Attr("role", "tablist"),
+		}
+		// Only the active group's tabs are shown on load; the rest carry the HTML
+		// boolean `hidden` attr (cmVGroup toggles it on a pill click).
+		if !isActive {
+			panelAttrs = append(panelAttrs, g.Attr("hidden", ""))
+		}
+		panelAttrs = append(panelAttrs, g.Group(tabs))
+		panels = append(panels, h.Div(panelAttrs...))
 	}
 
 	return card(
 		sectionTitle("Versions"),
-		// Single horizontally-scrolling row (never wraps) — see .cm-version-tabs in
-		// app.css. Marked as a tablist for AT.
 		h.Div(
-			h.Class("cm-version-tabs"),
-			g.Attr("role", "tablist"),
-			g.Group(tabs),
+			// Wrapper cmVGroup scopes its query to (so multiple models on a page — or
+			// a re-rendered region — can't cross-toggle).
+			dataAttr("cm-vgroups", "true"),
+			h.Div(
+				h.Class("cm-vgroup-pills"),
+				g.Attr("role", "group"),
+				g.Attr("aria-label", "Filter versions by base model"),
+				g.Group(pills),
+			),
+			g.Group(panels),
 		),
 	)
 }
@@ -1207,6 +1322,27 @@ function cmToggleDesc(btn){
   box.setAttribute('data-collapsed', collapsed ? 'false' : 'true');
   btn.setAttribute('aria-expanded', collapsed ? 'true' : 'false');
   btn.textContent = collapsed ? 'Show less' : 'Read more';
+}
+// Base-model version-group selector (grouped version tabs): a pill click shows
+// only its group's version tabs and hides the rest — CLIENT-SIDE, so no server
+// round-trip (only a version click swaps #version-region). Scoped to the pill's
+// [data-cm-vgroups] wrapper. The default-visible group is server-set; this only
+// handles user switching, and survives an htmx region swap because the inline
+// onclick references this globally-defined function.
+function cmVGroup(btn){
+  var wrap = btn.closest('[data-cm-vgroups]');
+  if(!wrap){ return; }
+  var key = btn.getAttribute('data-cm-vgroup');
+  var pills = wrap.querySelectorAll('.cm-vgroup-pill');
+  for (var i=0;i<pills.length;i++){
+    var on = pills[i].getAttribute('data-cm-vgroup') === key;
+    pills[i].classList.toggle('cm-vgroup-pill-active', on);
+    pills[i].setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+  var groups = wrap.querySelectorAll('.cm-vgroup');
+  for (var j=0;j<groups.length;j++){
+    groups[j].hidden = groups[j].getAttribute('data-cm-vgroup') !== key;
+  }
 }
 document.addEventListener('keydown', function(e){ if (e.key === 'Escape'){ cmCloseLightbox(); } });
 // cm popover hover controller: keeps the .cm-vstatus / .cm-updated popovers open
