@@ -515,7 +515,7 @@ func progressBar(it store.QueueItem) g.Node {
 // carousels on each card. heading, when set, labels the result grid (e.g.
 // "Popular this month" for the empty-query default feed).
 func searchPage(query string, res *civitai.ModelSearchResult, subs map[int]*store.Subscription, csrf, theme, mode, heading, sortSel, periodSel string) g.Node {
-	return page("Search", theme, csrf, mode,
+	return page("Models", theme, csrf, mode,
 		card(
 			sectionTitle("Search models"),
 			h.Form(
