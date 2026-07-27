@@ -442,6 +442,33 @@ func TestConvertFastGroupsBypasserDropped(t *testing.T) {
 	}
 }
 
+// TestConvertAnnotationNodesDropped asserts the on-canvas text annotation nodes
+// "Label (rgthree)" and "Note Plus (mtb)" are dropped SILENTLY (like the built-in
+// Note): they have no backend class / no execution links, so they must not warn
+// "type not available".
+func TestConvertAnnotationNodesDropped(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}}
+	}`)
+	ui := `{"nodes":[
+		{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+		{"id":8,"type":"Label (rgthree)","mode":0},
+		{"id":9,"type":"Note Plus (mtb)","mode":0}
+	],"links":[]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("annotation nodes must be dropped silently, got warnings: %v", warns)
+	}
+	for _, id := range []string{"8", "9"} {
+		if _, has := nodes[id]; has {
+			t.Errorf("annotation node %s should be dropped", id)
+		}
+	}
+	if _, has := nodes["4"]; !has {
+		t.Error("checkpoint node 4 should still convert")
+	}
+}
+
 // subgraphTestInfo is the object_info used by the subgraph tests: a checkpoint
 // loader, a pass-through node (one MODEL link input, no widgets), and a consumer.
 func subgraphTestInfo(t *testing.T) ObjectInfo {
