@@ -154,22 +154,36 @@ func ConvertUIToAPI(uiGraph json.RawMessage, info ObjectInfo) (apiGraph json.Raw
 	r.warnings = append(r.warnings, expandWarnings...)
 	result := make(map[string]apiOutNode)
 
+	// Tally why executable nodes were dropped, so an EMPTY result can be explained
+	// with an actionable error (all-bypassed template vs. no installed node types)
+	// rather than the opaque "no runnable nodes". Only consulted when result is empty.
+	var suppressed, unknown int
+
 	for i := range nodes {
 		n := &nodes[i]
 		id := idToString(n.ID)
 
-		// Virtual nodes (reroute/note/primitive) never become api nodes.
+		// Virtual nodes (reroute/note/primitive) never become api nodes — and are not
+		// executable, so they are excluded from the empty-result classification.
 		if virtualNodeTypes[n.Type] {
 			continue
 		}
 		// Muted / bypassed nodes are dropped (their passthrough is handled during
-		// link resolution for their consumers).
+		// link resolution for their consumers). If the type is known, the node WOULD
+		// have run if enabled (suppressed); if the type is also unknown it is counted
+		// as unknown instead.
 		if n.Mode == modeMuted || n.Mode == modeBypass {
+			if _, known := info[n.Type]; known {
+				suppressed++
+			} else {
+				unknown++
+			}
 			continue
 		}
 
 		sch, known := info[n.Type]
 		if !known {
+			unknown++
 			r.warnf("node %s type %q not available", id, n.Type)
 			continue
 		}
@@ -185,13 +199,43 @@ func ConvertUIToAPI(uiGraph json.RawMessage, info ObjectInfo) (apiGraph json.Raw
 	}
 
 	if len(result) == 0 {
-		return nil, r.warnings, fmt.Errorf("conversion produced no runnable nodes")
+		return nil, r.warnings, &ConversionEmptyError{Suppressed: suppressed, Unknown: unknown}
 	}
 	out, err := json.Marshal(result)
 	if err != nil {
 		return nil, r.warnings, fmt.Errorf("marshal api graph: %w", err)
 	}
 	return out, r.warnings, nil
+}
+
+// ConversionEmptyError is returned by ConvertUIToAPI when the conversion produced
+// ZERO runnable nodes. It classifies WHY so the caller can render an actionable
+// message: Suppressed counts executable nodes that were dropped only because they
+// are disabled (bypassed or muted) — they would run if enabled; Unknown counts
+// nodes whose type is not installed in this ComfyUI (custom nodes). Both zero means
+// a genuinely empty graph.
+type ConversionEmptyError struct {
+	Suppressed int
+	Unknown    int
+}
+
+// Error produces a specific, actionable sentence describing why nothing was
+// runnable. When disabled nodes dominate it reads as a multi-mode template and
+// tells the user to enable a group and re-save; when unknown types dominate it
+// points at missing custom nodes; otherwise it falls back to the generic message.
+func (e *ConversionEmptyError) Error() string {
+	switch {
+	case e.Suppressed > 0 && e.Suppressed >= e.Unknown:
+		return fmt.Sprintf("all %d executable nodes in this workflow are disabled (bypassed or muted). "+
+			"This looks like a multi-mode template — open it in ComfyUI, enable the one node group you "+
+			"want to run, and re-save the workflow before running it again.", e.Suppressed)
+	case e.Unknown > 0:
+		return fmt.Sprintf("none of this workflow's %d executable nodes are available in this ComfyUI — "+
+			"their node types are not installed (they are custom nodes). Install the required custom nodes "+
+			"in ComfyUI, then run it again.", e.Unknown)
+	default:
+		return "conversion produced no runnable nodes"
+	}
 }
 
 // converter holds the per-conversion indexes + accumulated warnings.
