@@ -138,8 +138,15 @@ func WriteModelStream(destPath string, src io.Reader, contentLength, maxBytes in
 	}()
 
 	// Bound the copy at cap+1 so an over-cap body (understated/absent
-	// Content-Length) is detected instead of written unbounded.
-	written, err := io.Copy(tmp, io.LimitReader(src, maxBytes+1))
+	// Content-Length) is detected instead of written unbounded. Guard the +1
+	// against int64 overflow (a maxBytes near MaxInt64 would wrap negative and make
+	// LimitReader read nothing → a silent empty file); at that scale the +1
+	// detection is moot, so fall back to maxBytes itself.
+	limit := maxBytes + 1
+	if limit <= 0 {
+		limit = maxBytes
+	}
+	written, err := io.Copy(tmp, io.LimitReader(src, limit))
 	if err != nil {
 		return written, fmt.Errorf("stream download: %w", err)
 	}

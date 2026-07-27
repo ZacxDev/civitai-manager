@@ -35,9 +35,14 @@ func comfyURLIsLocal(comfyURL string) bool {
 
 // comfyDownloadEligible reports whether the "Download & run" action is available:
 // comfy_model_path is configured, the ComfyUI is local (loopback), and the model
-// root is (still) an existing writable directory. Config load already validated
-// writability, but we re-check at request time because the directory could have
-// been removed/remounted since startup (Memory-is-a-hypothesis).
+// root is (still) an existing directory.
+//
+// This runs on EVERY run-status poll (~1-2s during a run), so it must stay cheap:
+// it does an os.Stat (exists + is-dir) re-check only — NOT a CreateTemp
+// write-probe, which would churn a temp file in the ComfyUI models dir on every
+// poll. Writability was validated at config load; if the dir became read-only
+// since, the actual download (comfy.WriteModelStream) fails cleanly and the user
+// sees the error — button visibility does not need the stronger probe.
 func (s *Server) comfyDownloadEligible() bool {
 	root := strings.TrimSpace(s.cfg.ComfyModelPath)
 	if root == "" {
@@ -46,8 +51,11 @@ func (s *Server) comfyDownloadEligible() bool {
 	if !comfyURLIsLocal(s.cfg.ComfyURL) {
 		return false
 	}
-	if err := config.ValidateWritableDir(root); err != nil {
-		s.log.Warn("comfy_model_path no longer writable", "path", root, "err", err)
+	fi, err := os.Stat(root)
+	if err != nil || !fi.IsDir() {
+		if err != nil {
+			s.log.Warn("comfy_model_path no longer available", "path", root, "err", err)
+		}
 		return false
 	}
 	return true
@@ -194,6 +202,14 @@ func fileExists(path string) bool {
 // across results whose basename equals filename — the strong, unambiguous signal.
 // It returns ok=false when nothing matches (the caller then shows the resolve
 // cards instead of auto-downloading).
+//
+// Supply-chain note: a workflow's model reference carries only a filename, not a
+// hash, so the resolved file cannot be pinned/verified against an expected digest.
+// "Download & run" therefore TRUSTS CivitAI's search ranking + the basename match
+// to identify the intended model. The download itself is still constrained by the
+// SDK's HTTPS-only, private-IP-blocking, civitai-host-scoped-token dialer, and by
+// the size cap and path-containment guards — but the CHOICE of file is a trust in
+// CivitAI, same as every other download in the app.
 func (s *Server) resolveDownloadSource(parent context.Context, filename, typ string, chosenModel int) (resolvedDownload, bool) {
 	want := path.Base(strings.ReplaceAll(strings.TrimSpace(filename), "\\", "/"))
 
