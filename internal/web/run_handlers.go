@@ -39,11 +39,12 @@ type comfyClient interface {
 
 // Run phases (job.phase).
 const (
-	runPhasePreparing = "preparing"
-	runPhaseQueued    = "queued"
-	runPhaseRunning   = "running"
-	runPhaseDone      = "done"
-	runPhaseFailed    = "failed"
+	runPhasePreparing   = "preparing"
+	runPhaseDownloading = "downloading"
+	runPhaseQueued      = "queued"
+	runPhaseRunning     = "running"
+	runPhaseDone        = "done"
+	runPhaseFailed      = "failed"
 )
 
 // runJob is the in-memory state of a single background workflow run. All fields are
@@ -138,18 +139,7 @@ func (s *Server) startRun(wf *store.Workflow, opts runOptions) {
 	}
 	s.runJob = job
 
-	up := runUpdater{
-		setPhase: func(phase, msg string, pos int) {
-			s.runMu.Lock()
-			job.phase, job.message, job.queuePos = phase, msg, pos
-			s.runMu.Unlock()
-		},
-		setPromptID: func(id string) {
-			s.runMu.Lock()
-			job.promptID = id
-			s.runMu.Unlock()
-		},
-	}
+	up := s.newRunUpdater(job)
 
 	run := s.runFn
 	if run == nil {
@@ -173,42 +163,67 @@ func (s *Server) startRun(wf *store.Workflow, opts runOptions) {
 		}()
 		s.runMu.Lock()
 		defer s.runMu.Unlock()
-		job.running = false
-		job.finishedAt = time.Now()
-		switch {
-		case job.stopped:
-			job.phase, job.message = runPhaseFailed, "Run stopped."
-		case err != nil:
-			// An empty-conversion abort (all nodes disabled / no installed types) gets a
-			// dedicated "nothing to run" report carrying the actionable guidance, rather
-			// than the generic failure message.
-			var ece *comfy.ConversionEmptyError
-			if errors.As(err, &ece) {
-				job.phase, job.err, job.aborted = runPhaseFailed, err, true
-				job.message = ece.Error()
-			} else {
-				job.phase, job.err, job.message = runPhaseFailed, err, runErrorMessage(err)
-			}
-		case res != nil && res.Preflight != nil:
-			job.phase, job.preflight, job.missingModels = runPhaseFailed, res.Preflight, res.MissingModels
-			job.message = "Preflight failed — this workflow references nodes or models that are not installed."
-		case res != nil && len(res.Warnings) > 0:
-			job.phase, job.warnings = runPhaseFailed, res.Warnings
-			job.message = "This workflow could not be converted into a runnable graph."
-		case res != nil:
-			job.phase, job.images = runPhaseDone, res.Images
-			if res.PromptID != "" {
-				job.promptID = res.PromptID
-			}
-			if len(res.Images) == 0 {
-				job.message = "Run complete (no images returned)."
-			} else {
-				job.message = "Run complete."
-			}
-		default:
-			job.phase, job.message = runPhaseFailed, "Run produced no result."
-		}
+		s.applyRunOutcomeLocked(job, res, err)
 	}()
+}
+
+// newRunUpdater builds the runUpdater that streams a run's phase transitions into
+// job under runMu. Shared by startRun and startDownloadAndRun.
+func (s *Server) newRunUpdater(job *runJob) runUpdater {
+	return runUpdater{
+		setPhase: func(phase, msg string, pos int) {
+			s.runMu.Lock()
+			job.phase, job.message, job.queuePos = phase, msg, pos
+			s.runMu.Unlock()
+		},
+		setPromptID: func(id string) {
+			s.runMu.Lock()
+			job.promptID = id
+			s.runMu.Unlock()
+		},
+	}
+}
+
+// applyRunOutcomeLocked settles job from a run's (res, err). The caller MUST hold
+// runMu. It marks the job finished and classifies the terminal state (stopped,
+// error, failed preflight, conversion warnings, success). Shared by the plain run
+// and the download-then-run job.
+func (s *Server) applyRunOutcomeLocked(job *runJob, res *runResult, err error) {
+	job.running = false
+	job.finishedAt = time.Now()
+	switch {
+	case job.stopped:
+		job.phase, job.message = runPhaseFailed, "Run stopped."
+	case err != nil:
+		// An empty-conversion abort (all nodes disabled / no installed types) gets a
+		// dedicated "nothing to run" report carrying the actionable guidance, rather
+		// than the generic failure message.
+		var ece *comfy.ConversionEmptyError
+		if errors.As(err, &ece) {
+			job.phase, job.err, job.aborted = runPhaseFailed, err, true
+			job.message = ece.Error()
+		} else {
+			job.phase, job.err, job.message = runPhaseFailed, err, runErrorMessage(err)
+		}
+	case res != nil && res.Preflight != nil:
+		job.phase, job.preflight, job.missingModels = runPhaseFailed, res.Preflight, res.MissingModels
+		job.message = "Preflight failed — this workflow references nodes or models that are not installed."
+	case res != nil && len(res.Warnings) > 0:
+		job.phase, job.warnings = runPhaseFailed, res.Warnings
+		job.message = "This workflow could not be converted into a runnable graph."
+	case res != nil:
+		job.phase, job.images = runPhaseDone, res.Images
+		if res.PromptID != "" {
+			job.promptID = res.PromptID
+		}
+		if len(res.Images) == 0 {
+			job.message = "Run complete (no images returned)."
+		} else {
+			job.message = "Run complete."
+		}
+	default:
+		job.phase, job.message = runPhaseFailed, "Run produced no result."
+	}
 }
 
 // realRun is the production run seam: load → (convert UI→API) → preflight → submit
@@ -403,7 +418,7 @@ func (s *Server) handleWorkflowRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.startRun(wf, runOptions{})
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf))
+	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible()))
 }
 
 // comfyStatusTimeout bounds the reachability probe so a dead/hung ComfyUI can
@@ -451,7 +466,7 @@ func (s *Server) handleWorkflowRunStatus(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "bad workflow id", http.StatusBadRequest)
 		return
 	}
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf))
+	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible()))
 }
 
 // handleWorkflowRunStop cancels the running run and interrupts ComfyUI.
@@ -471,7 +486,7 @@ func (s *Server) handleWorkflowRunStop(w http.ResponseWriter, r *http.Request) {
 	// The stop button carries the workflow id so the terminal fragment can offer a
 	// "Run again" button; 0 (absent) simply omits it.
 	id, _ := strconv.ParseInt(r.FormValue("workflow_id"), 10, 64)
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf))
+	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible()))
 }
 
 // handleWorkflowRunView proxies a result image from ComfyUI's /view to the browser

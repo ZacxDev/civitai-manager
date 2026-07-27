@@ -25,7 +25,7 @@ const runComfyStatusID = "run-comfy-status"
 // server and renders a green/red pill plus an enabled/disabled Run button + a
 // Recheck. The actual run job drives the separate stable #run-status container
 // (unchanged). When bound off-loopback the run endpoints are gated → a note.
-func runPanel(wf *store.Workflow, snap runSnapshot, csrf string, extraAllowed bool) g.Node {
+func runPanel(wf *store.Workflow, snap runSnapshot, csrf string, extraAllowed, dlEligible bool) g.Node {
 	id := strconv.FormatInt(wf.ID, 10)
 	if !extraAllowed {
 		return card(
@@ -47,7 +47,7 @@ func runPanel(wf *store.Workflow, snap runSnapshot, csrf string, extraAllowed bo
 			h.Span(h.Class("text-sm text-slate-400"), g.Text("Checking ComfyUI…")),
 		),
 		// Run job status container (unchanged): poller drives running → terminal.
-		h.Div(h.ID(runStatusContainerID), runStatusFragment(snap, wf.ID, csrf)),
+		h.Div(h.ID(runStatusContainerID), runStatusFragment(snap, wf.ID, csrf, dlEligible)),
 	)
 }
 
@@ -129,7 +129,7 @@ func comfyDisplayURL(_ *store.Workflow) string { return "local ComfyUI" }
 // running fragment (with poller + Stop) while in flight, else the terminal result.
 // A run belonging to a DIFFERENT workflow is not shown here (the poller would
 // otherwise attach this page to another workflow's run).
-func runStatusFragment(snap runSnapshot, wfID int64, csrf string) g.Node {
+func runStatusFragment(snap runSnapshot, wfID int64, csrf string, dlEligible bool) g.Node {
 	if snap.Started && snap.Running && snap.WorkflowID != wfID {
 		return h.Div(h.Class("text-sm text-amber-400"),
 			g.Text("A run is already in progress for another workflow. Try again when it finishes."))
@@ -147,7 +147,7 @@ func runStatusFragment(snap runSnapshot, wfID int64, csrf string) g.Node {
 	if snap.Running {
 		return runRunning(snap, wfID, csrf)
 	}
-	return runTerminal(snap, wfID, csrf)
+	return runTerminal(snap, wfID, csrf, dlEligible)
 }
 
 // runStopped is the terminal fragment after an explicit Stop (no poller).
@@ -207,7 +207,7 @@ func runStopVals(csrf string, wfID int64) g.Node {
 
 // runTerminal renders the settled run: a result gallery on success, or the failure
 // report (message + preflight/warnings detail) — plus a "Run again" button.
-func runTerminal(snap runSnapshot, wfID int64, csrf string) g.Node {
+func runTerminal(snap runSnapshot, wfID int64, csrf string, dlEligible bool) g.Node {
 	var body []g.Node
 	switch snap.Phase {
 	case runPhaseDone:
@@ -216,7 +216,7 @@ func runTerminal(snap runSnapshot, wfID int64, csrf string) g.Node {
 			body = append(body, gal)
 		}
 	default: // failed / stopped
-		body = append(body, runFailure(snap, wfID, csrf))
+		body = append(body, runFailure(snap, wfID, csrf, dlEligible))
 	}
 	if wfID > 0 {
 		body = append(body, h.Div(h.Class("pt-1"), runAgainButton(wfID, csrf)))
@@ -267,7 +267,7 @@ func runViewURL(promptID string, ref comfy.ImageRef) string {
 
 // runFailure renders the failure report: the (escaped, untrusted) message plus any
 // preflight detail (missing nodes/models) or conversion warnings.
-func runFailure(snap runSnapshot, wfID int64, csrf string) g.Node {
+func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool) g.Node {
 	// An empty-conversion abort is not a failure in the run sense — nothing was
 	// submitted. Render it as its own actionable report (the message is the
 	// escaped, actionable guidance from *comfy.ConversionEmptyError).
@@ -287,7 +287,7 @@ func runFailure(snap runSnapshot, wfID int64, csrf string) g.Node {
 			// enriched analysis; fall back to a plain bullet list if it is absent (e.g.
 			// an older snapshot with only filenames).
 			if len(snap.MissingModels) > 0 {
-				detail = append(detail, missingModelsPanel(snap.MissingModels, wfID, csrf))
+				detail = append(detail, missingModelsPanel(snap.MissingModels, wfID, csrf, dlEligible))
 			} else {
 				detail = append(detail, missingList("Missing model files", snap.Preflight.MissingModels))
 			}

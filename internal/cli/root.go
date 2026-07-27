@@ -26,6 +26,7 @@ type globalFlags struct {
 	webScanTimeout string
 	noPreview      bool
 	maxPreviewSize string
+	comfyModelPath string
 	verbose        bool
 }
 
@@ -140,6 +141,7 @@ func (gf *globalFlags) build() (*app, error) {
 		WebScanTimeout: gf.webScanTimeout,
 		NoPreview:      gf.noPreview,
 		MaxPreviewSize: gf.maxPreviewSize,
+		ComfyModelPath: gf.comfyModelPath,
 	})
 	if err != nil {
 		return nil, err

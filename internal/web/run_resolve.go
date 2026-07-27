@@ -96,10 +96,34 @@ func (s *Server) resolveModels(parent context.Context, query, typ string) *civit
 		return nil
 	}
 	s.resolveMu.Lock()
+	s.pruneResolveCacheLocked()
 	s.resolveVal[key] = res
 	s.resolveExp[key] = time.Now().Add(popularTTL)
 	s.resolveMu.Unlock()
 	return res
+}
+
+// resolveCacheMax caps the number of live entries in the resolution TTL cache.
+// Each distinct (query,type,nsfw) key adds an entry; without a bound a long-lived
+// server that resolves many distinct filenames would grow the map without limit
+// (audit nit). The cap is generous — a session rarely resolves this many models.
+const resolveCacheMax = 256
+
+// pruneResolveCacheLocked evicts expired entries and, if still over the cap,
+// clears the whole cache (simplest bound — the entries are cheap to refetch and
+// re-caching is immediate). The caller MUST hold resolveMu.
+func (s *Server) pruneResolveCacheLocked() {
+	now := time.Now()
+	for k, exp := range s.resolveExp {
+		if now.After(exp) {
+			delete(s.resolveExp, k)
+			delete(s.resolveVal, k)
+		}
+	}
+	if len(s.resolveVal) >= resolveCacheMax {
+		s.resolveVal = map[string]*civitai.ModelSearchResult{}
+		s.resolveExp = map[string]time.Time{}
+	}
 }
 
 // resolveLimit bounds a resolution search: the user only needs a few candidates
@@ -196,7 +220,7 @@ func (s *Server) handleWorkflowRunSubstitute(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	s.startRun(wf, runOptions{Substitute: map[string]string{filename: substitute}})
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf))
+	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible()))
 }
 
 // missingModelsPanel renders the actionable "Missing model files" panel: for
@@ -204,10 +228,10 @@ func (s *Server) handleWorkflowRunSubstitute(w http.ResponseWriter, r *http.Requ
 // and a list of installed substitute candidates each offering a one-click "Run
 // with substitute". Every untrusted string (filenames, choice strings) is
 // escaped via g.Text.
-func missingModelsPanel(models []comfy.MissingModel, wfID int64, csrf string) g.Node {
+func missingModelsPanel(models []comfy.MissingModel, wfID int64, csrf string, dlEligible bool) g.Node {
 	rows := make([]g.Node, 0, len(models))
 	for i, mm := range models {
-		rows = append(rows, missingModelRow(i, mm, wfID, csrf))
+		rows = append(rows, missingModelRow(i, mm, wfID, csrf, dlEligible))
 	}
 	return h.Div(h.Class("mt-2 space-y-4"),
 		h.Div(h.Class("text-xs font-semibold text-slate-200"), g.Text("Missing model files")),
@@ -217,7 +241,7 @@ func missingModelsPanel(models []comfy.MissingModel, wfID int64, csrf string) g.
 
 // missingModelRow renders one missing model: its filename, the resolve control +
 // its (stable) result container, and the substitute candidate controls.
-func missingModelRow(idx int, mm comfy.MissingModel, wfID int64, csrf string) g.Node {
+func missingModelRow(idx int, mm comfy.MissingModel, wfID int64, csrf string, dlEligible bool) g.Node {
 	resolveID := "resolve-model-" + strconv.Itoa(idx)
 
 	// Resolve control: lazy GET into the stable #resolve-model-i container.
@@ -232,9 +256,18 @@ func missingModelRow(idx int, mm comfy.MissingModel, wfID int64, csrf string) g.
 		hx("swap", "innerHTML"),
 	}, g.Text("Find on CivitAI"))
 
+	// The one-click "Download & run" control is shown ONLY when the flow is eligible
+	// (comfy_model_path configured+writable AND a local ComfyUI) AND the inferred
+	// type maps to a known ComfyUI subfolder — otherwise we cannot route the write,
+	// so we fall back to the Find-on-CivitAI link only.
+	actions := []g.Node{findBtn}
+	if dlEligible && comfyTypeRoutable(mm.CivitaiType) {
+		actions = append(actions, downloadAndRunButton(mm, wfID, csrf))
+	}
+
 	children := []g.Node{
 		h.Div(h.Class("font-mono text-xs text-slate-300 break-all"), g.Text(mm.Filename)),
-		h.Div(h.Class("mt-1 flex flex-wrap items-center gap-2"), findBtn),
+		h.Div(h.Class("mt-1 flex flex-wrap items-center gap-2"), g.Group(actions)),
 		h.Div(h.ID(resolveID)), // stable resolve-result container
 	}
 

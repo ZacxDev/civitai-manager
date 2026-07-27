@@ -117,6 +117,15 @@ type Config struct {
 	// It is a secret: mirror Token's handling — NEVER log it; RedactToken it in any
 	// diagnostic output.
 	ComfyToken string `yaml:"comfy_token"`
+	// ComfyModelPath is the local filesystem root of ComfyUI's `models` directory
+	// (the folder holding checkpoints/, loras/, vae/, …). It is SEPARATE from
+	// ModelRoot (this app's own download layout) and is used ONLY by the
+	// "Download & run" preflight action: it writes a missing model into the correct
+	// per-type subfolder under this root so a local ComfyUI run can find it. Optional
+	// — when empty the download flow is disabled (the missing-models panel degrades
+	// to the CivitAI-link-only view). When SET it must be an existing writable
+	// directory (validated on load), or config resolution fails with a clear error.
+	ComfyModelPath string `yaml:"comfy_model_path"`
 	// ComfyCloud enables the "Run on CivitAI Cloud" feature: submitting a workflow
 	// to the CivitAI orchestration API (which sends the graph + resource list to
 	// civitai.com AND spends Buzz from the account behind Token). Default false —
@@ -154,6 +163,9 @@ type Flags struct {
 	// MaxPreviewSize overrides the preview-size cap (a human size string or byte
 	// count). Empty means "not set on the command line".
 	MaxPreviewSize string
+	// ComfyModelPath overrides the ComfyUI models-dir root used by the
+	// "Download & run" flow. Empty means "not set on the command line".
+	ComfyModelPath string
 	// ConfigPath overrides the config-file location (default: the XDG path).
 	ConfigPath string
 }
@@ -379,6 +391,9 @@ func Resolve(flags Flags) (*Config, error) {
 	if flags.MaxPreviewSize != "" {
 		cfg.MaxPreviewSize = flags.MaxPreviewSize
 	}
+	if flags.ComfyModelPath != "" {
+		cfg.ComfyModelPath = flags.ComfyModelPath
+	}
 
 	if err := cfg.normalize(); err != nil {
 		return nil, err
@@ -412,6 +427,19 @@ func (c *Config) normalize() error {
 	c.ComfyURL = strings.TrimRight(strings.TrimSpace(c.ComfyURL), "/")
 	if c.ComfyURL == "" {
 		c.ComfyURL = DefaultComfyURL
+	}
+	// ComfyModelPath is optional; when set it must expand and point at an existing
+	// WRITABLE directory (the "Download & run" flow writes model files into its
+	// per-type subfolders). A bad value is a hard config error rather than a silent
+	// disable, so a typo surfaces at startup instead of at first download.
+	c.ComfyModelPath = strings.TrimSpace(c.ComfyModelPath)
+	if c.ComfyModelPath != "" {
+		if c.ComfyModelPath, err = expandHome(c.ComfyModelPath); err != nil {
+			return err
+		}
+		if err := ValidateWritableDir(c.ComfyModelPath); err != nil {
+			return fmt.Errorf("invalid comfy_model_path %q: %w", c.ComfyModelPath, err)
+		}
 	}
 	if c.DefaultPollInterval.D() <= 0 {
 		c.DefaultPollInterval = Duration(DefaultPollInterval)
@@ -514,6 +542,31 @@ func ParseSize(s string) (int64, error) {
 	return int64(n * float64(mult)), nil
 }
 
+// ValidateWritableDir reports whether path is an existing directory this process
+// can write to. It confirms writability by creating and removing a probe file
+// (the only portable check — file-mode bits do not account for ACLs, ownership,
+// or a read-only mount). Returns a descriptive error otherwise.
+func ValidateWritableDir(path string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("directory does not exist")
+		}
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("not a directory")
+	}
+	probe, err := os.CreateTemp(path, ".cm-writecheck-*")
+	if err != nil {
+		return fmt.Errorf("directory is not writable: %w", err)
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(name)
+	return nil
+}
+
 func expandHome(p string) (string, error) {
 	if p == "~" || strings.HasPrefix(p, "~/") {
 		home, err := os.UserHomeDir()
@@ -553,6 +606,6 @@ func (c *Config) Redacted() Config {
 // String renders the config with the token redacted.
 func (c *Config) String() string {
 	r := c.Redacted()
-	return fmt.Sprintf("Config{BaseURL:%s Addr:%s ModelRoot:%s DBPath:%s PollInterval:%s DownloadJitter:%s MaxFileSize:%d ComfyURL:%s ComfyCloud:%t Token:%s ComfyToken:%s}",
-		r.BaseURL, r.Addr, r.ModelRoot, r.DBPath, c.DefaultPollInterval.D(), c.DownloadJitter.D(), c.MaxFileSizeBytes, r.ComfyURL, c.ComfyCloud, r.Token, r.ComfyToken)
+	return fmt.Sprintf("Config{BaseURL:%s Addr:%s ModelRoot:%s DBPath:%s PollInterval:%s DownloadJitter:%s MaxFileSize:%d ComfyURL:%s ComfyModelPath:%s ComfyCloud:%t Token:%s ComfyToken:%s}",
+		r.BaseURL, r.Addr, r.ModelRoot, r.DBPath, c.DefaultPollInterval.D(), c.DownloadJitter.D(), c.MaxFileSizeBytes, r.ComfyURL, r.ComfyModelPath, c.ComfyCloud, r.Token, r.ComfyToken)
 }
