@@ -37,11 +37,13 @@ type sgIONode struct {
 
 // sgIOSlot is one ordered boundary slot (an input or an output) of a subgraph.
 // Only its position (index in Inputs/Outputs) is used for wiring; name/type are
-// advisory.
+// advisory. Type is json.RawMessage (never read) for the same reason as
+// uiConvInput.Type: a COMBO/enum boundary slot can carry an ARRAY type instead of
+// a string, which would break the graph-level Unmarshal if typed `string`.
 type sgIOSlot struct {
 	ID   json.RawMessage `json:"id"`
 	Name string          `json:"name"`
-	Type string          `json:"type"`
+	Type json.RawMessage `json:"type"`
 }
 
 // origin is a resolved source: an executable node id and its output slot. ok is

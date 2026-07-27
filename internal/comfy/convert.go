@@ -56,10 +56,17 @@ type uiConvNode struct {
 
 // uiConvInput is one input slot on a UI node: a name, a declared type, and a link
 // id (nil when unconnected).
+//
+// Type is decoded as json.RawMessage (and never read anywhere) because a slot's
+// declared type is usually a string ("MODEL","LATENT","COMBO") but for a
+// COMBO/enum slot ComfyUI serializes it as the ARRAY of allowed values (e.g.
+// ["yuv420p","yuv420p10le"]); typing it `string` made the whole-graph Unmarshal
+// fail on such nodes ("cannot unmarshal array into ... type string"). Only Name
+// and Link are consulted downstream.
 type uiConvInput struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
-	Link *int64 `json:"link"`
+	Name string          `json:"name"`
+	Type json.RawMessage `json:"type"`
+	Link *int64          `json:"link"`
 }
 
 // uiConvGraph is the UI-format top level the converter parses.
