@@ -1045,6 +1045,150 @@ func TestConvertSubgraphArrayTypedSlot(t *testing.T) {
 	assertLinkRef(t, nodes["17"].Inputs["model"], "100:1", 0)
 }
 
+// TestConvertSubgraphInteriorPromotedWidget reproduces the workflow-521 subgraph
+// sibling of the v0.1.56 widget-promotion bug: a subgraph-INTERIOR sampler has a
+// WIDGET input ("steps") that was converted to an input slot AND link-connected.
+// In modern ComfyUI such a promoted widget KEEPS its slot in widgets_values,
+// marked by the input's `widget` field. flattenSubgraphs clones interior nodes,
+// and if the clone drops that `widget` marker, buildInputs no longer treats the
+// slot as widget-backed, so it fails to CONSUME the promoted slot and every later
+// widget value shifts — exactly how the interior KSamplerAdvanced ended up with a
+// scheduler enum string ("simple") in its INT end_at_step (invalid_input_type).
+// Must fail without carrying Widget into the clone, pass with it.
+func TestConvertSubgraphInteriorPromotedWidget(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
+		"IntSrc": {"input":{"required":{}},"input_order":{"required":[]}},
+		"AdvSampler": {
+			"input":{"required":{
+				"model":["MODEL",{}],
+				"steps":["INT",{"default":20}],
+				"sampler_name":[["euler","dpmpp_2m"],{}],
+				"scheduler":[["normal","simple"],{}],
+				"end_at_step":["INT",{"default":10000}]
+			}},
+			"input_order":{"required":["model","steps","sampler_name","scheduler","end_at_step"]}
+		},
+		"BasicScheduler": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}}
+	}`)
+	// Interior node 5's widgets_values retains ALL widget slots in order:
+	//   [steps=20, sampler_name="euler", scheduler="simple", end_at_step=10000]
+	// "steps" is a promoted widget (carries a "widget" field) AND linked to the
+	// external IntSrc via boundary input 1. If the promotion marker survives the
+	// clone, its slot is consumed (emit nothing) and the plain widgets land right;
+	// otherwise sampler_name/scheduler/end_at_step all shift by one and end_at_step
+	// receives "simple".
+	ui := `{
+		"nodes":[
+			{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+			{"id":6,"type":"IntSrc","mode":0},
+			{"id":100,"type":"SG","mode":0,"inputs":[
+				{"name":"model","type":"MODEL","link":1},
+				{"name":"steps","type":"INT","link":2}
+			]},
+			{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":3}]}
+		],
+		"links":[[1,4,0,100,0,"MODEL"],[2,6,0,100,1,"INT"],[3,100,0,17,0,"MODEL"]],
+		"definitions":{"subgraphs":[
+			{"id":"SG","name":"Sampler",
+			 "inputNode":{"id":-10},"outputNode":{"id":-20},
+			 "inputs":[{"id":"i0","name":"model","type":"MODEL"},{"id":"i1","name":"steps","type":"INT"}],
+			 "outputs":[{"id":"o0","name":"LATENT","type":"LATENT"}],
+			 "nodes":[
+				{"id":5,"type":"AdvSampler","mode":0,
+				 "widgets_values":[20,"euler","simple",10000],
+				 "inputs":[
+					{"name":"model","type":"MODEL","link":11},
+					{"name":"steps","type":"INT","link":12,"widget":{"name":"steps"}}
+				 ]}
+			 ],
+			 "links":[[11,-10,0,5,0,"MODEL"],[12,-10,1,5,1,"INT"],[13,5,0,-20,0,"LATENT"]]}
+		]}
+	}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	s, ok := nodes["100:5"]
+	if !ok {
+		t.Fatalf("inlined interior sampler 100:5 missing: %v", keysOf(nodes))
+	}
+	// Plain widgets must receive their CORRECT (unshifted) values.
+	if got := scalarString(t, s.Inputs["sampler_name"]); got != "euler" {
+		t.Errorf("sampler_name = %q, want %q (interior promoted-widget slot not consumed → value shifted)", got, "euler")
+	}
+	if got := scalarString(t, s.Inputs["scheduler"]); got != "simple" {
+		t.Errorf("scheduler = %q, want %q", got, "simple")
+	}
+	// The exact live symptom: end_at_step must be the INTEGER 10000, not the
+	// shifted scheduler enum string "simple".
+	var end int
+	if err := json.Unmarshal(s.Inputs["end_at_step"], &end); err != nil {
+		t.Fatalf("end_at_step = %s, want integer 10000 (widget shifted an enum string into an INT input): %v", s.Inputs["end_at_step"], err)
+	}
+	if end != 10000 {
+		t.Errorf("end_at_step = %d, want 10000", end)
+	}
+	// The promoted+linked widget must be a link ref (to the external IntSrc), not a scalar.
+	assertLinkRef(t, s.Inputs["steps"], "6", 0)
+}
+
+// TestConvertSubgraphInteriorNormalLinkedInput is the regression guard: a
+// subgraph-interior node with a NORMAL (non-promoted, no `widget` marker) linked
+// input plus plain widget values must still convert unchanged after the clone
+// carries the (absent) Widget field. The link resolves and the widgets are not
+// shifted.
+func TestConvertSubgraphInteriorNormalLinkedInput(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
+		"PlainSampler": {
+			"input":{"required":{
+				"model":["MODEL",{}],
+				"sampler_name":[["euler","dpmpp_2m"],{}],
+				"scheduler":[["normal","simple"],{}]
+			}},
+			"input_order":{"required":["model","sampler_name","scheduler"]}
+		},
+		"BasicScheduler": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}}
+	}`)
+	ui := `{
+		"nodes":[
+			{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+			{"id":100,"type":"SG","mode":0,"inputs":[{"name":"model","type":"MODEL","link":1}]},
+			{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":3}]}
+		],
+		"links":[[1,4,0,100,0,"MODEL"],[3,100,0,17,0,"LATENT"]],
+		"definitions":{"subgraphs":[
+			{"id":"SG","name":"Sampler",
+			 "inputNode":{"id":-10},"outputNode":{"id":-20},
+			 "inputs":[{"id":"i0","name":"model","type":"MODEL"}],
+			 "outputs":[{"id":"o0","name":"LATENT","type":"LATENT"}],
+			 "nodes":[
+				{"id":5,"type":"PlainSampler","mode":0,
+				 "widgets_values":["euler","simple"],
+				 "inputs":[{"name":"model","type":"MODEL","link":11}]}
+			 ],
+			 "links":[[11,-10,0,5,0,"MODEL"],[13,5,0,-20,0,"LATENT"]]}
+		]}
+	}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	s, ok := nodes["100:5"]
+	if !ok {
+		t.Fatalf("inlined interior sampler 100:5 missing: %v", keysOf(nodes))
+	}
+	// Normal linked input resolves to the external checkpoint; widgets map straight.
+	assertLinkRef(t, s.Inputs["model"], "4", 0)
+	if got := scalarString(t, s.Inputs["sampler_name"]); got != "euler" {
+		t.Errorf("sampler_name = %q, want %q", got, "euler")
+	}
+	if got := scalarString(t, s.Inputs["scheduler"]); got != "simple" {
+		t.Errorf("scheduler = %q, want %q", got, "simple")
+	}
+}
+
 // TestConvertEmptyAllBypassed is the WAN-template case: every executable node is
 // bypassed (mode 4) with a KNOWN type. The conversion must yield a
 // *ConversionEmptyError classified as all-suppressed, with the actionable
