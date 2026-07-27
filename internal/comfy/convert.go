@@ -9,7 +9,12 @@ import (
 // virtualNodeTypes are UI-graph node types that are NOT executed nodes and carry
 // no /object_info class_type: they are dropped from the api graph. Reroute is also
 // spliced THROUGH during link resolution (its output resolves to its input's
-// origin); the others (notes / primitive / rgthree UI-only helpers) simply vanish.
+// origin); the others (notes / labels / primitive / rgthree UI-only helpers)
+// simply vanish.
+//
+// Annotation nodes carry no execution links and no backend class: the built-in
+// "Note"/"MarkdownNote", the rgthree "Label" (a canvas text label), and the mtb
+// "Note Plus" (an enhanced note) are all pure on-canvas text — dropped silently.
 //
 // The rgthree "Fast Groups Muter", "Fast Groups Bypasser", "Fast Muter", "Fast
 // Bypasser", "Bookmark", and the "Mute / Bypass Relay/Repeater" nodes are pure
@@ -22,6 +27,8 @@ var virtualNodeTypes = map[string]bool{
 	"Reroute":                          true,
 	"Note":                             true,
 	"MarkdownNote":                     true,
+	"Label (rgthree)":                  true,
+	"Note Plus (mtb)":                  true,
 	"PrimitiveNode":                    true,
 	"Primitive":                        true,
 	"Fast Groups Muter (rgthree)":      true,
