@@ -136,6 +136,13 @@ func (s *Server) cloudAPIGraph(ctx context.Context, wf *store.Workflow) (apiGrap
 	}
 	g, warns, cerr := comfy.ConvertUIToAPI(json.RawMessage(wf.Graph), info)
 	if cerr != nil {
+		// An empty-conversion abort already carries a full, actionable sentence
+		// (all-disabled template / no installed node types) — surface it directly
+		// instead of wrapping it in the generic "could not convert" prefix.
+		var ece *comfy.ConversionEmptyError
+		if errors.As(cerr, &ece) {
+			return nil, nil, ece.Error(), false
+		}
 		return nil, nil, "Could not convert this UI-format workflow to API format: " + cerr.Error(), false
 	}
 	if len(warns) > 0 {

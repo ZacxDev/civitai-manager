@@ -60,8 +60,12 @@ type runJob struct {
 	images  []comfy.ImageRef
 	// preflight is set when the run aborted on a failed preflight (missing nodes/
 	// models); warnings is set when a UI→API conversion produced unrunnable nodes.
-	preflight  *comfy.PreflightReport
-	warnings   []string
+	preflight *comfy.PreflightReport
+	warnings  []string
+	// aborted marks a run that never submitted because the UI→API conversion yielded
+	// zero runnable nodes (an all-disabled template / no installed node types). It
+	// gets a distinct "nothing to run" report rather than the generic failure alert.
+	aborted    bool
 	stopped    bool
 	err        error
 	startedAt  time.Time
@@ -159,7 +163,16 @@ func (s *Server) startRun(wf *store.Workflow) {
 		case job.stopped:
 			job.phase, job.message = runPhaseFailed, "Run stopped."
 		case err != nil:
-			job.phase, job.err, job.message = runPhaseFailed, err, runErrorMessage(err)
+			// An empty-conversion abort (all nodes disabled / no installed types) gets a
+			// dedicated "nothing to run" report carrying the actionable guidance, rather
+			// than the generic failure message.
+			var ece *comfy.ConversionEmptyError
+			if errors.As(err, &ece) {
+				job.phase, job.err, job.aborted = runPhaseFailed, err, true
+				job.message = ece.Error()
+			} else {
+				job.phase, job.err, job.message = runPhaseFailed, err, runErrorMessage(err)
+			}
 		case res != nil && res.Preflight != nil:
 			job.phase, job.preflight = runPhaseFailed, res.Preflight
 			job.message = "Preflight failed — this workflow references nodes or models that are not installed."
@@ -306,6 +319,7 @@ type runSnapshot struct {
 	Images           []comfy.ImageRef
 	Preflight        *comfy.PreflightReport
 	Warnings         []string
+	Aborted          bool
 	Stopped          bool
 }
 
@@ -324,7 +338,7 @@ func (s *Server) runJobState() runSnapshot {
 	return runSnapshot{
 		Started: true, Running: j.running, WorkflowID: j.workflowID,
 		PromptID: j.promptID, Phase: j.phase, Message: j.message, QueuePos: j.queuePos,
-		Images: imgs, Preflight: j.preflight, Warnings: warns, Stopped: j.stopped,
+		Images: imgs, Preflight: j.preflight, Warnings: warns, Aborted: j.aborted, Stopped: j.stopped,
 	}
 }
 
