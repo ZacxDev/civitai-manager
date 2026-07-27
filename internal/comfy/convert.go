@@ -11,20 +11,26 @@ import (
 // spliced THROUGH during link resolution (its output resolves to its input's
 // origin); the others (notes / primitive / rgthree UI-only helpers) simply vanish.
 //
-// The rgthree "Fast Groups Muter", "Fast Bypasser" and "Bookmark" nodes are
-// pure client-side helpers: they have NO backend class in /object_info and carry
-// no execution links, so — like Note — they are dropped silently rather than
-// warned as "type not available". Only these three UI-only helpers are dropped;
-// real rgthree nodes (e.g. "Power Lora Loader (rgthree)") still convert normally.
+// The rgthree "Fast Groups Muter", "Fast Groups Bypasser", "Fast Muter", "Fast
+// Bypasser", "Bookmark", and the "Mute / Bypass Relay/Repeater" nodes are pure
+// client-side quick-action helpers: they toggle the mode of OTHER nodes from the
+// canvas and have NO backend class in /object_info, carrying no execution links.
+// So — like Note — they are dropped silently rather than warned as "type not
+// available". Only these UI-only helpers are dropped; real rgthree nodes (e.g.
+// "Power Lora Loader (rgthree)") still convert normally.
 var virtualNodeTypes = map[string]bool{
-	"Reroute":                     true,
-	"Note":                        true,
-	"MarkdownNote":                true,
-	"PrimitiveNode":               true,
-	"Primitive":                   true,
-	"Fast Groups Muter (rgthree)": true,
-	"Fast Bypasser (rgthree)":     true,
-	"Bookmark (rgthree)":          true,
+	"Reroute":                          true,
+	"Note":                             true,
+	"MarkdownNote":                     true,
+	"PrimitiveNode":                    true,
+	"Primitive":                        true,
+	"Fast Groups Muter (rgthree)":      true,
+	"Fast Groups Bypasser (rgthree)":   true,
+	"Fast Muter (rgthree)":             true,
+	"Fast Bypasser (rgthree)":          true,
+	"Mute / Bypass Relay (rgthree)":    true,
+	"Mute / Bypass Repeater (rgthree)": true,
+	"Bookmark (rgthree)":               true,
 	// GetNode/SetNode are virtual "teleport" nodes (KJNodes/rgthree-style): they
 	// never become api nodes, but unlike a plain Note they are spliced THROUGH
 	// during link resolution — a GetNode re-emits the source a same-named SetNode
@@ -248,6 +254,18 @@ type converter struct {
 	warnings   []string
 }
 
+// unresolvedReason is a typed reason an origin could not be resolved that the
+// caller (buildInputs) must format with CONSUMER context it alone holds. Today the
+// only such case is ambiguousBypass: a bypassed node that has ≥1 connected input
+// but no clean 1:1 passthrough for the requested slot — the resulting warning must
+// name the active consumer node + input that loses its source, not just the
+// bypassed node id. (A bypassed SOURCE node with zero connected inputs is NOT a
+// reason: it is a legitimate dead-end, mirroring ComfyUI, and produces no warning.)
+type unresolvedReason struct {
+	ambiguousBypass bool
+	bypassedID      string
+}
+
 // teleportSrc is the source (origin node + output slot) a SetNode captured,
 // keyed by its constant name. ambiguous is set when more than one SetNode
 // declares the same name (an invalid graph we refuse to resolve).
@@ -327,8 +345,15 @@ func (c *converter) buildInputs(n *uiConvNode, sch NodeSchema) (map[string]json.
 		if !ok {
 			continue // dangling link id — leave the input unset
 		}
-		originID, originSlot, ok, warn := c.resolveOrigin(l.OriginID, l.OriginSlot, 0)
-		if warn != "" {
+		originID, originSlot, ok, warn, reason := c.resolveOrigin(l.OriginID, l.OriginSlot, 0)
+		switch {
+		case reason != nil && reason.ambiguousBypass:
+			// Name the CONSUMER (this active node + input) that loses its source, plus
+			// the ambiguous bypassed node — an actionable, precise warning.
+			warns = append(warns, fmt.Sprintf(
+				"node %s (%s) input %q has no source: bypassed node %s has multiple inputs and no clean passthrough",
+				idToString(n.ID), n.Type, in.Name, reason.bypassedID))
+		case warn != "":
 			warns = append(warns, warn)
 		}
 		if !ok {
@@ -409,23 +434,26 @@ func mapObjectWidgets(raw json.RawMessage, sch NodeSchema, linked map[string]boo
 // resolveOrigin resolves a link's (origin node, output slot) to a concrete
 // executed node, splicing through Reroute and bypassed nodes. It returns the
 // resolved node id + output slot, ok=false when the origin cannot be resolved
-// (e.g. it lands on a muted node), and a non-empty warn describing why.
-func (c *converter) resolveOrigin(nodeID string, slot, depth int) (id string, outSlot int, ok bool, warn string) {
+// (e.g. it lands on a muted node), a non-empty warn describing why, and a typed
+// reason for the cases the caller must reformat with consumer context (see
+// unresolvedReason). At most one of warn / reason is set for a given unresolved
+// origin. Recursive splices propagate the inner call's warn+reason unchanged.
+func (c *converter) resolveOrigin(nodeID string, slot, depth int) (id string, outSlot int, ok bool, warn string, reason *unresolvedReason) {
 	if depth > maxResolveDepth {
-		return "", 0, false, fmt.Sprintf("link resolution too deep at node %s", nodeID)
+		return "", 0, false, fmt.Sprintf("link resolution too deep at node %s", nodeID), nil
 	}
 	// A removed subgraph instance: redirect the requested output slot to the
 	// internal source that fed that boundary output during expansion.
 	if red, ok := c.sgRedirect[nodeID]; ok {
 		src, has := red[slot]
 		if !has || !src.ok {
-			return "", 0, false, "" // boundary output unconnected — leave unset
+			return "", 0, false, "", nil // boundary output unconnected — leave unset
 		}
 		return c.resolveOrigin(src.id, src.slot, depth+1)
 	}
 	n := c.byID[nodeID]
 	if n == nil {
-		return "", 0, false, ""
+		return "", 0, false, "", nil
 	}
 
 	// Reroute: splice through its single input regardless of mode.
@@ -434,7 +462,7 @@ func (c *converter) resolveOrigin(nodeID string, slot, depth int) (id string, ou
 			l := c.linkByID[*n.Inputs[idx].Link]
 			return c.resolveOrigin(l.OriginID, l.OriginSlot, depth+1)
 		}
-		return "", 0, false, fmt.Sprintf("reroute node %s has no input", nodeID)
+		return "", 0, false, fmt.Sprintf("reroute node %s has no input", nodeID), nil
 	}
 
 	// SetNode: splice through the input it captured (its output mirrors its input),
@@ -445,7 +473,7 @@ func (c *converter) resolveOrigin(nodeID string, slot, depth int) (id string, ou
 				return c.resolveOrigin(l.OriginID, l.OriginSlot, depth+1)
 			}
 		}
-		return "", 0, false, fmt.Sprintf("SetNode %s has no connected input", nodeID)
+		return "", 0, false, fmt.Sprintf("SetNode %s has no connected input", nodeID), nil
 	}
 
 	// GetNode: teleport to the source the same-named SetNode captured.
@@ -453,10 +481,10 @@ func (c *converter) resolveOrigin(nodeID string, slot, depth int) (id string, ou
 		name := getSetNodeName(n)
 		src, found := c.setByName[name]
 		if !found || !src.ok {
-			return "", 0, false, fmt.Sprintf("GetNode %s references SetNode name %q with no resolvable source", nodeID, name)
+			return "", 0, false, fmt.Sprintf("GetNode %s references SetNode name %q with no resolvable source", nodeID, name), nil
 		}
 		if src.ambiguous {
-			return "", 0, false, fmt.Sprintf("GetNode %s name %q is ambiguous (multiple SetNodes)", nodeID, name)
+			return "", 0, false, fmt.Sprintf("GetNode %s name %q is ambiguous (multiple SetNodes)", nodeID, name), nil
 		}
 		return c.resolveOrigin(src.originID, src.originSlot, depth+1)
 	}
@@ -472,14 +500,22 @@ func (c *converter) resolveOrigin(nodeID string, slot, depth int) (id string, ou
 			idx = only
 		}
 		if idx < 0 {
-			return "", 0, false, fmt.Sprintf("bypassed node %s could not be spliced (no clean input)", nodeID)
+			// A bypassed SOURCE/leaf node (no input slot has a connected link) is a
+			// clean dead-end, NOT an error: bypassing a loader/primitive drops the link
+			// and leaves the consumer input unset — exactly what ComfyUI does. No warning.
+			if firstLinkedInput(n) < 0 {
+				return "", 0, false, "", nil
+			}
+			// ≥1 connected input but no clean 1:1 passthrough for this slot: genuinely
+			// ambiguous. Report a typed reason so the caller names the affected consumer.
+			return "", 0, false, "", &unresolvedReason{ambiguousBypass: true, bypassedID: nodeID}
 		}
 		l := c.linkByID[*n.Inputs[idx].Link]
 		return c.resolveOrigin(l.OriginID, l.OriginSlot, depth+1)
 	case modeMuted:
-		return "", 0, false, fmt.Sprintf("muted node %s output is unavailable", nodeID)
+		return "", 0, false, fmt.Sprintf("muted node %s output is unavailable", nodeID), nil
 	}
-	return nodeID, slot, true, ""
+	return nodeID, slot, true, "", nil
 }
 
 // --- small helpers ---
