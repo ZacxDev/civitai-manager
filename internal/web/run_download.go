@@ -18,8 +18,6 @@ import (
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
 	"github.com/ZacxDev/civitai-manager/internal/config"
 	"github.com/ZacxDev/civitai-manager/internal/store"
-	g "maragu.dev/gomponents"
-	h "maragu.dev/gomponents/html"
 )
 
 // comfyURLIsLocal reports whether the configured ComfyUI base URL points at the
@@ -153,7 +151,7 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 	// Already installed → skip the download, just run the original workflow.
 	if fileExists(dest) {
 		s.startRun(wf, runOptions{})
-		s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible()))
+		s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 		return
 	}
 
@@ -173,7 +171,7 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 		ContentLengthHint: src.SizeBytes,
 	}
 	s.startDownloadAndRun(wf, pd)
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, true))
+	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, true, s.nsfwMode()))
 }
 
 // renderResolveFallback renders the existing resolve fragment (heuristic model
@@ -456,24 +454,3 @@ func (d *downloadProgressReader) message() string {
 	return fmt.Sprintf("Downloading %s… %s", d.name, humanBytes(d.read))
 }
 
-// downloadAndRunButton is the per-missing-model "Download & run" control. It POSTs
-// the missing filename + its inferred CivitAI type to the download-and-run
-// endpoint and swaps the run-status container (download phase → run phase). Shown
-// only when the flow is eligible (see missingModelRow). The CSRF token, filename,
-// and type travel in hx-vals as JSON-escaped values.
-func downloadAndRunButton(mm comfy.MissingModel, wfID int64, csrf string) g.Node {
-	id := strconv.FormatInt(wfID, 10)
-	b, _ := json.Marshal(map[string]string{
-		"csrf_token": csrf,
-		"filename":   mm.Filename,
-		"type":       mm.CivitaiType,
-	})
-	return civButton("filled", "sm", []g.Node{
-		h.Type("button"),
-		hx("post", "/workflows/"+id+"/download-and-run"),
-		hx("target", "#"+runStatusContainerID),
-		hx("swap", "innerHTML"),
-		hx("disabled-elt", "this"),
-		hx("vals", string(b)),
-	}, g.Text("Download & run"))
-}
