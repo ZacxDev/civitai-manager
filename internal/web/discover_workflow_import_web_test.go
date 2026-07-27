@@ -409,3 +409,78 @@ func TestImportNoArchiveFile(t *testing.T) {
 		t.Errorf("no download for a model with no archive, got %d calls", dl.calls)
 	}
 }
+
+// TestImportResultDeepLinksSingle proves the result link deep-links to the one
+// imported workflow's page when EXACTLY ONE was imported this request.
+func TestImportResultDeepLinksSingle(t *testing.T) {
+	url := "https://civitai.com/api/download/1"
+	dl := &fakeDownloader{zips: map[string][]byte{
+		url: buildZip(t, map[string]string{"only.json": importUIGraph}),
+	}}
+	srv := newImportServer(t, workflowsModel(map[string]string{"wf.zip": url}), dl, "tok", "")
+
+	rec := postImport(srv, 1818841, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import = %d", rec.Code)
+	}
+	wfs := listWorkflows(t, srv)
+	if len(wfs) != 1 {
+		t.Fatalf("stored %d workflows, want 1", len(wfs))
+	}
+	wantHref := fmt.Sprintf(`href="/workflows/%d"`, wfs[0].ID)
+	body := rec.Body.String()
+	if !strings.Contains(body, wantHref) {
+		t.Fatalf("expected single-import deep link %q, got:\n%s", wantHref, body)
+	}
+	if strings.Contains(body, "/library?tab=workflows") {
+		t.Errorf("single import should NOT fall back to the library tab:\n%s", body)
+	}
+}
+
+// TestImportResultLinksToTabForMulti proves that when more than one workflow is
+// imported the result link falls back to the Workflows library tab (no single
+// workflow to deep-link to).
+func TestImportResultLinksToTabForMulti(t *testing.T) {
+	url := "https://civitai.com/api/download/1"
+	dl := &fakeDownloader{zips: map[string][]byte{
+		url: buildZip(t, map[string]string{"a.json": importUIGraph, "b.json": importUIGraph2}),
+	}}
+	srv := newImportServer(t, workflowsModel(map[string]string{"wf.zip": url}), dl, "tok", "")
+
+	rec := postImport(srv, 1818841, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `href="/library?tab=workflows"`) {
+		t.Fatalf("multi import should link to the library tab, got:\n%s", body)
+	}
+	if strings.Contains(body, `href="/workflows/`) {
+		t.Errorf("multi import should NOT deep-link to a single workflow:\n%s", body)
+	}
+}
+
+// TestImportResultLinksToTabForZero proves that a re-import that stores nothing
+// (0 imported, all already present) links to the library tab, not a workflow page.
+func TestImportResultLinksToTabForZero(t *testing.T) {
+	url := "https://civitai.com/api/download/1"
+	dl := &fakeDownloader{zips: map[string][]byte{
+		url: buildZip(t, map[string]string{"only.json": importUIGraph}),
+	}}
+	srv := newImportServer(t, workflowsModel(map[string]string{"wf.zip": url}), dl, "tok", "")
+
+	if rec := postImport(srv, 1818841, true); rec.Code != http.StatusOK {
+		t.Fatalf("first import = %d", rec.Code)
+	}
+	rec := postImport(srv, 1818841, true) // second import: 0 imported, 1 already present
+	body := rec.Body.String()
+	if !strings.Contains(body, "Imported 0 workflow(s)") {
+		t.Fatalf("expected 0 imported on re-import, got:\n%s", body)
+	}
+	if !strings.Contains(body, `href="/library?tab=workflows"`) {
+		t.Fatalf("zero-import should link to the library tab, got:\n%s", body)
+	}
+	if strings.Contains(body, `href="/workflows/`) {
+		t.Errorf("zero-import should NOT deep-link to a single workflow:\n%s", body)
+	}
+}

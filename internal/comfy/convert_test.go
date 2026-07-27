@@ -732,3 +732,76 @@ func readFixture(t *testing.T, name string) json.RawMessage {
 	}
 	return json.RawMessage(b)
 }
+
+// TestConvertArrayTypedInput reproduces a real run failure: a node input slot's
+// declared `type` is usually a string ("IMAGE","COMBO") but for a COMBO/enum slot
+// ComfyUI serializes it as the ARRAY of allowed values (e.g. a VHS_VideoCombine
+// pix_fmt slot: ["yuv420p","yuv420p10le"]). Before the fix uiConvInput.Type was
+// typed `string`, so the whole-graph json.Unmarshal failed with "cannot unmarshal
+// array into Go struct field ... type string" and the entire conversion aborted.
+// The graph here mixes an array-typed slot with a normal string-typed slot and a
+// string "COMBO"-typed slot and must convert cleanly.
+func TestConvertArrayTypedInput(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
+		"VHS_VideoCombine": {"input":{"required":{"images":["IMAGE",{}]}},"input_order":{"required":["images"]}}
+	}`)
+	ui := `{"nodes":[
+		{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+		{"id":9,"type":"VHS_VideoCombine","mode":0,"inputs":[
+			{"name":"images","type":"IMAGE","link":5},
+			{"name":"pix_fmt","type":["yuv420p","yuv420p10le"],"link":null},
+			{"name":"format","type":"COMBO","link":null}
+		]}
+	],"links":[[5,4,0,9,0,"IMAGE"]]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	n, ok := nodes["9"]
+	if !ok {
+		t.Fatalf("node 9 (VHS_VideoCombine) missing: %v", keysOf(nodes))
+	}
+	if n.ClassType != "VHS_VideoCombine" {
+		t.Errorf("class_type = %q", n.ClassType)
+	}
+	// The linked input still resolves normally past the array-typed slot.
+	assertLinkRef(t, n.Inputs["images"], "4", 0)
+}
+
+// TestConvertSubgraphArrayTypedSlot hardens the sibling sgIOSlot.Type fix: an
+// array-typed `type` can appear on a subgraph instance's input slot, on a boundary
+// I/O slot (sgIOSlot), and on an interior node's input slot — all of which are
+// decoded by the one graph-level json.Unmarshal. It must parse and wire correctly.
+func TestConvertSubgraphArrayTypedSlot(t *testing.T) {
+	info := subgraphTestInfo(t)
+	ui := `{
+		"nodes":[
+			{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+			{"id":100,"type":"SG","mode":0,"inputs":[{"name":"model","type":["MODEL","OTHER"],"link":1}]},
+			{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":2}]}
+		],
+		"links":[[1,4,0,100,0,"MODEL"],[2,100,0,17,0,"MODEL"]],
+		"definitions":{"subgraphs":[
+			{"id":"SG","name":"Passer",
+			 "inputNode":{"id":-10},"outputNode":{"id":-20},
+			 "inputs":[{"id":"i0","name":"model","type":["MODEL","LATENT"]}],
+			 "outputs":[{"id":"o0","name":"MODEL","type":"MODEL"}],
+			 "nodes":[{"id":1,"type":"PassModel","mode":0,"inputs":[{"name":"model","type":["MODEL","X"],"link":11}]}],
+			 "links":[[11,-10,0,1,0,"MODEL"],[12,1,0,-20,0,"MODEL"]]}
+		]}
+	}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	pm, ok := nodes["100:1"]
+	if !ok {
+		t.Fatalf("inlined interior node 100:1 missing: %v", keysOf(nodes))
+	}
+	if pm.ClassType != "PassModel" {
+		t.Errorf("interior node class_type = %q", pm.ClassType)
+	}
+	assertLinkRef(t, pm.Inputs["model"], "4", 0)
+	assertLinkRef(t, nodes["17"].Inputs["model"], "100:1", 0)
+}
