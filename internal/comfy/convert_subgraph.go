@@ -190,7 +190,13 @@ func (e *sgExpander) expand(def *subgraphDef, prefix string, inputSrc []origin, 
 		clone.WidgetsValues = e.scopeTeleportName(m, prefix)
 		clone.Inputs = make([]uiConvInput, len(m.Inputs))
 		for j, in := range m.Inputs {
-			ni := uiConvInput{Name: in.Name, Type: in.Type}
+			// Carry the widget-promotion marker into the clone: a promoted widget slot
+			// (widget field present) KEEPS its widgets_values slot even when link-connected,
+			// and buildInputs relies on that marker (hasWidgetMarker → widgetBacked) to
+			// consume the slot without shifting later widget values. Dropping it here would
+			// misalign every subsequent widget value on interior nodes (Link is synthesized
+			// separately just below).
+			ni := uiConvInput{Name: in.Name, Type: in.Type, Widget: in.Widget}
 			if in.Link != nil {
 				if il, ok := intLinks[*in.Link]; ok {
 					if s := resolveInterior(il.originID, il.originSlot); s.ok {
