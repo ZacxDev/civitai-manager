@@ -225,6 +225,47 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 }
 
 /*
+ * Base-model version-group selector (.cm-vgroup-pills / .cm-vgroup-pill) — see
+ * the GROUPED path of modelVersionTabsCard in model_pages.go. Rendered ONLY for
+ * models with many versions spanning >1 base model: a row of pills (one per
+ * distinct base model) filters the version tabs below it (cmVGroup toggles the
+ * .cm-vgroup panels' `hidden`). Colors come from the --civitai-* theme tokens so
+ * both light/dark render, independent of the purged Tailwind build.
+ */
+.cm-vgroup-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin-bottom: 0.5rem;
+}
+.cm-vgroup-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  white-space: nowrap;
+  padding: 0.25rem 0.625rem;
+  border: 1px solid var(--civitai-color-border, rgba(148, 163, 184, 0.3));
+  border-radius: 9999px;
+  font-size: 0.8125rem;
+  color: var(--civitai-color-text-muted, #94a3b8);
+  background: transparent;
+  cursor: pointer;
+}
+.cm-vgroup-pill:hover {
+  color: var(--civitai-color-text, #e2e8f0);
+  background: var(--civitai-color-surface, rgba(148, 163, 184, 0.08));
+}
+.cm-vgroup-pill-active {
+  color: var(--civitai-color-primary, #818cf8);
+  border-color: var(--civitai-color-primary, #818cf8);
+  font-weight: 600;
+}
+.cm-vgroup-pill-count {
+  font-size: 0.6875rem;
+  opacity: 0.75;
+}
+
+/*
  * NSFW blur (.cm-blur) — see galleryTile (model_pages.go) + communityImageTile
  * (model_community_pages.go). Applied to a showcase/community <img> when the
  * NSFW display mode is blur; cmReveal removes it on click-to-reveal. Defined here
