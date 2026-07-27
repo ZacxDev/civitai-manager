@@ -68,9 +68,14 @@ func ApplyOptionFixes(apiGraph json.RawMessage, fixes map[OptionFixKey]string) j
 		}
 		nodeChanged := false
 		for k, v := range inputs {
-			var sv string
-			if err := json.Unmarshal(v, &sv); err != nil {
-				continue // link array, number, or object — never a targeted combo string
+			// Match the value's scalar STRING form (symmetric with detection's
+			// scalarComboValue): this rewrites a combo whose saved value is a plain
+			// string OR a bare number (e.g. a mis-stored sampler index `1`) while still
+			// skipping link arrays and objects. The replacement is always the chosen
+			// string choice.
+			sv, ok := scalarComboValue(v)
+			if !ok {
+				continue // link array or object — never a targeted combo value
 			}
 			repl, ok := fixes[OptionFixKey{InputName: k, OldValue: sv}]
 			if !ok {

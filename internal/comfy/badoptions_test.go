@@ -234,6 +234,34 @@ func TestApplyOptionFixesRewritesAcrossNodes(t *testing.T) {
 	}
 }
 
+// TestApplyOptionFixesNumericValue: a combo whose saved value is a bare NUMBER (e.g.
+// a mis-stored sampler index `1`) is matched by its scalar string form and rewritten
+// to the chosen string choice — symmetric with detection, which also flags it.
+func TestApplyOptionFixesNumericValue(t *testing.T) {
+	in := `{"20":{"class_type":"KSamplerAdvanced","inputs":{"sampler_name":1,"return_with_leftover_noise":2,"cfg":4,"model":["3",0]}}}`
+	fixes := map[OptionFixKey]string{
+		{InputName: "sampler_name", OldValue: "1"}:               "euler",
+		{InputName: "return_with_leftover_noise", OldValue: "2"}: "disable",
+	}
+	out := ApplyOptionFixes(json.RawMessage(in), fixes)
+	var nodes map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(out, &nodes); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var inputs map[string]json.RawMessage
+	_ = json.Unmarshal(nodes["20"]["inputs"], &inputs)
+	if string(inputs["sampler_name"]) != `"euler"` {
+		t.Errorf("numeric sampler_name not rewritten: %s", inputs["sampler_name"])
+	}
+	if string(inputs["return_with_leftover_noise"]) != `"disable"` {
+		t.Errorf("numeric return_with_leftover_noise not rewritten: %s", inputs["return_with_leftover_noise"])
+	}
+	// A non-targeted numeric input (cfg) and a link input are preserved verbatim.
+	if string(inputs["cfg"]) != "4" || string(inputs["model"]) != `["3",0]` {
+		t.Errorf("non-targeted inputs mutated: cfg=%s model=%s", inputs["cfg"], inputs["model"])
+	}
+}
+
 // TestApplyOptionFixesEmptyAndInvalid: empty fixes are a no-op; an unparseable graph
 // is returned unchanged.
 func TestApplyOptionFixesEmptyAndInvalid(t *testing.T) {
