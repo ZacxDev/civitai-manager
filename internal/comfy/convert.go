@@ -80,6 +80,13 @@ type uiConvInput struct {
 	Name string          `json:"name"`
 	Type json.RawMessage `json:"type"`
 	Link *int64          `json:"link"`
+	// Widget is present (a non-null object like {"name":"seed"}) when this input
+	// slot is a WIDGET that was converted to an input ("widget promotion"). In
+	// modern ComfyUI the promoted widget KEEPS its slot in widgets_values, so the
+	// converter must still CONSUME that slot even though the value now comes from the
+	// link — otherwise every later widget value shifts (see buildInputs). Absent/null
+	// for a pure link input (MODEL/LATENT/CLIP/…).
+	Widget json.RawMessage `json:"widget"`
 }
 
 // uiConvGraph is the UI-format top level the converter parses.
@@ -336,12 +343,30 @@ func (c *converter) warnf(format string, args ...any) {
 	c.warnings = append(c.warnings, fmt.Sprintf(format, args...))
 }
 
+// hasWidgetMarker reports whether an input slot's `widget` field is present and
+// non-null — i.e. the slot is a promoted widget (a widget converted to an input).
+// A missing field or an explicit JSON null both mean "not widget-backed".
+func hasWidgetMarker(raw json.RawMessage) bool {
+	s := strings.TrimSpace(string(raw))
+	return s != "" && s != "null"
+}
+
 // buildInputs assembles one node's api inputs: link refs first, then widget values
 // walked in input_order with the control_after_generate off-by-one applied.
 func (c *converter) buildInputs(n *uiConvNode, sch NodeSchema) (map[string]json.RawMessage, []string) {
 	inputs := make(map[string]json.RawMessage)
 	var warns []string
 	linked := map[string]bool{}
+	// widgetBacked marks input slots that are promoted widgets (carry a non-null
+	// `widget` field). Modern ComfyUI keeps such a widget's value in widgets_values
+	// even after it is linked, so the widget-value loop below must still consume its
+	// slot to stay aligned. Built over ALL inputs (linked or not).
+	widgetBacked := map[string]bool{}
+	for _, in := range n.Inputs {
+		if hasWidgetMarker(in.Widget) {
+			widgetBacked[in.Name] = true
+		}
+	}
 
 	// 1. Link inputs.
 	for _, in := range n.Inputs {
@@ -394,20 +419,27 @@ func (c *converter) buildInputs(n *uiConvNode, sch NodeSchema) (map[string]json.
 		if !ok || !spec.IsWidget() {
 			continue // a link-type input carries no widget value
 		}
-		if linked[name] {
-			// Widget promoted to a link input and connected: its value comes from the
-			// link, not widgets_values. (Older ComfyUI omits the value from the array;
-			// we do not consume a slot. Widget promotion is an untested edge case.)
+		if linked[name] && !widgetBacked[name] {
+			// Old-format widget promotion: the widget was REMOVED from widgets_values
+			// when it was converted to an input, so it occupies no slot — do not
+			// consume one (matches pre-modern ComfyUI serialization).
 			continue
 		}
 		if cursor >= len(wv) {
 			break
 		}
-		inputs[name] = wv[cursor]
+		// A promoted widget that is ALSO linked (widgetBacked && linked) keeps its
+		// widgets_values slot in modern ComfyUI: consume the slot to stay aligned, but
+		// emit nothing — the link ref was already set in step 1. Otherwise this is a
+		// plain widget: emit its value.
+		if !linked[name] {
+			inputs[name] = wv[cursor]
+		}
 		cursor++
 		// control_after_generate quirk: a seed/noise_seed widget consumes an EXTRA
 		// widgets_values slot (the fixed/increment/randomize control) with no schema
-		// input. Skip it so downstream widgets do not shift.
+		// input. Skip it so downstream widgets do not shift. Applies whether or not
+		// the seed widget itself is linked — the control slot is always present.
 		if spec.ControlAfterGenerate() || (isIntSpec(spec) && isSeedName(name)) {
 			cursor++
 		}

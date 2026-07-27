@@ -122,6 +122,124 @@ func TestConvertSeedControlOffByOne(t *testing.T) {
 	assertLinkRef(t, k.Inputs["model"], "4", 0)
 }
 
+// TestConvertPromotedWidgetKeepsSlot reproduces the 587 "Basic_V37" KSampler
+// misalignment: several WIDGET inputs (seed/steps/cfg/denoise) are converted to
+// input slots ("widget promotion") AND link-connected. In modern ComfyUI those
+// promoted widgets KEEP their slot in widgets_values (marked by the input's
+// `widget` field). The converter must consume those slots — including the seed's
+// control_after_generate extra — even though the value comes from the link, or
+// every later widget (sampler_name/scheduler) shifts onto the wrong slot. Before
+// the fix this emitted sampler_name=<seed number> and scheduler="randomize",
+// which ComfyUI rejected with value_not_in_list.
+func TestConvertPromotedWidgetKeepsSlot(t *testing.T) {
+	info := buildInfo(t, `{
+		"KSampler": {
+			"input": {"required": {
+				"model": ["MODEL", {}],
+				"seed": ["INT", {"default": 0, "control_after_generate": true}],
+				"steps": ["INT", {"default": 20}],
+				"cfg": ["FLOAT", {"default": 8.0}],
+				"sampler_name": [["euler","euler_ancestral","dpmpp_2m"], {}],
+				"scheduler": [["normal","karras","simple"], {}],
+				"positive": ["CONDITIONING", {}],
+				"negative": ["CONDITIONING", {}],
+				"latent_image": ["LATENT", {}],
+				"denoise": ["FLOAT", {"default": 1.0}]
+			}},
+			"input_order": {"required": ["model","seed","steps","cfg","sampler_name","scheduler","positive","negative","latent_image","denoise"]}
+		},
+		"Src": {"input":{"required":{}},"input_order":{"required":[]}}
+	}`)
+	// widgets_values retains ALL widget slots in order:
+	//   [seed, control, steps, cfg, sampler_name, scheduler, denoise]
+	// seed/steps/cfg/denoise are promoted widgets (carry a "widget" field) AND linked.
+	// Only sampler_name + scheduler are plain widgets — they must receive
+	// "euler_ancestral" and "normal", NOT the shifted seed/control values.
+	ui := `{"nodes":[
+		{"id":100,"type":"Src","mode":0},
+		{"id":41,"type":"KSampler","mode":0,
+		 "widgets_values":[1022776966395948,"randomize",20,8,"euler_ancestral","normal",1],
+		 "inputs":[
+			{"name":"model","type":"MODEL","link":49},
+			{"name":"positive","type":"CONDITIONING","link":76},
+			{"name":"negative","type":"CONDITIONING","link":78},
+			{"name":"latent_image","type":"LATENT","link":93},
+			{"name":"seed","type":"INT","link":29,"widget":{"name":"seed"}},
+			{"name":"steps","type":"INT","link":109,"widget":{"name":"steps"}},
+			{"name":"cfg","type":"FLOAT","link":110,"widget":{"name":"cfg"}},
+			{"name":"denoise","type":"FLOAT","link":137,"widget":{"name":"denoise"}}
+		 ]}
+	],"links":[
+		[49,100,0,41,0,"MODEL"],
+		[76,100,1,41,1,"CONDITIONING"],
+		[78,100,2,41,2,"CONDITIONING"],
+		[93,100,3,41,3,"LATENT"],
+		[29,100,4,41,4,"INT"],
+		[109,100,5,41,5,"INT"],
+		[110,100,6,41,6,"FLOAT"],
+		[137,100,7,41,7,"FLOAT"]
+	]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	k := nodes["41"]
+	// The two plain widgets must get their CORRECT (unshifted) values.
+	if got := scalarString(t, k.Inputs["sampler_name"]); got != "euler_ancestral" {
+		t.Errorf("sampler_name = %q, want %q (promoted-widget slot not consumed → value shifted)", got, "euler_ancestral")
+	}
+	if got := scalarString(t, k.Inputs["scheduler"]); got != "normal" {
+		t.Errorf("scheduler = %q, want %q (control_after_generate slot leaked)", got, "normal")
+	}
+	// The promoted+linked widgets must be link refs, not the widget scalars.
+	assertLinkRef(t, k.Inputs["seed"], "100", 4)
+	assertLinkRef(t, k.Inputs["steps"], "100", 5)
+	assertLinkRef(t, k.Inputs["cfg"], "100", 6)
+	assertLinkRef(t, k.Inputs["denoise"], "100", 7)
+}
+
+// TestConvertOldFormatPromotedWidgetNoSlot guards the backward-compatible path:
+// when a widget-type input is linked but carries NO `widget` marker (old ComfyUI
+// removed the promoted widget's value from widgets_values), the converter must NOT
+// consume a slot for it — otherwise the remaining widget values shift the other
+// way. Here seed is linked without a marker, so widgets_values holds only the two
+// plain widgets [sampler, scheduler].
+func TestConvertOldFormatPromotedWidgetNoSlot(t *testing.T) {
+	info := buildInfo(t, `{
+		"KSampler": {
+			"input": {"required": {
+				"model": ["MODEL", {}],
+				"seed": ["INT", {"default": 0, "control_after_generate": true}],
+				"sampler_name": [["euler","dpmpp_2m"], {}],
+				"scheduler": [["normal","karras"], {}]
+			}},
+			"input_order": {"required": ["model","seed","sampler_name","scheduler"]}
+		},
+		"Src": {"input":{"required":{}},"input_order":{"required":[]}}
+	}`)
+	ui := `{"nodes":[
+		{"id":100,"type":"Src","mode":0},
+		{"id":41,"type":"KSampler","mode":0,
+		 "widgets_values":["dpmpp_2m","karras"],
+		 "inputs":[
+			{"name":"model","type":"MODEL","link":49},
+			{"name":"seed","type":"INT","link":29}
+		 ]}
+	],"links":[
+		[49,100,0,41,0,"MODEL"],
+		[29,100,1,41,1,"INT"]
+	]}`
+	nodes, _ := convertNodes(t, ui, info)
+	k := nodes["41"]
+	if got := scalarString(t, k.Inputs["sampler_name"]); got != "dpmpp_2m" {
+		t.Errorf("sampler_name = %q, want %q (old-format slot wrongly consumed)", got, "dpmpp_2m")
+	}
+	if got := scalarString(t, k.Inputs["scheduler"]); got != "karras" {
+		t.Errorf("scheduler = %q, want %q", got, "karras")
+	}
+	assertLinkRef(t, k.Inputs["seed"], "100", 1)
+}
+
 func TestConvertLinkInput(t *testing.T) {
 	info := buildInfo(t, `{
 		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
