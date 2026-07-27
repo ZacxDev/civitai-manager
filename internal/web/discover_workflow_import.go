@@ -73,14 +73,14 @@ func (s *Server) handleWorkflowDiscoverImport(w http.ResponseWriter, r *http.Req
 	// error rather than attempting a fetch that 401s.
 	if strings.TrimSpace(s.cfg.Token) == "" {
 		s.importRespond(w, r, modelID, isHX,
-			"Configure your CivitAI token (in your config) to import workflows.", false)
+			"Configure your CivitAI token (in your config) to import workflows.", false, 0)
 		return
 	}
 
 	m, _, err := s.cachedModelDetail(r.Context(), modelID)
 	if err != nil || m == nil {
 		s.importRespond(w, r, modelID, isHX,
-			"Could not load that model from CivitAI.", false)
+			"Could not load that model from CivitAI.", false, 0)
 		return
 	}
 	// Defence-in-depth: this endpoint imports Workflows-type models only. The UI
@@ -90,11 +90,11 @@ func (s *Server) handleWorkflowDiscoverImport(w http.ResponseWriter, r *http.Req
 	// populated Type so a cache entry that omits it doesn't false-reject.
 	if m.Type != "" && !strings.EqualFold(m.Type, "Workflows") {
 		s.importRespond(w, r, modelID, isHX,
-			"That model is not a Workflows-type model, so it has no workflows to import.", false)
+			"That model is not a Workflows-type model, so it has no workflows to import.", false, 0)
 		return
 	}
 	if len(m.ModelVersions) == 0 {
-		s.importRespond(w, r, modelID, isHX, "That model has no versions to import.", false)
+		s.importRespond(w, r, modelID, isHX, "That model has no versions to import.", false, 0)
 		return
 	}
 	// The primary version is modelVersions[0] (the creator's index order — the
@@ -103,7 +103,7 @@ func (s *Server) handleWorkflowDiscoverImport(w http.ResponseWriter, r *http.Req
 	archives := archiveFiles(version.Files)
 	if len(archives) == 0 {
 		s.importRespond(w, r, modelID, isHX,
-			"No workflow archive (.zip) found on that model's primary version.", false)
+			"No workflow archive (.zip) found on that model's primary version.", false, 0)
 		return
 	}
 
@@ -122,25 +122,37 @@ func (s *Server) handleWorkflowDiscoverImport(w http.ResponseWriter, r *http.Req
 			if total.imported > 0 || total.present > 0 {
 				msg = total.summary() + " — then failed: " + ierr.Error()
 			}
-			s.importRespond(w, r, modelID, isHX, msg, false)
+			s.importRespond(w, r, modelID, isHX, msg, false, total.singleImportedID())
 			return
 		}
 	}
 
-	s.importRespond(w, r, modelID, isHX, total.summary(), true)
+	s.importRespond(w, r, modelID, isHX, total.summary(), true, total.singleImportedID())
 }
 
 // workflowImportCounts tallies an import's outcome across archives/entries.
 type workflowImportCounts struct {
-	imported int // newly stored
-	present  int // skipped — graph hash already in the library
-	skipped  int // skipped — non-json / non-workflow / unparseable entry
+	imported int     // newly stored
+	present  int     // skipped — graph hash already in the library
+	skipped  int     // skipped — non-json / non-workflow / unparseable entry
+	ids      []int64 // ids of the newly-stored workflows (len == imported)
 }
 
 func (c *workflowImportCounts) add(o workflowImportCounts) {
 	c.imported += o.imported
 	c.present += o.present
 	c.skipped += o.skipped
+	c.ids = append(c.ids, o.ids...)
+}
+
+// singleImportedID returns the id of the one workflow imported this request, or 0
+// when zero or more than one were imported — used to decide whether the result
+// link deep-links to that workflow's page vs the Workflows library tab.
+func (c workflowImportCounts) singleImportedID() int64 {
+	if len(c.ids) == 1 {
+		return c.ids[0]
+	}
+	return 0
 }
 
 // summary renders the human-readable import result line.
@@ -235,9 +247,11 @@ func (s *Server) importOneArchive(ctx context.Context, dl civitai.Downloader, m 
 			BaseModel: version.BaseModel,
 			Resources: res,
 		}
-		if _, ierr := s.store.InsertWorkflow(ctx, wf); ierr != nil {
+		id, ierr := s.store.InsertWorkflow(ctx, wf)
+		if ierr != nil {
 			return counts, fmt.Errorf("store workflow: %w", ierr)
 		}
+		counts.ids = append(counts.ids, id)
 		counts.imported++
 	}
 	return counts, nil
@@ -291,9 +305,9 @@ func readZipEntry(zf *zip.File, maxBytes int64) ([]byte, int64, error) {
 // importRespond renders the import outcome: an inline result fragment for an htmx
 // POST (swapped into the button's own container), or a POST-redirect-GET to the
 // Workflows library tab with a flash for a plain form POST.
-func (s *Server) importRespond(w http.ResponseWriter, r *http.Request, modelID int, isHX bool, msg string, ok bool) {
+func (s *Server) importRespond(w http.ResponseWriter, r *http.Request, modelID int, isHX bool, msg string, ok bool, workflowID int64) {
 	if isHX {
-		s.render(w, http.StatusOK, workflowImportResult(modelID, msg, ok))
+		s.render(w, http.StatusOK, workflowImportResult(modelID, msg, ok, workflowID))
 		return
 	}
 	level := "success"
@@ -332,19 +346,25 @@ func workflowImportAction(modelID int, csrf string) g.Node {
 }
 
 // workflowImportResult renders the inline outcome that replaces the import button
-// after the POST: the counts line (green on success, amber on failure) plus a link
-// to the Workflows library tab.
-func workflowImportResult(modelID int, msg string, ok bool) g.Node {
+// after the POST: the counts line (green on success, amber on failure) plus a
+// "View in library" link. When EXACTLY ONE workflow was imported this request the
+// link deep-links to that workflow's page (/workflows/{id}); for zero or more than
+// one it falls back to the Workflows library tab.
+func workflowImportResult(modelID int, msg string, ok bool, workflowID int64) g.Node {
 	cls := "text-xs text-amber-400"
 	if ok {
 		cls = "text-xs font-medium cm-ok"
 	}
+	href := "/library?tab=workflows"
+	if workflowID > 0 {
+		href = fmt.Sprintf("/workflows/%d", workflowID)
+	}
 	return g.Group([]g.Node{
 		h.P(h.Class(cls), g.Text(msg)),
 		h.A(
-			h.Href("/library?tab=workflows"),
+			h.Href(href),
 			h.Class("text-xs text-indigo-400 hover:underline"),
-			g.Text("View in Workflows library →"),
+			g.Text("View in library →"),
 		),
 	})
 }

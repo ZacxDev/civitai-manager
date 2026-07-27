@@ -33,17 +33,36 @@ func TestCompactCount(t *testing.T) {
 }
 
 // TestSearchCardRendersCompactCounts proves a rendered search card humanizes the
-// download/like totals via compactCount (e.g. 12_345 downloads -> "12.3K").
+// download/like totals via compactCount (e.g. 12_345 -> "12.3K") and renders them
+// as inline icon + count: the compact counts and the download/thumbs-up icons are
+// present, the a11y labels are kept, but the old "N downloads"/"N likes" word
+// phrases are gone (the words survive only inside aria-label/title).
 func TestSearchCardRendersCompactCounts(t *testing.T) {
 	res := &civitai.ModelSearchResult{Items: []civitai.ModelListItem{
 		{ID: 1, Name: "Cool LoRA", Type: "LORA",
 			Stats: civitai.ModelStats{DownloadCount: 12_345, ThumbsUpCount: 6_789}},
 	}}
 	out := renderString(t, searchResults(res, nil, NSFWBlur, "test-csrf", ""))
-	if !strings.Contains(out, "12.3K downloads") {
+
+	// Compact counts still present.
+	if !strings.Contains(out, "12.3K") {
 		t.Errorf("search card should show compact downloads (12.3K), got:\n%s", out)
 	}
-	if !strings.Contains(out, "6.8K likes") {
+	if !strings.Contains(out, "6.8K") {
 		t.Errorf("search card should show compact likes (6.8K)")
+	}
+	// The old word-phrase form is gone (counts and words are no longer adjacent).
+	if strings.Contains(out, "12.3K downloads") || strings.Contains(out, "6.8K likes") {
+		t.Errorf("stat words should be replaced by icons, but a count+word phrase remains:\n%s", out)
+	}
+	// Icons rendered inline.
+	if !strings.Contains(out, "cm-stat-ico") {
+		t.Errorf("stat icons (cm-stat-ico) not rendered:\n%s", out)
+	}
+	// a11y labels retained (via aria-label + title, not visible text).
+	for _, want := range []string{`aria-label="downloads"`, `title="downloads"`, `aria-label="likes"`, `title="likes"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing a11y attribute %q:\n%s", want, out)
+		}
 	}
 }

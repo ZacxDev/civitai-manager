@@ -607,3 +607,27 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   color: var(--civitai-color-text-dimmed);
   margin-top: 0.15rem;
 }
+
+/*
+ * Result-card stat row (.cm-stats / .cm-stat / .cm-stat-ico) — see statWithIcon
+ * in pages.go. Renders download/like counts as an inline SVG icon + compact
+ * count (the words "downloads"/"likes" were dropped; the icons carry the label
+ * via aria-label/title). Layout is done here (not with Tailwind utilities) so no
+ * new class enters the purged output.css build. Icons inherit currentColor so
+ * both data-theme paths render correctly.
+ */
+.cm-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+}
+.cm-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+}
+.cm-stat-ico {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}

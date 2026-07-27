@@ -609,30 +609,60 @@ func modelCardCore(it civitai.ModelListItem, images []galleryImage, mode string,
 		),
 		h.Div(
 			h.Class("flex items-center gap-2 text-xs text-slate-400"),
-			badge(it.Type, "indigo"),
+			// The redundant "Workflows" chip is dropped on discover-workflow cards;
+			// the useful Checkpoint/LORA/etc. badge stays on model-search cards.
+			g.If(it.Type != "Workflows", badge(it.Type, "indigo")),
 			g.If(it.NSFW, badge("NSFW", "red")),
 			g.If(creator != "", h.A(h.Href("/creators/"+creator), h.Class("hover:underline"), g.Text("@"+creator))),
 		),
+		// Stats as inline icon + count (the words "downloads"/"likes" are gone;
+		// "likes" == ThumbsUpCount, hence a thumbs-up glyph, not a heart).
 		h.Div(
-			h.Class("text-xs text-slate-500"),
-			g.Text(fmt.Sprintf("%s downloads · %s likes", compactCount(it.Stats.DownloadCount), compactCount(it.Stats.ThumbsUpCount))),
+			h.Class("cm-stats text-xs text-slate-500"),
+			statWithIcon(downloadIconSVG, compactCount(it.Stats.DownloadCount), "downloads"),
+			statWithIcon(thumbsUpIconSVG, compactCount(it.Stats.ThumbsUpCount), "likes"),
 		),
-		// "Updated X ago" from the newest version's publish date, with a hover/focus
-		// popover (absolute date + latest version name/date). Omitted when no
-		// parseable date is available.
-		g.If(!updated.At.IsZero(), updatedCardLine(
-			it.ID, updated.VersionID,
-			humanSince(updated.At),
-			updated.At.Local().Format("2006-01-02 15:04"),
-			updated.Name,
-			updated.At.Local().Format("2006-01-02"),
-		)),
 	}
 	if action != nil {
 		children = append(children, action)
 	}
+	// "Updated X ago" from the newest version's publish date renders LAST so it sits
+	// bottom-left of the card, after the primary action. Keeps its hover/focus
+	// popover (absolute date + latest version name/date). Omitted when no parseable
+	// date is available.
+	children = append(children, g.If(!updated.At.IsZero(), updatedCardLine(
+		it.ID, updated.VersionID,
+		humanSince(updated.At),
+		updated.At.Local().Format("2006-01-02 15:04"),
+		updated.Name,
+		updated.At.Local().Format("2006-01-02"),
+	)))
 	return card(children...)
 }
+
+// statWithIcon renders one card stat as a small inline SVG icon followed by its
+// compact count. The SVG markup is OUR OWN static content (g.Raw), but the count
+// is untrusted-shaped and is emitted via g.Text. The label ("downloads"/"likes")
+// is exposed to assistive tech via aria-label + a title tooltip since the words
+// themselves are no longer shown.
+func statWithIcon(iconSVG, count, label string) g.Node {
+	return h.Span(
+		h.Class("cm-stat"),
+		g.Attr("role", "img"),
+		g.Attr("aria-label", label),
+		h.Title(label),
+		g.Raw(iconSVG),
+		h.Span(g.Text(count)),
+	)
+}
+
+// downloadIconSVG / thumbsUpIconSVG are inline (feather-style) glyphs shown in
+// place of the words "downloads"/"likes" on result cards. Static, self-contained
+// markup (no external refs); sized/aligned via .cm-stat-ico in app.css.
+const (
+	downloadIconSVG = `<svg class="cm-stat-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`
+	thumbsUpIconSVG = `<svg class="cm-stat-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>`
+)
 
 // creatorPage renders a creator's models with a subscribe-to-creator button. subs
 // is the per-render model-subscription map used by each result card's subscribe
