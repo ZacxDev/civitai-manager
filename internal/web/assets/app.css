@@ -631,3 +631,23 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   height: 14px;
   flex: 0 0 auto;
 }
+
+/*
+ * .cm-wf-group-header — the "Group by base model" section headers the workflow
+ * list's client-side controls script inserts between card groups. Theme-aware via
+ * --civitai-* tokens so both data-theme paths render; styled here (not with a
+ * Tailwind utility) so no new class enters the purged output.css build.
+ */
+.cm-wf-group-header {
+  margin-top: 0.5rem;
+  padding: 0.25rem 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--civitai-color-text-dimmed);
+  border-bottom: 1px solid var(--civitai-color-border);
+}
+.cm-wf-group-header:first-child {
+  margin-top: 0;
+}
