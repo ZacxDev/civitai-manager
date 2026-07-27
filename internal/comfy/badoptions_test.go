@@ -261,7 +261,7 @@ func TestValidateOptionFixes(t *testing.T) {
 		{InputName: "Select to add Wildcard", Current: "OLD", Choices: []string{"Select the Wildcard to add to the text"}},
 	}
 	req := map[OptionFixKey]string{
-		{InputName: "model_name", OldValue: "bbox/face_yolov9c.pt"}: "bbox/face_yolov8m.pt",                    // valid
+		{InputName: "model_name", OldValue: "bbox/face_yolov9c.pt"}: "bbox/face_yolov8m.pt",                   // valid
 		{InputName: "Select to add Wildcard", OldValue: "OLD"}:      "Select the Wildcard to add to the text", // valid
 		{InputName: "steps", OldValue: "20"}:                        "50",                                     // not a bad option → drop
 	}
