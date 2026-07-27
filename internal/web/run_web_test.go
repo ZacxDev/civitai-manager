@@ -276,6 +276,38 @@ func TestRunViewProxy(t *testing.T) {
 	}
 }
 
+// TestRunAllBypassedAborts exercises the REAL run path on a UI workflow whose
+// only executable node is bypassed (mode 4) with a KNOWN type: the conversion
+// yields zero runnable nodes, so the run must abort BEFORE submit and render the
+// actionable "nothing to run" report (never the generic failure).
+func TestRunAllBypassedAborts(t *testing.T) {
+	srv := newLibraryTestServer(t, t.TempDir())
+	fake := &fakeComfy{
+		info: mustObjectInfo(t, `{"CheckpointLoaderSimple":{"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}}}`),
+	}
+	srv.comfyClientFn = func() comfyClient { return fake }
+
+	ui := `{"nodes":[{"id":4,"type":"CheckpointLoaderSimple","mode":4,"widgets_values":["a.safetensors"]}],"links":[]}`
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, ui)
+
+	rec := post(t, srv, "/workflows/"+id+"/run", nil, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("run start = %d", rec.Code)
+	}
+	body := pollRunUntilDone(t, srv, id)
+	if fake.submitCalled {
+		t.Error("Submit must NOT be called when the conversion produces no runnable nodes")
+	}
+	if !strings.Contains(body, "Run aborted — nothing to run") {
+		t.Errorf("terminal body missing the aborted headline:\n%s", body)
+	}
+	for _, want := range []string{"disabled", "enable", "re-save"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("terminal body missing %q guidance:\n%s", want, body)
+		}
+	}
+}
+
 // TestRunCSRFRejected asserts the run start requires a CSRF token.
 func TestRunCSRFRejected(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())

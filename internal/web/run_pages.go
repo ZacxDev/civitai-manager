@@ -268,6 +268,13 @@ func runViewURL(promptID string, ref comfy.ImageRef) string {
 // runFailure renders the failure report: the (escaped, untrusted) message plus any
 // preflight detail (missing nodes/models) or conversion warnings.
 func runFailure(snap runSnapshot) g.Node {
+	// An empty-conversion abort is not a failure in the run sense — nothing was
+	// submitted. Render it as its own actionable report (the message is the
+	// escaped, actionable guidance from *comfy.ConversionEmptyError).
+	if snap.Aborted {
+		return alert("warning", "Run aborted — nothing to run", g.Text(snap.Message))
+	}
+
 	var detail []g.Node
 	detail = append(detail, g.Text(snap.Message))
 

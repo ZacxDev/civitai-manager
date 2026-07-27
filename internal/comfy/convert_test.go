@@ -2,6 +2,7 @@ package comfy
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -804,4 +805,99 @@ func TestConvertSubgraphArrayTypedSlot(t *testing.T) {
 	}
 	assertLinkRef(t, pm.Inputs["model"], "4", 0)
 	assertLinkRef(t, nodes["17"].Inputs["model"], "100:1", 0)
+}
+
+// TestConvertEmptyAllBypassed is the WAN-template case: every executable node is
+// bypassed (mode 4) with a KNOWN type. The conversion must yield a
+// *ConversionEmptyError classified as all-suppressed, with the actionable
+// "enable"/"re-save" guidance.
+func TestConvertEmptyAllBypassed(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
+		"KSampler": {"input":{"required":{"seed":["INT",{}]}},"input_order":{"required":["seed"]}}
+	}`)
+	// Two known executable nodes, both bypassed; a Note (virtual) is not counted.
+	ui := `{"nodes":[
+		{"id":4,"type":"CheckpointLoaderSimple","mode":4,"widgets_values":["a.safetensors"]},
+		{"id":3,"type":"KSampler","mode":4,"widgets_values":[123]},
+		{"id":9,"type":"Note","mode":0,"widgets_values":["hi"]}
+	],"links":[]}`
+
+	api, _, err := ConvertUIToAPI(json.RawMessage(ui), info)
+	if api != nil {
+		t.Errorf("expected nil api graph, got: %s", api)
+	}
+	var ece *ConversionEmptyError
+	if !errors.As(err, &ece) {
+		t.Fatalf("error is not *ConversionEmptyError: %v", err)
+	}
+	if ece.Suppressed != 2 {
+		t.Errorf("Suppressed = %d, want 2", ece.Suppressed)
+	}
+	if ece.Unknown != 0 {
+		t.Errorf("Unknown = %d, want 0", ece.Unknown)
+	}
+	msg := ece.Error()
+	for _, want := range []string{"disabled", "enable", "re-save"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message missing %q guidance: %q", want, msg)
+		}
+	}
+}
+
+// TestConvertEmptyAllUnknown is the no-installed-node-types case: every node's
+// type is absent from /object_info. The conversion must yield a
+// *ConversionEmptyError classified as all-unknown, with the "not installed"
+// custom-node guidance.
+func TestConvertEmptyAllUnknown(t *testing.T) {
+	info := buildInfo(t, `{}`) // nothing installed
+	ui := `{"nodes":[
+		{"id":1,"type":"SomeCustomNode","mode":0,"widgets_values":[]},
+		{"id":2,"type":"AnotherCustomNode","mode":0,"widgets_values":[]}
+	],"links":[]}`
+
+	api, _, err := ConvertUIToAPI(json.RawMessage(ui), info)
+	if api != nil {
+		t.Errorf("expected nil api graph, got: %s", api)
+	}
+	var ece *ConversionEmptyError
+	if !errors.As(err, &ece) {
+		t.Fatalf("error is not *ConversionEmptyError: %v", err)
+	}
+	if ece.Suppressed != 0 {
+		t.Errorf("Suppressed = %d, want 0", ece.Suppressed)
+	}
+	if ece.Unknown != 2 {
+		t.Errorf("Unknown = %d, want 2", ece.Unknown)
+	}
+	msg := ece.Error()
+	for _, want := range []string{"not installed", "custom nodes"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message missing %q guidance: %q", want, msg)
+		}
+	}
+}
+
+// TestConvertNonEmptyHappyPathUnchanged is the regression guard: a graph with at
+// least one active, known node still converts successfully (no error), so the
+// empty-classification change did not touch the happy path.
+func TestConvertNonEmptyHappyPathUnchanged(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}}
+	}`)
+	// One active known node + one bypassed known node: converts to exactly one node.
+	ui := `{"nodes":[
+		{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+		{"id":5,"type":"CheckpointLoaderSimple","mode":4,"widgets_values":["b.safetensors"]}
+	],"links":[]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("node count = %d, want 1: %v", len(nodes), keysOf(nodes))
+	}
+	if _, ok := nodes["4"]; !ok {
+		t.Errorf("active node 4 missing: %v", keysOf(nodes))
+	}
 }
