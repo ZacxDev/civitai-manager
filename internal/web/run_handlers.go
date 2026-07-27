@@ -105,9 +105,13 @@ type runResult struct {
 // runOptions carries per-run overrides that must NOT be persisted to the stored
 // workflow. Substitute maps a missing model filename → an installed substitute:
 // the run applies it to the CONVERTED api graph (an ephemeral copy) before
-// preflight/submit, leaving the stored workflow untouched.
+// preflight/submit, leaving the stored workflow untouched. OptionFixes maps a
+// combo-input (name, old value) → a chosen valid value: applied the same ephemeral
+// way to rewrite `value_not_in_list` combos (validated on-list against the live
+// object_info before injection).
 type runOptions struct {
-	Substitute map[string]string
+	Substitute  map[string]string
+	OptionFixes map[comfy.OptionFixKey]string
 }
 
 // runUpdater lets runFn stream phase transitions into the job under the mutex.
@@ -284,10 +288,25 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater,
 	}
 
 	up.setPhase(runPhasePreparing, "Checking installed nodes & models…", 0)
-	report := comfy.Preflight(apiGraph, info, func(name string) bool {
+	localHave := func(name string) bool {
 		ok, _ := s.store.HasLocalFileNamed(name)
 		return ok
-	})
+	}
+	report := comfy.Preflight(apiGraph, info, localHave)
+
+	// Apply any user-selected incompatible-option fixes to the CONVERTED (ephemeral)
+	// graph: validate each chosen value against the detected BadOptions (on-list ONLY —
+	// an off-list value is refused, never injected), rewrite the matching combo inputs
+	// across all nodes, and re-run preflight so OK reflects the fixed graph. The stored
+	// workflow is never touched (apiGraph is a converted/parsed copy, never persisted).
+	if len(opts.OptionFixes) > 0 && len(report.BadOptions) > 0 {
+		valid := comfy.ValidateOptionFixes(opts.OptionFixes, report.BadOptions)
+		if len(valid) > 0 {
+			apiGraph = comfy.ApplyOptionFixes(apiGraph, valid)
+			report = comfy.Preflight(apiGraph, info, localHave)
+		}
+	}
+
 	if !report.OK {
 		// Enrich the missing-models list with resolve queries + installed substitute
 		// candidates while /object_info is in hand, so the failure panel is actionable.

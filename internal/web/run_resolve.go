@@ -224,6 +224,70 @@ func (s *Server) handleWorkflowRunSubstitute(w http.ResponseWriter, r *http.Requ
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 }
 
+// handleWorkflowRunWithOptions starts an EPHEMERAL run of the workflow with chosen
+// incompatible-option fixes applied — each combo's saved (invalid) value swapped for
+// a user-picked valid choice — leaving the stored workflow untouched. CSRF-protected
+// + loopback-gated (it reaches ComfyUI). It respects the one-run-at-a-time invariant
+// (a second call while a run is in flight is a no-op via startRun). The chosen values
+// are re-validated against the live object_info's real choices inside the run (an
+// off-list value is refused there), so this handler only parses the form.
+func (s *Server) handleWorkflowRunWithOptions(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	if !s.gate(w) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad workflow id", http.StatusBadRequest)
+		return
+	}
+	wf, err := s.store.GetWorkflow(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.renderError(w, "load workflow", err)
+		return
+	}
+	s.startRun(wf, runOptions{OptionFixes: parseOptionFixes(r.Form)})
+	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
+}
+
+// parseOptionFixes reads the parallel opt_input / opt_old / opt_new form arrays (one
+// entry per Incompatible-options group, index-aligned in DOM order) into a fix map
+// keyed by (input name, old value). An empty chosen value (an unmade selection) is
+// skipped; server-side ValidateOptionFixes still rejects any off-list value before it
+// is injected, so this is a lenient parse.
+func parseOptionFixes(form url.Values) map[comfy.OptionFixKey]string {
+	inputs, olds, news := form["opt_input"], form["opt_old"], form["opt_new"]
+	n := len(inputs)
+	if len(olds) < n {
+		n = len(olds)
+	}
+	if len(news) < n {
+		n = len(news)
+	}
+	if n == 0 {
+		return nil
+	}
+	fixes := make(map[comfy.OptionFixKey]string, n)
+	for i := 0; i < n; i++ {
+		newVal := strings.TrimSpace(news[i])
+		if newVal == "" {
+			continue
+		}
+		fixes[comfy.OptionFixKey{InputName: inputs[i], OldValue: olds[i]}] = newVal
+	}
+	return fixes
+}
+
 // missingResolution is the eager, at-settle CivitAI resolution for ONE missing
 // model filename. Reached distinguishes "reached CivitAI, no match" (Reached=true,
 // Result empty) from "couldn't reach CivitAI" (Reached=false) so the popover renders

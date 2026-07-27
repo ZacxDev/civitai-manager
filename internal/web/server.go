@@ -455,6 +455,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("POST /workflows/{id}/run", s.handleWorkflowRun)
 	mux.HandleFunc("POST /workflows/{id}/run-substitute", s.handleWorkflowRunSubstitute)
+	mux.HandleFunc("POST /workflows/{id}/run-with-options", s.handleWorkflowRunWithOptions)
 	// Download-a-missing-model-into-ComfyUI-then-run (CSRF + loopback gated; reaches
 	// civitai.com + the local filesystem). Disabled/degrades to link-only unless
 	// comfy_model_path is a writable dir and the ComfyUI is local.
