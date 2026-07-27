@@ -143,6 +143,62 @@ func TestDownloadAndRunWritesAndRuns(t *testing.T) {
 	}
 }
 
+// modelIDReader resolves NOTHING via SearchModels (empty) but serves a specific
+// model via GetModel, recording the requested ids — so a download that succeeds
+// PROVES the alternate card's model_id drove the resolution.
+type modelIDReader struct {
+	stubReader
+	modelRaw    []byte
+	mu          sync.Mutex
+	getModelIDs []string
+}
+
+func (r *modelIDReader) SearchModels(context.Context, url.Values) (*civitai.ModelSearchResult, error) {
+	return &civitai.ModelSearchResult{}, nil // no filename match without a model_id
+}
+func (r *modelIDReader) GetModel(_ context.Context, id string) (*civitai.ModelDetail, []byte, error) {
+	r.mu.Lock()
+	r.getModelIDs = append(r.getModelIDs, id)
+	r.mu.Unlock()
+	return &civitai.ModelDetail{ID: 42, Name: "Alt Model"}, r.modelRaw, nil
+}
+
+// TestDownloadAndRunAlternateModelID: the alternate card's install passes model_id;
+// the endpoint resolves via GetModel(model_id) and downloads THAT model's file.
+func TestDownloadAndRunAlternateModelID(t *testing.T) {
+	const dlURL = "http://dl.example/alt"
+	reader := &modelIDReader{modelRaw: []byte(
+		`{"id":42,"modelVersions":[{"id":10,"files":[{"name":"fabricatedXL_v70.safetensors","downloadUrl":"` + dlURL + `","sizeKB":4,"primary":true}]}]}`)}
+	srv, dl, comfyModels := newDownloadServer(t, reader, dlURL, []byte("ALTWEIGHTS"))
+	rr := &runRecorder{}
+	srv.runFn = rr.fn()
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI,
+		`{"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"fabricatedXL_v70.safetensors"}}}`)
+
+	rec := post(t, srv, "/workflows/"+wfID+"/download-and-run", url.Values{
+		"filename": {"fabricatedXL_v70.safetensors"},
+		"type":     {"Checkpoint"},
+		"model_id": {"42"},
+	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("download-and-run = %d", rec.Code)
+	}
+	pollRunUntilDone(t, srv, wfID)
+
+	dest := filepath.Join(comfyModels, "checkpoints", "fabricatedXL_v70.safetensors")
+	if got, err := os.ReadFile(dest); err != nil || string(got) != "ALTWEIGHTS" {
+		t.Fatalf("alternate model not written (got %q, err %v)", got, err)
+	}
+	if dl.calls != 1 {
+		t.Errorf("downloader called %d times, want 1", dl.calls)
+	}
+	reader.mu.Lock()
+	defer reader.mu.Unlock()
+	if len(reader.getModelIDs) == 0 || reader.getModelIDs[0] != "42" {
+		t.Errorf("GetModel called with %v, want the alternate model_id 42", reader.getModelIDs)
+	}
+}
+
 // TestDownloadAndRunTraversalStaysInside: a traversal-laden reference still writes
 // only its basename inside comfy_model_path/checkpoints (never escapes).
 func TestDownloadAndRunTraversalStaysInside(t *testing.T) {

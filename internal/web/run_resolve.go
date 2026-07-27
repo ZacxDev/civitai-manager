@@ -361,7 +361,7 @@ func civitaiMatchSection(mm comfy.MissingModel, res missingResolution, wfID int6
 	case !res.Reached:
 		body = append(body,
 			h.P(h.Class("text-xs text-slate-500 mb-2"),
-				g.Text("Couldn't reach CivitAI to find a match.")),
+				g.Text("Could not reach CivitAI to find a match.")),
 			resolveFallbackLink(mm.Query),
 		)
 	case res.Result != nil && len(res.Result.Items) > 0:
@@ -542,7 +542,6 @@ func libraryPreviewImg(meta store.LocalModelMeta, mode string) g.Node {
 	if strings.TrimSpace(meta.ImageURL) == "" {
 		return nil
 	}
-	mode = normalizeNSFWMode(mode)
 	level := meta.NSFWLevel
 	if !meta.NSFWLevelKnown {
 		level = nsfwLevelUnknown // fail-closed
@@ -552,7 +551,8 @@ func libraryPreviewImg(meta store.LocalModelMeta, mode string) g.Node {
 		return nil // hide: OMIT server-side (not just CSS-hidden)
 	}
 	cls := "w-full h-32 object-cover rounded border border-slate-800 bg-slate-900"
-	if nsfw && mode == NSFWBlur {
+	// Blur any NSFW preview unless the mode is an explicit "show" (safe default).
+	if nsfw && mode != NSFWShow {
 		cls += " cm-blur"
 	}
 	return h.Img(
