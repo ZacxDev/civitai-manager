@@ -147,7 +147,7 @@ func detectBadOptions(nodes map[string]apiNode, info ObjectInfo, modelRefSet map
 			if !ok || !spec.IsCombo || len(spec.Choices) == 0 {
 				continue // not a combo, or a combo with non-string (uncomparable) choices
 			}
-			val, ok := scalarString(n.Inputs[inName])
+			val, ok := scalarComboValue(n.Inputs[inName])
 			if !ok {
 				continue // link array, object, or otherwise not a scalar value
 			}
@@ -211,7 +211,7 @@ func choicesContainValue(choices []string, value string) bool {
 // scalarString decodes a node input value that is a plain scalar (string or number)
 // into its string form. A link input (a JSON array like ["6",0]) or an object value
 // yields ok=false, so only widget-entered scalar values are considered.
-func scalarString(raw json.RawMessage) (string, bool) {
+func scalarComboValue(raw json.RawMessage) (string, bool) {
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return s, true
