@@ -349,6 +349,99 @@ func TestConvertGetNodeAmbiguous(t *testing.T) {
 	}
 }
 
+// TestConvertBypassedSourceCleanDeadEnd is the Basic_V37 (587) case: a bypassed
+// SOURCE node with ZERO connected inputs (a loader/primitive) feeding a kept
+// node's input is a clean dead-end — the consumer input is legitimately left
+// unset, with NO warning (mirrors ComfyUI dropping the link when a source is
+// bypassed). Before the fix this warned "bypassed node N could not be spliced".
+func TestConvertBypassedSourceCleanDeadEnd(t *testing.T) {
+	info := buildInfo(t, `{
+		"LoadImage": {"input":{"required":{"image":[["a.png"],{}]}},"input_order":{"required":["image"]}},
+		"BasicScheduler": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}}
+	}`)
+	// bypassed LoadImage (id 46, no connected inputs) -> scheduler.model (kept).
+	ui := `{"nodes":[
+		{"id":46,"type":"LoadImage","mode":4,"widgets_values":["a.png"]},
+		{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":1}]}
+	],"links":[[1,46,0,17,0,"MODEL"]]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("a bypassed zero-input source is a clean dead-end; expected NO warnings, got %v", warns)
+	}
+	if _, has := nodes["46"]; has {
+		t.Error("bypassed source node 46 should be dropped")
+	}
+	if _, has := nodes["17"].Inputs["model"]; has {
+		t.Error("scheduler.model should be unset (bypassed source drops the link)")
+	}
+	if _, has := nodes["17"]; !has {
+		t.Error("kept consumer node 17 should still convert")
+	}
+}
+
+// TestConvertBypassedAmbiguousNamesConsumer covers the genuinely-ambiguous bypass:
+// a bypassed node with ≥1 connected input but no clean 1:1 passthrough for the
+// requested output slot. This DOES warn, and the warning must name the CONSUMER
+// (active node + input) that loses its source, not just the bypassed node id.
+func TestConvertBypassedAmbiguousNamesConsumer(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}},
+		"BasicScheduler": {"input":{"required":{"model":["MODEL",{}]}},"input_order":{"required":["model"]}}
+	}`)
+	// Bypassed node 60 has TWO connected inputs (from 4 and 5); the consumer asks
+	// for its output slot 2 — no 1:1 passthrough, not a sole input → ambiguous.
+	ui := `{"nodes":[
+		{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+		{"id":5,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["b.safetensors"]},
+		{"id":60,"type":"SomeMerge","mode":4,"inputs":[
+			{"name":"in0","type":"MODEL","link":1},
+			{"name":"in1","type":"MODEL","link":2}]},
+		{"id":17,"type":"BasicScheduler","mode":0,"inputs":[{"name":"model","type":"MODEL","link":3}]}
+	],"links":[
+		[1,4,0,60,0,"MODEL"],
+		[2,5,0,60,1,"MODEL"],
+		[3,60,2,17,0,"MODEL"]
+	]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if _, has := nodes["17"].Inputs["model"]; has {
+		t.Error("scheduler.model should be unset (ambiguous bypass)")
+	}
+	// The warning must name the consumer node + input AND the bypassed node.
+	if !containsSubstr(warns, `node 17 (BasicScheduler) input "model" has no source`) {
+		t.Errorf("expected a consumer-named ambiguous-bypass warning, got %v", warns)
+	}
+	if !containsSubstr(warns, "bypassed node 60") {
+		t.Errorf("warning should name the ambiguous bypassed node 60, got %v", warns)
+	}
+	// The old, unactionable wording must be gone.
+	if containsSubstr(warns, "could not be spliced (no clean input)") {
+		t.Errorf("old unactionable wording should be replaced, got %v", warns)
+	}
+}
+
+// TestConvertFastGroupsBypasserDropped asserts the rgthree "Fast Groups Bypasser"
+// UI-only helper is dropped SILENTLY (like its sibling "Fast Groups Muter"), with
+// no "type not available" warning — it has no backend class / no execution links.
+func TestConvertFastGroupsBypasserDropped(t *testing.T) {
+	info := buildInfo(t, `{
+		"CheckpointLoaderSimple": {"input":{"required":{"ckpt_name":[["a.safetensors"],{}]}},"input_order":{"required":["ckpt_name"]}}
+	}`)
+	ui := `{"nodes":[
+		{"id":4,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+		{"id":2,"type":"Fast Groups Bypasser (rgthree)","mode":0}
+	],"links":[]}`
+	nodes, warns := convertNodes(t, ui, info)
+	if len(warns) != 0 {
+		t.Errorf("Fast Groups Bypasser must be dropped silently, got warnings: %v", warns)
+	}
+	if _, has := nodes["2"]; has {
+		t.Error("Fast Groups Bypasser node 2 should be dropped")
+	}
+	if _, has := nodes["4"]; !has {
+		t.Error("checkpoint node 4 should still convert")
+	}
+}
+
 // subgraphTestInfo is the object_info used by the subgraph tests: a checkpoint
 // loader, a pass-through node (one MODEL link input, no widgets), and a consumer.
 func subgraphTestInfo(t *testing.T) ObjectInfo {
