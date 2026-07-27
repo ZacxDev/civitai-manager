@@ -81,8 +81,10 @@ func serveRun(ctx context.Context, st *store.Store, client civitai.Client, cfg *
 		WebScanMaxFiles:     cfg.WebScanMaxFiles,
 		ComfyURL:            cfg.ComfyURL,
 		ComfyToken:          cfg.ComfyToken,
+		ComfyModelPath:      cfg.ComfyModelPath,
 		ComfyCloud:          cfg.ComfyCloud,
 		Token:               cfg.Token,
+		MaxFileSizeBytes:    cfg.MaxFileSizeBytes,
 	}, log)
 	// Tie background discovery crawls to the server lifecycle: cancelling ctx on
 	// shutdown cancels any in-flight crawl instead of leaking its goroutine.
@@ -133,12 +135,14 @@ func newServeCmd(gf *globalFlags) *cobra.Command {
 	var (
 		addr           string
 		webScanTimeout string
+		comfyModelPath string
 	)
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the web UI, subscription poller, and download worker",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			gf.webScanTimeout = webScanTimeout
+			gf.comfyModelPath = comfyModelPath
 			a, err := gf.build()
 			if err != nil {
 				return err
@@ -156,6 +160,7 @@ func newServeCmd(gf *globalFlags) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&addr, "addr", "", "listen address (default from config, 127.0.0.1:8787); use a non-loopback host to expose the UI on your LAN")
 	cmd.Flags().StringVar(&webScanTimeout, "web-scan-timeout", "", "deadline for a web \"Scan now\" (e.g. 2m; default from config). Bounds the web-triggered directory walk/hash")
+	cmd.Flags().StringVar(&comfyModelPath, "comfy-model-path", "", "local ComfyUI models/ directory root; enables the \"Download & run\" action to write a missing model into the correct subfolder (must be an existing writable dir)")
 	return cmd
 }
 

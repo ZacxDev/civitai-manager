@@ -53,6 +53,16 @@ type Config struct {
 	// ComfyToken is an optional bearer token for a login-fronted ComfyUI. Secret —
 	// never rendered/logged.
 	ComfyToken string
+	// ComfyModelPath is the local ComfyUI models/ directory root used by the
+	// "Download & run" action to write a missing model into the correct per-type
+	// subfolder. Empty (or a non-loopback ComfyUI) disables the download flow — the
+	// missing-models panel then degrades to CivitAI-link-only. Validated at config
+	// load (existing writable dir when set).
+	ComfyModelPath string
+	// MaxFileSizeBytes caps a "Download & run" model download (0 = the built-in
+	// safety guard). It reuses the poller's max_file_size setting so a single knob
+	// bounds every download the app makes.
+	MaxFileSizeBytes int64
 	// ComfyCloud enables the "Run on CivitAI Cloud" feature (submit to the CivitAI
 	// orchestration API, sending the graph + resource list to civitai.com and
 	// spending Buzz). Default false → the cloud UI is shown but disabled with a note.
