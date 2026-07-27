@@ -437,7 +437,7 @@ func (c *Config) normalize() error {
 		if c.ComfyModelPath, err = expandHome(c.ComfyModelPath); err != nil {
 			return err
 		}
-		if err := validateWritableDir(c.ComfyModelPath); err != nil {
+		if err := ValidateWritableDir(c.ComfyModelPath); err != nil {
 			return fmt.Errorf("invalid comfy_model_path %q: %w", c.ComfyModelPath, err)
 		}
 	}
@@ -542,11 +542,11 @@ func ParseSize(s string) (int64, error) {
 	return int64(n * float64(mult)), nil
 }
 
-// validateWritableDir reports whether path is an existing directory this process
+// ValidateWritableDir reports whether path is an existing directory this process
 // can write to. It confirms writability by creating and removing a probe file
 // (the only portable check — file-mode bits do not account for ACLs, ownership,
 // or a read-only mount). Returns a descriptive error otherwise.
-func validateWritableDir(path string) error {
+func ValidateWritableDir(path string) error {
 	fi, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
