@@ -176,6 +176,14 @@ type Server struct {
 	popularMu  sync.Mutex
 	popularVal map[bool]*civitai.ModelSearchResult
 	popularExp map[bool]time.Time
+
+	// popularWfVal/popularWfExp are the parallel TTL cache for the "Popular this
+	// month" WORKFLOWS feed shown as the empty-query default on /workflows/discover.
+	// Same shape/posture as popularVal/popularExp (keyed by the NSFW flag, guarded
+	// by popularMu, refreshed on expiry via popularTTL) but a SEPARATE map so the
+	// Workflows-pinned feed never collides with the general popular-models feed.
+	popularWfVal map[bool]*civitai.ModelSearchResult
+	popularWfExp map[bool]time.Time
 }
 
 // popularTTL bounds how long the cached popular-models feed is served before a
@@ -272,6 +280,8 @@ func NewServer(st *store.Store, reader civitai.Reader, sub Subscriber, cfg Confi
 		cloudPollInterval: defaultCloudPollInterval,
 		popularVal:        map[bool]*civitai.ModelSearchResult{},
 		popularExp:        map[bool]time.Time{},
+		popularWfVal:      map[bool]*civitai.ModelSearchResult{},
+		popularWfExp:      map[bool]time.Time{},
 	}
 }
 

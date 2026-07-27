@@ -1,13 +1,24 @@
 package web
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
 )
+
+// erroringSearchReader is a civitai.Reader whose SearchModels always errors, used
+// to exercise the popular-feed graceful-degrade path.
+type erroringSearchReader struct{ fakeReader }
+
+func (erroringSearchReader) SearchModels(context.Context, url.Values) (*civitai.ModelSearchResult, error) {
+	return nil, errors.New("boom")
+}
 
 // workflowResult builds a one-item Workflows-type search result with a safe
 // showcase image and a version, so the discover cards render a name, a carousel
@@ -99,9 +110,10 @@ func TestDiscoverSortRejectsBogusValue(t *testing.T) {
 	}
 }
 
-// TestDiscoverEmptyQueryDoesNotFetch proves the empty-query state renders a prompt
-// and makes NO SearchModels call (no egress on an empty query).
-func TestDiscoverEmptyQueryDoesNotFetch(t *testing.T) {
+// TestDiscoverEmptyQueryShowsPopular proves the empty-query state now renders the
+// cached "Popular this month" WORKFLOWS feed: one SearchModels call pinned to
+// types=Workflows + Most Downloaded / Month, the heading, and the result cards.
+func TestDiscoverEmptyQueryShowsPopular(t *testing.T) {
 	reader := &recordingSearchReader{result: workflowResult(t)}
 	srv := newModelServer(t, reader)
 
@@ -110,16 +122,72 @@ func TestDiscoverEmptyQueryDoesNotFetch(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /workflows/discover = %d", rec.Code)
 	}
-	if reader.callCount() != 0 {
-		t.Fatalf("empty query must not fetch; SearchModels calls = %d, want 0", reader.callCount())
+	if reader.callCount() != 1 {
+		t.Fatalf("empty query should fetch the popular feed once; SearchModels calls = %d, want 1", reader.callCount())
+	}
+	reader.mu.Lock()
+	q := reader.calls[0]
+	reader.mu.Unlock()
+	if q.Get("types") != "Workflows" {
+		t.Errorf("popular feed must pin types=Workflows, got %q", q.Get("types"))
+	}
+	if q.Get("type") != "" {
+		t.Errorf("singular type must NOT be set (API ignores it); got %q", q.Get("type"))
+	}
+	if q.Get("sort") != "Most Downloaded" || q.Get("period") != "Month" || q.Get("limit") != "24" {
+		t.Errorf("popular workflow query params wrong: %v", q)
+	}
+	if q.Get("query") != "" {
+		t.Errorf("popular fetch must not carry a query, got %q", q.Get("query"))
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Popular this month",           // the feed heading
+		"WAN 2.2 Workflow T2V-I2V-T2I", // a result card
+		`href="/workflows/discover"`,   // full page chrome (Discover nav link)
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("empty-query popular page missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// TestDiscoverPopularCached proves the popular workflows feed is TTL-cached: a
+// second empty-query request does NOT re-fetch (call count stays 1).
+func TestDiscoverPopularCached(t *testing.T) {
+	reader := &recordingSearchReader{result: workflowResult(t)}
+	srv := newModelServer(t, reader)
+
+	get := func() {
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/workflows/discover", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /workflows/discover = %d", rec.Code)
+		}
+	}
+	get()
+	get()
+	if reader.callCount() != 1 {
+		t.Fatalf("second empty-query load within TTL should be cached; SearchModels calls = %d, want 1", reader.callCount())
+	}
+}
+
+// TestDiscoverPopularFetchErrorFallsBack proves a popular-feed fetch error
+// degrades to the plain "Search for workflows…" prompt (HTTP 200, no crash).
+func TestDiscoverPopularFetchErrorFallsBack(t *testing.T) {
+	srv := newModelServer(t, erroringSearchReader{})
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/workflows/discover", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /workflows/discover = %d, want 200 (graceful degrade)", rec.Code)
 	}
 	body := rec.Body.String()
 	if !strings.Contains(body, "Search for workflows") {
-		t.Errorf("empty-query page should show the search prompt:\n%s", body)
+		t.Errorf("on a popular-feed fetch error the page should show the plain prompt:\n%s", body)
 	}
-	// Full page chrome present (navbar with the Discover link).
-	if !strings.Contains(body, `href="/workflows/discover"`) {
-		t.Error("full page should include the Discover nav link")
+	if strings.Contains(body, "Popular this month") {
+		t.Errorf("no heading should render when the popular fetch failed:\n%s", body)
 	}
 }
 
