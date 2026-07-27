@@ -61,7 +61,10 @@ type runJob struct {
 	// preflight is set when the run aborted on a failed preflight (missing nodes/
 	// models); warnings is set when a UI→API conversion produced unrunnable nodes.
 	preflight *comfy.PreflightReport
-	warnings  []string
+	// missingModels is the enriched analysis for a failed preflight (nil otherwise),
+	// carried into the snapshot so the failure panel can render resolve/substitute.
+	missingModels []comfy.MissingModel
+	warnings      []string
 	// aborted marks a run that never submitted because the UI→API conversion yielded
 	// zero runnable nodes (an all-disabled template / no installed node types). It
 	// gets a distinct "nothing to run" report rather than the generic failure alert.
@@ -78,8 +81,21 @@ type runJob struct {
 type runResult struct {
 	Images    []comfy.ImageRef
 	Preflight *comfy.PreflightReport
-	Warnings  []string
-	PromptID  string
+	// MissingModels is the enriched per-missing-model analysis (search query +
+	// installed substitute candidates) computed WHILE the live /object_info schema
+	// is in hand, so the failure panel can offer resolve + substitute actions
+	// without re-fetching. Set only alongside a failed Preflight.
+	MissingModels []comfy.MissingModel
+	Warnings      []string
+	PromptID      string
+}
+
+// runOptions carries per-run overrides that must NOT be persisted to the stored
+// workflow. Substitute maps a missing model filename → an installed substitute:
+// the run applies it to the CONVERTED api graph (an ephemeral copy) before
+// preflight/submit, leaving the stored workflow untouched.
+type runOptions struct {
+	Substitute map[string]string
 }
 
 // runUpdater lets runFn stream phase transitions into the job under the mutex.
@@ -104,7 +120,7 @@ func (s *Server) comfy() comfyClient {
 // (idempotent — a re-click while a run is in flight starts no second goroutine).
 // The run derives its context from the server base context (so shutdown cancels it)
 // with the runaway-backstop budget.
-func (s *Server) startRun(wf *store.Workflow) {
+func (s *Server) startRun(wf *store.Workflow, opts runOptions) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	if s.runJob != nil && s.runJob.running {
@@ -153,7 +169,7 @@ func (s *Server) startRun(wf *store.Workflow) {
 					err = fmt.Errorf("run panicked: %v", r)
 				}
 			}()
-			res, err = run(ctx, wf, up)
+			res, err = run(ctx, wf, up, opts)
 		}()
 		s.runMu.Lock()
 		defer s.runMu.Unlock()
@@ -174,7 +190,7 @@ func (s *Server) startRun(wf *store.Workflow) {
 				job.phase, job.err, job.message = runPhaseFailed, err, runErrorMessage(err)
 			}
 		case res != nil && res.Preflight != nil:
-			job.phase, job.preflight = runPhaseFailed, res.Preflight
+			job.phase, job.preflight, job.missingModels = runPhaseFailed, res.Preflight, res.MissingModels
 			job.message = "Preflight failed — this workflow references nodes or models that are not installed."
 		case res != nil && len(res.Warnings) > 0:
 			job.phase, job.warnings = runPhaseFailed, res.Warnings
@@ -198,7 +214,7 @@ func (s *Server) startRun(wf *store.Workflow) {
 // realRun is the production run seam: load → (convert UI→API) → preflight → submit
 // → poll. It aborts (without an error) on a failed preflight or on conversion
 // warnings so a broken graph is never submitted.
-func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater) (*runResult, error) {
+func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater, opts runOptions) (*runResult, error) {
 	client := s.comfy()
 	if client == nil {
 		return nil, errors.New("local run is not configured (set comfy_url)")
@@ -232,13 +248,27 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater)
 		apiGraph = json.RawMessage(wf.Graph)
 	}
 
+	// Apply any one-off model substitution to the CONVERTED (ephemeral) graph. This
+	// swaps every loader-input value equal to a missing filename for the chosen
+	// installed substitute — the stored workflow is never touched (apiGraph is a
+	// converted/parsed copy, never persisted).
+	if len(opts.Substitute) > 0 {
+		apiGraph = comfy.ApplySubstitutions(apiGraph, opts.Substitute)
+	}
+
 	up.setPhase(runPhasePreparing, "Checking installed nodes & models…", 0)
 	report := comfy.Preflight(apiGraph, info, func(name string) bool {
 		ok, _ := s.store.HasLocalFileNamed(name)
 		return ok
 	})
 	if !report.OK {
-		return &runResult{Preflight: &report}, nil
+		// Enrich the missing-models list with resolve queries + installed substitute
+		// candidates while /object_info is in hand, so the failure panel is actionable.
+		var missing []comfy.MissingModel
+		if len(report.MissingModels) > 0 {
+			missing = comfy.AnalyzeMissingModels(apiGraph, info, report.MissingModels, wf.BaseModel)
+		}
+		return &runResult{Preflight: &report, MissingModels: missing}, nil
 	}
 
 	clientID := comfy.NewID()
@@ -318,6 +348,7 @@ type runSnapshot struct {
 	QueuePos         int
 	Images           []comfy.ImageRef
 	Preflight        *comfy.PreflightReport
+	MissingModels    []comfy.MissingModel
 	Warnings         []string
 	Aborted          bool
 	Stopped          bool
@@ -338,7 +369,8 @@ func (s *Server) runJobState() runSnapshot {
 	return runSnapshot{
 		Started: true, Running: j.running, WorkflowID: j.workflowID,
 		PromptID: j.promptID, Phase: j.phase, Message: j.message, QueuePos: j.queuePos,
-		Images: imgs, Preflight: j.preflight, Warnings: warns, Aborted: j.aborted, Stopped: j.stopped,
+		Images: imgs, Preflight: j.preflight, MissingModels: j.missingModels,
+		Warnings: warns, Aborted: j.aborted, Stopped: j.stopped,
 	}
 }
 
@@ -370,7 +402,7 @@ func (s *Server) handleWorkflowRun(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	s.startRun(wf)
+	s.startRun(wf, runOptions{})
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf))
 }
 

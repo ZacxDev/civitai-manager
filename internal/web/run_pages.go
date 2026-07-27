@@ -216,7 +216,7 @@ func runTerminal(snap runSnapshot, wfID int64, csrf string) g.Node {
 			body = append(body, gal)
 		}
 	default: // failed / stopped
-		body = append(body, runFailure(snap))
+		body = append(body, runFailure(snap, wfID, csrf))
 	}
 	if wfID > 0 {
 		body = append(body, h.Div(h.Class("pt-1"), runAgainButton(wfID, csrf)))
@@ -267,7 +267,7 @@ func runViewURL(promptID string, ref comfy.ImageRef) string {
 
 // runFailure renders the failure report: the (escaped, untrusted) message plus any
 // preflight detail (missing nodes/models) or conversion warnings.
-func runFailure(snap runSnapshot) g.Node {
+func runFailure(snap runSnapshot, wfID int64, csrf string) g.Node {
 	// An empty-conversion abort is not a failure in the run sense — nothing was
 	// submitted. Render it as its own actionable report (the message is the
 	// escaped, actionable guidance from *comfy.ConversionEmptyError).
@@ -283,7 +283,14 @@ func runFailure(snap runSnapshot) g.Node {
 			detail = append(detail, missingList("Missing custom nodes", snap.Preflight.MissingNodes))
 		}
 		if len(snap.Preflight.MissingModels) > 0 {
-			detail = append(detail, missingList("Missing model files", snap.Preflight.MissingModels))
+			// The actionable panel (resolve-to-CivitAI + run-with-substitute) needs the
+			// enriched analysis; fall back to a plain bullet list if it is absent (e.g.
+			// an older snapshot with only filenames).
+			if len(snap.MissingModels) > 0 {
+				detail = append(detail, missingModelsPanel(snap.MissingModels, wfID, csrf))
+			} else {
+				detail = append(detail, missingList("Missing model files", snap.Preflight.MissingModels))
+			}
 		}
 	}
 	if len(snap.Warnings) > 0 {
