@@ -13,6 +13,40 @@ import (
 	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
+// TestPreflightMessageByCategory asserts the failure headline reflects which
+// preflight categories actually failed — an options-only failure must NOT claim
+// missing nodes/models (the nodes are installed; the saved values just drifted).
+func TestPreflightMessageByCategory(t *testing.T) {
+	opt := []comfy.BadOption{{InputName: "model_name", Current: "x"}}
+	cases := []struct {
+		name   string
+		report *comfy.PreflightReport
+		want   string // substring that must appear
+		absent string // substring that must NOT appear (or "")
+	}{
+		{"options only", &comfy.PreflightReport{BadOptions: opt},
+			"saved option values are no longer valid", "not installed"},
+		{"models only", &comfy.PreflightReport{MissingModels: []string{"a.safetensors"}},
+			"nodes or models that are not installed", "saved option values"},
+		{"nodes only", &comfy.PreflightReport{MissingNodes: []string{"FooNode"}},
+			"nodes or models that are not installed", "saved option values"},
+		{"both", &comfy.PreflightReport{MissingModels: []string{"a.safetensors"}, BadOptions: opt},
+			"and some saved option values are no longer valid", ""},
+		{"nil", nil, "Preflight failed.", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := preflightMessage(tc.report)
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("message %q missing %q", got, tc.want)
+			}
+			if tc.absent != "" && strings.Contains(got, tc.absent) {
+				t.Errorf("message %q should not contain %q", got, tc.absent)
+			}
+		})
+	}
+}
+
 // badOptionObjectInfo has a detector-provider whose model_name combo lists two
 // installed files (neither is the graph's saved value) and a single-choice wildcard
 // picker — so a graph carrying the drifted values fails preflight ONLY on bad
