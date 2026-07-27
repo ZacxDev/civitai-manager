@@ -258,8 +258,9 @@ func TestRunSubstituteOneAtATime(t *testing.T) {
 }
 
 // TestMissingModelsPanelRenders drives the real preflight-fail path and asserts
-// the actionable panel: a resolve control, the substitute candidate + a "Run with
-// substitute" button carrying the CSRF token to the substitute endpoint.
+// the Fix popover: a compact "Fix" row opening a native <dialog> with BOTH labeled
+// sections, and the library-substitute card POSTing to run-substitute with CSRF.
+// (stubReader resolves to an empty CivitAI match → the "No CivitAI match" state.)
 func TestMissingModelsPanelRenders(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
 	fake := &fakeComfy{info: mustObjectInfo(t, substituteObjectInfo)}
@@ -274,23 +275,28 @@ func TestMissingModelsPanelRenders(t *testing.T) {
 
 	for _, want := range []string{
 		"Missing model files",
-		"absent.safetensors",                   // the missing filename
-		"Find on CivitAI",                      // resolve control
-		"/workflows/run/resolve-model?",        // resolve endpoint
-		"type=Checkpoint",                      // inferred type filter (in the resolve GET)
-		"Run with an installed model instead",  // substitute heading
-		"installed.safetensors",                // the candidate choice
-		"/workflows/" + id + "/run-substitute", // substitute endpoint
+		"absent.safetensors",                      // the missing filename
+		`onclick="document.getElementById(`,       // the Fix trigger opens a dialog
+		`showModal()`,                             // native <dialog> open
+		`<dialog id="fix-model-0"`,                // that model's popover
+		"Use matched model from CivitAI",          // section 1 header
+		"Replace with a model from my library",    // section 2 header
+		"installed.safetensors",                   // the substitute candidate choice
+		"Use this &amp; run",                      // the substitute CTA
+		"/workflows/" + id + "/run-substitute",    // substitute endpoint
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("panel missing %q:\n%s", want, body)
 		}
 	}
-	// The substitute button carries the CSRF token in hx-vals (HTML-escaped quotes).
+	// The old lazy "Find on CivitAI" control is gone — resolution is automatic.
+	if strings.Contains(body, "Find on CivitAI") || strings.Contains(body, "/workflows/run/resolve-model?") {
+		t.Errorf("Find-on-CivitAI control should be removed:\n%s", body)
+	}
+	// The substitute CTA carries the CSRF token in hx-vals.
 	if !strings.Contains(body, "csrf_token") || !strings.Contains(body, srv.csrf) {
 		t.Errorf("substitute button missing CSRF token:\n%s", body)
 	}
-	// hx-vals must be valid JSON carrying the substitute — assert the escaped shape.
 	if !strings.Contains(body, `substitute`) {
 		t.Errorf("substitute button missing substitute val:\n%s", body)
 	}

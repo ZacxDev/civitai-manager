@@ -51,7 +51,7 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runSection := g.Group([]g.Node{
-		runPanel(wf, s.runJobState(), s.csrf, s.extraPathsAllowed(), s.comfyDownloadEligible()),
+		runPanel(wf, s.runJobState(), s.csrf, s.extraPathsAllowed(), s.comfyDownloadEligible(), s.nsfwMode()),
 		cloudEntryCard(wf.ID),
 	})
 	s.render(w, http.StatusOK, workflowDetailPage(wf, prettyJSON(wf.Graph),

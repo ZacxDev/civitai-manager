@@ -65,7 +65,13 @@ type runJob struct {
 	// missingModels is the enriched analysis for a failed preflight (nil otherwise),
 	// carried into the snapshot so the failure panel can render resolve/substitute.
 	missingModels []comfy.MissingModel
-	warnings      []string
+	// missingResolved is the eager, at-settle CivitAI resolution per missing filename
+	// (computed ONCE while /object_info is in hand — never per poll). libMeta is the
+	// batch local-model enrichment for the substitute candidates, keyed by lowercased
+	// basename. Both are read-only after settle.
+	missingResolved map[string]missingResolution
+	libMeta         map[string]store.LocalModelMeta
+	warnings        []string
 	// aborted marks a run that never submitted because the UI→API conversion yielded
 	// zero runnable nodes (an all-disabled template / no installed node types). It
 	// gets a distinct "nothing to run" report rather than the generic failure alert.
@@ -87,8 +93,13 @@ type runResult struct {
 	// is in hand, so the failure panel can offer resolve + substitute actions
 	// without re-fetching. Set only alongside a failed Preflight.
 	MissingModels []comfy.MissingModel
-	Warnings      []string
-	PromptID      string
+	// MissingResolved is the eager per-filename CivitAI resolution and LibMeta the
+	// batch local-model enrichment of substitute candidates — both computed ONCE at
+	// settle so the terminal popover renders inline without any per-poll API call.
+	MissingResolved map[string]missingResolution
+	LibMeta         map[string]store.LocalModelMeta
+	Warnings        []string
+	PromptID        string
 }
 
 // runOptions carries per-run overrides that must NOT be persisted to the stored
@@ -207,6 +218,7 @@ func (s *Server) applyRunOutcomeLocked(job *runJob, res *runResult, err error) {
 		}
 	case res != nil && res.Preflight != nil:
 		job.phase, job.preflight, job.missingModels = runPhaseFailed, res.Preflight, res.MissingModels
+		job.missingResolved, job.libMeta = res.MissingResolved, res.LibMeta
 		job.message = "Preflight failed — this workflow references nodes or models that are not installed."
 	case res != nil && len(res.Warnings) > 0:
 		job.phase, job.warnings = runPhaseFailed, res.Warnings
@@ -280,10 +292,19 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater,
 		// Enrich the missing-models list with resolve queries + installed substitute
 		// candidates while /object_info is in hand, so the failure panel is actionable.
 		var missing []comfy.MissingModel
+		var resolved map[string]missingResolution
+		var libMeta map[string]store.LocalModelMeta
 		if len(report.MissingModels) > 0 {
 			missing = comfy.AnalyzeMissingModels(apiGraph, info, report.MissingModels, wf.BaseModel)
+			// Resolve each missing model to CivitAI + enrich substitute candidates ONCE,
+			// HERE at settle (bounded), so the terminal Fix popover renders inline and the
+			// ~1-2s run-status poll never triggers a CivitAI search.
+			resolved, libMeta = s.resolveMissingModels(ctx, missing)
 		}
-		return &runResult{Preflight: &report, MissingModels: missing}, nil
+		return &runResult{
+			Preflight: &report, MissingModels: missing,
+			MissingResolved: resolved, LibMeta: libMeta,
+		}, nil
 	}
 
 	clientID := comfy.NewID()
@@ -364,6 +385,8 @@ type runSnapshot struct {
 	Images           []comfy.ImageRef
 	Preflight        *comfy.PreflightReport
 	MissingModels    []comfy.MissingModel
+	MissingResolved  map[string]missingResolution
+	LibMeta          map[string]store.LocalModelMeta
 	Warnings         []string
 	Aborted          bool
 	Stopped          bool
@@ -385,6 +408,7 @@ func (s *Server) runJobState() runSnapshot {
 		Started: true, Running: j.running, WorkflowID: j.workflowID,
 		PromptID: j.promptID, Phase: j.phase, Message: j.message, QueuePos: j.queuePos,
 		Images: imgs, Preflight: j.preflight, MissingModels: j.missingModels,
+		MissingResolved: j.missingResolved, LibMeta: j.libMeta,
 		Warnings: warns, Aborted: j.aborted, Stopped: j.stopped,
 	}
 }
@@ -418,7 +442,7 @@ func (s *Server) handleWorkflowRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.startRun(wf, runOptions{})
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible()))
+	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 }
 
 // comfyStatusTimeout bounds the reachability probe so a dead/hung ComfyUI can
@@ -466,7 +490,7 @@ func (s *Server) handleWorkflowRunStatus(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "bad workflow id", http.StatusBadRequest)
 		return
 	}
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible()))
+	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 }
 
 // handleWorkflowRunStop cancels the running run and interrupts ComfyUI.
@@ -486,7 +510,7 @@ func (s *Server) handleWorkflowRunStop(w http.ResponseWriter, r *http.Request) {
 	// The stop button carries the workflow id so the terminal fragment can offer a
 	// "Run again" button; 0 (absent) simply omits it.
 	id, _ := strconv.ParseInt(r.FormValue("workflow_id"), 10, 64)
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible()))
+	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 }
 
 // handleWorkflowRunView proxies a result image from ComfyUI's /view to the browser

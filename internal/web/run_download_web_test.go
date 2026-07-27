@@ -360,19 +360,32 @@ func TestDownloadAndRunGating(t *testing.T) {
 	}
 }
 
-// TestDownloadButtonShownOnlyWhenEligible drives the real preflight-fail panel and
-// asserts the "Download & run" button appears only for an eligible server.
-func TestDownloadButtonShownOnlyWhenEligible(t *testing.T) {
+// TestInstallAndRunEligibilityFallback drives the real preflight-fail popover with
+// a resolved CivitAI match and asserts: an eligible server posts the enabled
+// "Install and run" to download-and-run; an ineligible server renders the CivitAI
+// card with a DISABLED Install-and-run + reason + a "View on CivitAI ↗" link (never
+// hidden), and no download-and-run POST.
+func TestInstallAndRunEligibilityFallback(t *testing.T) {
 	graph := `{"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"absent.safetensors"}}}`
 
 	render := func(t *testing.T, eligible bool) string {
-		srv := newLibraryTestServer(t, t.TempDir())
-		if eligible {
-			srv.cfg.ComfyURL = "http://127.0.0.1:8188"
-			srv.cfg.ComfyModelPath = t.TempDir()
+		st, err := store.Open(":memory:")
+		if err != nil {
+			t.Fatal(err)
 		}
-		fake := &fakeComfy{info: mustObjectInfo(t, substituteObjectInfo)}
-		srv.comfyClientFn = func() comfyClient { return fake }
+		t.Cleanup(func() { _ = st.Close() })
+		cfg := Config{
+			BaseURL: "https://civitai.com", DefaultPollInterval: time.Hour,
+			Addr: "127.0.0.1:8787", ComfyURL: "http://127.0.0.1:8188",
+		}
+		if eligible {
+			cfg.ComfyModelPath = t.TempDir()
+		}
+		srv := NewServer(st, &recordingSearchReader{result: resolveResult("Fabricated XL")}, stubSubscriber{}, cfg, nil)
+		base, cancel := context.WithCancel(context.Background())
+		srv.SetBaseContext(base)
+		t.Cleanup(cancel)
+		srv.comfyClientFn = func() comfyClient { return &fakeComfy{info: mustObjectInfo(t, substituteObjectInfo)} }
 		id := seedWorkflow(t, srv, store.WorkflowFormatAPI, graph)
 		if rec := post(t, srv, "/workflows/"+id+"/run", nil, true); rec.Code != http.StatusOK {
 			t.Fatalf("run = %d", rec.Code)
@@ -380,13 +393,23 @@ func TestDownloadButtonShownOnlyWhenEligible(t *testing.T) {
 		return pollRunUntilDone(t, srv, id)
 	}
 
-	if body := render(t, true); !strings.Contains(body, "Download &amp; run") && !strings.Contains(body, "Download & run") {
-		t.Errorf("eligible panel missing the Download & run button:\n%s", body)
-	} else if !strings.Contains(body, "/download-and-run") {
-		t.Errorf("eligible panel missing the download-and-run endpoint:\n%s", body)
+	elig := render(t, true)
+	if !strings.Contains(elig, "Install and run") || !strings.Contains(elig, "/download-and-run") {
+		t.Errorf("eligible popover missing an enabled Install-and-run posting to download-and-run:\n%s", elig)
 	}
-	if body := render(t, false); strings.Contains(body, "/download-and-run") {
-		t.Errorf("ineligible panel must NOT show the Download & run button:\n%s", body)
+	if strings.Contains(elig, "Set comfy_model_path to install here") {
+		t.Errorf("eligible popover must NOT show the disabled reason:\n%s", elig)
+	}
+
+	inelig := render(t, false)
+	if strings.Contains(inelig, "/download-and-run") {
+		t.Errorf("ineligible popover must NOT POST download-and-run:\n%s", inelig)
+	}
+	if !strings.Contains(inelig, "Install and run") || !strings.Contains(inelig, "Set comfy_model_path to install here") {
+		t.Errorf("ineligible popover should show a DISABLED Install-and-run + reason:\n%s", inelig)
+	}
+	if !strings.Contains(inelig, "View on CivitAI") {
+		t.Errorf("ineligible popover should show a View-on-CivitAI link:\n%s", inelig)
 	}
 }
 
