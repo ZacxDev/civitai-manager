@@ -292,11 +292,101 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mode
 				detail = append(detail, missingList("Missing model files", snap.Preflight.MissingModels))
 			}
 		}
+		// Incompatible combo (enum) options: a dedicated pick-a-valid-choice-and-run
+		// form. Independent of the missing nodes/models sections above.
+		if len(snap.Preflight.BadOptions) > 0 {
+			detail = append(detail, incompatibleOptionsSection(snap.Preflight.BadOptions, wfID, csrf))
+		}
 	}
 	if len(snap.Warnings) > 0 {
 		detail = append(detail, missingList("Conversion warnings", snap.Warnings))
 	}
 	return alert("error", "Run failed", detail...)
+}
+
+// incompatibleOptionsSection renders the "Incompatible options" section: a single
+// <form> (hx-post to /run-with-options, CSRF in a hidden input) with one group per
+// BadOption — the node class + input name + the current invalid value + a <select>
+// of the input's valid choices — and ONE "Run with selected options" submit that
+// applies every pick and runs. It lives inside the terminal (poller-free) fragment,
+// so it is never swapped away mid-interaction. Every untrusted string (class, input,
+// current value, choice) is escaped via g.Text / attribute escaping.
+func incompatibleOptionsSection(bad []comfy.BadOption, wfID int64, csrf string) g.Node {
+	groups := make([]g.Node, 0, len(bad))
+	for i, bo := range bad {
+		groups = append(groups, badOptionGroup(i, bo))
+	}
+	return h.Form(
+		hx("post", "/workflows/"+strconv.FormatInt(wfID, 10)+"/run-with-options"),
+		hx("target", "#"+runStatusContainerID),
+		hx("swap", "innerHTML"),
+		hx("disabled-elt", "find button[type='submit']"),
+		h.Class("mt-3 space-y-3"),
+		h.Input(h.Type("hidden"), h.Name("csrf_token"), h.Value(csrf)),
+		h.Div(h.Class("text-xs font-semibold text-slate-200"), g.Text("Incompatible options")),
+		h.P(h.Class("text-xs text-slate-400"),
+			g.Text("These saved values are no longer valid choices on your installed nodes. "+
+				"Pick a valid option for each, then run.")),
+		g.Group(groups),
+		h.Div(h.Class("pt-1"),
+			civButton("filled", "sm", []g.Node{h.Type("submit")}, g.Text("Run with selected options"))),
+	)
+}
+
+// badOptionGroup renders one incompatible-option group: the (escaped) node class +
+// input name + current value, the parallel hidden opt_input/opt_old fields, and the
+// opt_new <select>. A single-choice group pre-selects its only valid option (still
+// surfaced, never silently rewritten); a multi-choice group leads with a "Choose…"
+// placeholder and marks the select required so a pick is forced.
+func badOptionGroup(idx int, bo comfy.BadOption) g.Node {
+	single := len(bo.Choices) == 1
+	opts := make([]selectOption, 0, len(bo.Choices)+1)
+	selected := ""
+	if single {
+		selected = bo.Choices[0]
+	} else {
+		opts = append(opts, selectOption{Value: "", Label: "Choose a valid option…"})
+	}
+	for _, c := range bo.Choices {
+		opts = append(opts, selectOption{Value: c, Label: c})
+	}
+	return h.Div(
+		h.Class("rounded border border-slate-800 p-2 space-y-1"),
+		h.Div(h.Class("text-xs text-slate-300"),
+			h.Span(h.Class("font-semibold"), g.Text(bo.ClassType)),
+			g.Text(" · "),
+			h.Span(h.Class("font-mono"), g.Text(bo.InputName)),
+		),
+		h.Div(h.Class("text-xs text-slate-400"),
+			g.Text("Current: "),
+			h.Span(h.Class("font-mono break-all text-amber-400"), g.Text(bo.Current)),
+		),
+		h.Input(h.Type("hidden"), h.Name("opt_input"), h.Value(bo.InputName)),
+		h.Input(h.Type("hidden"), h.Name("opt_old"), h.Value(bo.Current)),
+		optionSelect("opt-new-"+strconv.Itoa(idx), opts, selected, !single),
+	)
+}
+
+// optionSelect renders the opt_new <select> for one incompatible-option group,
+// styled with the civitai text-input control role (theme-aware in both data-theme
+// paths). Option values are the real choice strings (attribute-escaped); required is
+// set for multi-choice groups so the user must make a pick.
+func optionSelect(id string, opts []selectOption, selected string, required bool) g.Node {
+	optNodes := make([]g.Node, 0, len(opts))
+	for _, o := range opts {
+		attrs := []g.Node{h.Value(o.Value)}
+		if o.Value == selected {
+			attrs = append(attrs, g.Attr("selected"))
+		}
+		attrs = append(attrs, g.Text(o.Label))
+		optNodes = append(optNodes, h.Option(attrs...))
+	}
+	selAttrs := []g.Node{dataFlag("civitai-ui-control"), h.ID(id), h.Name("opt_new")}
+	if required {
+		selAttrs = append(selAttrs, g.Attr("required"))
+	}
+	selAttrs = append(selAttrs, optNodes...)
+	return h.Div(dataAttr("civitai-ui", "text-input"), h.Select(selAttrs...))
 }
 
 // missingList renders a titled bullet list of untrusted strings (node names, model
