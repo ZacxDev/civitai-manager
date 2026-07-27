@@ -1,8 +1,13 @@
 # Workflow Discovery — feasibility + design proposal (v0 draft)
 
-_Status: **PROPOSAL, nothing implemented.** Grounded 2026-07-26 by (a) reading the
-thin SDK wrapper + vendored `pkg/civitai` SDK, (b) hitting the REAL CivitAI API with
-the prebuilt `civitai` CLI (`/home/zach/go/bin/civitai`), and (c) downloading and
+_Status: **D1 + D2 SHIPPED; D3 + D4 still open.** **D1** (dedicated Discover-
+workflows browse page) shipped **v0.1.44**, with the `type=`→`types=` plural fix in
+**v0.1.47**; **D2** (import: download → unzip → store N workflows, deduped by graph
+content-hash, migration `0011`) shipped **v0.1.48**. Still open: **D3** (per-model
+"related workflows" section) and **D4** (dedup-on-import UI / large-zip-via-queue /
+convert-to-runnable nudge). Originally grounded 2026-07-26 by (a) reading the thin SDK
+wrapper + vendored `pkg/civitai` SDK, (b) hitting the REAL CivitAI API with the
+prebuilt `civitai` CLI (`/home/zach/go/bin/civitai`), and (c) downloading and
 unzipping two real "Workflows"-type models. Cross-references the shipped ComfyUI work
 in `claudedocs/COMFYUI-INTEGRATION-DESIGN.md` (Slices A/A2/B/C1, v0.1.28–v0.1.41)._
 
@@ -254,21 +259,23 @@ But state the caveats prominently:
 
 ## 4. Slicing (thin-first, independently shippable v0.1.x)
 
-- **Slice D1 — Discover page, browse-only (MVP, recommended first).** Dedicated
+- **Slice D1 — Discover page, browse-only (MVP, recommended first).** _[SHIPPED
+  v0.1.44; `type=`→`types=` plural fix v0.1.47]_ Dedicated
   `/workflows/discover` page = existing search wired to `type=Workflows`; cards render via
   the existing renderer + `parseSearchImages`; sort/period/NSFW/pagination reused; each
   card links out to the CivitAI model page. **No import, no store writes.** Pure reuse,
   fully verifiable here at the HTTP level (curl the results fragment). Lowest risk.
-- **Slice D2 — Import (download → unzip → store N workflows).** Add
+- **Slice D2 — Import (download → unzip → store N workflows).** _[SHIPPED v0.1.48;
+  graph-hash dedup + migration `0011`]_ Add
   `WorkflowSourceCivitai`, the loopback-gated `POST /workflows/discover/{id}/import`,
   direct bounded fetch + in-memory unzip + per-`.json` `InsertWorkflow` pre-linked to the
   source model/version, zip-bomb guards. Reuses `comfy.DetectFormat`/`ExtractResourcesAny`
   and `InsertWorkflow`. Verifiable with a temp DB + a small real zip (dedup guard in §5).
-- **Slice D3 — Per-model "Related workflows" section.** Lazy fragment on the model detail
+- **Slice D3 — Per-model "Related workflows" section.** _[OPEN]_ Lazy fragment on the model detail
   page (mirrors the community feed), `type=Workflows` scoped by name/baseModel,
   cache-first + fail-open, clearly labeled approximate. Independent of D2 (can link to
   D1/D2).
-- **Slice D4 (optional) — quality-of-life.** Dedup-on-import UI (skip/replace already-
+- **Slice D4 (optional) — quality-of-life.** _[OPEN]_ Dedup-on-import UI (skip/replace already-
   imported), "Related workflows" tag-based refinement, large-zip-via-queue path, and a
   post-import "convert to runnable" nudge that hands off to the local ComfyUI convert flow.
 

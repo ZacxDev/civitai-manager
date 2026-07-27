@@ -1,12 +1,19 @@
 # CivitAI App discovery + click-to-play — feasibility + design proposal (v0 draft)
 
-_Status: **PROPOSAL, nothing implemented.** Grounded 2026-07-26 by (a) probing the
-live civitai.com API with `curl` (anon AND authenticated as the user's own personal
-API key), (b) reading the prod repo at `/home/zach/workspace/civit/civitai`
-(routers, REST endpoints, DTO schemas, page routes), and (c) reading the private
-`github.com/civitai/cli` SDK's App-Blocks client. Cross-references the shipped
-`internal/web/discover_workflows.go` page (the pattern this mirrors) and
-`claudedocs/WORKFLOW-DISCOVERY-DESIGN.md`._
+_Status: **A1 SHIPPED (v0.1.49: browse + click-to-play); A2 + A3 still open.**
+Originally grounded 2026-07-26 by (a) probing the live civitai.com API with `curl`
+(anon AND authenticated as the user's own personal API key), (b) reading the prod
+repo at `/home/zach/workspace/civit/civitai` (routers, REST endpoints, DTO schemas,
+page routes), and (c) reading the private `github.com/civitai/cli` SDK's App-Blocks
+client. Cross-references the shipped `internal/web/discover_workflows.go` page (the
+pattern this mirrors) and `claudedocs/WORKFLOW-DISCOVERY-DESIGN.md`._
+
+_**Two research assumptions reality overturned during A1 (corrected below):**_
+_(i) The catalog is **NOT dark for THIS user** — the user's own published apps ARE
+visible via their API key, so the POPULATED render path **was live-verified**, not
+just the empty path._
+_(ii) The app-listing item **`id` is a ULID string** (e.g. `apl_01K…`), NOT an int
+(`creator.id` IS an int) — this cost a live-caught decode bug in A1._
 
 Scope, as decided by the user:
 - **"Apps"** = CivitAI Apps (internally: **App Blocks** — sandboxed web apps that run
@@ -227,7 +234,9 @@ a table-driven client decode test against a captured/synthetic `{items,metadata}
 body, since we can't rely on a populated live catalog — mirror the existing
 `discover_workflows_web_test.go` style).
 
-- **Slice A1 — Apps browse page, browse-only (MVP, recommended first).**
+- **Slice A1 — Apps browse page, browse-only (MVP, recommended first).** _[SHIPPED
+  v0.1.49: browse + click-to-play; the POPULATED path live-verified against the
+  user's own published apps]_
   `internal/civitai.ListApps` (GET `/api/v1/apps`, token-optional, envelope decode) +
   `GET /apps/discover` page/fragment cloned from `discover_workflows.go` + `appCard`
   renderer + kind/category/sort/cursor controls + nav entry + the honest empty state.
@@ -235,10 +244,10 @@ body, since we can't rely on a populated live catalog — mirror the existing
   level for the empty + error + 404 paths and the exact request shape; the POPULATED
   render is verifiable only with a synthetic-body unit test** (no live apps visible).
   Lowest risk, self-contained.
-- **Slice A2 — per-app detail fragment (optional).** `GET /apps/discover/{slug}` →
+- **Slice A2 — per-app detail fragment (optional).** _[OPEN]_ `GET /apps/discover/{slug}` →
   `/api/v1/apps/{slug}` (`ListingDetail`): description + screenshot gallery + play
   action; cache-first + fail-open. Independent of A1's grid.
-- **Slice A3 — polish / QoL (optional).** Client-side name filter over the loaded page
+- **Slice A3 — polish / QoL (optional).** _[OPEN]_ Client-side name filter over the loaded page
   (clearly scoped, §2.3), a short TTL cache on the list call (§2.6), a "launching soon"
   learn-more affordance, and — if/when CivitAI opens the `public-external` flag first
   (§2.2) — defaulting the kind filter to `offsite` so the first populated apps surface.

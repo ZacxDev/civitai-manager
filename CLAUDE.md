@@ -2,7 +2,7 @@
 
 Conventions for working ON this repo. End-user docs live in `README.md`; this
 file is for contributors and agents. Module: `github.com/ZacxDev/civitai-manager`
-(Go 1.25). Current release line: v0.1.x.
+(Go 1.25). Current release line: v0.1.x (latest **v0.1.51**).
 
 ## Private dependency — you MUST set GOPRIVATE to build locally
 
@@ -51,7 +51,20 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   **streaming jobs** for scan (`scan_handlers.go`) and discovery
   (`discover_handlers.go`): snapshot-under-lock progress, a **Stop** action, and
   poll endpoints. `server.go`/`handlers.go` wire routes; `sanitize.go` scrubs
-  untrusted model metadata (bluemonday).
+  untrusted model metadata (bluemonday). Discovery surfaces:
+  `discover_workflows.go` — Discover-workflows browse page (`GET
+  /workflows/discover`), reuses the model-search card renderer pinned to
+  `types=Workflows`; an empty query shows a cached "Popular this month" feed
+  (`popularWorkflows`, TTL-cached like `popularModels`).
+  `discover_workflow_import.go` — `POST /workflows/discover/{id}/import`: download
+  the model's Archive zip(s) → in-memory unzip (zip-bomb guards) → store each
+  `.json` as a Workflow, deduped by canonical **graph content-hash** (migration
+  `0011_workflow_graph_hash.sql`, `store.GraphHash`/`WorkflowExistsByGraphHash`),
+  pre-linked to the source model/version. `discover_apps.go` (+ `internal/civitai/
+  apps.go`) — Apps discovery (`GET /apps/discover`): new `/api/v1/apps` client
+  (`ListApps`), browse + click-to-play as a scheme-validated external link. The
+  model detail page uses version-tab base-model grouping + a shared `modelCardCore`
+  card (stats-as-SVG-icons, "Updated" bottom-left).
 - **`internal/store`** — SQLite via **`modernc.org/sqlite`** (pure Go, **no
   cgo**). Schema is embedded, **ordered** migrations (`migrations/*.sql`, via
   `go:embed`, applied in filename order). Subscriptions, queue, events,
@@ -61,6 +74,17 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   (primary/featured first), **NOT by publish date** — positional `[0]` == the primary
   version == what the detail page defaults to. To find the NEWEST version, sort by
   `publishedAt` yourself (assuming `[0]` is newest caused a ship-then-revert).
+  **More CivitAI API gotchas** (all cost live-caught bugs — green in fake-reader
+  tests, broken against reality):
+  - The models list API filters by **`types` (PLURAL)** — singular `type=` is
+    silently ignored and returns mixed/unfiltered results. Always `q.Set("types",
+    …)` (cost a Discover D1 bug).
+  - The app-listing API (`/api/v1/apps`) item **`id` is a ULID string** (e.g.
+    `apl_01K…`), NOT an int — though `creator.id` IS an int (cost an Apps A1 decode
+    bug).
+  - `/api/v1/apps` is **default-closed / launch-gated**: returns `{"items":[]}` for
+    a normal user until CivitAI flips the marketplace flag; it auto-opens with no
+    code change. Build apps features flag-tolerant.
 - **`internal/queue`** — download queue (single active-per-item invariant).
 - **`internal/poller`** — polls subscriptions, diffs version lists, enqueues new.
 - **`internal/cli`** — cobra commands (`root.go`, `commands.go`, `serve`, `search`,
@@ -122,9 +146,19 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   mismatches. That's the LSP indexing a transient/mixed tree after a checkout or
   worktree switch — **not** a real break. Re-run the real `go build`/`go test`
   (with GOPRIVATE) as the arbiter.
-- **Run `/audit-pr` before merging** web-endpoint, concurrency, quarantine/
-  filesystem, DB-migration, or security PRs. It surfaced a real bug on nearly every
-  such PR this session.
+- **Run `/audit-pr` before merging** — but scale it to blast radius. Full adversarial
+  `/audit-pr` for: web endpoints, outbound egress, untrusted input (zips, URLs-in-
+  href), DB migrations, concurrency, security. For a **pure-UI / bug-fix / mirror of
+  an already-audited pattern**, gate + HTTP-level live-verify + a focused self-review
+  is sufficient (precedent: v0.1.45/0.1.50/0.1.51). Always live-verify regardless.
+  `/audit-pr` surfaced a real bug on nearly every high-blast PR this session.
+- **Fake-reader unit tests can encode the WRONG assumption about the real CivitAI
+  API — they pass green while the real integration is broken.** For ANY new civitai
+  API integration (search params, response decode), you MUST live-verify the request
+  params AND the response decode against the REAL API (curl the endpoint / run the
+  built binary against it), not only synthetic-body tests. This session had THREE
+  such catches: `types` plural, app `id` ULID, `modelVersions[]` ordering — all green
+  in tests, all broken against reality.
 - **Verify htmx/interaction changes at the HTTP level — real browsers are
   unavailable here** (MCP Playwright is broken on this NixOS host AND system
   chromium is NOT installed, so `executablePath` doesn't work either). What works:
@@ -155,5 +189,22 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   `.json`). A **local ComfyUI (v0.27) at `http://127.0.0.1:8188`** (the default
   `comfy_url`) live-verifies the workflow run/convert path (`/object_info`, `/prompt`,
   `/history`, `/view`).
+- **Dogfood binary swap is a 4-step SEQUENCE, not a compound:** `pkill -9 -f
+  "dogfood/cm serve"` → confirm the port is free by a `curl` returning `000` (do NOT
+  trust `pgrep`, which matches its own shell) → `cp` the new binary → start. A
+  compound `kill; cp` hits "Text file busy" because the old process still holds the
+  file.
+- **zsh loop gotchas that cause flaky verify loops:** unquoted `for x in $var` does
+  NOT word-split in zsh (use `while IFS= read -r x` from a file/`<<<`, or
+  `${(f)var}`); `curl` inside a loop consumes the loop's stdin — pass `</dev/null`;
+  `pgrep -f PATTERN` matches the very shell running the command.
+- **Converter reality (ComfyUI UI→API):** a UI-graph node input slot's `type` can be
+  a **string OR an array** (COMBO/enum inputs carry their option list as the type) —
+  decode it as `json.RawMessage` (v0.1.51 array-type fix). The converter also handles
+  subgraph expansion, Get/Set teleports, rgthree UI-only nodes, and object-form
+  `widgets_values` (v0.1.46). CivitAI cloud (CustomComfy) rejects a **bare
+  `comfy:nodepack` URN** at submit — it needs a `comfyNodepackSnapshot` step →
+  `nodepacklayer` AIR (post-paid), so custom-node cloud runs are NOT yet supported
+  (see COMFYUI-INTEGRATION-DESIGN.md).
 - **Parallel subagents on this repo:** pass `isolation: "worktree"` so their edits
   can't collide in the shared working tree.

@@ -1,11 +1,16 @@
 # ComfyUI Workflow Integration — design proposal (v0 draft)
 
-_Status (updated 2026-07-25): **Slice A (Workflow Library) shipped v0.1.28; A2 (scan
+_Status (updated 2026-07-26): **Slice A (Workflow Library) shipped v0.1.28; A2 (scan
 + Library tab + auto-link) v0.1.29; B (local run + UI→API converter) v0.1.30 — all
 live-verified against the real local ComfyUI. Slice C1 (remote CivitAI Comfy Cloud —
-thin end-to-end) shipped v0.1.41.** All three integration slices are now shipped.
-Original design below is unchanged; it was grounded in two research passes (codebase
-recon + external API research), 2026-07-24._
+thin end-to-end) shipped v0.1.41.** All three integration slices are shipped, plus
+cloud fast-follows: **affordability gate v0.1.42; UI→API converter for cloud v0.1.43;
+converter structural fixes v0.1.46; converter array-type input fix v0.1.51.**
+**Remaining custom-node gap:** CivitAI cloud rejects a bare `comfy:nodepack` URN at
+submit — it needs a `comfyNodepackSnapshot` step → `nodepacklayer` AIR (post-paid), so
+custom-node cloud runs are NOT yet supported. Original design below is unchanged; it
+was grounded in two research passes (codebase recon + external API research),
+2026-07-24._
 
 ## Slice C1 — SHIPPED v0.1.41 (verified contract + caveats)
 
