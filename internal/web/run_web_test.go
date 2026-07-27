@@ -104,7 +104,7 @@ func TestRunStartRunningThenDone(t *testing.T) {
 	id := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"3":{"class_type":"X","inputs":{}}}`)
 
 	release := make(chan struct{})
-	srv.runFn = func(ctx context.Context, wf *store.Workflow, up runUpdater) (*runResult, error) {
+	srv.runFn = func(ctx context.Context, wf *store.Workflow, up runUpdater, _ runOptions) (*runResult, error) {
 		up.setPromptID("p1")
 		up.setPhase(runPhaseRunning, "Generating…", 0)
 		select {
@@ -210,7 +210,7 @@ func TestRunStopCancels(t *testing.T) {
 	id := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"3":{"class_type":"X","inputs":{}}}`)
 
 	started := make(chan struct{})
-	srv.runFn = func(ctx context.Context, wf *store.Workflow, up runUpdater) (*runResult, error) {
+	srv.runFn = func(ctx context.Context, wf *store.Workflow, up runUpdater, _ runOptions) (*runResult, error) {
 		up.setPhase(runPhaseRunning, "Generating…", 0)
 		close(started)
 		<-ctx.Done()
@@ -246,7 +246,7 @@ func TestRunViewProxy(t *testing.T) {
 	srv.comfyClientFn = func() comfyClient { return fake }
 	id := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"3":{"class_type":"X","inputs":{}}}`)
 
-	srv.runFn = func(ctx context.Context, wf *store.Workflow, up runUpdater) (*runResult, error) {
+	srv.runFn = func(ctx context.Context, wf *store.Workflow, up runUpdater, _ runOptions) (*runResult, error) {
 		return &runResult{
 			Images:   []comfy.ImageRef{{Filename: "o.png", Subfolder: "", Type: "output"}},
 			PromptID: "pX",

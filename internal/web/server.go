@@ -127,7 +127,7 @@ type Server struct {
 	// runFn performs a workflow run against ComfyUI. Nil (production) uses realRun
 	// (load workflow → convert if UI → preflight → submit → poll history/queue).
 	// Tests inject a seam to drive job phases deterministically without a ComfyUI.
-	runFn func(ctx context.Context, wf *store.Workflow, up runUpdater) (*runResult, error)
+	runFn func(ctx context.Context, wf *store.Workflow, up runUpdater, opts runOptions) (*runResult, error)
 	// comfyClientFn builds the ComfyUI client used by realRun and the /view proxy.
 	// Nil (production) builds a comfy.Client from cfg.ComfyURL/ComfyToken; tests
 	// inject a fake to exercise the real run orchestration and the view proxy.
@@ -184,6 +184,14 @@ type Server struct {
 	// Workflows-pinned feed never collides with the general popular-models feed.
 	popularWfVal map[bool]*civitai.ModelSearchResult
 	popularWfExp map[bool]time.Time
+
+	// resolveMu guards the in-process TTL cache of missing-model RESOLUTION searches
+	// (the "Find on CivitAI" fragment on a failed-preflight panel). Keyed by
+	// (query, types filter, nsfw flag) so repeated opens of the same panel do not
+	// re-hit civitai.com; refreshed on expiry via popularTTL.
+	resolveMu  sync.Mutex
+	resolveVal map[string]*civitai.ModelSearchResult
+	resolveExp map[string]time.Time
 }
 
 // popularTTL bounds how long the cached popular-models feed is served before a
@@ -282,6 +290,8 @@ func NewServer(st *store.Store, reader civitai.Reader, sub Subscriber, cfg Confi
 		popularExp:        map[bool]time.Time{},
 		popularWfVal:      map[bool]*civitai.ModelSearchResult{},
 		popularWfExp:      map[bool]time.Time{},
+		resolveVal:        map[string]*civitai.ModelSearchResult{},
+		resolveExp:        map[string]time.Time{},
 	}
 }
 
@@ -434,10 +444,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /workflows/{id}/golden", s.handleWorkflowGolden)
 
 	mux.HandleFunc("POST /workflows/{id}/run", s.handleWorkflowRun)
+	mux.HandleFunc("POST /workflows/{id}/run-substitute", s.handleWorkflowRunSubstitute)
 	mux.HandleFunc("GET /workflows/{id}/run/comfy-status", s.handleWorkflowRunComfyStatus)
 	mux.HandleFunc("GET /workflows/{id}/run/status", s.handleWorkflowRunStatus)
 	mux.HandleFunc("POST /workflows/run/stop", s.handleWorkflowRunStop)
 	mux.HandleFunc("GET /workflows/run/view", s.handleWorkflowRunView)
+	// Missing-model resolution fragment (read-only GET, loopback-gated, TTL-cached).
+	mux.HandleFunc("GET /workflows/run/resolve-model", s.handleWorkflowResolveModel)
 
 	mux.HandleFunc("GET /workflows/{id}/cloud", s.handleWorkflowCloud)
 	mux.HandleFunc("POST /workflows/{id}/cloud/whatif", s.handleWorkflowCloudWhatif)
