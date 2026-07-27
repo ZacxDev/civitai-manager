@@ -223,7 +223,7 @@ func (s *Server) applyRunOutcomeLocked(job *runJob, res *runResult, err error) {
 	case res != nil && res.Preflight != nil:
 		job.phase, job.preflight, job.missingModels = runPhaseFailed, res.Preflight, res.MissingModels
 		job.missingResolved, job.libMeta = res.MissingResolved, res.LibMeta
-		job.message = "Preflight failed — this workflow references nodes or models that are not installed."
+		job.message = preflightMessage(res.Preflight)
 	case res != nil && len(res.Warnings) > 0:
 		job.phase, job.warnings = runPhaseFailed, res.Warnings
 		job.message = "This workflow could not be converted into a runnable graph."
@@ -591,6 +591,28 @@ func imageAllowed(images []comfy.ImageRef, ref comfy.ImageRef) bool {
 // runErrorMessage renders a run error for display. A *comfy.PromptValidationError
 // yields its message plus a compact per-node summary; other errors yield their
 // text. Both are UNTRUSTED (comfy-authored) and are escaped at render time.
+// preflightMessage builds the failure headline from WHICH preflight categories
+// actually failed. A run blocked only by drifted combo values (BadOptions) must
+// not claim "nodes or models are not installed" — those nodes ARE installed; it's
+// the saved option values that are stale.
+func preflightMessage(r *comfy.PreflightReport) string {
+	if r == nil {
+		return "Preflight failed."
+	}
+	missing := len(r.MissingNodes) > 0 || len(r.MissingModels) > 0
+	opts := len(r.BadOptions) > 0
+	switch {
+	case missing && opts:
+		return "Preflight failed — this workflow references nodes or models that are not installed, and some saved option values are no longer valid. Fix the items below, then run."
+	case missing:
+		return "Preflight failed — this workflow references nodes or models that are not installed."
+	case opts:
+		return "Preflight failed — some saved option values are no longer valid on your installed nodes. Pick a valid option for each below, then run."
+	default:
+		return "Preflight failed."
+	}
+}
+
 func runErrorMessage(err error) string {
 	var ve *comfy.PromptValidationError
 	if errors.As(err, &ve) {
