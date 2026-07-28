@@ -57,9 +57,11 @@ var inertActionPickers = func() map[[2]string]bool {
 // even when single-choice — silently swapping a model to a different installed one
 // changes the output. Those stay BadOptions for the model-install/substitute flow.
 //
-// Every normalization is surfaced (non-blocking) via c.warnf, matching how ComfyUI
-// itself shows nothing blocking. The value is only changed on the EMITTED api graph;
-// the stored graph is never mutated.
+// Normalization is FULLY SILENT — it must NOT emit a conversion warning, because the
+// run path aborts on any warning (`len(warnings) > 0`), which would turn a
+// successfully-normalized graph into a "could not be converted" failure. ComfyUI's
+// own frontend shows nothing here, so neither do we. The value is only changed on the
+// EMITTED api graph; the stored graph is never mutated.
 func (c *converter) normalizeComboWidget(classType, inputName string, spec InputSpec, raw json.RawMessage) json.RawMessage {
 	if !spec.IsCombo || len(spec.Choices) == 0 {
 		return raw // not a combo, or non-string (uncomparable) choices
@@ -79,18 +81,12 @@ func (c *converter) normalizeComboWidget(classType, inputName string, spec Input
 
 	switch {
 	case len(spec.Choices) == 1:
-		// Tier 1: single valid choice — provably loss-free, no decision.
-		target := spec.Choices[0]
-		c.warnf("normalized combo %q on %s: %q not a valid choice → %q (single valid choice)",
-			inputName, classType, val, target)
-		return marshalString(target)
+		// Tier 1: single valid choice — provably loss-free, no decision. Silent.
+		return marshalString(spec.Choices[0])
 	case inertActionPickers[[2]string{classType, inputName}]:
 		// Tier 2: curated inert action picker — emit the placeholder (Choices[0]),
-		// mirroring ComfyUI's serializeValue override.
-		target := spec.Choices[0]
-		c.warnf("normalized inert picker %q on %s: %q → %q (frontend-only picker)",
-			inputName, classType, val, target)
-		return marshalString(target)
+		// mirroring ComfyUI's serializeValue override. Silent.
+		return marshalString(spec.Choices[0])
 	}
 	return raw // genuine multi-choice, non-inert drift — leave as a BadOption
 }
