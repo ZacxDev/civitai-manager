@@ -76,7 +76,10 @@ func fullPages(t *testing.T) map[string]string {
 		"outputs":           renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", "dark", NSFWBlur)),
 		"generation":        renderString(t, generationDetailPage(gen, nil, "csrf", "dark", NSFWBlur)),
 		"workflow":          renderString(t, workflowDetailPage(wf, "{}", "csrf", "dark", NSFWBlur, nil, false, workflowResolver{})),
-		"discover-workflow": renderString(t, workflowDiscoverPage("", searchRes, "", "dark", NSFWBlur, "", "", "csrf")),
+		"discover-workflow": renderString(t, workflowDiscoverPage(workflowDiscoverView{
+			Res: searchRes, Mode: NSFWBlur, CSRF: "csrf",
+			Sort: "Most Downloaded", Period: "Month", Landing: true,
+		}, "dark")),
 		"discover-apps":     renderString(t, appsDiscoverPage(nil, "dark", NSFWBlur, "", "", "", "csrf")),
 	}
 }

@@ -1,138 +1,119 @@
 package web
 
 import (
-	"context"
 	"net/http"
-	"net/url"
 	"strings"
-	"time"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	g "maragu.dev/gomponents"
 	h "maragu.dev/gomponents/html"
 )
 
-// handleDiscoverWorkflows backs the browse-only "Discover workflows" page
-// (Slice D1). It is the existing model search re-skinned and pinned to
-// type=Workflows: it reuses handleSearch's query/limit/sort/period/NSFW param
-// assembly verbatim, then calls the SAME s.reader.SearchModels the model search
-// uses. It is GET-only and read-only — there are no state-changing controls on
-// this page (no subscribe/download/import), so no CSRF is involved.
+// workflowDiscoverView is everything one /workflows/discover render needs. It is
+// threaded whole (instead of a growing positional argument list) because the
+// facet chips, the landing grid and the empty state all need the SAME
+// query/sort/period/facet tuple to build their links — a chip that dropped the
+// current sort would silently reset the view.
+type workflowDiscoverView struct {
+	Query   string
+	Sort    string
+	Period  string
+	Facets  workflowFacets
+	Mode    string // NSFW display mode
+	CSRF    string
+	Heading string // section heading above the grid ("" = none)
+	// Landing is true for the entry-point view (no query, no facet): the curated
+	// browse-by grid renders above the popular feed.
+	Landing bool
+	Res     *civitai.ModelSearchResult
+}
+
+// handleDiscoverWorkflows backs the "Discover workflows" page: the model search
+// pinned to types=Workflows, plus URL-addressable ECOSYSTEM (base-model family)
+// and USE CASE (curated tag) facets.
 //
-// Egress posture is identical to /search: a non-empty query is sent to
-// civitai.com (with the nsfw flag tied to the display mode). An empty query does
-// NOT fetch — it renders a plain "search for workflows" prompt (D1 keeps the
-// empty state simple; the optional cached-popular feed is deferred).
+// It is GET-only and read-only apart from the per-card import control (which is
+// its own CSRF-protected POST endpoint).
 //
-// Like the model search it mirrors, results are capped at searchLimit; it does
-// not paginate (the existing /search page does not either).
+// Egress: a keyword search and a facet browse both send a request to civitai.com.
+// The LANDING view (no query, no facet) issues NO per-tile requests at all — the
+// browse grid is the curated static table — and its popular feed comes from the
+// TTL cache, so idle loads of the entry page do not hit the network.
+//
+// Request budget per render: 1 (no use case) or up to
+// civitai.MaxUseCaseTagQueries (a use case fans out over its tag synonyms
+// because CivitAI's `tag` param takes exactly one value — see taxonomy.go).
 func (s *Server) handleDiscoverWorkflows(w http.ResponseWriter, r *http.Request) {
 	q0 := r.URL.Query()
 	query := strings.TrimSpace(q0.Get("q"))
 	isHX := r.Header.Get("HX-Request") == "true"
-	mode := s.nsfwMode()
 	nsfw := s.nsfwSearchFlag()
-	sortSel := normalizeSearchSort(q0.Get("sort"))
-	// A keyword search defaults to AllTime (the least-restrictive window), matching
-	// the keyword branch of handleSearch — so results are not silently narrowed.
-	periodSel := normalizeSearchPeriod(q0.Get("period"), "AllTime")
+
+	v := workflowDiscoverView{
+		Query:  query,
+		Sort:   normalizeSearchSort(q0.Get("sort")),
+		Mode:   s.nsfwMode(),
+		CSRF:   s.csrf,
+		Facets: normalizeWorkflowFacets(q0),
+	}
+	v.Period = normalizeSearchPeriod(q0.Get("period"), discoverDefaultPeriod(query))
+	v.Landing = query == "" && !v.Facets.any()
 
 	if query == "" {
-		// Empty state: show the cached "Popular this month" workflows feed (mirrors
-		// the models dashboard). Egress happens ONLY through the TTL cache; on a
-		// fetch error popularWorkflows returns nil and we degrade to the plain prompt.
-		res, heading := s.popularWorkflows(r.Context(), nsfw)
-		if isHX {
-			s.render(w, http.StatusOK, workflowDiscoverResults(res, mode, heading, s.csrf))
-			return
+		// A BROWSE: the landing feed or a facet feed. Both go through the TTL
+		// cache, so clicking around the facets does not hammer civitai.com.
+		v.Res = s.facetFeed(r.Context(), nsfw, v.Sort, v.Period, v.Facets)
+		if v.Res != nil {
+			v.Heading = discoverFeedHeading(v.Sort, v.Period, v.Facets)
 		}
-		s.render(w, http.StatusOK, workflowDiscoverPage("", res, heading, s.currentTheme(), mode, sortSel, periodSel, s.csrf, s.rail(r.Context())))
-		return
+	} else {
+		res, err := s.fetchWorkflowFacetResults(r.Context(), query, v.Sort, v.Period, nsfw, v.Facets)
+		if err != nil {
+			if isHX {
+				s.render(w, http.StatusOK, errorNote("Search failed: "+err.Error()))
+				return
+			}
+			// Full-page degrade: render the page with no results (the prompt), as
+			// before — an error is not an empty result and must not be dressed up
+			// as "widen your search".
+			v.Res = nil
+		} else {
+			v.Res = res
+		}
 	}
 
-	// Reuse the model-search param assembly verbatim, then pin the model type.
-	// NOTE: the CivitAI models API filters by "types" (PLURAL) — the singular
-	// "type" is silently ignored and returns mixed/unfiltered results (verified
-	// live: type=Workflows returned Checkpoints/LoRAs; types=Workflows returns
-	// Workflows-type models).
-	q := url.Values{}
-	q.Set("query", query)
-	q.Set("limit", searchLimit)
-	q.Set("sort", sortSel)
-	q.Set("period", periodSel)
-	// Tie nsfw to the display mode so NSFW models return WITH their showcase images
-	// (blur/show) or are excluded (hide) — same posture as the model search.
-	setNSFWParam(q, nsfw)
-	q.Set("types", "Workflows")
-
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-	defer cancel()
-	res, err := s.reader.SearchModels(ctx, q)
-	if err != nil {
-		if isHX {
-			s.render(w, http.StatusOK, errorNote("Search failed: "+err.Error()))
-			return
-		}
-		s.render(w, http.StatusOK, workflowDiscoverPage(query, nil, "", s.currentTheme(), mode, sortSel, periodSel, s.csrf, s.rail(r.Context())))
-		return
-	}
 	if isHX {
-		s.render(w, http.StatusOK, workflowDiscoverResults(res, mode, "", s.csrf))
+		s.render(w, http.StatusOK, workflowDiscoverResults(v))
 		return
 	}
-	s.render(w, http.StatusOK, workflowDiscoverPage(query, res, "", s.currentTheme(), mode, sortSel, periodSel, s.csrf, s.rail(r.Context())))
+	s.render(w, http.StatusOK, workflowDiscoverPage(v, s.currentTheme(), s.rail(r.Context())))
 }
 
-// popularWorkflows returns the "Popular this month" WORKFLOWS feed (Most
-// Downloaded, this Month, types=Workflows) shown as the empty-query default on
-// /workflows/discover — served from a ~10 min in-process TTL cache (keyed by the
-// NSFW flag) so repeated loads do not hit civitai.com. It mirrors popularModels
-// exactly, only pinned to Workflows: on success it returns the feed plus the
-// "Popular this month" heading; on any fetch error it returns (nil, "") so the
-// caller degrades to the plain "Search for workflows…" prompt.
-func (s *Server) popularWorkflows(parent context.Context, nsfw bool) (*civitai.ModelSearchResult, string) {
-	s.popularMu.Lock()
-	if v := s.popularWfVal[nsfw]; v != nil && time.Now().Before(s.popularWfExp[nsfw]) {
-		s.popularMu.Unlock()
-		return v, "Popular this month"
+// discoverFeedHeading labels a no-query browse feed. The unfaceted default keeps
+// its historical "Popular this month" wording; a facet view is prefixed with what
+// is selected ("Flux.1 · Inpainting · Popular this month") so the grid is never
+// ambiguous about which filter produced it.
+func discoverFeedHeading(sort, period string, f workflowFacets) string {
+	base := "Popular this month"
+	if !(sort == discoverSortDefault && period == "Month") {
+		base = searchHeadingFor(sort, period)
 	}
-	s.popularMu.Unlock()
-
-	q := url.Values{}
-	q.Set("types", "Workflows") // PLURAL — the CivitAI API ignores singular "type".
-	q.Set("sort", "Most Downloaded")
-	q.Set("period", "Month")
-	q.Set("limit", searchLimit)
-	// Include NSFW models + their showcase images unless the user is in hide mode
-	// (see setNSFWParam) — same posture as popularModels / the workflow search.
-	setNSFWParam(q, nsfw)
-	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
-	defer cancel()
-	res, err := s.reader.SearchModels(ctx, q)
-	if err != nil {
-		s.log.Warn("popular workflows fetch failed", "err", err)
-		return nil, ""
+	if s := f.summary(); s != "" {
+		return s + " · " + base
 	}
-	s.popularMu.Lock()
-	s.popularWfVal[nsfw] = res
-	s.popularWfExp[nsfw] = time.Now().Add(popularTTL)
-	s.popularMu.Unlock()
-	return res, "Popular this month"
+	return base
 }
 
-// discoverPage renders the full "Discover workflows" page: the search form (query
-// + sort/period dropdowns, wired to GET /workflows/discover) and the results
-// container. It reuses the same lightbox + carousel scripts the search page uses.
-func workflowDiscoverPage(query string, res *civitai.ModelSearchResult, heading, theme, mode, sortSel, periodSel, csrf string, rail ...railData) g.Node {
-	// The cards now carry a state-changing "Import workflow(s)" control (D2), so the
-	// page + its results need the CSRF token threaded through.
-	return page("Discover workflows", theme, csrf, mode, railOf(rail),
+// workflowDiscoverPage renders the full page: the search form (query +
+// sort/period, wired to GET /workflows/discover) and the results container. The
+// facet chips live INSIDE the results container so an htmx search re-renders them
+// and a chip href can never go stale against the query in the box.
+func workflowDiscoverPage(v workflowDiscoverView, theme string, rail ...railData) g.Node {
+	return page("Discover workflows", theme, v.CSRF, v.Mode, railOf(rail),
 		card(
-			// The page's single <h1>. workflowDiscoverResults' grid label ("Popular this
-			// month") stays an <h2> — it is a section heading inside an htmx fragment.
 			pageTitle("Discover workflows"),
 			h.P(h.Class("text-sm text-slate-400 mb-3"),
-				g.Text("Browse ComfyUI workflows on CivitAI. Your search query is sent to civitai.com. Importing downloads the workflow zip with your token and stores each workflow locally.")),
+				g.Text("Browse ComfyUI workflows on CivitAI by ecosystem, use case, or keyword. Your search is sent to civitai.com. Importing downloads the workflow zip with your token and stores each workflow locally.")),
 			h.Form(
 				h.Class("flex flex-wrap items-end gap-3"),
 				hx("get", "/workflows/discover"),
@@ -142,45 +123,75 @@ func workflowDiscoverPage(query string, res *civitai.ModelSearchResult, heading,
 				h.Div(
 					h.Class("min-w-[12rem] flex-1"),
 					textInput("text-input", "discover-q", "Query",
-						h.Type("text"), h.Name("q"), h.Value(query),
+						h.Type("text"), h.Name("q"), h.Value(v.Query),
 						h.Placeholder("Search workflows by name, tag, …")),
 				),
-				labeledSelect("discover-sort", "sort", "Sort", searchSortOptions, sortSel),
-				labeledSelect("discover-period", "period", "Period", searchPeriodOptions, periodSel),
+				labeledSelect("discover-sort", "sort", "Sort", searchSortOptions, v.Sort),
+				labeledSelect("discover-period", "period", "Period", searchPeriodOptions, v.Period),
+				// Carry the selected facets through a sort/period/query change, so
+				// changing the sort of a faceted view does not silently clear it.
+				facetHiddenInputs(v.Facets),
 				btnPrimary(g.Text("Search")),
 			),
 		),
-		h.Div(h.ID("discover-results"), workflowDiscoverResults(res, mode, heading, csrf)),
+		h.Div(h.ID("discover-results"), workflowDiscoverResults(v)),
 		lightboxOverlay(),
 		modelPageScript(),
 		libraryCarouselScript(),
 	)
 }
 
-// workflowDiscoverResults renders the browse-only result grid fragment (used by htmx swaps
-// too). It reuses the SAME image parse (parseSearchImages), per-model "Updated X
-// ago" info (newestVersionInfoByModel), carousel, and card body the model search
-// uses — via modelCardCore with a nil action, so each card is link-only (name →
-// /models/{id}) with NO subscribe/download/import control. mode is the NSFW
-// display mode threaded to the carousels.
-func workflowDiscoverResults(res *civitai.ModelSearchResult, mode, heading, csrf string) g.Node {
-	if res == nil {
+// facetHiddenInputs emits the current facet selection as hidden form fields, so
+// the search form's htmx GET preserves the facets. Values are table slugs, never
+// user text.
+func facetHiddenInputs(f workflowFacets) g.Node {
+	var nodes []g.Node
+	if s := f.ecoSlug(); s != "" {
+		nodes = append(nodes, h.Input(h.Type("hidden"), h.Name("eco"), h.Value(s)))
+	}
+	if s := f.useSlug(); s != "" {
+		nodes = append(nodes, h.Input(h.Type("hidden"), h.Name("use"), h.Value(s)))
+	}
+	return g.Group(nodes)
+}
+
+// workflowDiscoverResults renders the swappable fragment: the facet chips, then
+// the landing browse-grid (entry point only), then the result grid or the
+// appropriate empty state. Cards reuse modelCardCore exactly as before, with the
+// import action and no subscribe/download control.
+func workflowDiscoverResults(v workflowDiscoverView) g.Node {
+	body := []g.Node{workflowFacetChips(v)}
+	if v.Landing {
+		body = append(body, workflowBrowseLanding(v))
+	}
+	body = append(body, workflowDiscoverGrid(v))
+	return g.Group(body)
+}
+
+// workflowDiscoverGrid is the result region alone: the card grid, or one of three
+// distinct empty states — an unfaceted prompt, the bare "no match", and the
+// guided facet empty state that names the selection and offers a way out.
+func workflowDiscoverGrid(v workflowDiscoverView) g.Node {
+	if v.Res == nil {
+		// No fetch happened, or it failed. Never claim "nothing matched".
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("Search for workflows to discover on CivitAI."))
 	}
-	if len(res.Items) == 0 {
+	if len(v.Res.Items) == 0 {
+		if v.Facets.any() {
+			return workflowFacetEmptyState(v)
+		}
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("No workflows found."))
 	}
-	images := parseSearchImages(res.Raw)
-	updated := newestVersionInfoByModel(res.Raw)
+	images := parseSearchImages(v.Res.Raw)
+	updated := newestVersionInfoByModel(v.Res.Raw)
 	grid := h.Div(
 		h.Class("cm-cardgrid"),
-		g.Map(res.Items, func(it civitai.ModelListItem) g.Node {
-			// The card's action is the D2 "Import workflow(s)" control.
-			return modelCardCore(it, images[it.ID], mode, updated[it.ID], workflowImportAction(it.ID, csrf))
+		g.Map(v.Res.Items, func(it civitai.ModelListItem) g.Node {
+			return modelCardCore(it, images[it.ID], v.Mode, updated[it.ID], workflowImportAction(it.ID, v.CSRF))
 		}),
 	)
-	if heading == "" {
+	if v.Heading == "" {
 		return grid
 	}
-	return h.Div(sectionTitle(heading), grid)
+	return h.Div(sectionTitle(v.Heading), grid)
 }
