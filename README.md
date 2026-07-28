@@ -1,500 +1,310 @@
 # civitai-manager
 
+**Run a ComfyUI workflow you just downloaded — and let the models it needs fetch
+themselves while the run waits.**
+
+[![Release](https://img.shields.io/github/v/release/ZacxDev/civitai-manager)](https://github.com/ZacxDev/civitai-manager/releases/latest)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Go](https://img.shields.io/github/go-mod/go-version/ZacxDev/civitai-manager)](go.mod)
 [![CI](https://github.com/ZacxDev/civitai-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/ZacxDev/civitai-manager/actions/workflows/ci.yml)
-[![Release](https://github.com/ZacxDev/civitai-manager/actions/workflows/release.yml/badge.svg)](https://github.com/ZacxDev/civitai-manager/actions/workflows/release.yml)
 
-A single-binary tool that subscribes to CivitAI **models** and **creators**,
-polls for new versions, and auto-queues downloads of anything new — with a local
-web UI (Tailwind + htmx + [gomponents](https://maragu.dev/gomponents)) for
-managing subscriptions, searching CivitAI, and watching the download queue.
+You grab a workflow off CivitAI. You drop it into ComfyUI. You hit Run, and it
+dies on `value not in list: ckpt_name`. So you read the node, guess which
+checkpoint it means, go hunt it on CivitAI, download it, drop it in the right
+folder, hit Run again — and it dies on the *next* missing file.
 
-> **Status: MVP.** The core logic (version diffing, the download-verify
-> pipeline, config, storage) is covered by tests, but the app has **not been
-> validated end-to-end against the live CivitAI API**. See
-> [Status & verification](#status--verification) for exactly what is and is not
-> proven.
+civitai-manager takes that loop off your hands. Import the workflow, click Run,
+and it checks the graph against your actual ComfyUI install, finds the model
+files you're missing, resolves them on CivitAI (or HuggingFace), downloads them
+into the correct `models/` subfolder, and **starts the run when the download
+finishes**. You don't re-click.
 
-## What it does
+![The run panel resolving missing models against CivitAI](docs/assets/hero-run-missing-models.png)
 
-- **Subscribe** to a model (`civitai.com/models/<id>`) or a creator (`@username`).
-- **Poll** each subscription on an interval and **diff** the current version list
-  against a per-subscription ledger of already-seen versions.
-- On a genuinely new version: record an activity event and — when the
-  subscription auto-downloads — **enqueue a download**.
-- **Download** files with streaming SHA256 verification, atomic finalize, and
-  `.civitai.info` / `.preview.png` sidecars.
-- A local **web UI** for subscriptions, search, model/creator pages, the
-  activity feed, live queue progress, and a **Library page** whose "Scan now"
-  form accepts extra scan paths (one absolute directory per line or
-  comma-separated) so cross-directory duplicates outside `model_root` — the same
-  reach as the CLI `scan --path` — surface as quarantinable candidates in the UI.
-  The web scan is **confined**: it refuses `/`, system directories (`/etc`,
-  `/proc`, `/usr`, …), and your `$HOME` root itself; it is bounded by a deadline
-  (`--web-scan-timeout`, default 2m) and a model-file cap (default 50k) so an
-  over-broad path aborts with a "narrow the path" message; and the extra-path
-  input is **only available when the server is bound to loopback** (see the
-  security note below). By default a web scan runs **offline** (local
-  duplicate/broken analysis only) and does not send file hashes to CivitAI —
-  tick "Match against CivitAI" to opt into by-hash matching for that scan.
-- **Search** CivitAI from the CLI or UI (first page / `--limit`).
-- **Library management** — `scan` an existing model directory (hash, match to
-  CivitAI, flag superseded/duplicate/broken deletion candidates, read-only), then
-  `library quarantine`/`restore`/`trash` to soft-delete candidates into a trash
-  dir with a reversible undo manifest (nothing is ever hard-deleted).
+> **One thing it does not do: install custom nodes.** It resolves and downloads
+> **model files** only. If a workflow needs a node pack you don't have, it tells
+> you exactly which nodes are missing — and then stops. Installing them is still
+> your job. See [Limitations](#limitations).
 
-First-poll behaviour is deliberately conservative: subscribing **seeds** the
-ledger with the current back-catalog *without downloading it*, so a new
-subscription never retro-downloads everything. Pass `--backfill-latest` to also
-grab the current newest version on subscribe.
+A single Go binary, no cgo, no CDN, no account, no telemetry. It binds to
+loopback, keeps its state in a local SQLite file, and the web UI is fully offline
+— the CSS and htmx are compiled into the binary.
 
-## Install
+---
 
-`civitai-manager` is a single static binary (SQLite is the pure-Go
-`modernc.org/sqlite` driver, so builds are `CGO_ENABLED=0` — no C toolchain,
-trivially cross-compiled). Pick one:
+## 60-second quickstart
 
-**1. Prebuilt binary (GitHub Releases).** Download the archive for your
-OS/arch from the [Releases page](https://github.com/ZacxDev/civitai-manager/releases/latest),
-verify it against `checksums.txt`, extract, and put the binary on your `PATH`:
+**1. Get the binary.** Grab the archive for your platform from the
+[latest release](https://github.com/ZacxDev/civitai-manager/releases/latest), or:
 
 ```sh
-# Example: Linux x86_64. Swap the OS/arch for darwin_amd64, darwin_arm64,
-# linux_arm64, or the windows_*.zip archive as appropriate.
-VERSION=0.1.0
+VERSION=0.1.73   # or whatever the latest release is
 curl -sSLO "https://github.com/ZacxDev/civitai-manager/releases/download/v${VERSION}/civitai-manager_${VERSION}_linux_amd64.tar.gz"
 curl -sSLO "https://github.com/ZacxDev/civitai-manager/releases/download/v${VERSION}/checksums.txt"
 sha256sum --check --ignore-missing checksums.txt
 tar -xzf "civitai-manager_${VERSION}_linux_amd64.tar.gz"
 sudo install civitai-manager /usr/local/bin/
-civitai-manager --version
 ```
 
-**2. `go install`** (needs Go 1.25+):
+Swap `linux_amd64` for `darwin_arm64`, `linux_arm64`, `darwin_amd64`, or the
+`windows_*.zip` archive.
+
+**2. Start it, pointed at your ComfyUI models folder.**
+
+```sh
+civitai-manager serve --comfy-model-path ~/ComfyUI/models
+```
+
+`--comfy-model-path` is what enables downloading a missing model into the right
+place. Without it you still get the diagnosis, just not the fix. Set it once in
+the [config file](docs/configuration.md) so you don't have to pass it every time.
+
+**3. Open <http://localhost:8787>.**
+
+**4. Add a workflow.** Go to **Workflows** and either paste the workflow JSON,
+drop in a **PNG that ComfyUI generated** (the graph is read out of its metadata),
+or browse **Discover** to import one straight from CivitAI.
+
+**5. Click Run.** If anything is missing, you get a panel telling you what — with
+the fix attached where a fix is possible.
+
+You'll want a **CivitAI API token** before downloading much: the public browse
+endpoints work anonymously, but most file downloads need auth. Set `CIVITAI_TOKEN`
+or drop it in the config — and if you already use the official `civitai` CLI,
+your existing token is picked up automatically. See
+[configuration](docs/configuration.md).
+
+> **You need ComfyUI actually running** (default `http://127.0.0.1:8188`) for
+> anything that runs, converts, or preflights a workflow. Roughly half the tool —
+> subscriptions, downloads, the library scanner, workflow import and browsing —
+> works with ComfyUI closed. There's a
+> [full breakdown below](#what-needs-comfyui-running).
+
+---
+
+## Running workflows
+
+**Import from anywhere.** Paste workflow JSON, extract the graph from a ComfyUI
+PNG's metadata, scan your ComfyUI install for workflows already on disk, or
+import from CivitAI's Workflow models (which ship as zips — it unpacks them for
+you and skips graphs you already have).
+
+**UI → API conversion that handles real-world graphs.** Workflows in the wild
+aren't clean. The converter expands **subgraphs**, resolves **Get/Set teleport**
+nodes back to their real source, splices through **bypassed and muted** nodes,
+drops UI-only **rgthree** helper nodes, and handles converted-widget inputs
+without shifting every widget value after them.
+
+**Preflight before it costs you anything.** Every run is checked against your
+live ComfyUI's `/object_info` first, and reports three separate things:
+
+- **Missing custom nodes** — named, so you know what to install. *(No install
+  action; see [Limitations](#limitations).)*
+- **Missing models** — with the resolution flow below.
+- **Incompatible options** — a saved sampler, scheduler, or other enum value your
+  install doesn't have, shown next to a dropdown of the values it *does* have,
+  so you can pick one and run. Your choice is re-validated against the real list
+  server-side; an off-list value is refused, never injected.
+
+**Missing-model resolution.** For each model file the graph wants but you don't
+have, civitai-manager infers the model type, searches CivitAI, and offers:
+
+- the **best match** plus **other possible matches** when several models fit, so
+  you disambiguate instead of guessing;
+- an **already-installed substitute** — run with a model you do have, without
+  editing the workflow;
+- **download and run** — it fetches the file into the correct `models/`
+  subfolder and the run begins on its own when the download completes.
+
+![The run status showing a model download in progress, with the run queued behind it](docs/assets/run-downloading.png)
+
+When CivitAI doesn't have the file, a **HuggingFace fallback** takes over — the
+usual home of VAEs, upscalers, and detection models that never had a CivitAI
+page. Auto-download there is deliberately narrow: it only fires for a curated
+filename map or a recognised org, when the file isn't gated and its SHA256 is
+known. Everything else becomes a link, with the reason stated.
+
+**Edit the parameters without opening ComfyUI.** Prompt, seed, steps, cfg,
+sampler, scheduler, denoise, width, height, and batch size — pulled from the
+nodes that actually hold them, including through converted-widget links, and
+shown with their provenance.
+
+![The editable run-parameters panel](docs/assets/run-params.png)
+
+**The stored workflow is never modified.** Every edit, substitution, and option
+fix is applied to an in-memory copy for that run only. The graph you imported
+stays exactly as you imported it.
+
+**Your outputs don't evaporate.** Every successful local run has its images
+copied into an app-owned gallery, recorded with the parameters that produced
+them. Re-run reconstructs those parameters. It's disk-capped (default 20 GiB,
+oldest-first eviction — [read the note](docs/configuration.md#output-gallery-storage-and-its-automatic-deletion),
+it deletes things), and it survives ComfyUI clearing its own output folder.
+
+![The durable output gallery](docs/assets/outputs-gallery.png)
+
+**Open in ComfyUI** saves the graph into ComfyUI's own Workflows menu. An
+optional helper extension — installed from the UI, one ComfyUI restart to
+activate — makes that button open the workflow directly instead of just telling
+you where it landed.
+
+**Run on CivitAI Cloud** is there too, and is **off by default** (`comfy_cloud:
+true` to enable), because it sends the graph to CivitAI and spends Buzz. You get
+a cost estimate before committing.
+
+---
+
+## Managing the model library
+
+The other half of the tool, for when your `models/` folder has become a landfill.
+
+**Subscribe to models and creators.** A poller diffs each subscription's version
+list against a per-subscription ledger and queues genuinely new versions. Every
+download is verified against the API's SHA256 where one is published, finalized
+atomically, and written with `.civitai.info` / `.preview.png` sidecars.
+
+Subscribing is conservative on purpose: it **seeds** the ledger with the current
+back-catalog *without* downloading it, so a new subscription never retro-pulls
+300 GB. `--backfill-latest` opts into grabbing the current newest version.
+
+**Scan what you already have.** Point it at your ComfyUI or A1111 model
+directories. It hashes everything (with an mtime/size cache so re-scans skip
+unchanged multi-GB files), matches the whole set against CivitAI in **one** batch
+by-hash lookup, and flags **duplicates**, **superseded** versions, and **broken**
+files.
+
+**Nothing is ever hard-deleted.** Acting on those flags *moves* files into a
+trash directory with an undo manifest, and `library restore <batchID>` puts them
+back. The mover refuses to leave zero copies of a duplicate set, refuses
+unmatched files, refuses the newest version, and refuses anything that changed
+since the scan.
+
+![The library page showing duplicate and superseded candidates](docs/assets/library-candidates.png)
+
+**`verify` recovers what you lost.** It reconciles what the tool downloaded
+against what's actually on disk and re-downloads anything missing or corrupt —
+the one path that recovers a model you deleted, since a normal re-subscribe
+considers that version already "seen".
+
+---
+
+## What needs ComfyUI running
+
+| Needs ComfyUI running | Works standalone |
+| --- | --- |
+| Running a workflow locally | Subscriptions, polling, the download queue |
+| Preflight (missing nodes/models, bad options) | Library scan, match, quarantine, restore, `verify` |
+| Missing-model resolution, download-and-run, substitutes | Workflow import: paste, PNG, CivitAI zip |
+| UI→API graph conversion | Browsing workflows and the graph viewer |
+| Output-gallery capture | The output gallery itself (browse, re-run setup, delete) |
+| "Open in ComfyUI" | Installing/removing the helper extension |
+| Cloud runs of **UI-format** workflows (converted locally first) | Cloud runs of **API-format** workflows |
+
+Downloading a missing model additionally requires `comfy_model_path` to be set to
+an existing writable directory, and `comfy_url` to be **loopback** — you can't
+install model files into a ComfyUI on another machine. Without those, the
+missing-model panel degrades to CivitAI links.
+
+---
+
+## Limitations
+
+Read these before you decide the tool is broken.
+
+- **Custom nodes are not installed for you.** Only *model files* are resolved and
+  downloaded. A workflow needing an uninstalled node pack will not run until you
+  install it yourself. The preflight names the missing nodes; that's where its
+  help ends.
+- **A graph the converter can't fully understand blocks the run.** If conversion
+  produces warnings — an unknown node class, an ambiguous teleport — the run is
+  aborted rather than submitted as a partially-broken graph.
+- **Parameters inside subgraphs are not editable.** The run-parameters panel only
+  reads top-level nodes and stops at a subgraph boundary. The panel also only
+  appears for **UI-format** workflows; an API-format graph carries no widget
+  values to edit.
+- **CivitAI cloud runs don't resolve custom node packs.** Model resources are
+  mapped to AIR URNs automatically; node packs are not. You can paste the
+  `urn:air:comfy:nodepack:…` URN in yourself, but nothing figures it out for you.
+- **Cloud run results are not captured into the output gallery.** Only local runs
+  are.
+- **The ComfyUI helper extension needs one restart to activate**, and another to
+  fully remove — its routes are registered at ComfyUI startup and stay live in
+  memory until then.
+- **Preflight checks against civitai-manager's own file index**, not ComfyUI's
+  models directory. A file that's in your library but not where ComfyUI can see
+  it will pass preflight and then fail inside ComfyUI.
+- **Duplicate detection on import isn't uniform.** CivitAI imports are deduped by
+  canonical graph hash; disk scans are idempotent per file path; pasting the same
+  JSON twice will create two entries.
+- **NSFW previews are blurred by default, not withheld.** Blur is a browser-side
+  CSS filter — the image bytes are still sent. It's a shoulder-surfing control,
+  not a privacy boundary.
+- **The web UI has no login.** It binds loopback by default and its only
+  protection is a per-process CSRF token. Binding a LAN address exposes an
+  unauthenticated UI — *and your output gallery*. Read the
+  [security notes](docs/configuration.md#security-notes) first.
+- **Two things phone home by default**, both disclosed and both switchable:
+  library scan matching sends your files' **SHA256 hashes** to CivitAI
+  (`scan --no-remote` to stop), and the HuggingFace fallback sends a missing
+  model's **filename** to HuggingFace (`hf_fallback: false` to stop). See
+  [what talks to the network](docs/configuration.md#what-talks-to-the-network).
+- **This is v0.1.x.** The database schema and internal APIs still move between
+  releases. Migrations run automatically and in order, but treat it as unstable
+  software. See [testing & verification status](docs/testing.md) for what is and
+  isn't actually proven.
+- Interrupted downloads are **re-fetched whole**, not resumed. Search results are
+  the first page only.
+
+---
+
+## Documentation
+
+| | |
+| --- | --- |
+| [Configuration & security](docs/configuration.md) | Config file reference, token resolution, ComfyUI paths, the output-gallery cap, network egress, security notes |
+| [CLI reference](docs/cli.md) | Every command and flag |
+| [Testing & verification](docs/testing.md) | What's covered, what isn't, the live integration harness |
+| [Contributing](CONTRIBUTING.md) | Building, testing, cutting a release |
+
+---
+
+## Other ways to install
+
+**`go install`** (needs Go 1.25+):
 
 ```sh
 go install github.com/ZacxDev/civitai-manager@latest
 ```
 
-**3. Build from source** — see [Build & run](#build--run) below.
-
-> The `go.mod` currently pins `github.com/civitai/cli` at a pseudo-version
-> (a commit on its public `main`) because the module hasn't cut a tagged
-> release that includes `pkg/civitai`. Source builds resolve it fine. Once
-> upstream tags such a release, bump the dependency to that tag.
-
-## Build & run
-
-Requires **Go 1.25+**.
+**From source:**
 
 ```sh
+git clone https://github.com/ZacxDev/civitai-manager
+cd civitai-manager
 go build -o civitai-manager .
-
-# Run the web UI + poller + download worker (binds loopback by default):
-./civitai-manager serve
-# → open http://localhost:8787
-
-# To expose the UI on your LAN, bind a non-loopback interface explicitly:
-./civitai-manager serve --addr 0.0.0.0:8787
 ```
 
-> **Security note:** the UI binds `127.0.0.1:8787` by default, so it is not
-> reachable from other machines. The UI has **no login**; its only protection is
-> a per-process CSRF token on the state-changing forms. Binding `--addr` to a
-> non-loopback interface exposes an **unauthenticated** UI (CSRF-token-only) to
-> anyone who can reach that interface — only do so on a trusted network.
->
-> Because the Library "Scan now" form can walk and hash arbitrary host
-> directories, that **extra-scan-path capability is disabled on a non-loopback
-> bind**: a LAN-exposed server may only scan `model_root` and configured
-> `library_paths`, the extra-path input is not rendered, and any submitted
-> `scan_paths` is rejected. On loopback the web scan is still confined (no `/`,
-> no system dirs, not `$HOME` itself) and bounded by `--web-scan-timeout` and a
-> model-file cap.
->
-> The interactive **directory browser** (used to pick a scan dir) is additionally
-> constrained to paths within `$HOME`, `model_root`, and configured
-> `library_paths` — it will not enumerate unrelated locations such as `/root` or
-> another user's home, and the constraint is enforced on the symlink-resolved
-> real path.
->
-> **Your generated images are part of what a non-loopback bind exposes.** The
-> output gallery (`/outputs`) and the image bytes it serves (`/outputs/img/{id}`)
-> are readable by any client that can reach the port — there is no per-route
-> gate on them, by design, so that a deliberately LAN-exposed instance still has
-> a working gallery. The **"Recent outputs" sidebar** puts the 12 most recent
-> thumbnails and their workflow names on *every* page, so they are the first
-> thing such a client sees. Setting the NSFW display mode to **Blur** does not
-> change what is served: the blur is a CSS filter applied in the browser, and the
-> unblurred bytes still go over the wire. If that matters for your setup, keep
-> the default loopback bind (or put the port behind your own auth proxy).
+SQLite is the pure-Go `modernc.org/sqlite` driver, so everything builds with
+`CGO_ENABLED=0` — no C toolchain, no build tags, trivially cross-compiled.
+Releases ship for **linux, macOS, and Windows** on **amd64 and arm64**, with a
+`checksums.txt`.
 
-### CLI
+## Command line
+
+The web UI is optional — every core operation has a CLI equivalent, and `check`
+is designed to run from cron:
 
 ```sh
-# Subscribe to a model (by id or full URL):
-civitai-manager subscribe 4201
-civitai-manager subscribe https://civitai.com/models/4201/realistic-vision
-
-# Subscribe to a creator:
+civitai-manager subscribe 4201                  # or a full civitai.com/models/... URL
 civitai-manager subscribe --creator someartist
-
-# Subscription options:
-#   --notify-only        record new versions but don't download
-#   --no-auto            create the subscription with auto-download off
-#   --backfill-latest    download the current latest version now, synchronously,
-#                        before the command returns (plain subscribe only seeds
-#                        the ledger and downloads nothing)
-#   --base-model SDXL    only download versions matching this base model
-#   --file-type Model    prefer this file type when a version has several
-
-# Search CivitAI from the CLI (first page / --limit; --json for the raw body):
-civitai-manager search "realistic vision"
-civitai-manager search --username someartist --type Checkpoint --limit 20
-civitai-manager search anime --tag style --nsfw --json
-
-# Global flags (apply to serve/check/subscribe/verify):
-#   --max-file-size 2GB     skip auto-downloads whose primary file exceeds this
-#                           size (e.g. 500MB, 2GB; 0/empty = unlimited)
-#   --download-jitter 15m   anti-stampede: schedule each AUTO-detected download
-#                           at a random point in [0, dur) so a fleet of installs
-#                           doesn't hit CivitAI's download endpoint in unison
-#                           when a popular model publishes (0 = start at once).
-#                           Manual/--backfill-latest downloads always start now.
-#   --no-preview            do NOT write the .preview.png image sidecar at all
-#                           (opt-in; the default still writes it)
-#   --max-preview-size 2MB  skip the .preview.png when the fetched image exceeds
-#                           this size (e.g. 2MB; 0/empty = no cap). The model
-#                           file and .civitai.info are still written.
-
-civitai-manager list
-civitai-manager unsubscribe <id>
-
-# One-shot poll of every subscription (for cron); add --download to also
-# fetch queued files immediately instead of leaving them for `serve`:
-civitai-manager check
-civitai-manager check --download
-
-# Reconcile downloaded files against the ledger and recover deleted/moved ones.
-# The source of truth is the tool's own completed downloads; `verify` stat()s each
-# recorded destination:
-civitai-manager verify                    # report: counts of OK / MISSING / CORRUPT
-civitai-manager verify --check-hash       # also re-hash present files (slower) → CORRUPT
-civitai-manager verify --repair           # re-download files reported MISSING
-civitai-manager verify --repair --check-hash   # also re-download CORRUPT (mismatched) files
-# Plain `verify` only reports and exits 0; `--repair` re-enqueues each offending
-# file (its done row → queued) and re-downloads ONLY those rows through the normal
-# verify pipeline (an unrelated queued backlog is left untouched). This is the
-# path that recovers a model you deleted or moved on disk — a normal
-# re-subscribe/`check` cannot, because the version is already "seen". If a repair
-# re-download itself fails (e.g. the source 404s), the row is re-detected as
-# repairable on the next `verify` so you can simply re-run `verify --repair`.
-
-# Library: scan model directories (read-only: hash, match, flag deletion
-# candidates), then quarantine acts on the flags. --path adds extra directories
-# to scan (repeatable) on top of model_root:
-civitai-manager scan
-civitai-manager scan --path ~/ComfyUI/models --path ~/A1111/models/Lora
-
-# `scan` RECORDS, per file, the root it was found under, so a candidate flagged
-# under an extra `scan --path <dir>` stays actionable by a later `quarantine`
-# WITHOUT re-specifying <dir>. A file may only be quarantined if it lies inside
-# model_root, a root that was actually scanned (recorded at scan time), or an
-# explicit --path — never an arbitrary path.
-#
-# Note on persistence: the extra scan *paths* (CLI --path / the web form's extra
-# paths) are NOT saved as config — you re-supply them each run. But each scanned
-# file's `scan_root` IS persisted on its index row, so a file that MATCHED a
-# CivitAI version while found under an extra path stays quarantine-eligible
-# afterwards without re-passing that path. Safety bound: only files that MATCH a
-# CivitAI version can ever be quarantined — an unmatched host file scanned via an
-# extra path is recorded/inventoried but can NEVER be moved.
-civitai-manager library candidates
-civitai-manager library quarantine --all              # dry-run over all candidates
+civitai-manager check --download                # one-shot poll, then drain the queue
+civitai-manager scan --path ~/ComfyUI/models    # hash, match, flag candidates
 civitai-manager library quarantine --reason duplicate --apply
-civitai-manager library quarantine --id 12 --apply
-# Standalone quarantine of a directory not recorded by a prior scan: union it in
-# explicitly with --path (repeatable; unioned with model_root + recorded roots):
-civitai-manager library quarantine --path ~/loose-loras --all --apply
-civitai-manager library restore <batchID>             # undo a quarantine batch
+civitai-manager verify --repair                 # re-download missing files
 ```
 
-By default the one-shot download commands (`subscribe --backfill-latest`,
-`check --download`) print clean friendly progress/summary lines; add `-v` to see
-the detailed structured worker/poller logs. Each completed download prints a
-per-file verification line so you can see, at a glance, that the bytes were
-hash-checked against the API's expected SHA256. The name shown is the **on-disk**
-file name (files are written version-name-cased), not the API's file name — so
-the printed name is exactly what you will find (and can `grep`) on disk:
+Full details in the [CLI reference](docs/cli.md).
 
-```
-✓ EasyNegative.safetensors (sha256 c74b4e810b03 verified)
-⚠ some-model.safetensors (unverified — no hash from API)
-```
+## License
 
-A `⚠ unverified` line means the API supplied no hash for that file, so it was
-downloaded but could not be checksum-verified (it is never reported as
-"verified").
-
-`unsubscribe <id>` fully removes the subscription's state — its seen-version
-ledger AND its download-queue rows — so re-subscribing to the same target later
-is a clean slate that re-enqueues and re-downloads (rather than being deduped
-against a stale completed row).
-
-## Configuration & authentication
-
-The CivitAI **API token** and other settings resolve by precedence:
-
-1. command-line flag (`--token`, `--base-url`, `--model-root`, `--db`)
-2. environment variable **`CIVITAI_TOKEN`** (token only)
-3. config file (below)
-4. the official [`civitai` CLI](https://github.com/civitai/cli)'s config, if
-   present — `~/.config/civitai/config.yaml`, the `token:` field (token only,
-   lowest precedence)
-5. built-in defaults
-
-The token is **never logged** — diagnostic output redacts it to `****abcd`.
-The public read endpoints work anonymously; a token is required to download most
-files.
-
-> **Already using the official `civitai` CLI?** Its login token lives in
-> `~/.config/civitai/config.yaml` under `token:`. civitai-manager reads that as a
-> last-resort fallback automatically, so you may not need to configure a token at
-> all. To be explicit instead, copy that value into `CIVITAI_TOKEN`, pass
-> `--token`, or set `token:` in `~/.config/civitai-manager/config.yaml`. A
-> missing or unreadable official-CLI config is ignored.
-
-Config file location honours `XDG_CONFIG_HOME`, defaulting to
-`~/.config/civitai-manager/config.yaml`:
-
-```yaml
-token: "your-civitai-api-key"      # or set CIVITAI_TOKEN
-base_url: "https://civitai.com"
-model_root: "~/civitai-models"
-default_poll_interval: "1h"        # floored at 15m (API edge-caches ~5m)
-download_jitter: "15m"             # anti-stampede window; "0" = start at once
-max_file_size: ""                  # e.g. "2GB"; empty/"0" = unlimited
-no_preview: false                  # true = never write the .preview.png sidecar
-max_preview_size: ""               # e.g. "2MB"; skip a preview larger than this
-                                   # (empty/"0" = no cap). Model + .civitai.info
-                                   # are always written regardless.
-addr: "127.0.0.1:8787"             # loopback by default; set a LAN host to expose.
-                                   # A non-loopback bind also exposes the output
-                                   # gallery + the every-page "Recent outputs"
-                                   # thumbnails — see the security note above.
-web_scan_timeout: "2m"             # deadline for a web "Scan now" walk/hash
-web_scan_max_files: 50000          # model-file cap for a web scan; over → aborts
-outputs_dir: ""                    # where the output gallery stores images
-                                   # (empty = <db-dir>/outputs)
-outputs_max_bytes: "20GB"          # total size cap for that gallery; over it, the
-                                   # OLDEST generations are DELETED. "0" = unlimited
-# db_path: "~/.config/civitai-manager/civitai-manager.db"
-```
-
-The web-scan bounds only apply to the browser "Scan now" button (the
-network-reachable surface). The CLI `scan` is unbounded — you typed the path
-knowingly — though it is equally context-cancellable (Ctrl-C aborts the walk
-promptly, not just after it finishes).
-
-### Output gallery storage and its automatic deletion
-
-Every successful ComfyUI workflow run has its output images **copied** into an
-app-owned directory — `outputs_dir` / `--outputs-dir`, defaulting to
-`<db-dir>/outputs` (i.e. `~/.config/civitai-manager/outputs`) — and recorded in
-the database so they stay browsable under **Outputs** after ComfyUI clears its own
-output folder.
-
-> ⚠️ **That directory is size-capped, and the cap deletes your images.** Once the
-> total recorded size of the gallery exceeds `outputs_max_bytes`
-> (`--outputs-max-bytes`), the app **automatically deletes the OLDEST generations
-> — database rows and image files — until it is back under the cap.** There is
-> **no undo and no trash**; deleted generations are gone. Each eviction is logged
-> at INFO level with the generation id and the bytes reclaimed.
->
-> - **Default: `"20GB"`.** Set it to any size string (`"500MB"`, `"2GB"`) or a
->   plain byte count.
-> - **`"0"` means unlimited** — nothing is ever auto-deleted, and the directory
->   grows without bound.
-> - A positive cap below 1 MiB is rejected at startup (almost always a unit
->   mistake, e.g. `outputs_max_bytes: 20` meaning 20 GB).
-> - Eviction runs **only after a successful capture**, so lowering the cap does
->   nothing until the next successful run.
-> - Keep anything you care about somewhere else — copy it out of the gallery.
-
-Downloaded files are laid out as
-`<model_root>/<type>/<creator>/<model>/<versionName>.<ext>` with sanitized path
-components, plus `.civitai.info` (raw version JSON) and `.preview.png` sidecars.
-The preview image can be suppressed entirely with `--no-preview` / `no_preview`,
-or size-capped with `--max-preview-size` / `max_preview_size` (previews are
-full-resolution by default, which can be large relative to a small model).
-
-## SDK dependency
-
-This app imports the official client SDK `github.com/civitai/cli/pkg/civitai`
-(promoted to a public, importable package in civitai/cli #172). `go.mod` pins the
-merged commit as a pseudo-version; once civitai/cli cuts a tagged release
-containing `pkg/civitai`, bump the `require` to that tag.
-
-## Architecture
-
-```
-main.go                 cobra entrypoint
-internal/
-  config/               flag/env/file resolution, token redaction
-  store/                SQLite (modernc.org/sqlite, pure Go) + embedded migrations
-  civitai/              thin wrapper over the SDK Reader/Downloader (test seams,
-                        URL parsing, path layout, file selection)
-  poller/               version-diff (pure) + scheduler + subscribe/seed logic
-  queue/                streaming download worker (verify → atomic rename → sidecars)
-  web/                  gomponents pages + htmx handlers + embedded Tailwind/htmx
-  hashutil/             SHA256 file digest + compare
-  library/              read-only scan/match/analyze pipeline + quarantine mover
-  cli/                  cobra commands: serve, subscribe, search, list,
-                        unsubscribe, check, scan, library (candidates/quarantine/
-                        restore/trash)
-```
-
-SQLite uses the **pure-Go** `modernc.org/sqlite` driver (no cgo), so the binary
-cross-compiles cleanly. The schema is applied via embedded, ordered `.sql`
-migrations tracked in a `schema_migrations` table.
-
-The web UI is **fully self-contained**: Tailwind's `output.css` and `htmx.min.js`
-are embedded via `go:embed` — no external CDN, works offline. Regenerate the CSS
-after editing any template's classes:
-
-```sh
-cd internal/web
-nix-shell -p tailwindcss --run \
-  "tailwindcss -c tailwind.config.js -i input.css -o assets/output.css --minify"
-```
-
-## Status & verification
-
-`go build ./...`, `go vet ./...`, `go test ./...` all pass and `gofmt -l .` is
-empty.
-
-**Tested (automated):**
-
-- **Version diff** — table-driven: given a seen-set and a fetched version list,
-  exactly the right new version ids are detected; first-poll seeding does **not**
-  enqueue; notify-only does not enqueue; base-model filter is respected;
-  `--backfill-latest` enqueues only the latest; creator-search raw parsing.
-  Driven by an in-memory fake `civitai.Reader` (no network).
-- **Download worker** — SHA256 happy-path (case-insensitive), mismatch **fails
-  the row and discards** the file, atomic rename, sidecar writes, `local_files`
-  indexing, and HTTP-error retry/fail — via `httptest` + a fake downloader. A
-  file the API gives **no hash** for is finalized but recorded as
-  **UNVERIFIED** (never reported as "verified"). A download interrupted by a
-  **graceful shutdown** is requeued (not failed) and completes on restart.
-- **Anti-stampede** — auto-detected downloads get a per-instance random
-  `not_before` start offset (within the `download_jitter` window) and are not
-  claimed before their time; manual/`--backfill-latest` downloads start
-  immediately.
-- **Size cap** — a version whose primary file exceeds `--max-file-size` is
-  skipped (a `size_skip` event), not enqueued.
-- **CSRF** — state-changing POSTs are rejected (403) without the per-process
-  token and accepted with it; `PollAll` (`check`) backs off on `ErrRateLimited`.
-- **Store** — migration applies to version 1; subscription CRUD + unique-target
-  constraints; seen-versions ledger; queue state transitions + dedup guard.
-- **Config** — flag > env > file precedence; token redaction; XDG; duration parse.
-- **Web** — every page/fragment renders without panic with expected elements;
-  dashboard/asset/subscribe handlers return 200 with the right content.
-- **Library scan/quarantine** — incremental hash cache (unchanged files reuse the
-  stored hash/match); duplicate/superseded/broken flagging (duplicates work
-  offline; the keeper is the best-organized copy); the quarantine mover's safety
-  invariants (never leaves zero copies of a duplicate set, refuses unmatched /
-  newest-version / out-of-root / changed-since-scan files), durable cross-FS move,
-  reversible restore, and root-qualified trash paths — via in-memory store + fake
-  reader with injectable hash/move seams. A candidate scanned under an extra
-  `scan --path` root stays actionable via its persisted `scan_root` (or an explicit
-  `quarantine --path`), while a file inside no scanned root is still refused —
-  containment is verified against real paths, so a mismatched `scan_root` grants no
-  escape.
-  `restore` returns a quarantined batch's files to disk AND re-indexes each
-  restored model file into `local_files` (path/sha/size, nearest known scan
-  root), so it reappears in `library candidates` / the Library page immediately;
-  it prints a hint to run `scan` to re-match and re-evaluate candidacy.
-- **CLI search** — the `search` command maps flags to query params and renders
-  the first page (bounded by `--limit`); `--json` emits the raw body.
-
-**Manually exercised (real HTTP, local fake API):** `serve` starts and renders
-the dashboard + embedded assets; `subscribe` seeds without downloading; `list`,
-`check`, and `unsubscribe` work; a bad model id surfaces the SDK's classified
-`404` error.
-
-**Live validation against api.civitai.com** is now available as an opt-in
-integration-test harness — see [Live integration tests](#live-integration-tests).
-Run it with your own `CIVITAI_TOKEN` to exercise these real code paths:
-
-- Real API response shapes (field presence/casing) beyond the SDK's typed structs.
-- An actual authenticated **file download** end-to-end — CivitAI's signed-redirect
-  + auth flow, with the downloaded bytes' SHA256 checked against the API hash.
-- by-hash version resolution (`GetModelVersionByHash`) round-trip.
-- `ErrNotFound` classification on a bad id.
-- The real poller seed/diff cycle against live model data.
-- `.civitai.info` / `.preview.png` sidecars written from live data.
-
-**Still NOT covered (even by the live harness):**
-
-- Rate-limit backoff behaviour against the live throttle.
-- Creator polling against a real creator's `/api/v1/models?username=` payload.
-
-### Live integration tests
-
-These tests hit the **real** `api.civitai.com`. They are gated so ordinary
-`go test ./...` and CI stay green offline: they compile only under the
-`integration` build tag AND skip unless `CIVITAI_INTEGRATION=1` is set (auth
-tests also need `CIVITAI_TOKEN`).
-
-```sh
-# Read/metadata + by-hash + error-classification + poller seed (no file bytes):
-CIVITAI_INTEGRATION=1 CIVITAI_TOKEN=xxx \
-  go test -tags integration ./internal/integration/ -run Integration -v
-
-# ...plus the real authenticated file-download test (transfers real bytes):
-CIVITAI_INTEGRATION=1 CIVITAI_INTEGRATION_DOWNLOAD=1 CIVITAI_TOKEN=xxx \
-  go test -tags integration ./internal/integration/ -run Integration -v
-```
-
-Or via `make`:
-
-```sh
-make integration-test CIVITAI_TOKEN=xxx
-make integration-test-download CIVITAI_TOKEN=xxx
-```
-
-The live targets default to long-lived public resources and are overridable:
-
-| Env var | Default | Meaning |
-| --- | --- | --- |
-| `CIVITAI_TEST_MODEL_ID` | `4384` (DreamShaper) | Model used for metadata + poller tests |
-| `CIVITAI_TEST_DOWNLOAD_VERSION_ID` | `9208` (EasyNegative embedding, ~25 KB) | **Small** file version for the real-download test |
-| `CIVITAI_BASE_URL` | `https://civitai.com` | API base URL |
-
-The download default is intentionally a **tiny** textual-inversion embedding, not
-a multi-GB checkpoint, so the test transfers only tens of KB. If a default id has
-since been removed upstream, override it. The download test refuses any primary
-file larger than ~500 MB as a safety guard.
-
-### Deferred / stubbed (post-MVP)
-
-- **Byte-range resume** — the SDK `Downloader` takes only a URL (no `Range`
-  header), so an interrupted download is **re-fetched whole** rather than
-  resumed. Interrupted rows are requeued on restart.
-- **Search pagination beyond the first page** — the CLI/UI `search` returns the
-  first page (bounded by `--limit`); walking the cursor/`Metadata` to fetch
-  subsequent pages is not wired yet. First-page search itself is implemented and
-  tested.
-
-## Notes on the SDK surface
-
-Coding against `pkg/civitai` matched the documented surface, with these details
-confirmed from source:
-
-- `ModelSearchResult.Items` are `ModelListItem` (id/name/type/nsfw/creator/stats)
-  and **do not carry versions or a thumbnail**. Creator polling therefore diffs
-  on the search response's **raw JSON** (`items[].modelVersions[].id`), and
-  search result cards show no thumbnail (the typed item has no image field).
-- `ModelVersionSummary` carries `ID`/`Name`/`BaseModel`/`Files` but **no
-  `publishedAt`**, so `seen_versions.published_at` is left null.
-- `ModelVersionDetail` has no `Images` field; the first preview image is parsed
-  best-effort from the raw version JSON (`images[].url`).
+[Apache-2.0](LICENSE).
