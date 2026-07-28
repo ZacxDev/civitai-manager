@@ -125,7 +125,7 @@ func (s *Server) handleWorkflowOpenInComfyUI(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	s.render(w, http.StatusOK, openComfyResult(cid, openURL,
-		"Saved to ComfyUI under “"+openComfyDir+"/”. Opening the editor…", true))
+		"Saved to ComfyUI under “"+openComfyDir+"/” — open it there from the Workflows menu.", true))
 }
 
 // openComfyResult renders the inline outcome that replaces the "Open in ComfyUI"
