@@ -41,11 +41,12 @@ type railData struct {
 // rail is treated as ONE surface — mode "hide" OMITS it server-side (no markup at
 // all), "blur" renders it blurred (hover/focus reveals), "show" renders it plain.
 //
-// The hide test deliberately reads the RAW stored/passed mode rather than
-// normalizeNSFWMode's output: that helper MIGRATES a stored "hide" to blur (the
-// navbar toggle dropped the hide state), so normalizing first would make the omit
-// branch unreachable. Reading the raw value keeps the "hide omits server-side"
-// capability real and testable, per the CLAUDE.md invariant.
+// Like the omit branches in model_pages.go, the hide path is an INERT, PRESERVED
+// capability rather than a live one: every production caller passes s.nsfwMode(),
+// which runs normalizeNSFWMode and MIGRATES a stored "hide" to blur, so mode ==
+// hide is unreachable in practice. The test below reads the RAW value (instead of
+// normalizing first, which would make the branch unreachable from tests too) so
+// the "hide omits server-side" invariant stays exercised and cannot rot.
 func (rd railData) visible(nsfwMode string) bool {
 	if len(rd.Gens) == 0 {
 		return false
@@ -114,10 +115,12 @@ func outputsRail(rd railData, csrf, nsfwMode string) g.Node {
 		h.Span(g.Attr("aria-hidden", "true"), g.Text(glyph)),
 	)
 
-	// Mobile-only close control for the drawer.
+	// Mobile-only close control for the drawer. It is also the element focus moves
+	// to when the drawer opens (see railDrawerScript), so it carries a stable id.
 	closeBtn := civButton("subtle", "sm",
 		[]g.Node{
 			h.Type("button"),
+			h.ID("cm-rail-close"),
 			h.Class("cm-rail-close"),
 			g.Attr("onclick", "cmRailDrawer(false)"),
 			g.Attr("aria-label", "Close recent outputs"),
@@ -200,20 +203,52 @@ func railNavToggle() g.Node {
 	)
 }
 
-// railDrawerScript toggles the EPHEMERAL mobile drawer state (data-open on the
-// rail + scrim, aria-expanded on the nav button). Vendored inline — no CDN, no
-// framework. The persisted desktop collapse state is server state and does NOT go
-// through here.
+// railDrawerScript toggles the EPHEMERAL mobile drawer state. Vendored inline —
+// no CDN, no framework. The persisted desktop collapse state is server state and
+// does NOT go through here.
+//
+// While open the rail behaves as a modal drawer, so the script (not the markup)
+// applies the dialog semantics — on desktop the same element is a static
+// complementary column, where role="dialog" would be wrong:
+//   - role="dialog" + aria-modal="true" while open, removed on close;
+//   - focus moves to the close button on open and is RESTORED to whatever opened
+//     the drawer on close;
+//   - the rest of the page (nav + main) is marked `inert`, which both removes it
+//     from the tab order — containing focus without a hand-rolled Tab trap — and
+//     hides it from assistive tech.
+//
+// Escape closes. This is a proportionate pass, not a full a11y sweep.
 func railDrawerScript() g.Node {
 	return h.Script(g.Raw(`
+var cmRailPrevFocus = null;
 function cmRailDrawer(open){
   var v = open ? 'true' : 'false';
   var r = document.getElementById('cm-rail');
+  if (!r) { return; }
   var s = document.getElementById('cm-rail-scrim');
   var b = document.getElementById('cm-rail-open');
-  if (r) { r.setAttribute('data-open', v); }
+  if (open) {
+    cmRailPrevFocus = document.activeElement;
+    r.setAttribute('role', 'dialog');
+    r.setAttribute('aria-modal', 'true');
+  } else {
+    r.removeAttribute('role');
+    r.removeAttribute('aria-modal');
+  }
+  r.setAttribute('data-open', v);
   if (s) { s.setAttribute('data-open', v); }
   if (b) { b.setAttribute('aria-expanded', v); }
+  var rest = document.querySelectorAll('nav, main');
+  for (var i = 0; i < rest.length; i++) {
+    if (open) { rest[i].setAttribute('inert', ''); } else { rest[i].removeAttribute('inert'); }
+  }
+  if (open) {
+    var c = document.getElementById('cm-rail-close');
+    if (c && c.focus) { c.focus(); }
+  } else if (cmRailPrevFocus && cmRailPrevFocus.focus) {
+    cmRailPrevFocus.focus();
+    cmRailPrevFocus = null;
+  }
 }
 document.addEventListener('keydown', function(e){
   if (e.key === 'Escape') { cmRailDrawer(false); }

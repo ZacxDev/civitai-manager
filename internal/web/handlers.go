@@ -390,7 +390,9 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 			s.render(w, status, errNode)
 			return
 		}
-		s.render(w, status, page("Not found", s.currentTheme(), s.csrf, s.nsfwMode(), s.rail(r.Context()), errNode))
+		// railData{} — an error page skips the outputs rail rather than paying its
+		// two extra queries to decorate a "Not found".
+		s.render(w, status, page("Not found", s.currentTheme(), s.csrf, s.nsfwMode(), railData{}, errNode))
 		return
 	}
 	// Mark which of this model's versions the user already has locally, so the
@@ -691,7 +693,8 @@ func (s *Server) handleCreator(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	res, err := s.reader.SearchModels(ctx, q)
 	if err != nil {
-		s.render(w, http.StatusBadGateway, page("@"+username, s.currentTheme(), s.csrf, s.nsfwMode(), s.rail(r.Context()), errorNote("Could not load creator: "+err.Error())))
+		// railData{} — see handleModel: error pages skip the rail's queries.
+		s.render(w, http.StatusBadGateway, page("@"+username, s.currentTheme(), s.csrf, s.nsfwMode(), railData{}, errorNote("Could not load creator: "+err.Error())))
 		return
 	}
 	// One ListSubscriptions query per render → each model card reflects real

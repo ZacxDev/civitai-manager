@@ -78,6 +78,34 @@ func TestRailRendersOnEveryPage(t *testing.T) {
 	}
 }
 
+// TestRailDrawerHasModalSemantics pins the pieces the drawer's a11y depends on.
+// The dialog role/aria-modal are applied by the script (only while open — on
+// desktop the same element is a static complementary column, where role="dialog"
+// would be wrong), so this asserts the script contains them plus the focus
+// move/restore and the inert marking of the rest of the page.
+func TestRailDrawerHasModalSemantics(t *testing.T) {
+	srv, root := newOutputsServer(t, "127.0.0.1:8787")
+	wf := seedWF(t, srv, "wf")
+	seedGen(t, srv, root, &wf, "wf", []byte("X"))
+	shell := pageShell(get(t, srv, "/").Body.String())
+
+	for _, want := range []string{
+		`aria-controls="cm-rail"`,     // the opener names its target
+		`aria-expanded="false"`,       // …and reports state
+		`id="cm-rail-close"`,          // focus lands here on open
+		`aria-label="Recent outputs"`, // the rail is a labelled landmark
+		"cmRailPrevFocus",             // focus is restored on close
+		`setAttribute('role', 'dialog')`,
+		`setAttribute('aria-modal', 'true')`,
+		"inert",              // the rest of the page is removed from the tab order
+		"e.key === 'Escape'", // Escape closes
+	} {
+		if !strings.Contains(shell, want) {
+			t.Errorf("rail drawer missing %q", want)
+		}
+	}
+}
+
 func TestRailShowsGenerationsFromEveryWorkflow(t *testing.T) {
 	srv, root := newOutputsServer(t, "127.0.0.1:8787")
 	wfA := seedWF(t, srv, "alpha")
@@ -129,6 +157,7 @@ func TestRailHonorsNSFWModes(t *testing.T) {
 		out := renderString(t, dashboardPage(nil, nil, "csrf", "dark", NSFWHide, rd))
 		for _, bad := range []string{
 			`id="cm-rail"`, "cm-rail-item", "cm-shell-rail", `id="cm-rail-open"`,
+			"cmRailDrawer", // the drawer script ships with the rail — it must go too
 			imgURL, "/outputs/" + strconv.FormatInt(genID, 10),
 		} {
 			if strings.Contains(out, bad) {
