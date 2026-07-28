@@ -6,16 +6,22 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
 
-// fakeComfyRoot builds a directory that looks like a ComfyUI install.
+// fakeComfyRoot builds a directory that looks like a ComfyUI install: custom_nodes/
+// AND a ComfyUI fingerprint (see rootMarkerFiles — custom_nodes/ alone is
+// deliberately NOT enough).
 func fakeComfyRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, CustomNodesDir), 0o755); err != nil {
 		t.Fatalf("make custom_nodes: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.py"), []byte("# comfyui\n"), 0o644); err != nil {
+		t.Fatalf("make main.py: %v", err)
 	}
 	return root
 }
@@ -357,17 +363,230 @@ func snapshot(t *testing.T, path string) string {
 	return b.String()
 }
 
-// assertNoStagingLeftovers proves a failed/completed install left no temp dir in
-// custom_nodes (ComfyUI would try to import it as a node package).
+// assertNoStagingLeftovers proves a failed/completed install left no temp dir
+// behind — in custom_nodes/ (where ComfyUI would IMPORT it, taking the whole
+// server down) or under the root (where it is merely litter).
 func assertNoStagingLeftovers(t *testing.T, root string) {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(root, CustomNodesDir))
-	if err != nil {
-		t.Fatalf("read custom_nodes: %v", err)
-	}
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".civitai-manager-staging-") || strings.HasPrefix(e.Name(), ".civitai-manager-probe-") {
-			t.Errorf("leftover temp entry in custom_nodes: %s", e.Name())
+	for _, dir := range []string{filepath.Join(root, CustomNodesDir), root} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read %s: %v", dir, err)
+		}
+		for _, e := range entries {
+			for _, prefix := range []string{stagingPrefix, backupPrefix, ".civitai-manager-probe-"} {
+				if strings.HasPrefix(e.Name(), prefix) {
+					t.Errorf("leftover temp entry in %s: %s", dir, e.Name())
+				}
+			}
 		}
 	}
+}
+
+// --- staging containment, crash safety, and root fingerprinting ---
+
+// TestStagingNeverLandsUnderCustomNodes is the regression pin for the worst bug
+// this package can cause: a staging directory holds a COMPLETE __init__.py, and
+// ComfyUI's loader does NOT skip dot-directories under custom_nodes/. An orphaned
+// staging dir there would be imported as a SECOND copy of this extension, whose
+// route registration makes aiohttp raise and takes the WHOLE ComfyUI down.
+//
+// The hook fires at the exact vulnerable moment — tree fully staged, nothing moved
+// yet — and asserts custom_nodes/ still holds only what it held before.
+func TestStagingNeverLandsUnderCustomNodes(t *testing.T) {
+	root := fakeComfyRoot(t)
+	cn := filepath.Join(root, CustomNodesDir)
+	mustMkdir(t, filepath.Join(cn, "someone-elses-node"))
+	before := entryNames(t, cn)
+
+	var sawStage string
+	afterStageHook = func(stage string) {
+		sawStage = stage
+		if got := entryNames(t, cn); got != before {
+			t.Errorf("during staging, custom_nodes changed:\nbefore=%s\nduring=%s", before, got)
+		}
+		// And the staged tree — which IS importable — must not be under custom_nodes.
+		if strings.HasPrefix(stage, cn+string(filepath.Separator)) {
+			t.Errorf("staging dir %q is under %q: ComfyUI would import an orphan of it", stage, cn)
+		}
+		if filepath.Dir(stage) != filepath.Clean(root) {
+			t.Errorf("staging dir %q should sit directly under the root %q (same filesystem, atomic rename)", stage, root)
+		}
+		// It must really contain the importable entrypoint (otherwise this test
+		// would pass vacuously for a staging dir that holds nothing).
+		if _, err := os.Stat(filepath.Join(stage, "__init__.py")); err != nil {
+			t.Errorf("staged tree has no __init__.py: %v", err)
+		}
+	}
+	t.Cleanup(func() { afterStageHook = nil })
+
+	if _, err := Install(root); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if sawStage == "" {
+		t.Fatal("the staging hook never fired — this test proved nothing")
+	}
+	// Afterwards: exactly one new entry (our install), no staging leftovers.
+	assertNoStagingLeftovers(t, root)
+	if _, err := os.Stat(sawStage); !os.IsNotExist(err) {
+		t.Errorf("staging dir %s survived a successful install", sawStage)
+	}
+}
+
+// TestSweepStaleRemovesOrphanedStagingDirs proves an install repairs the damage a
+// PREVIOUS killed install could have left — including an orphan in the old
+// (dangerous) custom_nodes/ location written by an earlier civitai-manager.
+func TestSweepStaleRemovesOrphanedStagingDirs(t *testing.T) {
+	root := fakeComfyRoot(t)
+	cn := filepath.Join(root, CustomNodesDir)
+	orphans := []string{
+		filepath.Join(cn, ".civitai-manager-staging-old1"),   // the dangerous one
+		filepath.Join(root, ".civitai-manager-staging-old2"), // current location
+		filepath.Join(root, ".civitai-manager-backup-old3"),
+	}
+	keep := filepath.Join(cn, "someone-elses-node")
+	mustMkdir(t, keep)
+	mustWrite(t, filepath.Join(keep, "__init__.py"), "# not ours")
+	for _, o := range orphans {
+		mustMkdir(t, o)
+		mustWrite(t, filepath.Join(o, "__init__.py"), "# orphaned copy of our helper")
+	}
+
+	if _, err := Install(root); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	for _, o := range orphans {
+		if _, err := os.Stat(o); !os.IsNotExist(err) {
+			t.Errorf("stale temp dir %s survived the install", o)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(keep, "__init__.py")); err != nil {
+		t.Errorf("the sweep must not touch other custom nodes: %v", err)
+	}
+	assertNoStagingLeftovers(t, root)
+}
+
+// TestInterruptedUpgradeKeepsThePreviousInstall proves the reordered swap: if the
+// final rename fails mid-upgrade, the user is left with their WORKING previous
+// install — never an empty hole.
+func TestInterruptedUpgradeKeepsThePreviousInstall(t *testing.T) {
+	root := fakeComfyRoot(t)
+	dir := filepath.Join(root, CustomNodesDir, DirName)
+	mustMkdir(t, dir)
+	mustWrite(t, filepath.Join(dir, MarkerName), `{"tool":"civitai-manager","extension_version":"0"}`)
+	mustWrite(t, filepath.Join(dir, "__init__.py"), "# the working v0 install")
+
+	// Fail ONLY the stage->target rename (the second one), leaving the previous
+	// install already moved aside — the exact interruption that used to destroy it.
+	real := renameFn
+	calls := 0
+	renameFn = func(oldpath, newpath string) error {
+		calls++
+		if calls == 2 {
+			return errors.New("simulated crash during the swap")
+		}
+		return real(oldpath, newpath)
+	}
+	t.Cleanup(func() { renameFn = real })
+
+	if _, err := Install(root); err == nil {
+		t.Fatal("expected the interrupted install to report an error")
+	}
+	if calls < 3 {
+		t.Fatalf("expected a restore rename after the failure, got %d rename calls", calls)
+	}
+	// The previous install must be back, intact.
+	body, err := os.ReadFile(filepath.Join(dir, "__init__.py"))
+	if err != nil {
+		t.Fatalf("the previous install was destroyed by an interrupted upgrade: %v", err)
+	}
+	if string(body) != "# the working v0 install" {
+		t.Errorf("restored content = %q", body)
+	}
+	st := Inspect(root)
+	if !st.Installed || st.Version != "0" {
+		t.Errorf("status after the interrupted upgrade = %+v, want the v0 install restored", st)
+	}
+	// And no temp junk anywhere.
+	renameFn = real
+	assertNoStagingLeftovers(t, root)
+	for _, e := range entriesOf(t, root) {
+		if strings.HasPrefix(e, ".civitai-manager-") {
+			t.Errorf("leftover temp entry under the root: %s", e)
+		}
+	}
+}
+
+// TestRootFingerprintRequired proves custom_nodes/ ALONE is not accepted as a
+// ComfyUI root. This is not hypothetical: on the dev machine
+// /…/fast/comfyui/ has a custom_nodes/ while the real install is one level deeper,
+// so the old check would install where the running ComfyUI never looks.
+func TestRootFingerprintRequired(t *testing.T) {
+	shallow := t.TempDir()
+	mustMkdir(t, filepath.Join(shallow, CustomNodesDir))
+	mustMkdir(t, filepath.Join(shallow, "ComfyUI", CustomNodesDir))
+	mustWrite(t, filepath.Join(shallow, "ComfyUI", "main.py"), "# the real install")
+
+	if LooksLikeRoot(shallow) {
+		t.Error("a directory with only custom_nodes/ must NOT look like a ComfyUI root")
+	}
+	if !LooksLikeRoot(filepath.Join(shallow, "ComfyUI")) {
+		t.Error("the real install (custom_nodes/ + main.py) must look like a ComfyUI root")
+	}
+	err := ValidateRoot(shallow)
+	if err == nil {
+		t.Fatal("expected ValidateRoot to refuse the containing folder")
+	}
+	if !strings.Contains(err.Error(), "main.py") {
+		t.Errorf("the error should tell the user to point at the directory holding main.py: %v", err)
+	}
+	if _, err := Install(shallow); err == nil {
+		t.Error("expected Install to refuse the containing folder")
+	}
+	if _, err := os.Stat(filepath.Join(shallow, CustomNodesDir, DirName)); !os.IsNotExist(err) {
+		t.Error("a refused install must write nothing")
+	}
+
+	// Each fingerprint on its own is sufficient.
+	for _, marker := range []string{"main.py", "folder_paths.py", "nodes.py"} {
+		d := t.TempDir()
+		mustMkdir(t, filepath.Join(d, CustomNodesDir))
+		mustWrite(t, filepath.Join(d, marker), "#")
+		if !LooksLikeRoot(d) {
+			t.Errorf("%s should be enough of a fingerprint", marker)
+		}
+	}
+	d := t.TempDir()
+	mustMkdir(t, filepath.Join(d, CustomNodesDir))
+	mustMkdir(t, filepath.Join(d, "comfy"))
+	if !LooksLikeRoot(d) {
+		t.Error("a comfy/ directory should be enough of a fingerprint")
+	}
+	// A FILE named comfy (not a dir) is not a fingerprint.
+	d2 := t.TempDir()
+	mustMkdir(t, filepath.Join(d2, CustomNodesDir))
+	mustWrite(t, filepath.Join(d2, "comfy"), "not a dir")
+	if LooksLikeRoot(d2) {
+		t.Error("a FILE named comfy must not count as the comfy/ package")
+	}
+}
+
+// entryNames renders a stable, comparable listing of a directory.
+func entryNames(t *testing.T, dir string) string {
+	t.Helper()
+	return strings.Join(entriesOf(t, dir), ",")
+}
+
+func entriesOf(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	return names
 }

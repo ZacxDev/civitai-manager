@@ -14,11 +14,14 @@
 // writes into the user's ComfyUI install, so it is never done automatically.
 //
 // Safety rules this package enforces:
-//   - the target root must look like a real ComfyUI install (custom_nodes/ exists);
+//   - the target root must be a real ComfyUI install (custom_nodes/ AND a ComfyUI
+//     fingerprint — see rootMarkerFiles);
 //   - it NEVER clobbers a directory it did not write (a marker file identifies
 //     our own installs; anything else is refused);
 //   - every written path is contained under the target directory;
-//   - the write is atomic-ish (staged in a sibling temp dir, then renamed);
+//   - the write is staged OUTSIDE custom_nodes/ then renamed in, and an existing
+//     install is moved aside rather than deleted, so neither a crash nor a failed
+//     rename can leave an importable orphan or an empty hole (see Install);
 //   - Uninstall removes ONLY a directory carrying our marker.
 //
 // ComfyUI registers custom-node HTTP routes at startup only, so installing or
@@ -58,6 +61,25 @@ const (
 	// presence (with a matching tool field) is the ONLY thing that authorizes
 	// overwriting or removing the directory.
 	MarkerName = ".civitai-manager-install.json"
+
+	// stagingPrefix names the temporary directory an install is built in before it
+	// is renamed into place.
+	//
+	// It MUST live directly under the ComfyUI ROOT, never under custom_nodes/: a
+	// staging dir holds a COMPLETE __init__.py, and ComfyUI's loader does NOT skip
+	// dot-directories under custom_nodes (it only skips __pycache__, non-.py files
+	// and *.disabled). A staging dir orphaned by a kill/crash would therefore be
+	// imported as a SECOND copy of this extension at the next start, and the second
+	// copy's route registration makes aiohttp raise
+	// "Added route will never be executed" — which takes the WHOLE ComfyUI down,
+	// across every custom node. The root is on the same filesystem as
+	// custom_nodes/, so the final rename stays atomic.
+	stagingPrefix = ".civitai-manager-staging-"
+
+	// backupPrefix names the temporary directory an existing install is renamed
+	// ASIDE to during an upgrade, so a failure at any point can restore it. It also
+	// lives under the root, for the same reason as stagingPrefix.
+	backupPrefix = ".civitai-manager-backup-"
 
 	// ToolName identifies this tool in the install marker AND in the helper's
 	// /civitai-manager/ping response, so feature detection cannot be satisfied by
@@ -116,11 +138,41 @@ func Dir(root string) string {
 	return filepath.Join(root, CustomNodesDir, DirName)
 }
 
-// ValidateRoot reports whether root looks like a ComfyUI install we can install
-// into: a non-empty existing directory containing a writable custom_nodes/
-// directory. It is deliberately the check the task demands — presence of
-// custom_nodes/ — rather than a fingerprint of ComfyUI internals, which vary
-// across packaged installs.
+// rootMarkerFiles are files that, alongside custom_nodes/, identify a directory
+// as the ComfyUI install ITSELF rather than merely a directory that happens to
+// contain a custom_nodes/ folder.
+//
+// custom_nodes/ ALONE is not enough, and that is not hypothetical: on the
+// development machine /…/fast/comfyui/ has a custom_nodes/ directory while the
+// real install lives one level deeper at /…/fast/comfyui/ComfyUI/. Installing
+// into the shallower directory writes a helper the running ComfyUI never loads —
+// with no diagnostic at all, just "it didn't work".
+var rootMarkerFiles = []string{"main.py", "folder_paths.py", "nodes.py"}
+
+// rootMarkerDirs are directories that serve the same purpose as rootMarkerFiles.
+var rootMarkerDirs = []string{"comfy"}
+
+// rootFingerprint reports whether root carries at least one unambiguous ComfyUI
+// install marker beside custom_nodes/.
+func rootFingerprint(root string) bool {
+	for _, name := range rootMarkerFiles {
+		if info, err := os.Stat(filepath.Join(root, name)); err == nil && info.Mode().IsRegular() {
+			return true
+		}
+	}
+	for _, name := range rootMarkerDirs {
+		if info, err := os.Stat(filepath.Join(root, name)); err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidateRoot reports whether root is a ComfyUI install we can install into: an
+// existing absolute directory that has BOTH a writable custom_nodes/ directory
+// AND at least one ComfyUI fingerprint (main.py / folder_paths.py / nodes.py /
+// comfy/). Both halves are required — see rootMarkerFiles for why custom_nodes/
+// alone silently installs into the wrong place.
 func ValidateRoot(root string) error {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -141,27 +193,39 @@ func ValidateRoot(root string) error {
 	if err != nil || !cnInfo.IsDir() {
 		return fmt.Errorf("%q does not look like a ComfyUI install (no %s/ directory)", root, CustomNodesDir)
 	}
-	// A probe write is the only honest writability check (permission bits lie
-	// under ACLs / read-only mounts). It is removed immediately.
-	probe, err := os.CreateTemp(cn, ".civitai-manager-probe-")
-	if err != nil {
-		return fmt.Errorf("%s is not writable: %w", cn, err)
+	if !rootFingerprint(root) {
+		return fmt.Errorf("%q has a %s/ directory but none of %s — it is probably the folder CONTAINING your ComfyUI install rather than the install itself; point comfy_root at the directory holding main.py",
+			root, CustomNodesDir, strings.Join(append(append([]string{}, rootMarkerFiles...), "comfy/"), ", "))
 	}
-	name := probe.Name()
-	_ = probe.Close()
-	_ = os.Remove(name)
+	// A probe write is the only honest writability check (permission bits lie
+	// under ACLs / read-only mounts). It is removed immediately. It probes the
+	// ROOT, which is where staging happens, and custom_nodes/, which is where the
+	// final directory lands.
+	for _, dir := range []string{root, cn} {
+		probe, err := os.CreateTemp(dir, ".civitai-manager-probe-")
+		if err != nil {
+			return fmt.Errorf("%s is not writable: %w", dir, err)
+		}
+		name := probe.Name()
+		_ = probe.Close()
+		_ = os.Remove(name)
+	}
 	return nil
 }
 
-// LooksLikeRoot reports whether root exists and contains custom_nodes/. It is the
-// cheap, side-effect-free predicate used to decide whether a DERIVED root (the
-// parent of comfy_model_path) is plausible — never to authorize a write.
+// LooksLikeRoot reports whether root is a plausible ComfyUI install: it has
+// custom_nodes/ AND a ComfyUI fingerprint. It is the cheap, side-effect-free
+// predicate used to decide whether a DERIVED root (the parent of
+// comfy_model_path) is plausible — never to authorize a write.
 func LooksLikeRoot(root string) bool {
 	if strings.TrimSpace(root) == "" {
 		return false
 	}
 	info, err := os.Stat(filepath.Join(root, CustomNodesDir))
-	return err == nil && info.IsDir()
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	return rootFingerprint(root)
 }
 
 // DeriveRoot guesses the ComfyUI root from a configured comfy_model_path
@@ -210,13 +274,31 @@ func Inspect(root string) Status {
 	return st
 }
 
+// renameFn is os.Rename, indirected so a test can inject a failure at a chosen
+// step and prove the swap leaves either the OLD install or the NEW one in place —
+// never nothing.
+var renameFn = os.Rename
+
+// afterStageHook, when non-nil, runs after the new tree is fully staged and
+// BEFORE anything is moved. Tests use it to assert the invariant at the exact
+// vulnerable moment: nothing importable may exist under custom_nodes/ yet.
+var afterStageHook func(stage string)
+
 // Install writes (or updates in place) the helper under root/custom_nodes/.
 //
-// It refuses a root that does not look like a ComfyUI install and refuses to
-// touch an existing directory that is not ours. An existing OUR-marker install is
-// replaced, which is how an upgrade works. The new tree is staged in a sibling
-// temp directory and renamed into place, so a failed write never leaves a
-// half-written extension behind.
+// It refuses a root that is not a ComfyUI install and refuses to touch an
+// existing directory that is not ours. An existing OUR-marker install is
+// replaced, which is how an upgrade works.
+//
+// The swap is crash-conscious:
+//
+//   - the new tree is staged under the ROOT, never under custom_nodes/, so an
+//     orphaned staging directory can never be imported by ComfyUI as a second
+//     copy of this extension (which would abort ComfyUI's startup entirely);
+//   - an existing install is renamed ASIDE rather than deleted, then the new tree
+//     is renamed in, and only then is the old one deleted — so an interruption
+//     leaves either the old install or the new one, never an empty hole;
+//   - stale staging/backup directories from a previous killed run are swept first.
 func Install(root string) (Status, error) {
 	if err := ValidateRoot(root); err != nil {
 		return Status{}, err
@@ -226,14 +308,18 @@ func Install(root string) (Status, error) {
 		return st, fmt.Errorf("refusing to overwrite %s: it already exists and was not installed by civitai-manager (no %s marker) — move or delete it yourself first", st.Dir, MarkerName)
 	}
 
-	parent := filepath.Join(root, CustomNodesDir)
-	stage, err := os.MkdirTemp(parent, ".civitai-manager-staging-")
+	// A previous run killed mid-install may have orphaned temp dirs. Sweep them
+	// (including any left under custom_nodes/ by an older civitai-manager, which
+	// staged there) BEFORE writing, so they can never be imported.
+	SweepStale(root)
+
+	stage, err := os.MkdirTemp(root, stagingPrefix)
 	if err != nil {
 		return st, fmt.Errorf("stage the extension: %w", err)
 	}
-	staged := false
+	committed := false
 	defer func() {
-		if !staged {
+		if !committed {
 			_ = os.RemoveAll(stage)
 		}
 	}()
@@ -246,18 +332,68 @@ func Install(root string) (Status, error) {
 	if err := writeMarker(stage); err != nil {
 		return st, err
 	}
-
-	// Replace only a directory we already own (Foreign was refused above).
-	if st.Installed {
-		if err := os.RemoveAll(st.Dir); err != nil {
-			return st, fmt.Errorf("replace the previous install: %w", err)
-		}
+	if afterStageHook != nil {
+		afterStageHook(stage)
 	}
-	if err := os.Rename(stage, st.Dir); err != nil {
+
+	// Move an existing install (ours — Foreign was refused above) aside instead of
+	// deleting it, so a failure below can put it back.
+	backup := ""
+	if st.Installed {
+		tmp, err := os.MkdirTemp(root, backupPrefix)
+		if err != nil {
+			return st, fmt.Errorf("back up the previous install: %w", err)
+		}
+		// MkdirTemp created the directory; rename needs the destination to not
+		// exist, so drop it and reuse the (still unique) name.
+		if err := os.Remove(tmp); err != nil {
+			return st, fmt.Errorf("back up the previous install: %w", err)
+		}
+		if err := renameFn(st.Dir, tmp); err != nil {
+			return st, fmt.Errorf("back up the previous install: %w", err)
+		}
+		backup = tmp
+	}
+
+	if err := renameFn(stage, st.Dir); err != nil {
+		// Put the previous install back — an interrupted upgrade must never leave
+		// the user with nothing installed.
+		if backup != "" {
+			if rerr := renameFn(backup, st.Dir); rerr != nil {
+				return st, fmt.Errorf("install the extension: %w (and the previous install could not be restored from %s: %v)", err, backup, rerr)
+			}
+		}
 		return st, fmt.Errorf("install the extension: %w", err)
 	}
-	staged = true
+	committed = true
+	if backup != "" {
+		_ = os.RemoveAll(backup)
+	}
 	return Inspect(root), nil
+}
+
+// SweepStale removes civitai-manager staging/backup leftovers from a killed
+// install. It looks under BOTH the root (where staging lives now) and
+// custom_nodes/ (where an older civitai-manager staged, and where an orphan is
+// actively dangerous — ComfyUI imports dot-directories there). It is best-effort
+// and never reports an error: a leftover it cannot remove must not block a repair
+// install.
+func SweepStale(root string) {
+	if strings.TrimSpace(root) == "" {
+		return
+	}
+	for _, dir := range []string{root, filepath.Join(root, CustomNodesDir)} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if strings.HasPrefix(name, stagingPrefix) || strings.HasPrefix(name, backupPrefix) {
+				_ = os.RemoveAll(filepath.Join(dir, name))
+			}
+		}
+	}
 }
 
 // Uninstall removes the helper directory — but ONLY when it carries our marker.

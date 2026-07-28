@@ -39,12 +39,17 @@ func openComfyServer(t *testing.T, fake *fakeComfy) *Server {
 	return srv
 }
 
-// fakeComfyRoot builds a directory that looks like a ComfyUI install.
+// fakeComfyRoot builds a directory that looks like a ComfyUI install: custom_nodes/
+// AND a ComfyUI fingerprint (custom_nodes/ alone is deliberately not enough — it
+// matches the folder CONTAINING a ComfyUI install, which is a real mix-up).
 func fakeComfyRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, comfyext.CustomNodesDir), 0o755); err != nil {
 		t.Fatalf("make custom_nodes: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.py"), []byte("# comfyui\n"), 0o644); err != nil {
+		t.Fatalf("make main.py: %v", err)
 	}
 	return root
 }

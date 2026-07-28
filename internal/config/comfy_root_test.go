@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// comfyInstall builds a directory that looks like a ComfyUI install (has
-// custom_nodes/) plus its models/ dir, and returns (root, models).
+// comfyInstall builds a directory that looks like a ComfyUI install (custom_nodes/
+// plus a main.py fingerprint) with its models/ dir, and returns (root, models).
 func comfyInstall(t *testing.T) (string, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -15,6 +15,9 @@ func comfyInstall(t *testing.T) (string, string) {
 		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.py"), []byte("# comfyui\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	return root, filepath.Join(root, "models")
 }
@@ -115,5 +118,48 @@ func TestComfyRootMissingOrFileErrors(t *testing.T) {
 	cfgPath2 := writeConfig(t, dir2, "comfy_root: "+file+"\n")
 	if _, err := Resolve(Flags{ConfigPath: cfgPath2}); err == nil {
 		t.Error("expected an error for a comfy_root that is a file")
+	}
+}
+
+// TestComfyRootNotDerivedFromContainingFolder pins the mix-up the audit found on
+// this machine: /…/fast/comfyui/ HAS a custom_nodes/ while the real install is one
+// level deeper at /…/fast/comfyui/ComfyUI/. If comfy_model_path points at the
+// install root itself (instead of its models/ dir), the derived parent is the
+// CONTAINING folder — which must NOT be accepted, or the helper is written where
+// the running ComfyUI never looks, with no diagnostic at all.
+func TestComfyRootNotDerivedFromContainingFolder(t *testing.T) {
+	outer := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outer, "custom_nodes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(outer, "ComfyUI")
+	for _, sub := range []string{"custom_nodes", "models"} {
+		if err := os.MkdirAll(filepath.Join(inner, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(inner, "main.py"), []byte("# comfyui\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// comfy_model_path pointing at the INSTALL ROOT (the easy mistake) → the parent
+	// is the containing folder, which has custom_nodes/ but is not a ComfyUI install.
+	cfgPath := writeConfig(t, t.TempDir(), "comfy_model_path: "+inner+"\n")
+	cfg, err := Resolve(Flags{ConfigPath: cfgPath})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if cfg.ComfyRoot != "" {
+		t.Errorf("ComfyRoot = %q, want empty (the parent is the folder CONTAINING the install)", cfg.ComfyRoot)
+	}
+
+	// The correct configuration still derives correctly.
+	cfgPath2 := writeConfig(t, t.TempDir(), "comfy_model_path: "+filepath.Join(inner, "models")+"\n")
+	cfg2, err := Resolve(Flags{ConfigPath: cfgPath2})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if cfg2.ComfyRoot != inner {
+		t.Errorf("ComfyRoot = %q, want %q", cfg2.ComfyRoot, inner)
 	}
 }
