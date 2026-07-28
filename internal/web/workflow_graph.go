@@ -798,7 +798,7 @@ func structuredAPINodes(graph []byte) g.Node {
 		cards = append(cards, h.Div(h.Class("py-2 border-b border-slate-800 last:border-0"),
 			h.Div(h.Class("flex items-baseline gap-2"),
 				h.Span(h.Class("text-xs font-mono text-slate-500"), g.Text("#"+id)),
-				h.Span(h.Class("text-sm font-semibold text-slate-100"), g.Text(title)),
+				h.Span(h.Class("text-sm font-semibold text-slate-100 break-all"), g.Text(title)),
 			),
 			g.If(len(rows) > 0, h.Ul(h.Class("mt-1 pl-4 space-y-0.5"), g.Group(rows))),
 		))
@@ -867,7 +867,7 @@ func structuredUINodes(graph []byte) g.Node {
 		cards = append(cards, h.Div(h.Class("py-2 border-b border-slate-800 last:border-0"),
 			h.Div(h.Class("flex items-baseline gap-2"),
 				h.Span(h.Class("text-xs font-mono text-slate-500"), g.Text("#"+id)),
-				h.Span(h.Class("text-sm font-semibold text-slate-100"), g.Text(title)),
+				h.Span(h.Class("text-sm font-semibold text-slate-100 break-all"), g.Text(title)),
 			),
 			g.If(len(rows) > 0, h.Ul(h.Class("mt-1 pl-4 space-y-0.5"), g.Group(rows))),
 		))
