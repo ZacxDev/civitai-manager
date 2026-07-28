@@ -259,7 +259,17 @@ type Server struct {
 // extProbe is the cached outcome of a helper feature-detection probe. An absent
 // helper is a normal outcome and is cached exactly like a present one.
 type extProbe struct {
-	present bool
+	// usable is the ONLY field that authorizes the one-click open. It requires
+	// BOTH halves of the helper to be live: the ping route answering as ours AND
+	// the frontend script actually being served. Ping alone is not enough — see
+	// zombie.
+	usable bool
+	// zombie records the exact live-caught failure: the ping route still answers
+	// (ComfyUI registered it at startup and holds the handler in memory) but the
+	// frontend script 404s because the directory is gone. Nothing can happen in
+	// that state, so the UI must say "restart ComfyUI", not "opened it".
+	zombie bool
+	// version is what the ping reported (empty unless the ping answered).
 	version string
 }
 

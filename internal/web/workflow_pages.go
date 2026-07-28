@@ -720,7 +720,10 @@ func workflowResourcesDisclosure(resources []string, resolver workflowResolver) 
 // workflowDetailPage renders a single workflow: its pretty-printed graph (escaped
 // — untrusted), resources, attachment controls, and metadata. runSection is the
 // live Run panel (nil renders no run controls).
-func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode string, runSection g.Node, comfyConfigured bool, resolver workflowResolver, rail ...railData) g.Node {
+// helper is the ComfyUI helper's ON-DISK state, rendered into the "Open in
+// ComfyUI" card's management disclosure. It is stat-only — no network probe ever
+// runs on this render path.
+func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode string, runSection g.Node, comfyConfigured bool, helper comfyHelperView, resolver workflowResolver, rail ...railData) g.Node {
 	id := strconv.FormatInt(wf.ID, 10)
 	name := wf.Name
 	if strings.TrimSpace(name) == "" {
@@ -772,7 +775,7 @@ func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode s
 	// Shown only for UI-format graphs with a configured comfy_url: API graphs do
 	// not load into the editor, and there is nothing to reach without comfy_url.
 	if comfyConfigured && wf.Format == store.WorkflowFormatUI {
-		body = append(body, workflowOpenComfyCard(wf.ID, csrf))
+		body = append(body, workflowOpenComfyCard(wf.ID, csrf, helper))
 	}
 
 	// Run panel (local ComfyUI execution).

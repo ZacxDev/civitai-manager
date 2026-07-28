@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/ZacxDev/civitai-manager/internal/comfyext"
 )
 
 // TestExtensionPingDetectsHelper proves a well-formed helper response is accepted
@@ -81,6 +83,79 @@ func TestExtensionPingAbsentSignals(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		if _, err := NewClient(srv.URL, "").ExtensionPing(ctx); !errors.Is(err, ErrExtensionAbsent) {
+			t.Errorf("err = %v, want ErrExtensionAbsent (a timeout must fall back, not crash)", err)
+		}
+	})
+}
+
+// TestExtensionAssetAcceptsTheRealScript proves the frontend-half probe hits the
+// URL ComfyUI serves the helper's script from and accepts the real script.
+func TestExtensionAssetAcceptsTheRealScript(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = io.WriteString(w, `app.registerExtension({ name: "`+comfyext.AssetMarker+`" });`)
+	}))
+	defer srv.Close()
+
+	if err := NewClient(srv.URL, "").ExtensionAsset(context.Background()); err != nil {
+		t.Fatalf("asset: %v", err)
+	}
+	if gotPath != comfyext.AssetURLPath {
+		t.Errorf("asset probe hit %q, want %q", gotPath, comfyext.AssetURLPath)
+	}
+}
+
+// TestExtensionAssetAbsentSignals proves every "the frontend script is not really
+// being served" shape is ErrExtensionAbsent. The FIRST case is the live-caught
+// zombie: the directory was deleted, so the static route 404s even though the
+// in-memory python routes still answer.
+func TestExtensionAssetAbsentSignals(t *testing.T) {
+	cases := map[string]http.HandlerFunc{
+		"404 (helper directory deleted — the zombie case)": func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "Not Found", http.StatusNotFound)
+		},
+		"500": func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "boom", http.StatusInternalServerError)
+		},
+		"empty body with 200": func(w http.ResponseWriter, _ *http.Request) {},
+		"a proxy error page with 200": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, "<html><body>502 upstream</body></html>")
+		},
+		"someone else's script": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, `app.registerExtension({ name: "someone.else" });`)
+		},
+		"oversized body": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, strings.Repeat("x", maxExtAssetBytes+64))
+		},
+	}
+	for name, hf := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(hf)
+			defer srv.Close()
+			if err := NewClient(srv.URL, "").ExtensionAsset(context.Background()); !errors.Is(err, ErrExtensionAbsent) {
+				t.Errorf("err = %v, want ErrExtensionAbsent", err)
+			}
+		})
+	}
+
+	t.Run("unreachable server", func(t *testing.T) {
+		srv := httptest.NewServer(http.NotFoundHandler())
+		url := srv.URL
+		srv.Close()
+		if err := NewClient(url, "").ExtensionAsset(context.Background()); !errors.Is(err, ErrExtensionAbsent) {
+			t.Errorf("err = %v, want ErrExtensionAbsent", err)
+		}
+	})
+
+	t.Run("timeout / cancelled context", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, comfyext.AssetMarker)
+		}))
+		defer srv.Close()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := NewClient(srv.URL, "").ExtensionAsset(ctx); !errors.Is(err, ErrExtensionAbsent) {
 			t.Errorf("err = %v, want ErrExtensionAbsent (a timeout must fall back, not crash)", err)
 		}
 	})

@@ -41,6 +41,10 @@ type comfyClient interface {
 	// ExtensionPing feature-detects the civitai-manager ComfyUI helper. A missing
 	// helper is comfy.ErrExtensionAbsent — an expected outcome, not a failure.
 	ExtensionPing(ctx context.Context) (*comfy.ExtensionInfo, error)
+	// ExtensionAsset verifies the helper's FRONTEND script is actually served. It
+	// is the second, NON-OPTIONAL half of feature detection: the ping route can
+	// outlive a deleted helper (startup-registered, in-memory), the asset cannot.
+	ExtensionAsset(ctx context.Context) error
 	// ExtensionOpen asks the helper to broadcast an "open this workflow" event to
 	// already-open editor tabs.
 	ExtensionOpen(ctx context.Context, relPath string) error

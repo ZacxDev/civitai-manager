@@ -126,13 +126,31 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   `custom_nodes/` must exist, a directory we did not write (JSON marker) is NEVER
   clobbered, writes are staged+renamed, paths are containment-checked. **Route
   registration is startup-only → installing/removing needs ONE ComfyUI restart.**
+  **Detection needs BOTH legs — ping AND the frontend asset** (`ExtensionPing` +
+  `ExtensionAsset` on `/extensions/civitai-manager/civitai_manager.js`, requiring
+  200 whose bounded body carries `comfyext.AssetMarker`). Startup-only route
+  registration means a DELETED helper keeps answering `/civitai-manager/ping` with
+  our exact body until ComfyUI restarts — a **zombie** — while the static asset
+  route (served from disk) 404s immediately. Ping-only detection therefore reported
+  "helper present" and claimed a jump while the frontend half was not loaded at all
+  and nothing could happen (live-caught v0.1.72 bug). The zombie state's ONLY fix is
+  a ComfyUI restart, so say that rather than pretending it worked.
   The frontend script feature-detects every undocumented API
   (`app.extensionManager.workflow.getWorkflowByPath`, `wf.load`,
   `store.openWorkflow`, `app.loadGraphData`) and fails silently — it must never
   break the user's editor. It defers the `?cm_open=` open to `afterConfigureGraph`
   because ComfyUI restores its previous workflow AFTER extension `setup()`.
   Config: `comfy_root` / `--comfy-root` (defaults to the `comfy_model_path` parent
-  when that looks like a ComfyUI install).
+  when that looks like a ComfyUI install). **The "Open in ComfyUI" control is a real
+  `<form method=post target=_blank>`, NOT an htmx button** — the browser opens the
+  tab synchronously from the click (no popup blocker, no JS) so the handler can
+  303-redirect it into `<comfy_url>/?cm_open=<path>`. An htmx POST can only answer
+  with markup, which is how this once shipped as "we saved it, now click this OTHER
+  link". Helper install/remove lives in a collapsed **"ComfyUI helper (advanced)"**
+  disclosure, never in the per-click result: an inline "Remove helper" button beside
+  the success text got clicked by a user who did not know it disabled the feature.
+  The two endpoints take **only** a CSRF token (no `workflow_id`), so they are
+  usable from any surface and reflect nothing from the request.
 - **`internal/queue`** — download queue (single active-per-item invariant).
 - **`internal/poller`** — polls subscriptions, diffs version lists, enqueues new.
 - **`internal/cli`** — cobra commands (`root.go`, `commands.go`, `serve`, `search`,
