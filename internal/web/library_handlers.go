@@ -342,14 +342,21 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 		Flash:      r.URL.Query().Get("flash"),
 		FlashLevel: r.URL.Query().Get("level"),
 		Resolver:   s.workflowResolver(),
+		Facets:     normalizeLibraryWorkflowFacets(r.URL.Query()),
 	}
 	if wfs, werr := s.store.ListWorkflows(r.Context()); werr == nil {
-		lw.Workflows = wfs
+		// Classify ONCE against the curated taxonomy (the classifier memoizes the
+		// per-model cache reads), count every bucket over the WHOLE library, then
+		// narrow to the selection. Counts come from the unfiltered list so a chip's
+		// number stays meaningful while a filter is applied.
+		cls := classifyWorkflows(wfs, lw.Resolver)
+		lw.Counts = countWorkflowFacets(cls)
+		lw.Workflows = filterWorkflows(wfs, cls, lw.Facets)
 		if snap := s.workflowScanJobState(); snap.Started {
 			if snap.Running {
 				lw.ScanInitial = workflowScanScanning(snap, s.csrf)
 			} else {
-				lw.ScanInitial = workflowScanTerminal(wfs, snap, s.csrf, s.extraPathsAllowed(), s.workflowResolver())
+				lw.ScanInitial = workflowScanTerminal(lw.Workflows, snap, s.csrf, s.extraPathsAllowed(), s.workflowResolver())
 			}
 		}
 	}
