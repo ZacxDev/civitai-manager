@@ -155,7 +155,7 @@ func outputsPagination(selectedWorkflow string, page, total int) g.Node {
 		controls = append(controls, h.A(h.Href(href(page-1)),
 			h.Class("text-sm text-indigo-400 hover:text-indigo-300"), g.Text("← Newer")))
 	} else {
-		controls = append(controls, h.Span(h.Class("text-sm text-slate-600"), g.Text("← Newer")))
+		controls = append(controls, h.Span(h.Class("cm-disabled text-sm text-slate-500"), g.Text("← Newer")))
 	}
 	controls = append(controls, h.Span(h.Class("text-sm text-slate-400"),
 		g.Text(fmt.Sprintf("Page %d of %d", page+1, lastPage+1))))
@@ -163,7 +163,7 @@ func outputsPagination(selectedWorkflow string, page, total int) g.Node {
 		controls = append(controls, h.A(h.Href(href(page+1)),
 			h.Class("text-sm text-indigo-400 hover:text-indigo-300"), g.Text("Older →")))
 	} else {
-		controls = append(controls, h.Span(h.Class("text-sm text-slate-600"), g.Text("Older →")))
+		controls = append(controls, h.Span(h.Class("cm-disabled text-sm text-slate-500"), g.Text("Older →")))
 	}
 	return h.Div(h.Class("flex items-center justify-center gap-6 pt-2"), g.Group(controls))
 }

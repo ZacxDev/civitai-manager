@@ -64,6 +64,11 @@ func librarySubscribeSuggestions(files []store.LocalFile, subs []store.Subscript
 // activity feed, and queue.
 func dashboardPage(subs []store.Subscription, suggestions []suggestion, csrf, theme, nsfwMode string, rail ...railData) g.Node {
 	return page("Dashboard", theme, csrf, nsfwMode, railOf(rail),
+		// The page's single <h1>. The dashboard is a stack of equal-weight cards with
+		// no natural title card, so the heading is emitted on its own above them —
+		// otherwise the outline would start at <h2> ("Add a subscription") with no
+		// level-1 heading anywhere on the page.
+		pageTitle("Dashboard"),
 		card(
 			sectionTitle("Add a subscription"),
 			// Primary: search civitai and subscribe with one click.
@@ -520,7 +525,9 @@ func progressBar(it store.QueueItem) g.Node {
 func searchPage(query string, res *civitai.ModelSearchResult, subs map[int]*store.Subscription, csrf, theme, mode, heading, sortSel, periodSel string, rail ...railData) g.Node {
 	return page("Models", theme, csrf, mode, railOf(rail),
 		card(
-			sectionTitle("Search models"),
+			// The page's single <h1>. searchResults' own heading (the "Popular this
+			// month" label on the result grid below) stays an <h2>.
+			pageTitle("Search models"),
 			h.Form(
 				h.Class("flex flex-wrap items-end gap-3"),
 				hx("get", "/search"),

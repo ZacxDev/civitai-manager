@@ -1031,7 +1031,7 @@ func downloadFileID(modelID, versionID, fileID int) string {
 // destination path from the model/version/file metadata (no client path).
 func downloadFileButton(modelID, versionID, fileID int, csrf string, hasURL bool) g.Node {
 	if !hasURL {
-		return h.Span(h.Class("text-slate-600"), h.Title("No download URL available"), g.Text("no URL"))
+		return h.Span(h.Class("cm-disabled text-slate-500"), h.Title("No download URL available"), g.Text("no URL"))
 	}
 	id := downloadFileID(modelID, versionID, fileID)
 	return civButton("outline", "sm", []g.Node{

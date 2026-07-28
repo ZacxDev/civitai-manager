@@ -163,7 +163,8 @@ func libraryPage(v libraryView, csrf string, allowExtra bool, selectedDirs []str
 	}
 	return page("Library", theme, csrf, nsfwMode, railOf(rail),
 		h.Div(
-			sectionTitle("Library"),
+			// The page's single <h1>; every heading inside the tab panels is an <h2>.
+			pageTitle("Library"),
 			libraryTabStrip(activeTab),
 		),
 		h.Div(h.ID("tab-panel"), panel),
@@ -1068,7 +1069,7 @@ func quarantinePreview(plan *library.QuarantinePlan, ids []int64, csrf string) g
 func trashPage(batches []batchView, csrf, theme, nsfwMode string, rail ...railData) g.Node {
 	return page("Trash", theme, csrf, nsfwMode, railOf(rail),
 		card(
-			sectionTitle("Quarantine trash"),
+			pageTitle("Quarantine trash"), // the page's single <h1>
 			h.Div(h.ID("trash-content"), trashTable(batches, csrf)),
 		),
 	)

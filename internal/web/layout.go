@@ -226,6 +226,19 @@ func card(children ...g.Node) g.Node {
 	return h.Div(all...)
 }
 
+// pageTitle is the ONE <h1> of a page; sectionTitle is every heading below it.
+//
+// sectionTitle hardcodes <h2> and was being used as the page-level title on most
+// pages, so six of seven top-level pages shipped with NO <h1> at all: a screen
+// reader's "jump to main heading" landed nowhere and the outline started at level
+// 2 with no level 1 above it. pageTitle emits the identical classes — this is a
+// pure semantics fix with zero visual change — and every page that already had a
+// real <h1> (model detail, creator, workflow detail, outputs, generation detail)
+// keeps its own.
+func pageTitle(text string) g.Node {
+	return h.H1(h.Class("text-lg font-semibold text-slate-100 mb-3"), g.Text(text))
+}
+
 func sectionTitle(text string) g.Node {
 	return h.H2(h.Class("text-lg font-semibold text-slate-100 mb-3"), g.Text(text))
 }

@@ -471,7 +471,7 @@ func availableVersionRows(modelID int, avs []availableVersion) []g.Node {
 				g.Text("newer →"),
 			)
 		default:
-			mark = h.Span(h.Class("text-slate-600"), g.Text("—"))
+			mark = h.Span(h.Class("cm-disabled text-slate-500"), g.Text("—"))
 		}
 		rows = append(rows, h.Div(
 			h.Class("flex items-center justify-between gap-2"),
