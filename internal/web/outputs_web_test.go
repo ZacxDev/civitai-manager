@@ -114,8 +114,11 @@ func TestOutputsGalleryPopulatedAndFilter(t *testing.T) {
 	// beta appears as a filter OPTION but its tile/caption should be gone. The tile
 	// caption uses the label text inside a truncate span; assert beta's detail link
 	// count is what we expect by checking the image route count.
-	if strings.Count(filtered, "/outputs/img/") != 1 {
-		t.Errorf("filtered gallery should show exactly 1 tile, got %d image URLs", strings.Count(filtered, "/outputs/img/"))
+	// Count inside the page body only — the global recent-outputs rail (app shell,
+	// unfiltered by design) also links image URLs and is not part of the gallery.
+	grid := pageMain(filtered)
+	if strings.Count(grid, "/outputs/img/") != 1 {
+		t.Errorf("filtered gallery should show exactly 1 tile, got %d image URLs", strings.Count(grid, "/outputs/img/"))
 	}
 }
 
@@ -347,18 +350,6 @@ func TestDeleteLoopbackGated(t *testing.T) {
 	}
 }
 
-func TestWorkflowDetailShowsOutputsSection(t *testing.T) {
-	srv, root := newOutputsServer(t, "127.0.0.1:8787")
-	// The workflow detail page needs a comfy URL configured to render the run
-	// panel, but the outputs section is independent — seed a generation and assert
-	// the section renders.
-	wf := seedWF(t, srv, "wf")
-	seedGen(t, srv, root, &wf, "wf", []byte("X"))
-	body := get(t, srv, "/workflows/"+strconv.FormatInt(wf, 10)).Body.String()
-	if !strings.Contains(body, "Recent outputs") {
-		t.Error("workflow detail missing the per-workflow outputs section")
-	}
-	if !strings.Contains(body, "View all 1 →") {
-		t.Error("outputs section missing the View all link")
-	}
-}
+// NOTE: the former TestWorkflowDetailShowsOutputsSection was REPLACED by
+// TestWorkflowDetailNoLongerHasPerWorkflowOutputsCard (outputs_rail_web_test.go):
+// the per-workflow "Recent outputs" card was removed in favour of the global rail.

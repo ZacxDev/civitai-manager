@@ -98,7 +98,7 @@ func generationGrid(gens []store.Generation, emptyMsg string) g.Node {
 // outputsGalleryPage is the global /outputs page: a paginated masonry grid,
 // newest-first, with an optional workflow filter. Render-plain (no NSFW blur).
 func outputsGalleryPage(gens []store.Generation, wfRefs []store.GenerationWorkflowRef,
-	selectedWorkflow string, pageNum, total int, csrf, theme, nsfwMode string) g.Node {
+	selectedWorkflow string, pageNum, total int, csrf, theme, nsfwMode string, rail ...railData) g.Node {
 
 	// Workflow filter select. An empty value = all.
 	opts := []selectOption{{Value: "", Label: "All workflows"}}
@@ -136,7 +136,7 @@ func outputsGalleryPage(gens []store.Generation, wfRefs []store.GenerationWorkfl
 		body = append(body, outputsPagination(selectedWorkflow, pageNum, total))
 	}
 
-	return page("Outputs", theme, csrf, nsfwMode, body...)
+	return page("Outputs", theme, csrf, nsfwMode, railOf(rail), body...)
 }
 
 // outputsPagination renders Prev/Next controls preserving the workflow filter.
@@ -171,7 +171,7 @@ func outputsPagination(selectedWorkflow string, page, total int) g.Node {
 // panel, and Re-run / Delete actions. wfExists gates the Re-run control (disabled
 // when the source workflow was deleted). Render-plain.
 func generationDetailPage(gen *store.Generation, images []store.GenerationImage,
-	csrf, theme, nsfwMode string) g.Node {
+	csrf, theme, nsfwMode string, rail ...railData) g.Node {
 
 	id := strconv.FormatInt(gen.ID, 10)
 
@@ -208,7 +208,7 @@ func generationDetailPage(gen *store.Generation, images []store.GenerationImage,
 		lightboxOverlay(),
 		modelPageScript(),
 	}
-	return page("Output "+id, theme, csrf, nsfwMode, body...)
+	return page("Output "+id, theme, csrf, nsfwMode, railOf(rail), body...)
 }
 
 // generationParamsCard renders the stored run params + snapshots, all escaped.
@@ -309,20 +309,7 @@ func generationActionsCard(gen *store.Generation, csrf string) g.Node {
 	)
 }
 
-// workflowOutputsSection renders the per-workflow "Recent outputs" card on the
-// workflow detail page — the shared grid limited to the most recent generations,
-// with a "View all →" link when there are more. Returns nil when the workflow has
-// no generations (so nothing is emitted).
-func workflowOutputsSection(workflowID int64, gens []store.Generation, total int) g.Node {
-	if len(gens) == 0 {
-		return nil
-	}
-	wfID := strconv.FormatInt(workflowID, 10)
-	head := h.Div(h.Class("flex items-center justify-between"),
-		sectionTitle("Recent outputs"),
-		h.A(h.Href("/outputs?workflow="+wfID),
-			h.Class("text-sm text-indigo-400 hover:text-indigo-300"),
-			g.Text(fmt.Sprintf("View all %d →", total))),
-	)
-	return card(head, generationGrid(gens, ""))
-}
+// NOTE: the per-workflow "Recent outputs" card that used to live here was
+// REMOVED — the global recent-outputs rail (outputs_rail.go), rendered by the app
+// shell on every page, supersedes it. Per-workflow browsing is still one click
+// away at /outputs?workflow=<id> via the gallery's workflow filter.

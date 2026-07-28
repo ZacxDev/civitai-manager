@@ -62,8 +62,8 @@ func librarySubscribeSuggestions(files []store.LocalFile, subs []store.Subscript
 // dashboardPage is the full dashboard: add-a-subscription (integrated civitai
 // search + library-derived suggestions + a demoted manual form), subscriptions,
 // activity feed, and queue.
-func dashboardPage(subs []store.Subscription, suggestions []suggestion, csrf, theme, nsfwMode string) g.Node {
-	return page("Dashboard", theme, csrf, nsfwMode,
+func dashboardPage(subs []store.Subscription, suggestions []suggestion, csrf, theme, nsfwMode string, rail ...railData) g.Node {
+	return page("Dashboard", theme, csrf, nsfwMode, railOf(rail),
 		card(
 			sectionTitle("Add a subscription"),
 			// Primary: search civitai and subscribe with one click.
@@ -154,7 +154,7 @@ func subscribeSearchResults(res *civitai.ModelSearchResult, subs map[int]*store.
 	images := parseSearchImages(res.Raw)
 	updated := newestVersionInfoByModel(res.Raw)
 	return h.Div(
-		h.Class("grid gap-4 sm:grid-cols-2 lg:grid-cols-3"),
+		h.Class("cm-cardgrid"),
 		g.Map(res.Items, func(it civitai.ModelListItem) g.Node {
 			return modelCardWith(it, images[it.ID], subs, mode, csrf, updated[it.ID])
 		}),
@@ -181,7 +181,7 @@ type suggestion struct {
 // handleModelTitle) so the dashboard never blocks on civitai to render.
 func suggestionsList(suggestions []suggestion, csrf string) g.Node {
 	return h.Div(
-		h.Class("grid gap-3 sm:grid-cols-2 lg:grid-cols-3"),
+		h.Class("cm-cardgrid cm-cardgrid-tight"),
 		g.Map(suggestions, func(sg suggestion) g.Node {
 			return card(
 				h.Class("flex flex-col gap-2"),
@@ -514,8 +514,8 @@ func progressBar(it store.QueueItem) g.Node {
 // mode is the app's NSFW display mode (hide|blur|show), threaded to the showcase
 // carousels on each card. heading, when set, labels the result grid (e.g.
 // "Popular this month" for the empty-query default feed).
-func searchPage(query string, res *civitai.ModelSearchResult, subs map[int]*store.Subscription, csrf, theme, mode, heading, sortSel, periodSel string) g.Node {
-	return page("Models", theme, csrf, mode,
+func searchPage(query string, res *civitai.ModelSearchResult, subs map[int]*store.Subscription, csrf, theme, mode, heading, sortSel, periodSel string, rail ...railData) g.Node {
+	return page("Models", theme, csrf, mode, railOf(rail),
 		card(
 			sectionTitle("Search models"),
 			h.Form(
@@ -560,7 +560,7 @@ func searchResults(res *civitai.ModelSearchResult, subs map[int]*store.Subscript
 	// each card's "Updated X ago" line + its hover popover (version name/date).
 	updated := newestVersionInfoByModel(res.Raw)
 	grid := h.Div(
-		h.Class("grid gap-4 sm:grid-cols-2 lg:grid-cols-3"),
+		h.Class("cm-cardgrid"),
 		g.Map(res.Items, func(it civitai.ModelListItem) g.Node {
 			return modelCard(it, images[it.ID], subs, mode, csrf, updated[it.ID])
 		}),
@@ -667,8 +667,8 @@ const (
 // creatorPage renders a creator's models with a subscribe-to-creator button. subs
 // is the per-render model-subscription map used by each result card's subscribe
 // control (built once by the handler, not per card).
-func creatorPage(username string, res *civitai.ModelSearchResult, subs map[int]*store.Subscription, csrf, theme, mode string) g.Node {
-	return page("@"+username, theme, csrf, mode,
+func creatorPage(username string, res *civitai.ModelSearchResult, subs map[int]*store.Subscription, csrf, theme, mode string, rail ...railData) g.Node {
+	return page("@"+username, theme, csrf, mode, railOf(rail),
 		card(
 			h.Div(
 				h.Class("flex items-center justify-between"),

@@ -129,15 +129,15 @@ func (s *Server) handleDiscoverApps(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusOK, results)
 		return
 	}
-	s.render(w, http.StatusOK, appsDiscoverPage(results, s.currentTheme(), mode, kindSel, catSel, sortSel, s.csrf))
+	s.render(w, http.StatusOK, appsDiscoverPage(results, s.currentTheme(), mode, kindSel, catSel, sortSel, s.csrf, s.rail(r.Context())))
 }
 
 // appsDiscoverPage renders the full Apps browse page: the filter form (kind /
 // category / sort dropdowns wired to GET /apps/discover) and the results
 // container. The container id is stable — the form and the cursor "next" control
 // both swap its innerHTML, never the container itself (streaming-job invariant).
-func appsDiscoverPage(results g.Node, theme, mode, kindSel, catSel, sortSel, csrf string) g.Node {
-	return page("Apps", theme, csrf, mode,
+func appsDiscoverPage(results g.Node, theme, mode, kindSel, catSel, sortSel, csrf string, rail ...railData) g.Node {
+	return page("Apps", theme, csrf, mode, railOf(rail),
 		card(
 			sectionTitle("Apps"),
 			h.P(h.Class("text-sm text-slate-400 mb-3"),
@@ -168,7 +168,7 @@ func appsDiscoverResults(page *civitai.AppsPage, mode, kindSel, catSel, sortSel 
 		return appsEmptyState()
 	}
 	grid := h.Div(
-		h.Class("grid gap-4 sm:grid-cols-2 lg:grid-cols-3"),
+		h.Class("cm-cardgrid"),
 		g.Map(page.Items, func(a civitai.App) g.Node { return appCard(a) }),
 	)
 	next := appsNextControl(page.Metadata.NextCursor, kindSel, catSel, sortSel)

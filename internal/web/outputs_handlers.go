@@ -10,30 +10,51 @@ import (
 	"strings"
 
 	"github.com/ZacxDev/civitai-manager/internal/store"
-	g "maragu.dev/gomponents"
 )
 
-// workflowOutputsPreviewLimit caps how many recent generations the per-workflow
-// section shows before the "View all →" link.
-const workflowOutputsPreviewLimit = 12
-
-// renderWorkflowOutputs builds the per-workflow "Recent outputs" card for the
-// workflow detail page, or nil when the workflow has no generations (a query
-// failure also yields nil — the section is a non-essential add-on and must never
-// break the detail page).
-func (s *Server) renderWorkflowOutputs(ctx context.Context, workflowID int64) g.Node {
-	total, err := s.store.CountGenerations(ctx, &workflowID)
-	if err != nil || total == 0 {
-		return nil
-	}
-	gens, err := s.store.ListGenerations(ctx, store.ListGenerationsOpts{
-		WorkflowID: &workflowID,
-		Limit:      workflowOutputsPreviewLimit,
-	})
+// rail loads the per-request state of the global "Recent outputs" sidebar: ONE
+// bounded newest-first query (outputsRailLimit rows) plus the persisted collapse
+// flag. It runs on every full-page render, so it must stay cheap and must NEVER
+// fail a page: a store error degrades to the zero value, which renders no rail.
+func (s *Server) rail(ctx context.Context) railData {
+	gens, err := s.store.ListRecentGenerations(ctx, outputsRailLimit)
 	if err != nil || len(gens) == 0 {
-		return nil
+		return railData{}
 	}
-	return workflowOutputsSection(workflowID, gens, total)
+	return railData{Gens: gens, Collapsed: s.railCollapsed()}
+}
+
+// railCollapsed reads the persisted rail collapse state (default expanded).
+func (s *Server) railCollapsed() bool {
+	v, err := s.store.GetSettingDefault(outputsRailSettingKey, "false")
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(v), "true")
+}
+
+// handleSetOutputsRail persists the outputs rail's collapsed state and asks htmx
+// to refresh so the shell re-renders at the new width. This mirrors the theme and
+// NSFW toggles exactly (CSRF-protected POST → settings store → HX-Refresh); the
+// state is server-side, never localStorage.
+func (s *Server) handleSetOutputsRail(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	collapsed := "false"
+	if strings.EqualFold(strings.TrimSpace(r.FormValue("collapsed")), "true") {
+		collapsed = "true"
+	}
+	if err := s.store.SetSetting(outputsRailSettingKey, collapsed); err != nil {
+		s.renderError(w, "save outputs rail setting", err)
+		return
+	}
+	w.Header().Set("HX-Refresh", "true")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleOutputs renders the global /outputs gallery: a paginated masonry grid,
@@ -81,7 +102,7 @@ func (s *Server) handleOutputs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.render(w, http.StatusOK, outputsGalleryPage(gens, refs, selectedWorkflow,
-		page, total, s.csrf, s.currentTheme(), s.nsfwMode()))
+		page, total, s.csrf, s.currentTheme(), s.nsfwMode(), s.rail(ctx)))
 }
 
 // handleOutputsImage serves one app-owned output image by id, from disk,
@@ -157,7 +178,7 @@ func (s *Server) handleGenerationDetail(w http.ResponseWriter, r *http.Request) 
 		s.renderError(w, "load generation", err)
 		return
 	}
-	s.render(w, http.StatusOK, generationDetailPage(gen, images, s.csrf, s.currentTheme(), s.nsfwMode()))
+	s.render(w, http.StatusOK, generationDetailPage(gen, images, s.csrf, s.currentTheme(), s.nsfwMode(), s.rail(r.Context())))
 }
 
 // handleGenerationRerun re-runs the CURRENT stored workflow with the generation's

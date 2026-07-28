@@ -26,9 +26,20 @@ func dataFlag(name string) g.Node { return g.Attr("data-" + name) }
 // app.css for the cascade rationale). `theme` ("light"|"dark") is reflected onto
 // <html data-theme> so every --civitai-* token re-resolves; `csrf` powers the
 // persisted theme toggle in the nav.
-func page(title, theme, csrf, nsfwMode string, body ...g.Node) g.Node {
+//
+// `rail` is the app shell's global "Recent outputs" sidebar state (see
+// outputs_rail.go). Its zero value renders no rail — the shell is then
+// byte-identical to the pre-rail one, which is what page builders called without
+// shell state (unit tests) produce.
+func page(title, theme, csrf, nsfwMode string, rail railData, body ...g.Node) g.Node {
 	if theme != "light" {
 		theme = "dark"
+	}
+	// One predicate decides the rail markup, the shell's reserved width and the
+	// nav's drawer button, so they can never disagree.
+	bodyClass := "min-h-screen bg-slate-950 text-slate-100 antialiased"
+	if c := railShellClass(rail, nsfwMode); c != "" {
+		bodyClass += " " + c
 	}
 	return g.El("html",
 		h.Lang("en"),
@@ -49,30 +60,54 @@ func page(title, theme, csrf, nsfwMode string, body ...g.Node) g.Node {
 			h.Script(h.Src("/assets/htmx.min.js"), h.Defer()),
 		),
 		h.Body(
-			h.Class("min-h-screen bg-slate-950 text-slate-100 antialiased"),
-			navbar(theme, csrf, nsfwMode),
+			h.Class(bodyClass),
+			navbar(theme, csrf, nsfwMode, rail),
 			h.Main(
-				h.Class("mx-auto max-w-6xl px-4 py-6 space-y-6"),
+				h.Class("mx-auto max-w-[1800px] px-4 py-6 space-y-6"),
 				g.Group(body),
 			),
+			// The rail is a SIBLING of <main>, never inside it, so it can never
+			// interfere with an htmx poll target in the page body.
+			outputsRail(rail, csrf, nsfwMode),
 		),
 	)
 }
 
-func navbar(theme, csrf, nsfwMode string) g.Node {
+// shellMeasure is the shared max-width of the nav bar and <main> — a wide but
+// still bounded cap (~1800px), deliberately NOT fully fluid. Nav and main use the
+// SAME class so their left/right edges line up at every viewport.
+const shellMeasure = "max-w-[1800px]"
+
+// navbar renders the sticky top bar. Sticky positioning + stacking order live in
+// .cm-nav (app.css) alongside --cm-nav-h, which the rail's top offset and the
+// anchor scroll-margin both derive from — keep those in sync.
+//
+// MOBILE: the seven destinations stay in ONE horizontally scrollable strip
+// (.cm-navlinks) rather than collapsing into a hamburger drawer. At 390px that
+// keeps every destination reachable in one gesture with no JS, no focus trap and
+// no second overlay competing with the rail drawer for the same corner of the
+// screen; only the brand shortens. The controls (rail/NSFW/theme) never scroll.
+func navbar(theme, csrf, nsfwMode string, rail railData) g.Node {
 	return h.Nav(
-		h.Class("border-b border-slate-800 bg-slate-900"),
+		h.Class("cm-nav border-b border-slate-800 bg-slate-900"),
 		h.Div(
-			h.Class("mx-auto max-w-6xl px-4 py-3 flex items-center gap-6"),
-			h.A(h.Href("/"), h.Class("font-semibold text-indigo-400"), g.Text("civitai-manager")),
-			navLink("/", "Dashboard"),
-			navLink("/search", "Models"),
-			navLink("/workflows/discover", "Workflows"),
-			navLink("/outputs", "Outputs"),
-			navLink("/apps/discover", "Apps"),
-			navLink("/library", "Library"),
-			navLink("/trash", "Trash"),
-			h.Div(h.Class("ml-auto flex items-center gap-2"),
+			h.Class("cm-nav-inner mx-auto "+shellMeasure+" px-4 py-3 flex items-center gap-4"),
+			h.A(h.Href("/"), h.Class("shrink-0 font-semibold text-indigo-400"),
+				h.Span(h.Class("hidden sm:inline"), g.Text("civitai-manager")),
+				h.Span(h.Class("sm:hidden"), g.Text("cm")),
+			),
+			h.Div(
+				h.Class("cm-navlinks flex min-w-0 flex-1 items-center gap-4 overflow-x-auto"),
+				navLink("/", "Dashboard"),
+				navLink("/search", "Models"),
+				navLink("/workflows/discover", "Workflows"),
+				navLink("/outputs", "Outputs"),
+				navLink("/apps/discover", "Apps"),
+				navLink("/library", "Library"),
+				navLink("/trash", "Trash"),
+			),
+			h.Div(h.Class("flex shrink-0 items-center gap-2"),
+				g.If(rail.visible(nsfwMode), railNavToggle()),
 				nsfwToggle(nsfwMode, csrf),
 				themeToggle(theme, csrf),
 			),
@@ -113,7 +148,10 @@ func nsfwToggle(mode, csrf string) g.Node {
 func navLink(href, label string) g.Node {
 	return h.A(
 		h.Href(href),
-		h.Class("text-sm text-slate-300 hover:text-white"),
+		// NOT hover:text-white: `white` maps to --civitai-color-primary-fg (#fefefe),
+		// which is ALSO the light theme's surface — a 1.00:1 hover that makes the
+		// link vanish. indigo-300 (the primary token) reads in both themes.
+		h.Class("shrink-0 whitespace-nowrap text-sm text-slate-300 hover:text-indigo-300"),
 		g.Text(label),
 	)
 }

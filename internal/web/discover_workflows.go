@@ -46,7 +46,7 @@ func (s *Server) handleDiscoverWorkflows(w http.ResponseWriter, r *http.Request)
 			s.render(w, http.StatusOK, workflowDiscoverResults(res, mode, heading, s.csrf))
 			return
 		}
-		s.render(w, http.StatusOK, workflowDiscoverPage("", res, heading, s.currentTheme(), mode, sortSel, periodSel, s.csrf))
+		s.render(w, http.StatusOK, workflowDiscoverPage("", res, heading, s.currentTheme(), mode, sortSel, periodSel, s.csrf, s.rail(r.Context())))
 		return
 	}
 
@@ -73,14 +73,14 @@ func (s *Server) handleDiscoverWorkflows(w http.ResponseWriter, r *http.Request)
 			s.render(w, http.StatusOK, errorNote("Search failed: "+err.Error()))
 			return
 		}
-		s.render(w, http.StatusOK, workflowDiscoverPage(query, nil, "", s.currentTheme(), mode, sortSel, periodSel, s.csrf))
+		s.render(w, http.StatusOK, workflowDiscoverPage(query, nil, "", s.currentTheme(), mode, sortSel, periodSel, s.csrf, s.rail(r.Context())))
 		return
 	}
 	if isHX {
 		s.render(w, http.StatusOK, workflowDiscoverResults(res, mode, "", s.csrf))
 		return
 	}
-	s.render(w, http.StatusOK, workflowDiscoverPage(query, res, "", s.currentTheme(), mode, sortSel, periodSel, s.csrf))
+	s.render(w, http.StatusOK, workflowDiscoverPage(query, res, "", s.currentTheme(), mode, sortSel, periodSel, s.csrf, s.rail(r.Context())))
 }
 
 // popularWorkflows returns the "Popular this month" WORKFLOWS feed (Most
@@ -123,10 +123,10 @@ func (s *Server) popularWorkflows(parent context.Context, nsfw bool) (*civitai.M
 // discoverPage renders the full "Discover workflows" page: the search form (query
 // + sort/period dropdowns, wired to GET /workflows/discover) and the results
 // container. It reuses the same lightbox + carousel scripts the search page uses.
-func workflowDiscoverPage(query string, res *civitai.ModelSearchResult, heading, theme, mode, sortSel, periodSel, csrf string) g.Node {
+func workflowDiscoverPage(query string, res *civitai.ModelSearchResult, heading, theme, mode, sortSel, periodSel, csrf string, rail ...railData) g.Node {
 	// The cards now carry a state-changing "Import workflow(s)" control (D2), so the
 	// page + its results need the CSRF token threaded through.
-	return page("Discover workflows", theme, csrf, mode,
+	return page("Discover workflows", theme, csrf, mode, railOf(rail),
 		card(
 			sectionTitle("Discover workflows"),
 			h.P(h.Class("text-sm text-slate-400 mb-3"),
@@ -171,7 +171,7 @@ func workflowDiscoverResults(res *civitai.ModelSearchResult, mode, heading, csrf
 	images := parseSearchImages(res.Raw)
 	updated := newestVersionInfoByModel(res.Raw)
 	grid := h.Div(
-		h.Class("grid gap-4 sm:grid-cols-2 lg:grid-cols-3"),
+		h.Class("cm-cardgrid"),
 		g.Map(res.Items, func(it civitai.ModelListItem) g.Node {
 			// The card's action is the D2 "Import workflow(s)" control.
 			return modelCardCore(it, images[it.ID], mode, updated[it.ID], workflowImportAction(it.ID, csrf))

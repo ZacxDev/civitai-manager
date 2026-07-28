@@ -55,7 +55,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			suggestions[i].Name = ent.Name
 		}
 	}
-	s.render(w, http.StatusOK, dashboardPage(subs, suggestions, s.csrf, s.currentTheme(), s.nsfwMode()))
+	s.render(w, http.StatusOK, dashboardPage(subs, suggestions, s.csrf, s.currentTheme(), s.nsfwMode(), s.rail(r.Context())))
 }
 
 // subscribeSuggestionLimit caps how many library-derived subscribe suggestions
@@ -175,7 +175,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			s.render(w, http.StatusOK, searchResults(res, subs, mode, s.csrf, heading))
 			return
 		}
-		s.render(w, http.StatusOK, searchPage("", res, subs, s.csrf, s.currentTheme(), mode, heading, sortSel, periodSel))
+		s.render(w, http.StatusOK, searchPage("", res, subs, s.csrf, s.currentTheme(), mode, heading, sortSel, periodSel, s.rail(r.Context())))
 		return
 	}
 
@@ -197,14 +197,14 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			s.render(w, http.StatusOK, errorNote("Search failed: "+err.Error()))
 			return
 		}
-		s.render(w, http.StatusOK, searchPage(query, nil, subs, s.csrf, s.currentTheme(), mode, "", sortSel, periodSel))
+		s.render(w, http.StatusOK, searchPage(query, nil, subs, s.csrf, s.currentTheme(), mode, "", sortSel, periodSel, s.rail(r.Context())))
 		return
 	}
 	if isHX {
 		s.render(w, http.StatusOK, searchResults(res, subs, mode, s.csrf, ""))
 		return
 	}
-	s.render(w, http.StatusOK, searchPage(query, res, subs, s.csrf, s.currentTheme(), mode, "", sortSel, periodSel))
+	s.render(w, http.StatusOK, searchPage(query, res, subs, s.csrf, s.currentTheme(), mode, "", sortSel, periodSel, s.rail(r.Context())))
 }
 
 // searchFeed fetches a no-query model feed for a chosen sort/period (the empty-
@@ -390,7 +390,7 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 			s.render(w, status, errNode)
 			return
 		}
-		s.render(w, status, page("Not found", s.currentTheme(), s.csrf, s.nsfwMode(), errNode))
+		s.render(w, status, page("Not found", s.currentTheme(), s.csrf, s.nsfwMode(), s.rail(r.Context()), errNode))
 		return
 	}
 	// Mark which of this model's versions the user already has locally, so the
@@ -409,7 +409,7 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusOK, versionRegionInner(view, s.csrf))
 		return
 	}
-	s.render(w, http.StatusOK, modelDetailPage(view, sub, s.csrf, s.currentTheme(), s.cfg.BaseURL))
+	s.render(w, http.StatusOK, modelDetailPage(view, sub, s.csrf, s.currentTheme(), s.cfg.BaseURL, s.rail(r.Context())))
 }
 
 // communityCacheTTL bounds how long a cached community-image feed is served
@@ -691,13 +691,13 @@ func (s *Server) handleCreator(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	res, err := s.reader.SearchModels(ctx, q)
 	if err != nil {
-		s.render(w, http.StatusBadGateway, page("@"+username, s.currentTheme(), s.csrf, s.nsfwMode(), errorNote("Could not load creator: "+err.Error())))
+		s.render(w, http.StatusBadGateway, page("@"+username, s.currentTheme(), s.csrf, s.nsfwMode(), s.rail(r.Context()), errorNote("Could not load creator: "+err.Error())))
 		return
 	}
 	// One ListSubscriptions query per render → each model card reflects real
 	// subscribe state (the creator-subscribe button in the header is separate).
 	subs := s.modelSubscriptions()
-	s.render(w, http.StatusOK, creatorPage(username, res, subs, s.csrf, s.currentTheme(), s.nsfwMode()))
+	s.render(w, http.StatusOK, creatorPage(username, res, subs, s.csrf, s.currentTheme(), s.nsfwMode(), s.rail(r.Context())))
 }
 
 func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
