@@ -716,10 +716,12 @@ func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode s
 	// CivitAI showcase carousel for the linked model — REUSES the exact card the
 	// model detail page uses (showcaseCard → modelCardCarouselW + the shared
 	// lightbox), fed entirely from the LOCAL model_cache (never a fetch). NSFW-aware
-	// (hide omits, blur obscures, show reveals — all inside modelCardCarouselW).
-	// Rendered only when the workflow is model-linked AND that model has cached
-	// images; otherwise nothing is emitted (no broken markup). The shared lightbox +
-	// carousel scripts are appended once, at the end of the body, when it is shown.
+	// via the reused component: `show` reveals, `blur`/`hide` obscure behind .cm-blur
+	// (the card carousel migrates `hide`→`blur` at this layer, matching the model
+	// detail showcase + the workflow list cards). Rendered only when the workflow is
+	// model-linked AND that model has cached images; otherwise nothing is emitted (no
+	// broken markup). The shared lightbox + carousel scripts are appended once, at the
+	// end of the body, when it is shown.
 	showcaseShown := false
 	if wf.ModelID != nil {
 		if imgs := resolver.showcase(*wf.ModelID); len(imgs) > 0 {

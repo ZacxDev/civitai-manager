@@ -115,6 +115,11 @@ type runResult struct {
 type runOptions struct {
 	Substitute  map[string]string
 	OptionFixes map[comfy.OptionFixKey]string
+	// WidgetOverrides carries per-(node,input) edits from the "Parameters" panel: an
+	// ephemeral rewrite of a targeted node's targeted scalar input on the CONVERTED
+	// api graph (via comfy.ApplyWidgetOverrides), keyed by node+input since a prompt
+	// is node-specific. Applied like the other overrides — on a copy, never persisted.
+	WidgetOverrides map[comfy.WidgetOverrideKey]string
 }
 
 // runUpdater lets runFn stream phase transitions into the job under the mutex.
@@ -288,6 +293,14 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater,
 	// converted/parsed copy, never persisted).
 	if len(opts.Substitute) > 0 {
 		apiGraph = comfy.ApplySubstitutions(apiGraph, opts.Substitute)
+	}
+
+	// Apply any per-run "Parameters" edits to the CONVERTED (ephemeral) graph — before
+	// preflight/submit so preflight sees the actual values that will run, and on a
+	// copy so the stored workflow is never touched. ApplyWidgetOverrides rewrites only
+	// existing scalar inputs on the targeted nodes (never links, never new keys).
+	if len(opts.WidgetOverrides) > 0 {
+		apiGraph = comfy.ApplyWidgetOverrides(apiGraph, opts.WidgetOverrides)
 	}
 
 	up.setPhase(runPhasePreparing, "Checking installed nodes & models…", 0)

@@ -1,0 +1,221 @@
+package web
+
+import (
+	"errors"
+	"net/http"
+	"net/url"
+	"strconv"
+
+	"github.com/ZacxDev/civitai-manager/internal/comfy"
+	"github.com/ZacxDev/civitai-manager/internal/store"
+	g "maragu.dev/gomponents"
+	h "maragu.dev/gomponents/html"
+)
+
+// handleWorkflowRunWithParams starts an EPHEMERAL run applying the "Parameters"
+// panel's per-(node,input) overrides. Same prologue/gating as the other run
+// endpoints (CSRF + loopback), same one-run-at-a-time invariant, and the stored
+// workflow is never mutated (the overrides apply to the converted api-graph copy).
+func (s *Server) handleWorkflowRunWithParams(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	if !s.gate(w) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad workflow id", http.StatusBadRequest)
+		return
+	}
+	wf, err := s.store.GetWorkflow(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.renderError(w, "load workflow", err)
+		return
+	}
+	s.startRun(wf, runOptions{WidgetOverrides: parseWidgetOverrides(r.Form, wf)})
+	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
+}
+
+// parseWidgetOverrides reads the parallel wp_node / wp_input / wp_value form arrays
+// (one triple per Parameters field, index-aligned in DOM order) into an override
+// map. It keeps ONLY keys that DetectRunInputs surfaces for THIS workflow, so a
+// caller can never target an input outside the curated, editable set. The values are
+// applied by comfy.ApplyWidgetOverrides, which additionally refuses to touch links or
+// add keys — so this is a lenient parse backed by a structural guarantee downstream.
+func parseWidgetOverrides(form url.Values, wf *store.Workflow) map[comfy.WidgetOverrideKey]string {
+	nodes, inputs, values := form["wp_node"], form["wp_input"], form["wp_value"]
+	n := len(nodes)
+	if len(inputs) < n {
+		n = len(inputs)
+	}
+	if len(values) < n {
+		n = len(values)
+	}
+	if n == 0 {
+		return nil
+	}
+	allowed := make(map[comfy.WidgetOverrideKey]bool)
+	for _, ri := range comfy.DetectRunInputs([]byte(wf.Graph), nil) {
+		allowed[comfy.WidgetOverrideKey{NodeID: ri.NodeID, InputName: ri.InputName}] = true
+	}
+	out := make(map[comfy.WidgetOverrideKey]string, n)
+	for i := 0; i < n; i++ {
+		key := comfy.WidgetOverrideKey{NodeID: nodes[i], InputName: inputs[i]}
+		if !allowed[key] {
+			continue // not a curated, editable input for this workflow
+		}
+		out[key] = values[i]
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// runParametersPanel renders the collapsible "Parameters" section on the run-ready
+// card: pre-filled controls for the workflow's curated editable inputs and a "Run
+// with these parameters" submit that posts to /run-with-params (CSRF-carrying). It
+// returns nil when the graph exposes no editable inputs (an api-format graph, or a
+// UI graph with none of the curated nodes) so the panel is simply absent.
+//
+// Sampler/scheduler render as free-text inputs here: choices come from /object_info,
+// which the render path does not fetch (offline/no slow network in render), so they
+// degrade to text — an invalid enum is caught by preflight's existing
+// incompatible-options flow. DetectRunInputs still accepts object_info elsewhere, so
+// object_info-backed selects can be added without changing the wiring.
+func runParametersPanel(wf *store.Workflow, csrf string) g.Node {
+	inputs := comfy.DetectRunInputs([]byte(wf.Graph), nil)
+	if len(inputs) == 0 {
+		return nil
+	}
+	id := strconv.FormatInt(wf.ID, 10)
+	fields := make([]g.Node, 0, len(inputs))
+	for i, ri := range inputs {
+		fields = append(fields, runParamField(i, ri))
+	}
+	form := h.Form(
+		hx("post", "/workflows/"+id+"/run-with-params"),
+		hx("target", "#"+runStatusContainerID),
+		hx("swap", "innerHTML"),
+		hx("disabled-elt", "find button[type='submit']"),
+		h.Class("mt-3 space-y-3"),
+		h.Input(h.Type("hidden"), h.Name("csrf_token"), h.Value(csrf)),
+		g.Group(fields),
+		h.P(h.Class("text-xs text-slate-500"),
+			g.Text("These edits apply to THIS run only — the saved workflow is unchanged.")),
+		h.Div(h.Class("flex flex-wrap items-center gap-2 pt-1"),
+			civButton("filled", "sm", []g.Node{h.Type("submit")}, g.Text("Run with these parameters")),
+			// A native form reset restores every control to its pre-filled value.
+			civButton("subtle", "sm", []g.Node{h.Type("reset")}, g.Text("Reset")),
+		),
+	)
+	return h.Details(
+		h.Class("mt-4 cm-run-params"),
+		h.Summary(h.Class("cursor-pointer text-sm font-semibold text-slate-200 select-none"),
+			g.Text("Parameters")),
+		form,
+		runParamsScript(),
+	)
+}
+
+// runParamField renders one Parameters control, preceded by the hidden wp_node /
+// wp_input fields that pair (index-aligned in DOM order) with the wp_value control —
+// the same parallel-array shape parseWidgetOverrides reads. Every pre-filled value is
+// escaped (g.Text for textareas, attribute escaping for value=).
+func runParamField(idx int, ri comfy.RunInput) g.Node {
+	fid := "cm-param-" + strconv.Itoa(idx)
+	hidden := []g.Node{
+		h.Input(h.Type("hidden"), h.Name("wp_node"), h.Value(ri.NodeID)),
+		h.Input(h.Type("hidden"), h.Name("wp_input"), h.Value(ri.InputName)),
+	}
+
+	var control g.Node
+	switch ri.Kind {
+	case comfy.RunInputText:
+		control = h.Textarea(
+			dataFlag("civitai-ui-control"), h.ID(fid), h.Name("wp_value"), h.Rows("3"),
+			g.Text(ri.Current),
+		)
+	case comfy.RunInputSelect:
+		if len(ri.Choices) > 0 {
+			control = paramSelect(fid, ri.Choices, ri.Current)
+		} else {
+			control = h.Input(dataFlag("civitai-ui-control"), h.ID(fid),
+				h.Type("text"), h.Name("wp_value"), h.Value(ri.Current))
+		}
+	case comfy.RunInputSeed:
+		control = h.Div(h.Class("flex items-center gap-2"),
+			h.Input(dataFlag("civitai-ui-control"), h.ID(fid), h.Type("number"),
+				h.Name("wp_value"), g.Attr("step", "1"), h.Value(ri.Current)),
+			civButton("outline", "sm", []g.Node{
+				h.Type("button"),
+				g.Attr("onclick", "cmRandomSeed('"+fid+"')"),
+				g.Attr("aria-label", "Randomize seed"),
+			}, g.Text("🎲")),
+		)
+	case comfy.RunInputInt:
+		control = h.Input(dataFlag("civitai-ui-control"), h.ID(fid), h.Type("number"),
+			h.Name("wp_value"), g.Attr("step", "1"), h.Value(ri.Current))
+	case comfy.RunInputFloat:
+		control = h.Input(dataFlag("civitai-ui-control"), h.ID(fid), h.Type("number"),
+			h.Name("wp_value"), g.Attr("step", "any"), h.Value(ri.Current))
+	default:
+		control = h.Input(dataFlag("civitai-ui-control"), h.ID(fid), h.Type("text"),
+			h.Name("wp_value"), h.Value(ri.Current))
+	}
+
+	return h.Div(
+		dataAttr("civitai-ui", "text-input"),
+		h.Label(dataFlag("civitai-ui-label"), h.For(fid), g.Text(ri.Label)),
+		g.Group(hidden),
+		control,
+	)
+}
+
+// paramSelect renders an enum <select name="wp_value"> for a sampler/scheduler input.
+// The current value is pre-selected; if it is not among the live choices it is
+// prepended as a "(current)" option so the run defaults to the SAVED value rather than
+// silently switching to the first choice.
+func paramSelect(id string, choices []string, selected string) g.Node {
+	opts := make([]g.Node, 0, len(choices)+1)
+	found := false
+	for _, c := range choices {
+		attrs := []g.Node{h.Value(c)}
+		if c == selected {
+			attrs = append(attrs, g.Attr("selected"))
+			found = true
+		}
+		attrs = append(attrs, g.Text(c))
+		opts = append(opts, h.Option(attrs...))
+	}
+	if !found && selected != "" {
+		opts = append([]g.Node{h.Option(h.Value(selected), g.Attr("selected"),
+			g.Text(selected+" (current)"))}, opts...)
+	}
+	sel := append([]g.Node{dataFlag("civitai-ui-control"), h.ID(id), h.Name("wp_value")}, opts...)
+	return h.Select(sel...)
+}
+
+// runParamsScript is the tiny, self-contained (offline/no-CDN) randomize-seed helper.
+// Defined idempotently (a plain function (re)definition, no listeners) so re-emitting
+// it after an htmx swap never stacks handlers. The seed range stays within 2^53 so
+// the number field carries it exactly.
+func runParamsScript() g.Node {
+	const js = `
+function cmRandomSeed(fid){
+  var el = document.getElementById(fid);
+  if(!el){ return; }
+  el.value = String(Math.floor(Math.random() * 1000000000000000));
+}
+`
+	return h.Script(g.Raw(js))
+}

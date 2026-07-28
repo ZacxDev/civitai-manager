@@ -37,7 +37,7 @@ func runPanel(wf *store.Workflow, snap runSnapshot, csrf string, extraAllowed, d
 				g.Text("Local run is disabled when the server is bound to a non-loopback address.")),
 		)
 	}
-	return card(
+	body := []g.Node{
 		sectionTitle("Run"),
 		h.P(h.Class("text-xs text-slate-500 mb-3"),
 			g.Text("Submits this workflow to your local ComfyUI ("+comfyDisplayURL(wf)+"). "+
@@ -49,9 +49,16 @@ func runPanel(wf *store.Workflow, snap runSnapshot, csrf string, extraAllowed, d
 			hx("swap", "innerHTML"),
 			h.Span(h.Class("text-sm text-slate-400"), g.Text("Checking ComfyUI…")),
 		),
-		// Run job status container (unchanged): poller drives running → terminal.
-		h.Div(h.ID(runStatusContainerID), runStatusFragment(snap, wf.ID, csrf, dlEligible, mode)),
-	)
+	}
+	// Editable "Parameters" panel (prompts / KSampler settings / latent dimensions),
+	// detected from the graph and applied as per-run overrides. Absent when the graph
+	// exposes none of the curated inputs (e.g. an api-format graph with no widgets).
+	if params := runParametersPanel(wf, csrf); params != nil {
+		body = append(body, params)
+	}
+	// Run job status container (unchanged): poller drives running → terminal.
+	body = append(body, h.Div(h.ID(runStatusContainerID), runStatusFragment(snap, wf.ID, csrf, dlEligible, mode)))
+	return card(body...)
 }
 
 // comfyStatusView is the resolved reachability state the fragment renders.

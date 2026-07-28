@@ -469,6 +469,7 @@ func (s *Server) Handler() http.Handler {
 	// gated; reaches/writes the local ComfyUI, like run).
 	mux.HandleFunc("POST /workflows/{id}/open-in-comfyui", s.handleWorkflowOpenInComfyUI)
 	mux.HandleFunc("POST /workflows/{id}/run", s.handleWorkflowRun)
+	mux.HandleFunc("POST /workflows/{id}/run-with-params", s.handleWorkflowRunWithParams)
 	mux.HandleFunc("POST /workflows/{id}/run-substitute", s.handleWorkflowRunSubstitute)
 	mux.HandleFunc("POST /workflows/{id}/run-with-options", s.handleWorkflowRunWithOptions)
 	mux.HandleFunc("POST /workflows/{id}/install-option-and-run", s.handleWorkflowInstallOptionAndRun)
