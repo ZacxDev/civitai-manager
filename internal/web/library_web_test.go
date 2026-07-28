@@ -263,7 +263,7 @@ func TestScanFormOmitsPathsInputWhenNotAllowed(t *testing.T) {
 	// selected dirs a non-loopback bind shows the empty state, NOT a bare scan
 	// button (Change 2 — model_root alone no longer triggers the scan affordance).
 	files := renderString(t, libraryPage(buildLibraryView(nil), "csrf-tok", false, nil, "dark", "files", nil, false, nil, NSFWBlur, libraryWorkflowsView{}))
-	if !strings.Contains(files, "Add install directories first") {
+	if !strings.Contains(files, "No install directories yet") {
 		t.Errorf("Tab B with no dirs on a non-loopback bind should show the empty state:\n%s", files)
 	}
 	if strings.Contains(files, "Scan for model files") {
@@ -279,7 +279,7 @@ func TestFilesTabGatedOnAddedDir(t *testing.T) {
 	for _, allowExtra := range []bool{true, false} {
 		// Zero dirs → empty state, no scan button.
 		empty := renderString(t, libraryPage(buildLibraryView(nil), "csrf", allowExtra, nil, "dark", "files", nil, false, nil, NSFWBlur, libraryWorkflowsView{}))
-		if !strings.Contains(empty, "Add install directories first") {
+		if !strings.Contains(empty, "No install directories yet") {
 			t.Errorf("allowExtra=%v: 0 dirs should show empty state:\n%s", allowExtra, empty)
 		}
 		if strings.Contains(empty, "Scan for model files") {
@@ -291,7 +291,7 @@ func TestFilesTabGatedOnAddedDir(t *testing.T) {
 		if !strings.Contains(withDir, "Scan for model files") {
 			t.Errorf("allowExtra=%v: ≥1 dir should render the scan button:\n%s", allowExtra, withDir)
 		}
-		if strings.Contains(withDir, "Add install directories first") {
+		if strings.Contains(withDir, "No install directories yet") {
 			t.Errorf("allowExtra=%v: ≥1 dir must not show the empty state", allowExtra)
 		}
 	}

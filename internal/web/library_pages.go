@@ -266,11 +266,18 @@ func filesPanel(v libraryView, csrf string, allowExtra bool, selectedDirs []stri
 	// already holds auto-downloaded files is not scannable until the user adds a scan
 	// directory in Tab A. This mirrors Tab A's own CTA gating (scanForModelsCTA).
 	if len(selectedDirs) == 0 {
+		// Guided empty state: a single primary CTA over to the Install-directories
+		// tab (where dirs are added) rather than a bare gated scan button.
 		return card(
-			sectionTitle("Model files"),
-			alert("info", "No install directories selected yet",
-				h.P(h.Class("mt-1 text-sm"),
-					g.Text("Add install directories first (see the “Install directories” tab), then scan them for model files.")),
+			h.Class("cm-lift py-6 text-center"),
+			h.H3(h.Class("text-base font-semibold text-slate-200"), g.Text("No install directories yet")),
+			h.P(h.Class("mx-auto mt-1 mb-3 max-w-md text-sm text-slate-400"),
+				g.Text("Point the scanner at your model folders first. Add install directories, then come back here to scan them for model files and match your library against CivitAI.")),
+			h.A(
+				h.Href("/library?tab=sources"),
+				dataAttr("civitai-ui", "button"), dataAttr("variant", "filled"), dataAttr("size", "md"),
+				h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("→ ")),
+				g.Text("Add install directories"),
 			),
 		)
 	}

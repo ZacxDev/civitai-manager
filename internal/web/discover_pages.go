@@ -45,7 +45,7 @@ func csrfInline(csrf string) g.Node {
 func selectedDirsList(dirs []string, csrf string) g.Node {
 	if len(dirs) == 0 {
 		return h.P(h.Class("text-xs text-slate-500"),
-			g.Text("No extra directories selected. Discover installs or browse to add one."))
+			g.Text("No install directories yet — use “Discover installs” above to find them automatically, or add a path/browse below. Selected directories appear here and become scannable in the “Model files” tab."))
 	}
 	var rows []g.Node
 	for _, d := range dirs {

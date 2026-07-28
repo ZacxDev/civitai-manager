@@ -144,7 +144,11 @@ func workflowImportPanel(csrf string, extraAllowed bool) g.Node {
 		// Inline open — no external script. showModal() gives the native top-layer
 		// modal + backdrop; the dialog id is a constant, not user input.
 		g.Attr("onclick", "document.getElementById('"+workflowImportDialogID+"').showModal()"),
-	}, g.Text("Import a workflow"))
+		g.Attr("aria-label", "Add a workflow — paste JSON or upload a ComfyUI PNG"),
+	},
+		h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("＋ ")),
+		g.Text("Add a workflow"),
+	)
 
 	dialog := h.Dialog(
 		h.ID(workflowImportDialogID),
@@ -196,9 +200,10 @@ func workflowImportPanel(csrf string, extraAllowed bool) g.Node {
 	)
 
 	return card(
-		sectionTitle("Import a workflow"),
+		h.Class("cm-lift"),
+		sectionTitle("Add a workflow"),
 		h.P(h.Class("text-sm text-slate-400 mb-3"),
-			g.Text("Paste an API/UI graph or extract one from a ComfyUI PNG.")),
+			g.Text("Paste an API/UI graph or extract one from a ComfyUI PNG. To index workflows already saved in your ComfyUI installs, use “Scan for workflows” below.")),
 		trigger,
 		dialog,
 	)
@@ -245,10 +250,9 @@ var workflowFormatFilterOptions = []selectOption{
 // are workflows it prepends a read-only controls bar (sort / text filter / source +
 // format filter / group-by-base toggle) that a small INLINE script (no external
 // asset — offline-safe) drives entirely client-side over per-card data-* attributes.
-func workflowList(wfs []store.Workflow, csrf string, resolver workflowResolver) g.Node {
+func workflowList(wfs []store.Workflow, csrf string, extraAllowed bool, resolver workflowResolver) g.Node {
 	if len(wfs) == 0 {
-		return card(h.P(h.Class("text-slate-400 text-center py-6"),
-			g.Text("No workflows yet. Import one above to get started.")))
+		return workflowEmptyState(extraAllowed)
 	}
 	items := make([]g.Node, 0, len(wfs))
 	for _, wf := range wfs {
@@ -300,6 +304,31 @@ if(!window.__cmWfDeeplinkBound){
 cmWfDeeplink();
 `
 	return h.Script(g.Raw(js))
+}
+
+// workflowEmptyState is the friendly, guided empty state shown when the library
+// holds no workflows: a short heading + explainer and (on a loopback bind, where
+// the import dialog exists) a single primary CTA that opens the SAME "Add a
+// workflow" dialog. When import is gated off (non-loopback) the CTA is omitted —
+// the panel's gating note already explains why — so the button can never open a
+// dialog that was not rendered.
+func workflowEmptyState(extraAllowed bool) g.Node {
+	children := []g.Node{
+		h.H3(h.Class("text-base font-semibold text-slate-200"), g.Text("No workflows yet")),
+		h.P(h.Class("mx-auto mt-1 mb-3 max-w-md text-sm text-slate-400"),
+			g.Text("Add a ComfyUI workflow to run it locally, organize it, and link it to your models — paste an API/UI graph, extract one from a PNG, or scan your installs.")),
+	}
+	if extraAllowed {
+		children = append(children, civButton("filled", "md", []g.Node{
+			h.Type("button"),
+			g.Attr("onclick", "document.getElementById('"+workflowImportDialogID+"').showModal()"),
+			g.Attr("aria-label", "Add your first workflow"),
+		},
+			h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("＋ ")),
+			g.Text("Add a workflow"),
+		))
+	}
+	return card(h.Class("cm-lift py-6 text-center"), g.Group(children))
 }
 
 // workflowListItem wraps one workflowCard in a data-attributed container the
