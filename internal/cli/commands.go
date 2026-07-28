@@ -82,6 +82,7 @@ func serveRun(ctx context.Context, st *store.Store, client civitai.Client, cfg *
 		ComfyURL:            cfg.ComfyURL,
 		ComfyToken:          cfg.ComfyToken,
 		ComfyModelPath:      cfg.ComfyModelPath,
+		OutputsDir:          cfg.OutputsDir,
 		ComfyCloud:          cfg.ComfyCloud,
 		Token:               cfg.Token,
 		MaxFileSizeBytes:    cfg.MaxFileSizeBytes,

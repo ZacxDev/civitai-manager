@@ -59,6 +59,11 @@ type Config struct {
 	// missing-models panel then degrades to CivitAI-link-only. Validated at config
 	// load (existing writable dir when set).
 	ComfyModelPath string
+	// OutputsDir is the civitai-manager-owned directory the output gallery copies
+	// successful workflow-run images into (app-owned data next to the DB). Always
+	// set by config resolution (defaults to <db-dir>/outputs). Capture is skipped
+	// when empty (e.g. an unconfigured test server).
+	OutputsDir string
 	// MaxFileSizeBytes caps a "Download & run" model download (0 = the built-in
 	// safety guard). It reuses the poller's max_file_size setting so a single knob
 	// bounds every download the app makes.

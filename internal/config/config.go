@@ -124,6 +124,13 @@ type Config struct {
 	// It is a secret: mirror Token's handling — NEVER log it; RedactToken it in any
 	// diagnostic output.
 	ComfyToken string `yaml:"comfy_token"`
+	// OutputsDir is the civitai-manager-owned directory into which successful
+	// workflow-run output images are COPIED (the durable output gallery). It is
+	// app-owned application data, the same class as the DB — NOT model weights, so
+	// it defaults NEXT TO the DB (<dir(DBPath)>/outputs) rather than under
+	// ModelRoot. Empty resolves to that default. It is created on first write (no
+	// pre-existence requirement), and ~ is expanded on load.
+	OutputsDir string `yaml:"outputs_dir"`
 	// ComfyModelPath is the local filesystem root of ComfyUI's `models` directory
 	// (the folder holding checkpoints/, loras/, vae/, …). It is SEPARATE from
 	// ModelRoot (this app's own download layout) and is used ONLY by the
@@ -184,6 +191,9 @@ type Flags struct {
 	// ComfyModelPath overrides the ComfyUI models-dir root used by the
 	// "Download & run" flow. Empty means "not set on the command line".
 	ComfyModelPath string
+	// OutputsDir overrides the output-gallery storage directory. Empty means "not
+	// set on the command line" (falls through to file/default).
+	OutputsDir string
 	// HFToken overrides the optional HuggingFace token (secret; never logged). Empty
 	// means "not set on the command line".
 	HFToken string
@@ -427,6 +437,9 @@ func Resolve(flags Flags) (*Config, error) {
 	if flags.ComfyModelPath != "" {
 		cfg.ComfyModelPath = flags.ComfyModelPath
 	}
+	if flags.OutputsDir != "" {
+		cfg.OutputsDir = flags.OutputsDir
+	}
 
 	if err := cfg.normalize(); err != nil {
 		return nil, err
@@ -441,6 +454,15 @@ func (c *Config) normalize() error {
 		return err
 	}
 	if c.DBPath, err = expandHome(c.DBPath); err != nil {
+		return err
+	}
+	// OutputsDir is app-owned data co-located with the DB. Expand ~ when set;
+	// default to <dir(DBPath)>/outputs. It is NOT validated for pre-existence here
+	// (the capture path creates it on first write), unlike ComfyModelPath.
+	c.OutputsDir = strings.TrimSpace(c.OutputsDir)
+	if c.OutputsDir == "" {
+		c.OutputsDir = filepath.Join(filepath.Dir(c.DBPath), "outputs")
+	} else if c.OutputsDir, err = expandHome(c.OutputsDir); err != nil {
 		return err
 	}
 	if c.TrashDir != "" {
