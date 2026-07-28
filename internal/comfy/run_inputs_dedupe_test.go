@@ -144,6 +144,31 @@ func TestHopCapBoundary(t *testing.T) {
 	}
 }
 
+// TestResolveStopsAtSubgraphInstance documents + pins the subgraph limit: a converted
+// widget fed by a SUBGRAPH INSTANCE node must not be surfaced. Flattening deletes the
+// instance and emits prefixed clones of the interior, so an override written to the
+// instance's own widgets_values would never reach the submitted graph — a control that
+// silently does nothing is worse than no control.
+func TestResolveStopsAtSubgraphInstance(t *testing.T) {
+	const graph = `{"nodes":[
+	  {"id":9,"type":"KSampler","widgets_values":[5,"fixed",20,8.0,"euler","normal",1.0],
+	   "inputs":[{"name":"steps","type":"INT","widget":{"name":"steps"},"link":1}]},
+	  {"id":2,"type":"sg-uuid-1","widgets_values":[33],"outputs":[{"name":"int"}]}
+	],"links":[[1,2,0,9,1,"INT"]],
+	"definitions":{"subgraphs":[{"id":"sg-uuid-1","name":"My Group",
+	  "nodes":[{"id":50,"type":"PrimitiveInt","widgets_values":[33]}],"links":[]}]}}`
+
+	if ri := findRunInputFor(DetectRunInputs(json.RawMessage(graph), nil), "KSampler", "steps"); ri != nil {
+		t.Errorf("a subgraph instance must not be surfaced as editable, got %+v", ri)
+	}
+	// Sanity: an identically-shaped graph WITHOUT the subgraph definition resolves, so
+	// the test is discriminating on the subgraph check and not on some other failure.
+	plain := strings.Replace(graph, `"type":"sg-uuid-1"`, `"type":"PrimitiveInt"`, 1)
+	if ri := findRunInputFor(DetectRunInputs(json.RawMessage(plain), nil), "KSampler", "steps"); ri == nil {
+		t.Error("control case should resolve — the subgraph check must be what stops it")
+	}
+}
+
 // passthroughChain wires KSampler.steps through n pass-through nodes to a primitive.
 func passthroughChain(n int) string {
 	nodes := []string{`{"id":9,"type":"KSampler",` +

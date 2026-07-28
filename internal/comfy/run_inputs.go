@@ -147,7 +147,11 @@ const maxRunInputHops = 8
 // run inputs for its TOP-LEVEL nodes (prompts, KSampler settings, empty-latent
 // dimensions). Subgraph-interior nodes are NOT scanned — they live under
 // definitions.subgraphs[] (not the top-level nodes[]) and their ids are rewritten by
-// flattening, so they are out of scope.
+// flattening, so they are out of scope. For the same reason an upstream walk STOPS at
+// a subgraph instance node (a top-level node whose type is a subgraph definition id):
+// conversion deletes that node, so an override aimed at it would silently no-op.
+// Parameters that live inside a subgraph are therefore not editable at all — a known
+// limit, and the honest one, since the alternative is a control that does nothing.
 //
 // A curated input whose slot is link-connected is handled by its slot KIND:
 //
@@ -206,12 +210,25 @@ func DetectRunInputs(graph json.RawMessage, info ObjectInfo) []RunInput {
 type runGraphIndex struct {
 	byID     map[string]*uiConvNode
 	linkByID map[int64]uiLink
+	// subgraphTypes are the definitions.subgraphs[] ids. A top-level node whose TYPE
+	// is one of these is a subgraph INSTANCE: conversion deletes it and replaces it
+	// with prefixed clones of the subgraph's interior nodes, so an override written to
+	// the instance's own widgets_values would silently vanish. Resolution therefore
+	// stops at such a node (see resolveUpstreamWidget) rather than surfacing a field
+	// whose edit would not reach ComfyUI.
+	subgraphTypes map[string]bool
 }
 
 func newRunGraphIndex(g *uiConvGraph) *runGraphIndex {
 	idx := &runGraphIndex{
-		byID:     make(map[string]*uiConvNode, len(g.Nodes)),
-		linkByID: make(map[int64]uiLink, len(g.Links)),
+		byID:          make(map[string]*uiConvNode, len(g.Nodes)),
+		linkByID:      make(map[int64]uiLink, len(g.Links)),
+		subgraphTypes: make(map[string]bool, len(g.Definitions.Subgraphs)),
+	}
+	for _, sg := range g.Definitions.Subgraphs {
+		if sg.ID != "" {
+			idx.subgraphTypes[sg.ID] = true
+		}
 	}
 	for i := range g.Nodes {
 		id := idToString(g.Nodes[i].ID)
@@ -338,6 +355,14 @@ func (idx *runGraphIndex) resolveUpstreamWidget(start *uiConvNode, inputName str
 		}
 		if isInactiveMode(src.Mode) {
 			return resolvedWidget{}, false // bypassed/muted source — never editable
+		}
+		if idx.subgraphTypes[src.Type] {
+			// A subgraph INSTANCE: flattening deletes this node and emits prefixed
+			// clones of the subgraph interior, so an override written to the instance's
+			// widgets_values would never reach the submitted graph. Surface nothing
+			// rather than a control that silently does not apply. (Editing values inside
+			// a subgraph is a known limit — the interior nodes are not scanned either.)
+			return resolvedWidget{}, false
 		}
 		if visited[l.OriginID] {
 			return resolvedWidget{}, false // cycle
