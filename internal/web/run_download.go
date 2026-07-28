@@ -76,6 +76,13 @@ type pendingDownload struct {
 	DestPath          string
 	MaxBytes          int64
 	ContentLengthHint int64
+	// ExpectedSHA256, when set, is verified against the streamed bytes before the
+	// atomic rename (the HuggingFace path pins on the tree's LFS oid). Empty for the
+	// civitai path (no hash to pin).
+	ExpectedSHA256 string
+	// SourceHF routes the fetch through the SSRF-hardened HuggingFace client instead
+	// of the civitai downloader.
+	SourceHF bool
 }
 
 // resolvedDownload is one file candidate parsed from a model-search raw body: a
@@ -126,14 +133,7 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 	chosenModel, _ := strconv.Atoi(r.FormValue("model_id"))
 
 	// Not eligible → link-only fallback (never attempt a write/download).
-	if !s.comfyDownloadEligible() || !comfyTypeRoutable(typ) {
-		s.renderResolveFallback(w, r, filename, typ)
-		return
-	}
-
-	subdir, _ := comfy.TypeSubdir(typ) // ok guaranteed by comfyTypeRoutable
-	dest, derr := comfy.SafeModelDest(s.cfg.ComfyModelPath, subdir, filename)
-	if derr != nil {
+	if !s.comfyDownloadEligible() {
 		s.renderResolveFallback(w, r, filename, typ)
 		return
 	}
@@ -148,30 +148,97 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Already installed → skip the download, just run the original workflow.
-	if fileExists(dest) {
-		s.startRun(wf, runOptions{})
-		s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
-		return
+	// Fast path: for a routable CivitAI type whose destination already exists, skip
+	// the network entirely and just run the original workflow.
+	if subdir, ok := comfy.TypeSubdir(typ); ok {
+		if dest, derr := comfy.SafeModelDest(s.cfg.ComfyModelPath, subdir, filename); derr == nil && fileExists(dest) {
+			s.startRun(wf, runOptions{})
+			s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
+			return
+		}
 	}
 
-	// Resolve the download source. Ambiguous/zero → show the resolve cards (no
-	// download), so the user can pick a specific model to install.
-	src, ok := s.resolveDownloadSource(r.Context(), filename, typ, chosenModel)
+	// Resolve the install source: CivitAI first, then the HuggingFace fallback (only
+	// an auto-eligible HF match — curated/recognized-org + non-gated + exact + sha).
+	// Ambiguous/zero → show the resolve cards (no download).
+	plan, ok := s.resolveInstallPlan(r.Context(), filename, typ, chosenModel)
 	if !ok {
 		s.renderResolveFallback(w, r, filename, typ)
 		return
 	}
 
+	// Already installed at the resolved destination → skip the download, run.
+	if fileExists(plan.DestPath) {
+		s.startRun(wf, runOptions{})
+		s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
+		return
+	}
+
 	pd := pendingDownload{
-		FileName:          path.Base(strings.ReplaceAll(filename, "\\", "/")),
-		URL:               src.DownloadURL,
-		DestPath:          dest,
+		FileName:          plan.FileName,
+		URL:               plan.URL,
+		DestPath:          plan.DestPath,
 		MaxBytes:          s.cfg.MaxFileSizeBytes,
-		ContentLengthHint: src.SizeBytes,
+		ContentLengthHint: plan.ContentLengthHint,
+		ExpectedSHA256:    plan.ExpectedSHA256,
+		SourceHF:          plan.SourceHF,
 	}
 	s.startDownloadAndRun(wf, pd)
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, true, s.nsfwMode()))
+}
+
+// installPlan is a resolved, ready-to-execute install: the source download URL, the
+// containment-checked destination under comfy_model_path, and — for a HuggingFace
+// source — the expected sha256 the bytes are verified against before the rename.
+type installPlan struct {
+	FileName          string
+	URL               string
+	DestPath          string
+	ContentLengthHint int64
+	// ExpectedSHA256 is the HF file's LFS oid; the download is refused unless the
+	// streamed bytes hash to it. Empty for the civitai source (no hash to pin).
+	ExpectedSHA256 string
+	// SourceHF routes the download through the hardened HuggingFace client.
+	SourceHF bool
+}
+
+// resolveInstallPlan resolves a missing FILENAME to an install plan. It tries CivitAI
+// first (only for a routable type, whose subdir gives the destination) and, on a
+// CivitAI miss, the HuggingFace fallback — but ONLY an auto-download-eligible HF match
+// (curated-map/recognized-org + non-gated + exact-basename + a captured sha256 + a
+// determinable ComfyUI subdir). An explicitly chosen CivitAI model (model_id) is
+// CivitAI-only and never falls back to HF. Returns ok=false when nothing installable
+// resolves (the caller then shows the resolve cards).
+func (s *Server) resolveInstallPlan(ctx context.Context, filename, typ string, chosenModel int) (installPlan, bool) {
+	// CivitAI branch — needs a routable type so the destination subdir is defined.
+	if subdir, ok := comfy.TypeSubdir(typ); ok {
+		if dest, err := comfy.SafeModelDest(s.cfg.ComfyModelPath, subdir, filename); err == nil {
+			if src, ok := s.resolveDownloadSource(ctx, filename, typ, chosenModel); ok {
+				return installPlan{
+					FileName:          path.Base(strings.ReplaceAll(filename, "\\", "/")),
+					URL:               src.DownloadURL,
+					DestPath:          dest,
+					ContentLengthHint: src.SizeBytes,
+				}, true
+			}
+		}
+	}
+
+	// HuggingFace fallback — never for an explicitly chosen CivitAI model.
+	if chosenModel == 0 {
+		if m := s.resolveHF(ctx, filename); m != nil && s.hfInstallEligible(m) {
+			if dest, err := comfy.SafeModelDest(s.cfg.ComfyModelPath, m.Subdir, m.FileName); err == nil {
+				return installPlan{
+					FileName:       m.FileName,
+					URL:            m.URL,
+					DestPath:       dest,
+					ExpectedSHA256: m.SHA256,
+					SourceHF:       true,
+				}, true
+			}
+		}
+	}
+	return installPlan{}, false
 }
 
 // renderResolveFallback renders the existing resolve fragment (heuristic model
@@ -390,7 +457,7 @@ func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload) {
 // file is there, so the run can proceed.
 func (s *Server) downloadModelFile(ctx context.Context, pd pendingDownload, cb func(string)) error {
 	cb("Downloading " + pd.FileName + "…")
-	resp, err := s.downloader().DownloadFile(ctx, pd.URL)
+	resp, err := s.modelDownloader(pd).DownloadFile(ctx, pd.URL)
 	if err != nil {
 		return fmt.Errorf("download %s: %w", pd.FileName, err)
 	}
@@ -408,7 +475,9 @@ func (s *Server) downloadModelFile(ctx context.Context, pd pendingDownload, cb f
 	pr := &downloadProgressReader{
 		r: resp.Body, total: contentLen, name: pd.FileName, cb: cb, last: time.Now(),
 	}
-	_, err = comfy.WriteModelStream(pd.DestPath, pr, contentLen, pd.MaxBytes)
+	// The HuggingFace path pins on a known sha256 (the tree's LFS oid); the civitai
+	// path has no hash to pin (empty → verification skipped, unchanged behavior).
+	_, err = comfy.WriteModelStreamVerified(pd.DestPath, pr, contentLen, pd.MaxBytes, pd.ExpectedSHA256)
 	if errors.Is(err, comfy.ErrDestExists) {
 		return nil // installed concurrently / already present — proceed to run
 	}
@@ -417,6 +486,20 @@ func (s *Server) downloadModelFile(ctx context.Context, pd pendingDownload, cb f
 	}
 	cb("Download complete — starting run…")
 	return nil
+}
+
+// modelDownloader picks the fetcher for a pending download: the SSRF-hardened
+// HuggingFace client for an HF source, otherwise the civitai downloader. Both
+// satisfy the same (ctx,url)→(*http.Response,error) shape.
+func (s *Server) modelDownloader(pd pendingDownload) interface {
+	DownloadFile(ctx context.Context, fileURL string) (*http.Response, error)
+} {
+	if pd.SourceHF {
+		if c := s.hfClientOrNil(); c != nil {
+			return c
+		}
+	}
+	return s.downloader()
 }
 
 // downloadProgressReader wraps a download body and reports throttled progress

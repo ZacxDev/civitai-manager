@@ -1,14 +1,22 @@
 package comfy
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 )
+
+// ErrHashMismatch is returned by WriteModelStreamVerified when the streamed bytes'
+// sha256 does not match the expected digest. The temp file is deleted and NOTHING is
+// committed to destPath — an unverified (possibly wrong/malicious) file never lands.
+var ErrHashMismatch = errors.New("downloaded file failed sha256 verification")
 
 // ErrDestExists is returned by WriteModelStream when the destination file already
 // exists. The "Download & run" orchestrator treats this as "already installed —
@@ -70,13 +78,27 @@ func SafeModelDest(root, subdir, refName string) (string, error) {
 	if subdir == "" {
 		return "", errors.New("empty model subdirectory")
 	}
+	// Defense in depth: the subdir is a per-type routing constant today, but this
+	// containment function must never trust it to stay inside root — reject an
+	// absolute or ".."-escaping subdir so a future caller cannot lift a write out.
+	cleanSub := filepath.Clean(strings.ReplaceAll(subdir, "\\", "/"))
+	if filepath.IsAbs(cleanSub) || cleanSub == ".." || cleanSub == "." ||
+		strings.HasPrefix(cleanSub, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid model subdirectory %q", subdir)
+	}
 	// Normalize backslashes to forward slashes so a Windows-style traversal is
 	// collapsed on every platform, then take the slash-based basename.
 	base := path.Base(strings.ReplaceAll(strings.TrimSpace(refName), "\\", "/"))
 	if base == "" || base == "." || base == ".." || base == "/" {
 		return "", fmt.Errorf("invalid model reference %q", refName)
 	}
-	dir := filepath.Join(root, subdir)
+	dir := filepath.Join(root, cleanSub)
+	// The joined subdir must still resolve inside root (belt-and-suspenders with the
+	// lexical check above).
+	if srel, err := filepath.Rel(root, dir); err != nil || srel == ".." ||
+		strings.HasPrefix(srel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("model subdirectory %q escapes root", subdir)
+	}
 	dest := filepath.Join(dir, base)
 	// Defense in depth: the joined result must be dir + exactly one path element.
 	rel, err := filepath.Rel(dir, dest)
@@ -100,7 +122,23 @@ func SafeModelDest(root, subdir, refName string) (string, error) {
 //   - Removes the temp file on ANY error path.
 //
 // It returns the number of bytes written.
+//
+// This is the civitai path: no expected digest. For a source that supplies a known
+// content hash (the HuggingFace fallback pins on the tree's LFS oid), use
+// WriteModelStreamVerified so the bytes are checked BEFORE the atomic rename.
 func WriteModelStream(destPath string, src io.Reader, contentLength, maxBytes int64) (int64, error) {
+	return WriteModelStreamVerified(destPath, src, contentLength, maxBytes, "")
+}
+
+// WriteModelStreamVerified is WriteModelStream with an OPTIONAL expected sha256
+// (lowercase hex). When expectedSHA256 is non-empty, the streamed bytes are hashed
+// while being written to the temp file and the digest is compared BEFORE the
+// finalizing rename: on a mismatch the temp file is removed and ErrHashMismatch is
+// returned, so an unverified file is NEVER committed to destPath. An empty
+// expectedSHA256 skips verification entirely (identical to WriteModelStream), so the
+// civitai path — which has no hash to pin — is unchanged.
+func WriteModelStreamVerified(destPath string, src io.Reader, contentLength, maxBytes int64, expectedSHA256 string) (int64, error) {
+	expectedSHA256 = strings.ToLower(strings.TrimSpace(expectedSHA256))
 	if maxBytes <= 0 {
 		maxBytes = defaultModelSizeCap
 	}
@@ -146,12 +184,28 @@ func WriteModelStream(destPath string, src io.Reader, contentLength, maxBytes in
 	if limit <= 0 {
 		limit = maxBytes
 	}
-	written, err := io.Copy(tmp, io.LimitReader(src, limit))
+	// When an expected digest is supplied, hash the bytes as they are written so we
+	// can verify BEFORE the atomic rename (a mismatch must never reach destPath).
+	var hasher hash.Hash
+	var dst io.Writer = tmp
+	if expectedSHA256 != "" {
+		hasher = sha256.New()
+		dst = io.MultiWriter(tmp, hasher)
+	}
+	written, err := io.Copy(dst, io.LimitReader(src, limit))
 	if err != nil {
 		return written, fmt.Errorf("stream download: %w", err)
 	}
 	if written > maxBytes {
 		return written, fmt.Errorf("%w (>%d bytes)", ErrSizeCapExceeded, maxBytes)
+	}
+	if hasher != nil {
+		got := hex.EncodeToString(hasher.Sum(nil))
+		if got != expectedSHA256 {
+			// The deferred cleanup removes the temp file (success stays false); nothing
+			// is renamed into place.
+			return written, fmt.Errorf("%w: got %s, want %s", ErrHashMismatch, got, expectedSHA256)
+		}
 	}
 	if err := tmp.Sync(); err != nil {
 		return written, fmt.Errorf("sync temp file: %w", err)

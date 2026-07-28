@@ -52,6 +52,13 @@ const (
 	// token (for installs fronted by ComfyUI-Login). Like the CivitAI token it is a
 	// secret and is never logged.
 	EnvComfyToken = "COMFY_TOKEN"
+	// EnvHFToken is the environment variable holding an OPTIONAL HuggingFace token,
+	// used by the HuggingFace fallback resolver to raise rate limits and (when the
+	// user has accepted a gated model's terms) download gated repos. It is a secret:
+	// it is NEVER logged and is sent ONLY to HuggingFace hosts (never to civitai.com,
+	// never to the CDN redirect target). The fallback works fully anonymously without
+	// it for the public models it targets.
+	EnvHFToken = "HF_TOKEN"
 	// DefaultComfyURL is the default local ComfyUI server address. ComfyUI listens
 	// on loopback with no auth by default.
 	DefaultComfyURL = "http://127.0.0.1:8188"
@@ -126,6 +133,17 @@ type Config struct {
 	// to the CivitAI-link-only view). When SET it must be an existing writable
 	// directory (validated on load), or config resolution fails with a clear error.
 	ComfyModelPath string `yaml:"comfy_model_path"`
+	// HFToken is an OPTIONAL HuggingFace token for the HuggingFace fallback resolver.
+	// Secret — mirror Token's handling: NEVER log it; RedactToken it in any diagnostic
+	// output. Empty means anonymous (the default), which resolves the public aux-model
+	// repos the fallback targets. It is sent ONLY to HuggingFace hosts.
+	HFToken string `yaml:"hf_token"`
+	// HFFallback enables the HuggingFace fallback: when CivitAI resolution finds no
+	// match for a missing model filename, the filename is sent to huggingface.co to
+	// look for a fallback download. This is a NEW external egress (mirrors the
+	// match_remote opt-out spirit); it defaults ON but is clearly disclosed and can be
+	// turned off with `hf_fallback: false`. When off, the resolve flow is CivitAI-only.
+	HFFallback *bool `yaml:"hf_fallback"`
 	// ComfyCloud enables the "Run on CivitAI Cloud" feature: submitting a workflow
 	// to the CivitAI orchestration API (which sends the graph + resource list to
 	// civitai.com AND spends Buzz from the account behind Token). Default false —
@@ -166,8 +184,17 @@ type Flags struct {
 	// ComfyModelPath overrides the ComfyUI models-dir root used by the
 	// "Download & run" flow. Empty means "not set on the command line".
 	ComfyModelPath string
+	// HFToken overrides the optional HuggingFace token (secret; never logged). Empty
+	// means "not set on the command line".
+	HFToken string
 	// ConfigPath overrides the config-file location (default: the XDG path).
 	ConfigPath string
+}
+
+// HFFallbackEnabled reports whether the HuggingFace fallback is on. It defaults ON
+// (an unset hf_fallback key); only an explicit `hf_fallback: false` disables it.
+func (c *Config) HFFallbackEnabled() bool {
+	return c.HFFallback == nil || *c.HFFallback
 }
 
 // Duration is a time.Duration that (un)marshals from a Go duration string
@@ -335,10 +362,16 @@ func Resolve(flags Flags) (*Config, error) {
 	if env := os.Getenv(EnvComfyToken); env != "" {
 		cfg.ComfyToken = env
 	}
+	if env := os.Getenv(EnvHFToken); env != "" {
+		cfg.HFToken = env
+	}
 
 	// Flag layer (highest precedence).
 	if flags.Token != "" {
 		cfg.Token = flags.Token
+	}
+	if flags.HFToken != "" {
+		cfg.HFToken = flags.HFToken
 	}
 
 	// Lowest-precedence fallback: if nothing above (flag / env / this app's own
@@ -600,12 +633,13 @@ func (c *Config) Redacted() Config {
 	dup := *c
 	dup.Token = RedactToken(c.Token)
 	dup.ComfyToken = RedactToken(c.ComfyToken)
+	dup.HFToken = RedactToken(c.HFToken)
 	return dup
 }
 
 // String renders the config with the token redacted.
 func (c *Config) String() string {
 	r := c.Redacted()
-	return fmt.Sprintf("Config{BaseURL:%s Addr:%s ModelRoot:%s DBPath:%s PollInterval:%s DownloadJitter:%s MaxFileSize:%d ComfyURL:%s ComfyModelPath:%s ComfyCloud:%t Token:%s ComfyToken:%s}",
-		r.BaseURL, r.Addr, r.ModelRoot, r.DBPath, c.DefaultPollInterval.D(), c.DownloadJitter.D(), c.MaxFileSizeBytes, r.ComfyURL, r.ComfyModelPath, c.ComfyCloud, r.Token, r.ComfyToken)
+	return fmt.Sprintf("Config{BaseURL:%s Addr:%s ModelRoot:%s DBPath:%s PollInterval:%s DownloadJitter:%s MaxFileSize:%d ComfyURL:%s ComfyModelPath:%s ComfyCloud:%t HFFallback:%t Token:%s ComfyToken:%s HFToken:%s}",
+		r.BaseURL, r.Addr, r.ModelRoot, r.DBPath, c.DefaultPollInterval.D(), c.DownloadJitter.D(), c.MaxFileSizeBytes, r.ComfyURL, r.ComfyModelPath, c.ComfyCloud, c.HFFallbackEnabled(), r.Token, r.ComfyToken, r.HFToken)
 }

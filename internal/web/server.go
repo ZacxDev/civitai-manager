@@ -70,6 +70,12 @@ type Config struct {
 	// Token is the CivitAI API token, reused as the bearer for the cloud
 	// orchestration API. Secret — never rendered/logged.
 	Token string
+	// HFToken is the optional HuggingFace token for the HF fallback resolver. Secret
+	// — never rendered/logged; sent only to HuggingFace hosts.
+	HFToken string
+	// HFFallback enables the HuggingFace fallback (try HF when CivitAI resolution
+	// misses). Default resolved from config (on unless explicitly disabled).
+	HFFallback bool
 }
 
 // Server wires the store, the CivitAI reader, and the subscriber into an
@@ -170,6 +176,12 @@ type Server struct {
 	// cfg.BaseURL/cfg.Token; tests inject a fake that serves a canned zip without
 	// touching civitai.com.
 	downloaderFn func() civitai.Downloader
+
+	// hfClientFn builds the HuggingFace fallback client (resolver + hardened
+	// downloader) used when CivitAI resolution misses. Nil (production) builds a live
+	// hf.Client from cfg.HFToken; tests inject a fake that returns a canned Match /
+	// serves a canned body without touching huggingface.co.
+	hfClientFn func() hfClient
 
 	// appsClientFn builds the CivitAI apps-catalog client used by the /apps/discover
 	// browse page. Nil (production) builds a live client from cfg.BaseURL/cfg.Token

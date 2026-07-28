@@ -27,6 +27,7 @@ type globalFlags struct {
 	noPreview      bool
 	maxPreviewSize string
 	comfyModelPath string
+	hfToken        string
 	verbose        bool
 }
 
@@ -61,6 +62,7 @@ func newRootCmd(bi BuildInfo) *cobra.Command {
 	pf := root.PersistentFlags()
 	pf.StringVar(&gf.configPath, "config", "", "config file path (default: XDG config dir)")
 	pf.StringVar(&gf.token, "token", "", "CivitAI API token (overrides env/config; never logged)")
+	pf.StringVar(&gf.hfToken, "hf-token", "", "optional HuggingFace token for the HF fallback resolver (overrides HF_TOKEN env/config; sent only to HuggingFace; never logged)")
 	pf.StringVar(&gf.baseURL, "base-url", "", "CivitAI API base URL (default https://civitai.com)")
 	pf.StringVar(&gf.modelRoot, "model-root", "", "root directory for downloaded models")
 	pf.StringVar(&gf.dbPath, "db", "", "SQLite database path")
@@ -142,6 +144,7 @@ func (gf *globalFlags) build() (*app, error) {
 		NoPreview:      gf.noPreview,
 		MaxPreviewSize: gf.maxPreviewSize,
 		ComfyModelPath: gf.comfyModelPath,
+		HFToken:        gf.hfToken,
 	})
 	if err != nil {
 		return nil, err

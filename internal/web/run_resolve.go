@@ -13,6 +13,7 @@ import (
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
+	"github.com/ZacxDev/civitai-manager/internal/hf"
 	"github.com/ZacxDev/civitai-manager/internal/store"
 	g "maragu.dev/gomponents"
 	h "maragu.dev/gomponents/html"
@@ -295,6 +296,13 @@ func parseOptionFixes(form url.Values) map[comfy.OptionFixKey]string {
 type missingResolution struct {
 	Result  *civitai.ModelSearchResult
 	Reached bool
+	// HF is the HuggingFace fallback match, resolved ONLY when CivitAI yielded no
+	// items (nil otherwise). HFInstallEligible records whether it may be auto-installed
+	// here (curated/recognized-org + non-gated + exact + sha + comfy_model_path set +
+	// routable subdir) vs shown as an "Open on HuggingFace" link only. Both are
+	// computed once at run settle — never per poll.
+	HF                *hf.Match
+	HFInstallEligible bool
 }
 
 // missingResolveBudget bounds the WHOLE at-settle resolution pass so N missing
@@ -332,7 +340,16 @@ func (s *Server) resolveMissingModels(parent context.Context, models []comfy.Mis
 		r := s.resolveModels(ctx, mm.Query, civitaiTypeParam(mm.CivitaiType))
 		// resolveModels returns nil ONLY on an API error/timeout — treat that as
 		// "couldn't reach"; a reached-but-empty search returns a non-nil empty result.
-		res[mm.Filename] = missingResolution{Result: r, Reached: r != nil}
+		mr := missingResolution{Result: r, Reached: r != nil}
+		// HuggingFace fallback: ONLY when CivitAI reached but found no items. A
+		// CivitAI hit or an unreachable CivitAI keeps the existing behavior.
+		if r != nil && len(r.Items) == 0 {
+			if m := s.resolveHF(ctx, mm.Filename); m != nil {
+				mr.HF = m
+				mr.HFInstallEligible = s.hfInstallEligible(m)
+			}
+		}
+		res[mm.Filename] = mr
 	}
 
 	var names []string
@@ -452,6 +469,12 @@ func civitaiMatchSection(mm comfy.MissingModel, res missingResolution, wfID int6
 				h.Div(h.Class("grid gap-4 sm:grid-cols-2 lg:grid-cols-3"), g.Group(cards)),
 			)
 		}
+	case res.HF != nil:
+		// CivitAI reached but had no match — a HuggingFace fallback match was found.
+		body = append(body,
+			h.P(h.Class("text-xs text-slate-500 mb-2"), g.Text("No CivitAI match.")),
+			hfMatchSection(mm, res.HF, res.HFInstallEligible, wfID, csrf),
+		)
 	default:
 		body = append(body,
 			h.P(h.Class("text-xs text-slate-500 mb-2"), g.Text("No CivitAI match.")),
