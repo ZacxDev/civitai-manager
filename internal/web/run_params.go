@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
 	"github.com/ZacxDev/civitai-manager/internal/store"
@@ -70,6 +71,7 @@ func parseWidgetOverrides(form url.Values, wf *store.Workflow) map[comfy.UIWidge
 		allowed[comfy.UIWidgetKey{NodeID: ri.NodeID, Widget: ri.WidgetIndex}] = true
 	}
 	out := make(map[comfy.UIWidgetKey]string, n)
+	conflicted := map[comfy.UIWidgetKey]bool{}
 	for i := 0; i < n; i++ {
 		widx, err := strconv.Atoi(widgets[i])
 		if err != nil {
@@ -79,7 +81,20 @@ func parseWidgetOverrides(form url.Values, wf *store.Workflow) map[comfy.UIWidge
 		if !allowed[key] {
 			continue // not a curated, editable widget for this workflow
 		}
+		// The panel renders ONE field per key (DetectRunInputs dedupes), so a repeated
+		// key is a malformed/hand-built request. If the repeats disagree there is no
+		// non-arbitrary winner — assigning one would silently discard the other, which
+		// is exactly the last-wins bug the dedupe exists to prevent. Drop the key.
+		if prev, dup := out[key]; dup {
+			if prev != values[i] {
+				conflicted[key] = true
+			}
+			continue
+		}
 		out[key] = values[i]
+	}
+	for key := range conflicted {
+		delete(out, key)
 	}
 	if len(out) == 0 {
 		return nil
@@ -137,6 +152,12 @@ func runParametersPanel(wf *store.Workflow, csrf string) g.Node {
 // wp_widget fields that pair (index-aligned in DOM order) with the wp_value control —
 // the same parallel-array shape parseWidgetOverrides reads. Every pre-filled value is
 // escaped (g.Text for textareas, attribute escaping for value=).
+//
+// The three parallel arrays are paired BY POSITION, which holds only because every
+// control here always submits exactly one wp_value (all five kinds are a single
+// input/textarea/select). A future control that can submit zero values (an unchecked
+// checkbox) or several would shift the alignment — such a control must carry its key
+// in the value itself (or use indexed field names) rather than rely on this pairing.
 func runParamField(idx int, ri comfy.RunInput) g.Node {
 	fid := "cm-param-" + strconv.Itoa(idx)
 	hidden := []g.Node{
@@ -187,9 +208,23 @@ func runParamField(idx int, ri comfy.RunInput) g.Node {
 		// When the value lives on an upstream node (a widget converted to an input and
 		// wired from a primitive/custom node), say so — the edit lands there, not on the
 		// node the label names, and that indirection is otherwise invisible.
-		g.If(ri.Resolved, h.P(h.Class("text-xs text-slate-500"),
-			g.Text("from #"+ri.NodeID+" "+ri.SourceClassType))),
+		g.If(ri.Resolved, h.P(h.Class("text-xs text-slate-500"), g.Text(runParamOrigin(ri)))),
 	)
+}
+
+// runParamOrigin describes where an edit will actually land: the holding node, the
+// exact widget slot, every pass-through hop the resolver followed, and how many
+// curated inputs this one widget drives (a shared primitive is ONE field, so say so
+// rather than letting the user think the other consumer is unedited).
+func runParamOrigin(ri comfy.RunInput) string {
+	s := "from #" + ri.NodeID + " " + ri.SourceClassType + " widget " + strconv.Itoa(ri.WidgetIndex)
+	if len(ri.SourceVia) > 0 {
+		s += " (via " + strings.Join(ri.SourceVia, " → ") + ")"
+	}
+	if ri.Consumers > 1 {
+		s += " · drives " + strconv.Itoa(ri.Consumers) + " inputs"
+	}
+	return s
 }
 
 // paramSelect renders an enum <select name="wp_value"> for a sampler/scheduler input.

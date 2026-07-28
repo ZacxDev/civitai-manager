@@ -48,6 +48,18 @@ type RunInput struct {
 	// SourceClassType is the class of the node that holds the value (== ClassType
 	// when !Resolved). Informational — surfaced so the UI can explain the indirection.
 	SourceClassType string
+	// SourceVia lists each PASS-THROUGH hop the upstream walk took, as
+	// "#<node id> <class>.<input>". It is surfaced verbatim in the UI: which upstream
+	// input was followed is a judgement chooseSourceWidget makes from graph structure
+	// alone (no /object_info at render time), so showing the path is what makes a
+	// wrong pick visible to the user instead of silently editing the wrong thing.
+	SourceVia []string
+	// Consumers is how many curated inputs this ONE widget drives. Two consumers wired
+	// to the same upstream widget are the same editable value, so DetectRunInputs emits
+	// a single RunInput for them (see the dedupe in DetectRunInputs) and records the
+	// count here — rendering one field per consumer would show N controls that are
+	// secretly one, and collapse to last-wins on submit.
+	Consumers int
 	// Choices are the enum options for a select input, populated from /object_info
 	// when it is supplied to DetectRunInputs (nil → the UI degrades to a text field).
 	Choices []string
@@ -159,6 +171,13 @@ func DetectRunInputs(graph json.RawMessage, info ObjectInfo) []RunInput {
 	}
 	idx := newRunGraphIndex(&g)
 	var out []RunInput
+	// DEDUPE by the override key (node id + widgets_values index). Several curated
+	// consumers can resolve to the SAME upstream widget — one `easy int` feeding a
+	// base and a refiner KSampler's steps, or one string node feeding an SDXL
+	// encoder's text_g and text_l. They are one editable value; emitting one RunInput
+	// per consumer would render N fields that all post the same key, and the override
+	// map would silently keep only the last one (dropping the field the user edited).
+	at := make(map[UIWidgetKey]int, len(g.Nodes))
 	for i := range g.Nodes {
 		n := &g.Nodes[i]
 		layout, ok := runInputLayouts[n.Type]
@@ -168,7 +187,16 @@ func DetectRunInputs(graph json.RawMessage, info ObjectInfo) []RunInput {
 		if isInactiveMode(n.Mode) {
 			continue // bypassed/muted consumer — it will not run, so it is not editable
 		}
-		out = append(out, detectNodeRunInputs(idx, n, layout, info)...)
+		for _, ri := range detectNodeRunInputs(idx, n, layout, info) {
+			key := UIWidgetKey{NodeID: ri.NodeID, Widget: ri.WidgetIndex}
+			if pos, dup := at[key]; dup {
+				out[pos].Consumers++
+				continue // first consumer in nodes[] order supplies the label — deterministic
+			}
+			ri.Consumers = 1
+			at[key] = len(out)
+			out = append(out, ri)
+		}
 	}
 	return out
 }
@@ -256,6 +284,7 @@ func detectNodeRunInputs(idx *runGraphIndex, n *uiConvNode, layout []runWidget, 
 			}
 			ri.NodeID, ri.WidgetIndex = src.nodeID, src.widgetIndex
 			ri.Current, ri.SourceClassType, ri.Resolved = src.current, src.classType, true
+			ri.SourceVia = src.via
 			// The SOURCE node's title wins: in real graphs it is the human label of the
 			// value ("POSITIVE"/"NEGATIVE"/"Steps"), while the consumer's title names the
 			// consumer. Fall back to the consumer's title when the source has none.
@@ -277,6 +306,7 @@ type resolvedWidget struct {
 	title       string
 	widgetIndex int
 	current     string
+	via         []string // pass-through hops, as "#<id> <class>.<input>"
 }
 
 // resolveUpstreamWidget follows a converted widget input upstream to the node that
@@ -292,6 +322,7 @@ type resolvedWidget struct {
 func (idx *runGraphIndex) resolveUpstreamWidget(start *uiConvNode, inputName string, kind RunInputKind) (resolvedWidget, bool) {
 	cur, name := start, inputName
 	visited := map[string]bool{idToString(start.ID): true}
+	var via []string
 	for hop := 0; hop < maxRunInputHops; hop++ {
 		slot := idx.input(cur, name)
 		if slot == nil || slot.Link == nil {
@@ -313,11 +344,12 @@ func (idx *runGraphIndex) resolveUpstreamWidget(start *uiConvNode, inputName str
 		}
 		visited[l.OriginID] = true
 
-		next, widgetIdx, val, ok := chooseSourceWidget(src, kind)
+		next, widgetIdx, val, ok := chooseSourceWidget(src, kind, name)
 		if !ok {
 			return resolvedWidget{}, false
 		}
 		if next != "" {
+			via = append(via, "#"+l.OriginID+" "+src.Type+"."+next)
 			cur, name = src, next
 			continue // the value passes THROUGH this node — keep walking
 		}
@@ -327,6 +359,7 @@ func (idx *runGraphIndex) resolveUpstreamWidget(start *uiConvNode, inputName str
 			title:       strings.TrimSpace(src.Title),
 			widgetIndex: widgetIdx,
 			current:     val,
+			via:         via,
 		}, true
 	}
 	return resolvedWidget{}, false // hop cap
@@ -339,7 +372,8 @@ func (idx *runGraphIndex) resolveUpstreamWidget(start *uiConvNode, inputName str
 //  1. If the node has a type-compatible CONVERTED widget that is itself LINKED, the
 //     value merely passes through this node (a RegexReplace's `string`, a passthrough
 //     wrapper's input): return its name so the caller recurses upstream. Ties are
-//     broken by inputs[] order — the FIRST such slot wins.
+//     broken by NAME first — a slot named like the consumer's input (`text` → `text`)
+//     is the same semantic value — then by inputs[] order.
 //  2. Otherwise the value lives in this node's own widgets_values: return the FIRST
 //     slot whose JSON type matches the wanted kind (string for text/select, number for
 //     int/float/seed). Ties are broken by widget order — the first slot wins, which is
@@ -349,15 +383,32 @@ func (idx *runGraphIndex) resolveUpstreamWidget(start *uiConvNode, inputName str
 // A control_after_generate slot (a "fixed"/"randomize"/… string right after a numeric
 // slot) is skipped: it is a serialization artifact, not a value.
 //
+// KNOWN LIMIT: rule 2 is positional. Without /object_info (which the render path does
+// not fetch) a widgets_values slot carries no name, so on a node with several
+// same-typed widgets the leading one is a convention, not a proof — e.g. a node
+// serializing a pattern widget ahead of its subject widget would surface the pattern.
+// The resolution path is therefore reported to the user (RunInput.SourceVia + the
+// widget index) so a wrong pick is visible rather than silent.
+//
 // Returns (recurseInputName, widgetIndex, currentValue, ok).
-func chooseSourceWidget(n *uiConvNode, kind RunInputKind) (string, int, string, bool) {
+func chooseSourceWidget(n *uiConvNode, kind RunInputKind, preferName string) (string, int, string, bool) {
+	best := ""
 	for _, in := range n.Inputs {
 		if in.Link == nil || !hasWidgetMarker(in.Widget) {
 			continue
 		}
-		if slotTypeMatchesKind(in.Type, kind) {
-			return in.Name, 0, "", true
+		if !slotTypeMatchesKind(in.Type, kind) {
+			continue
 		}
+		if in.Name == preferName {
+			return in.Name, 0, "", true // same-named slot: the same semantic value
+		}
+		if best == "" {
+			best = in.Name
+		}
+	}
+	if best != "" {
+		return best, 0, "", true
 	}
 	wv, ok := asJSONArray(n.WidgetsValues)
 	if !ok {

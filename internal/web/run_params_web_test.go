@@ -59,6 +59,59 @@ func TestRunParametersPanelRendersPrefilled(t *testing.T) {
 	}
 }
 
+// sharedPrimitiveUIGraph: one `easy int` drives BOTH KSamplers' steps.
+const sharedPrimitiveUIGraph = `{"nodes":[
+  {"id":2,"type":"easy int","title":"Steps","widgets_values":[28],"outputs":[{"name":"int"}]},
+  {"id":9,"type":"KSampler","title":"Base","widgets_values":[5,"fixed",20,8.0,"euler","normal",1.0],
+   "inputs":[{"name":"steps","type":"INT","widget":{"name":"steps"},"link":1}]},
+  {"id":10,"type":"KSampler","title":"Refiner","widgets_values":[5,"fixed",20,8.0,"euler","normal",1.0],
+   "inputs":[{"name":"steps","type":"INT","widget":{"name":"steps"},"link":2}]}
+],"links":[[1,2,0,9,1,"INT"],[2,2,0,10,1,"INT"]]}`
+
+// TestRunParametersPanelRendersOneFieldPerSharedWidget is the F1 render-side
+// regression: two consumers of one upstream widget must produce ONE control, labelled
+// so the user knows it drives both — not two controls that secretly collapse on submit.
+func TestRunParametersPanelRendersOneFieldPerSharedWidget(t *testing.T) {
+	wf := &store.Workflow{ID: 7, Format: store.WorkflowFormatUI, Graph: sharedPrimitiveUIGraph}
+	got := renderString(t, runParametersPanel(wf, "tok"))
+
+	if n := strings.Count(got, `name="wp_node" value="2"`); n != 1 {
+		t.Errorf("shared widget should render exactly ONE field, got %d:\n%s", n, got)
+	}
+	if !strings.Contains(got, "drives 2 inputs") {
+		t.Errorf("the field must say it drives both consumers:\n%s", got)
+	}
+	if !strings.Contains(got, "from #2 easy int widget 0") {
+		t.Errorf("the field must name the holding node AND widget slot:\n%s", got)
+	}
+}
+
+// TestParseWidgetOverridesRejectsConflictingDuplicateKeys proves a hand-built request
+// that posts the same key twice with DIFFERENT values drops that key rather than
+// silently letting one value win (the F1 failure mode at the parse layer).
+func TestParseWidgetOverridesRejectsConflictingDuplicateKeys(t *testing.T) {
+	wf := &store.Workflow{ID: 7, Format: store.WorkflowFormatUI, Graph: sharedPrimitiveUIGraph}
+
+	conflicting := parseWidgetOverrides(url.Values{
+		"wp_node":   {"2", "2"},
+		"wp_widget": {"0", "0"},
+		"wp_value":  {"50", "33"},
+	}, wf)
+	if _, ok := conflicting[comfy.UIWidgetKey{NodeID: "2", Widget: 0}]; ok {
+		t.Errorf("conflicting duplicate keys must be dropped, got %+v", conflicting)
+	}
+
+	// Identical repeats are not a conflict — they carry one unambiguous value.
+	agreeing := parseWidgetOverrides(url.Values{
+		"wp_node":   {"2", "2"},
+		"wp_widget": {"0", "0"},
+		"wp_value":  {"50", "50"},
+	}, wf)
+	if agreeing[comfy.UIWidgetKey{NodeID: "2", Widget: 0}] != "50" {
+		t.Errorf("agreeing duplicates should apply, got %+v", agreeing)
+	}
+}
+
 // TestRunParametersPanelAbsentForAPIGraph proves an api-format graph (no widgets)
 // yields no panel.
 func TestRunParametersPanelAbsentForAPIGraph(t *testing.T) {

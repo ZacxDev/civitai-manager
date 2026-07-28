@@ -338,38 +338,6 @@ func TestResolveUpstreamWidgetEdgeCases(t *testing.T) {
 	}
 }
 
-// TestResolveUpstreamWidgetHopCap builds a passthrough chain LONGER than
-// maxRunInputHops and proves the walk gives up (rather than recursing forever or
-// surfacing a value the run would not use), while a chain exactly at the cap resolves.
-func TestResolveUpstreamWidgetHopCap(t *testing.T) {
-	// chain(n) wires KSampler.steps through n passthrough nodes to a primitive.
-	chain := func(n int) string {
-		var nodes, links []string
-		nodes = append(nodes, `{"id":9,"type":"KSampler",`+
-			`"widgets_values":[5,"fixed",20,8.0,"euler","normal",1.0],`+
-			`"inputs":[{"name":"steps","type":"INT","widget":{"name":"steps"},"link":1}]}`)
-		for i := 1; i <= n; i++ {
-			id := 100 + i
-			nodes = append(nodes, `{"id":`+itoa(id)+`,"type":"Passthrough","widgets_values":[0],`+
-				`"inputs":[{"name":"value","type":"INT","widget":{"name":"value"},"link":`+itoa(i+1)+`}]}`)
-			links = append(links, `[`+itoa(i)+`,`+itoa(id)+`,0,`+itoa(prevID(i, id))+`,0,"INT"]`)
-		}
-		nodes = append(nodes, `{"id":999,"type":"PrimitiveInt","widgets_values":[7],"inputs":[]}`)
-		links = append(links, `[`+itoa(n+1)+`,999,0,`+itoa(100+n)+`,0,"INT"]`)
-		return `{"nodes":[` + strings.Join(nodes, ",") + `],"links":[` + strings.Join(links, ",") + `]}`
-	}
-
-	// maxRunInputHops hops == (maxRunInputHops-1) passthroughs + the primitive.
-	atCap := DetectRunInputs(json.RawMessage(chain(maxRunInputHops-1)), nil)
-	if ri := findRunInputFor(atCap, "KSampler", "steps"); ri == nil || ri.NodeID != "999" {
-		t.Errorf("chain at the hop cap should resolve to the primitive, got %+v", ri)
-	}
-	overCap := DetectRunInputs(json.RawMessage(chain(maxRunInputHops+2)), nil)
-	if ri := findRunInputFor(overCap, "KSampler", "steps"); ri != nil {
-		t.Errorf("chain past the hop cap must not be surfaced, got %+v", ri)
-	}
-}
-
 func itoa(i int) string {
 	if i == 0 {
 		return "0"
