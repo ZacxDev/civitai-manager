@@ -1,9 +1,12 @@
 package web
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
+	"path"
 	"strconv"
+	"strings"
 
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
 	"github.com/ZacxDev/civitai-manager/internal/store"
@@ -295,7 +298,7 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mode
 		// Incompatible combo (enum) options: a dedicated pick-a-valid-choice-and-run
 		// form. Independent of the missing nodes/models sections above.
 		if len(snap.Preflight.BadOptions) > 0 {
-			detail = append(detail, incompatibleOptionsSection(snap.Preflight.BadOptions, wfID, csrf))
+			detail = append(detail, incompatibleOptionsSection(snap.Preflight.BadOptions, wfID, csrf, dlEligible))
 		}
 	}
 	if len(snap.Warnings) > 0 {
@@ -311,10 +314,10 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mode
 // applies every pick and runs. It lives inside the terminal (poller-free) fragment,
 // so it is never swapped away mid-interaction. Every untrusted string (class, input,
 // current value, choice) is escaped via g.Text / attribute escaping.
-func incompatibleOptionsSection(bad []comfy.BadOption, wfID int64, csrf string) g.Node {
+func incompatibleOptionsSection(bad []comfy.BadOption, wfID int64, csrf string, dlEligible bool) g.Node {
 	groups := make([]g.Node, 0, len(bad))
 	for i, bo := range bad {
-		groups = append(groups, badOptionGroup(i, bo))
+		groups = append(groups, badOptionGroup(i, bo, wfID, csrf, dlEligible))
 	}
 	return h.Form(
 		hx("post", "/workflows/"+strconv.FormatInt(wfID, 10)+"/run-with-options"),
@@ -335,22 +338,38 @@ func incompatibleOptionsSection(bad []comfy.BadOption, wfID int64, csrf string) 
 
 // badOptionGroup renders one incompatible-option group: the (escaped) node class +
 // input name + current value, the parallel hidden opt_input/opt_old fields, and the
-// opt_new <select>. A single-choice group pre-selects its only valid option (still
-// surfaced, never silently rewritten); a multi-choice group leads with a "Choose…"
-// placeholder and marks the select required so a pick is forced.
-func badOptionGroup(idx int, bo comfy.BadOption) g.Node {
+// opt_new <select>.
+//
+// Two shapes:
+//   - A model-FILE bad option (Current has a model extension, e.g. a detector
+//     "bbox/face_yolov9c.pt") gets an "Install <basename>" action ALONGSIDE the
+//     dropdown: install downloads the EXACT referenced file so the original saved
+//     value becomes valid. Its dropdown is an OPTIONAL substitute (never required —
+//     Install is the primary fix), so clicking Install is never blocked by a forced
+//     pick on this group.
+//   - An inert enum drift (no model extension, e.g. a wildcard-picker label) is
+//     pick-only: a single-choice group pre-selects its only valid option; a
+//     multi-choice group leads with a "Choose…" placeholder and is required.
+func badOptionGroup(idx int, bo comfy.BadOption, wfID int64, csrf string, dlEligible bool) g.Node {
+	isModelFile := comfy.IsModelFileValue(bo.Current)
 	single := len(bo.Choices) == 1
 	opts := make([]selectOption, 0, len(bo.Choices)+1)
 	selected := ""
-	if single {
+	required := false
+	switch {
+	case isModelFile:
+		// The exact file is installable; the dropdown is only an optional substitute.
+		opts = append(opts, selectOption{Value: "", Label: "Or substitute an installed file…"})
+	case single:
 		selected = bo.Choices[0]
-	} else {
+	default:
 		opts = append(opts, selectOption{Value: "", Label: "Choose a valid option…"})
+		required = true
 	}
 	for _, c := range bo.Choices {
 		opts = append(opts, selectOption{Value: c, Label: c})
 	}
-	return h.Div(
+	children := []g.Node{
 		h.Class("rounded border border-slate-800 p-2 space-y-1"),
 		h.Div(h.Class("text-xs text-slate-300"),
 			h.Span(h.Class("font-semibold"), g.Text(bo.ClassType)),
@@ -363,7 +382,56 @@ func badOptionGroup(idx int, bo comfy.BadOption) g.Node {
 		),
 		h.Input(h.Type("hidden"), h.Name("opt_input"), h.Value(bo.InputName)),
 		h.Input(h.Type("hidden"), h.Name("opt_old"), h.Value(bo.Current)),
-		optionSelect("opt-new-"+strconv.Itoa(idx), opts, selected, !single),
+		optionSelect("opt-new-"+strconv.Itoa(idx), opts, selected, required),
+	}
+	if isModelFile {
+		children = append(children, badOptionInstallAction(bo, wfID, csrf, dlEligible))
+	}
+	return h.Div(children...)
+}
+
+// badOptionInstallAction renders the "Install <basename>" control for a model-file
+// bad option. When installing is available (comfyDownloadEligible AND the value routes
+// to a known ComfyUI subdir) it POSTs to /install-option-and-run, hx-including the
+// enclosing section form so the OTHER groups' picks (e.g. the wildcard) ride along and
+// the whole section resolves in ONE action. When NOT installable here it renders a
+// DISABLED Install + a reason + a "Search CivitAI ↗" link (never hidden — the user is
+// told the file is fetchable, just not automatically). Every untrusted string (the
+// basename, the current value) is escaped via g.Text / json.Marshal + attribute-escaping.
+func badOptionInstallAction(bo comfy.BadOption, wfID int64, csrf string, dlEligible bool) g.Node {
+	base := path.Base(strings.ReplaceAll(bo.Current, "\\", "/"))
+	civitaiType, _, routable := comfy.InferBadOptionInstall(bo.ClassType, bo.InputName, bo.Current)
+	label := "Install " + base
+	if !(dlEligible && routable) {
+		return h.Div(h.Class("mt-1 space-y-1"),
+			h.Div(h.Class("flex flex-wrap items-center gap-2"),
+				civButton("filled", "sm", []g.Node{
+					h.Type("button"), h.Disabled(),
+					g.Attr("title", "Set comfy_model_path (with a local ComfyUI) to install this file here."),
+				}, g.Text(label)),
+				resolveFallbackLink(comfy.CleanModelQuery(bo.Current)),
+			),
+			h.P(h.Class("text-xs text-slate-500"),
+				g.Text("Set comfy_model_path to install this file here, or fetch it manually.")),
+		)
+	}
+	// hx-include pulls the section form's csrf_token + every opt_input/opt_old/opt_new
+	// so the picks for the OTHER groups are applied together with this install. The
+	// install target itself rides in hx-vals (json.Marshal escapes the untrusted value).
+	b, _ := json.Marshal(map[string]string{
+		"install_filename": bo.Current,
+		"install_type":     civitaiType,
+	})
+	return h.Div(h.Class("mt-1"),
+		civButton("filled", "sm", []g.Node{
+			h.Type("button"),
+			hx("post", "/workflows/"+strconv.FormatInt(wfID, 10)+"/install-option-and-run"),
+			hx("target", "#"+runStatusContainerID),
+			hx("swap", "innerHTML"),
+			hx("include", "closest form"),
+			hx("disabled-elt", "this"),
+			hx("vals", string(b)),
+		}, g.Text(label)),
 	)
 }
 
