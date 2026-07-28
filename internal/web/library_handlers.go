@@ -499,6 +499,12 @@ func (s *Server) handleQuarantine(w http.ResponseWriter, r *http.Request) {
 	if !s.verifyCSRF(w, r) {
 		return
 	}
+	// Loopback-gate: quarantine performs DESTRUCTIVE file moves; CSRF is not an auth
+	// boundary, so on a non-loopback bind this must be disabled (security audit
+	// v0.1.64, 🟡-3). Order: ParseForm → verifyCSRF → gate.
+	if !s.gate(w) {
+		return
+	}
 	ids := s.quarantineIDs(r)
 	if len(ids) == 0 {
 		s.render(w, http.StatusOK, errorNote("Select at least one candidate to quarantine."))

@@ -522,6 +522,12 @@ func (s *Server) handleModelDownload(w http.ResponseWriter, r *http.Request) {
 	if !s.verifyCSRF(w, r) {
 		return
 	}
+	// Loopback-gate: download egresses AND writes a file into the model root; CSRF is
+	// not an auth boundary, so disable on a non-loopback bind (security audit v0.1.64,
+	// 🟡-3). Order: ParseForm → verifyCSRF → gate.
+	if !s.gate(w) {
+		return
+	}
 	versionID, _ := strconv.Atoi(r.FormValue("versionId"))
 	fileID, _ := strconv.Atoi(r.FormValue("fileId"))
 	if versionID <= 0 || fileID <= 0 {
@@ -702,6 +708,12 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	if !s.verifyCSRF(w, r) {
 		return
 	}
+	// Loopback-gate: subscribing is a state change (and enables auto-download egress);
+	// CSRF is not an auth boundary, so disable on a non-loopback bind (security audit
+	// v0.1.64, 🟡-3). Order: ParseForm → verifyCSRF → gate.
+	if !s.gate(w) {
+		return
+	}
 	opts := poller.SubscribeOptions{
 		AutoDownload:   checkboxVal(r, "auto_download"),
 		NotifyOnly:     checkboxVal(r, "notify_only"),
@@ -790,6 +802,11 @@ func (s *Server) handleModelSubscribe(w http.ResponseWriter, r *http.Request) {
 	if !s.verifyCSRF(w, r) {
 		return
 	}
+	// Loopback-gate: state change (+ auto-download egress); CSRF is not an auth
+	// boundary → disable on a non-loopback bind (security audit v0.1.64, 🟡-3).
+	if !s.gate(w) {
+		return
+	}
 	// The options panel sends the choice as a radio (mode=auto_download|notify_only);
 	// an explicit notify_only=true is also honored.
 	notifyOnly := checkboxVal(r, "notify_only") || r.FormValue("mode") == "notify_only"
@@ -826,6 +843,11 @@ func (s *Server) handleModelUnsubscribe(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !s.verifyCSRF(w, r) {
+		return
+	}
+	// Loopback-gate: state change; CSRF is not an auth boundary → disable on a
+	// non-loopback bind (security audit v0.1.64, 🟡-3).
+	if !s.gate(w) {
 		return
 	}
 	if sub := s.modelSubscription(id); sub != nil {

@@ -101,7 +101,7 @@ func (rr *runRecorder) fn() func(context.Context, *store.Workflow, runUpdater, r
 // comfy_model_path/checkpoints/<name>, then runs the ORIGINAL workflow (empty
 // Substitute).
 func TestDownloadAndRunWritesAndRuns(t *testing.T) {
-	const dlURL = "http://dl.example/checkpoint"
+	const dlURL = "https://dl.example/checkpoint"
 	reader := dlRunReader{searchRaw: searchRawWithFile(t, "fabricatedXL_v70.safetensors", dlURL)}
 	srv, dl, comfyModels := newDownloadServer(t, reader, dlURL, []byte("MODELWEIGHTS"))
 	rr := &runRecorder{}
@@ -166,7 +166,7 @@ func (r *modelIDReader) GetModel(_ context.Context, id string) (*civitai.ModelDe
 // TestDownloadAndRunAlternateModelID: the alternate card's install passes model_id;
 // the endpoint resolves via GetModel(model_id) and downloads THAT model's file.
 func TestDownloadAndRunAlternateModelID(t *testing.T) {
-	const dlURL = "http://dl.example/alt"
+	const dlURL = "https://dl.example/alt"
 	reader := &modelIDReader{modelRaw: []byte(
 		`{"id":42,"modelVersions":[{"id":10,"files":[{"name":"fabricatedXL_v70.safetensors","downloadUrl":"` + dlURL + `","sizeKB":4,"primary":true}]}]}`)}
 	srv, dl, comfyModels := newDownloadServer(t, reader, dlURL, []byte("ALTWEIGHTS"))
@@ -202,7 +202,7 @@ func TestDownloadAndRunAlternateModelID(t *testing.T) {
 // TestDownloadAndRunTraversalStaysInside: a traversal-laden reference still writes
 // only its basename inside comfy_model_path/checkpoints (never escapes).
 func TestDownloadAndRunTraversalStaysInside(t *testing.T) {
-	const dlURL = "http://dl.example/evil"
+	const dlURL = "https://dl.example/evil"
 	// The workflow references a traversal path; the file on CivitAI has that same
 	// name. The write must collapse to the basename under checkpoints/.
 	reader := dlRunReader{searchRaw: searchRawWithFile(t, "../../etc/evil.safetensors", dlURL)}
@@ -235,7 +235,7 @@ func TestDownloadAndRunTraversalStaysInside(t *testing.T) {
 // TestDownloadAndRunExistingFileSkipsDownload: the file already present → no
 // download, but the run still starts on the original workflow.
 func TestDownloadAndRunExistingFileSkipsDownload(t *testing.T) {
-	const dlURL = "http://dl.example/x"
+	const dlURL = "https://dl.example/x"
 	reader := dlRunReader{searchRaw: searchRawWithFile(t, "present.safetensors", dlURL)}
 	srv, dl, comfyModels := newDownloadServer(t, reader, dlURL, []byte("NEW"))
 	rr := &runRecorder{}
@@ -271,7 +271,7 @@ func TestDownloadAndRunExistingFileSkipsDownload(t *testing.T) {
 // TestDownloadAndRunUnconfiguredFallback: no comfy_model_path → link-only
 // fallback, NO download, NO run.
 func TestDownloadAndRunUnconfiguredFallback(t *testing.T) {
-	const dlURL = "http://dl.example/x"
+	const dlURL = "https://dl.example/x"
 	reader := &recordingSearchReader{result: resolveResult("Some Model")}
 	srv := newLibraryTestServer(t, t.TempDir()) // no ComfyModelPath, empty ComfyURL
 	srv.reader = reader
@@ -305,7 +305,7 @@ func TestDownloadAndRunUnconfiguredFallback(t *testing.T) {
 // TestDownloadAndRunRemoteComfyFallback: comfy_model_path set but a non-loopback
 // comfy_url → not local → link-only fallback, no download.
 func TestDownloadAndRunRemoteComfyFallback(t *testing.T) {
-	const dlURL = "http://dl.example/x"
+	const dlURL = "https://dl.example/x"
 	reader := dlRunReader{searchRaw: searchRawWithFile(t, "foo.safetensors", dlURL)}
 	srv, dl, _ := newDownloadServer(t, reader, dlURL, []byte("D"))
 	srv.cfg.ComfyURL = "http://192.168.1.50:8188" // remote ComfyUI
@@ -329,7 +329,7 @@ func TestDownloadAndRunRemoteComfyFallback(t *testing.T) {
 // TestDownloadAndRunUnknownTypeFallback: an unroutable type → link-only, no
 // download.
 func TestDownloadAndRunUnknownTypeFallback(t *testing.T) {
-	const dlURL = "http://dl.example/x"
+	const dlURL = "https://dl.example/x"
 	reader := dlRunReader{searchRaw: searchRawWithFile(t, "foo.safetensors", dlURL)}
 	srv, dl, _ := newDownloadServer(t, reader, dlURL, []byte("D"))
 	srv.runFn = (&runRecorder{}).fn()
@@ -350,7 +350,7 @@ func TestDownloadAndRunUnknownTypeFallback(t *testing.T) {
 // TestDownloadAndRunAmbiguousShowsCards: eligible, but NO file basename matches
 // the reference → no auto-download; the resolve cards are shown instead.
 func TestDownloadAndRunAmbiguousShowsCards(t *testing.T) {
-	const dlURL = "http://dl.example/other"
+	const dlURL = "https://dl.example/other"
 	// The search returns a model whose file name does NOT equal the reference.
 	reader := dlRunReader{searchRaw: searchRawWithFile(t, "different.safetensors", dlURL)}
 	srv, dl, _ := newDownloadServer(t, reader, dlURL, []byte("D"))
@@ -381,7 +381,7 @@ func TestDownloadAndRunAmbiguousShowsCards(t *testing.T) {
 
 // TestDownloadAndRunGating: CSRF rejected + non-loopback bind → gated note.
 func TestDownloadAndRunGating(t *testing.T) {
-	const dlURL = "http://dl.example/x"
+	const dlURL = "https://dl.example/x"
 	reader := dlRunReader{searchRaw: searchRawWithFile(t, "foo.safetensors", dlURL)}
 	srv, dl, _ := newDownloadServer(t, reader, dlURL, []byte("D"))
 	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"4":{"class_type":"X","inputs":{}}}`)

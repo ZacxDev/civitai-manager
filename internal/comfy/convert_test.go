@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // buildInfo assembles an ObjectInfo from a compact JSON literal for synthetic tests.
@@ -748,6 +749,90 @@ func TestConvertSubgraphDepthBounded(t *testing.T) {
 	}
 	if _, has := nodes["4"]; !has {
 		t.Error("checkpoint node 4 should still convert")
+	}
+}
+
+// TestConvertSubgraphNodeCapExponentialClones guards the total-work cap against a
+// self-referential subgraph that DOES emit clones: each instance holds an ordinary
+// node PLUS two self-typed child instances, so without the cap it fans out to
+// ~2^depth clones. Conversion must return the cap error QUICKLY (bounded work), not
+// hang.
+func TestConvertSubgraphNodeCapExponentialClones(t *testing.T) {
+	info := subgraphTestInfo(t)
+	// FANOUT: one ordinary interior node (a checkpoint, which IS in info) + two
+	// self-typed child instances → exponential emitted-clone fan-out.
+	ui := `{
+		"nodes":[
+			{"id":100,"type":"FANOUT","mode":0,"inputs":[]}
+		],
+		"links":[],
+		"definitions":{"subgraphs":[
+			{"id":"FANOUT","name":"Fanout",
+			 "inputNode":{"id":-10},"outputNode":{"id":-20},
+			 "inputs":[],"outputs":[],
+			 "nodes":[
+				{"id":1,"type":"CheckpointLoaderSimple","mode":0,"widgets_values":["a.safetensors"]},
+				{"id":2,"type":"FANOUT","mode":0,"inputs":[]},
+				{"id":3,"type":"FANOUT","mode":0,"inputs":[]}
+			 ],
+			 "links":[]}
+		]}
+	}`
+	done := make(chan struct{})
+	var api json.RawMessage
+	var err error
+	go func() {
+		api, _, err = ConvertUIToAPI(json.RawMessage(ui), info)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("ConvertUIToAPI did not return within 10s — cap did not bound the fan-out")
+	}
+	if err == nil {
+		t.Fatalf("expected a cap error, got nil (api len=%d)", len(api))
+	}
+	if !strings.Contains(err.Error(), "workflow too large") {
+		t.Fatalf("expected 'workflow too large' cap error, got: %v", err)
+	}
+}
+
+// TestConvertSubgraphNodeCapPureRecursion guards the WORK cap against a subgraph
+// whose interior is ONLY nested self-instances (no ordinary node): it emits zero
+// clones yet recurses exponentially, so an emitted-node-only cap would miss it.
+// Conversion must still return the cap error quickly.
+func TestConvertSubgraphNodeCapPureRecursion(t *testing.T) {
+	info := subgraphTestInfo(t)
+	ui := `{
+		"nodes":[
+			{"id":100,"type":"REC","mode":0,"inputs":[]}
+		],
+		"links":[],
+		"definitions":{"subgraphs":[
+			{"id":"REC","name":"Rec",
+			 "inputNode":{"id":-10},"outputNode":{"id":-20},
+			 "inputs":[],"outputs":[],
+			 "nodes":[
+				{"id":1,"type":"REC","mode":0,"inputs":[]},
+				{"id":2,"type":"REC","mode":0,"inputs":[]}
+			 ],
+			 "links":[]}
+		]}
+	}`
+	done := make(chan struct{})
+	var err error
+	go func() {
+		_, _, err = ConvertUIToAPI(json.RawMessage(ui), info)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("ConvertUIToAPI did not return within 10s — work cap did not bound pure recursion")
+	}
+	if err == nil || !strings.Contains(err.Error(), "workflow too large") {
+		t.Fatalf("expected 'workflow too large' cap error, got: %v", err)
 	}
 }
 

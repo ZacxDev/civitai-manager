@@ -140,7 +140,7 @@ func newTestServer(t *testing.T) *Server {
 		t.Fatalf("store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return NewServer(st, stubReader{}, stubSubscriber{}, Config{BaseURL: "https://civitai.com", DefaultPollInterval: time.Hour}, nil)
+	return NewServer(st, stubReader{}, stubSubscriber{}, Config{BaseURL: "https://civitai.com", DefaultPollInterval: time.Hour, Addr: "127.0.0.1:8787"}, nil)
 }
 
 func TestDashboardHandler(t *testing.T) {

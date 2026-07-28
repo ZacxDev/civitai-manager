@@ -156,7 +156,11 @@ func ConvertUIToAPI(uiGraph json.RawMessage, info ObjectInfo) (apiGraph json.Raw
 	var sgRedirect map[string]map[int]origin
 	var expandWarnings []string
 	if len(g.Definitions.Subgraphs) > 0 {
-		nodes, linkByID, sgRedirect, expandWarnings = flattenSubgraphs(&g, linkByID)
+		var expandErr error
+		nodes, linkByID, sgRedirect, expandWarnings, expandErr = flattenSubgraphs(&g, linkByID)
+		if expandErr != nil {
+			return nil, nil, expandErr
+		}
 	}
 
 	// Index nodes by id.
