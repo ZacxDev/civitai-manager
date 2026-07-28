@@ -19,6 +19,7 @@
 package hf
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -65,6 +66,11 @@ type Client struct {
 	tokenHostOK func(host string) bool
 	// denyIP reports whether a RESOLVED dial IP must be refused (the SSRF block).
 	denyIP func(ip net.IP) bool
+
+	// tlsClientConfig is a TEST-ONLY hook to trust a harness's self-signed cert on
+	// the hardened transport. Nil in production (default verification). It never
+	// relaxes the dial-time IP block or the redirect guard — only TLS trust.
+	tlsClientConfig *tls.Config
 }
 
 // NewClient builds a production hardened client. token may be empty (anonymous —
@@ -103,6 +109,7 @@ func (c *Client) buildHTTPClient() *http.Client {
 		IdleConnTimeout:       60 * time.Second,
 		TLSHandshakeTimeout:   15 * time.Second,
 		ExpectContinueTimeout: 5 * time.Second,
+		TLSClientConfig:       c.tlsClientConfig, // nil in production
 	}
 	return &http.Client{
 		Transport:     transport,

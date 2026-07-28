@@ -2,6 +2,8 @@ package comfy
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -181,6 +183,85 @@ func TestWriteModelStreamCleansTempOnReadError(t *testing.T) {
 		t.Error("no final file should exist after a read error")
 	}
 	assertNoTempLeftovers(t, sub)
+}
+
+// sha256Hex returns the lowercase hex sha256 of data (test helper).
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// TestWriteModelStreamVerifiedCorrectHash: a matching expected sha256 writes the file.
+func TestWriteModelStreamVerifiedCorrectHash(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "ultralytics", "bbox")
+	dest := filepath.Join(sub, "face_yolov9c.pt")
+	data := []byte("pretend model weights")
+
+	n, err := WriteModelStreamVerified(dest, bytes.NewReader(data), int64(len(data)), 0, sha256Hex(data))
+	if err != nil {
+		t.Fatalf("WriteModelStreamVerified: %v", err)
+	}
+	if n != int64(len(data)) {
+		t.Errorf("wrote %d, want %d", n, len(data))
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read dest: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Errorf("content = %q, want %q", got, data)
+	}
+	assertNoTempLeftovers(t, sub)
+}
+
+// TestWriteModelStreamVerifiedWrongHash: a mismatched expected sha256 deletes the
+// temp, writes NO file, and returns ErrHashMismatch — an unverified file never lands.
+func TestWriteModelStreamVerifiedWrongHash(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "vae")
+	dest := filepath.Join(sub, "x.safetensors")
+	data := []byte("actual bytes")
+	wrong := sha256Hex([]byte("different bytes entirely"))
+
+	_, err := WriteModelStreamVerified(dest, bytes.NewReader(data), int64(len(data)), 0, wrong)
+	if !errors.Is(err, ErrHashMismatch) {
+		t.Fatalf("err = %v, want ErrHashMismatch", err)
+	}
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Error("no file must be written on a sha256 mismatch")
+	}
+	assertNoTempLeftovers(t, sub)
+}
+
+// TestWriteModelStreamVerifiedUppercaseExpected: the expected digest comparison is
+// case-insensitive (LFS oids are lowercase, but be robust to an uppercase input).
+func TestWriteModelStreamVerifiedUppercaseExpected(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "loras", "y.safetensors")
+	data := []byte("weights")
+	up := strings.ToUpper(sha256Hex(data))
+	if _, err := WriteModelStreamVerified(dest, bytes.NewReader(data), int64(len(data)), 0, up); err != nil {
+		t.Fatalf("uppercase expected sha should still verify: %v", err)
+	}
+	if _, err := os.Stat(dest); err != nil {
+		t.Errorf("file should exist: %v", err)
+	}
+}
+
+// TestWriteModelStreamNoHashUnchanged: the civitai path (empty expected sha) writes
+// the file with no verification — behavior unchanged.
+func TestWriteModelStreamNoHashUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "checkpoints", "m.safetensors")
+	data := []byte("no hash to pin here")
+	if _, err := WriteModelStream(dest, bytes.NewReader(data), int64(len(data)), 0); err != nil {
+		t.Fatalf("WriteModelStream (no hash): %v", err)
+	}
+	got, _ := os.ReadFile(dest)
+	if !bytes.Equal(got, data) {
+		t.Errorf("content = %q, want %q", got, data)
+	}
 }
 
 // errReader always fails, simulating a truncated/broken download body.
