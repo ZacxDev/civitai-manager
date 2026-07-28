@@ -39,28 +39,24 @@ const openComfyParam = "cm_open"
 // absent) is reused before re-probing.
 const extProbeTTL = 30 * time.Second
 
-// extProbeTimeout bounds a single probe. A ComfyUI that is down or slow must not
-// stall the click that triggered it.
+// extProbeTimeout bounds a single probe leg (ping, then asset). A ComfyUI that is
+// down or slow must not stall the click that triggered it.
 const extProbeTimeout = 1500 * time.Millisecond
 
 // extOpenTimeout bounds the jump-an-open-tab broadcast. It is deliberately tight
 // and SEPARATE from the enclosing handler budget: the broadcast is a nice-to-have
-// (the deep link works without it), so a wedged helper must not hold the user's
-// click for the full save timeout.
+// (the new tab opens the workflow regardless), so a wedged helper must not hold
+// the user's click for the full save timeout.
 const extOpenTimeout = 2 * time.Second
 
-// openComfyContainerID is the stable element the "Open in ComfyUI" button and its
-// POST result share, so the action swaps its own container inline (mirrors
-// workflowImportContainerID).
-func openComfyContainerID(id int64) string {
-	return fmt.Sprintf("wf-open-comfy-%d", id)
-}
-
-// extContainerID is the nested container the helper install/uninstall actions
-// swap, so installing does not blow away the surrounding result fragment.
-func extContainerID(id int64) string {
-	return fmt.Sprintf("cm-comfy-ext-%d", id)
-}
+// comfyExtContainerID is the STABLE element the helper install/uninstall actions
+// swap.
+//
+// It is a CONSTANT, not a per-workflow id. Helper management is a server-wide
+// setting that lives in its own disclosure (see comfyHelperDisclosure), so the
+// endpoints must be usable from any surface that renders it — they no longer take
+// a workflow_id, and therefore nothing from the request reaches the markup at all.
+const comfyExtContainerID = "cm-comfy-ext"
 
 // sanitizeWorkflowFilename builds a TRAVERSAL-SAFE "<name>-<id>.json" filename from
 // an untrusted workflow name. It keeps only [A-Za-z0-9-_], collapses every other
@@ -92,8 +88,22 @@ func sanitizeWorkflowFilename(name string, id int64) string {
 	return fmt.Sprintf("%s-%d.json", base, id)
 }
 
-// comfyExtensionProbe reports whether this ComfyUI is running the civitai-manager
-// helper, using a short-lived cache of BOTH outcomes.
+// comfyExtensionProbe reports whether this ComfyUI is running a USABLE
+// civitai-manager helper, using a short-lived cache of BOTH outcomes.
+//
+// Detection has TWO legs and needs BOTH:
+//
+//  1. /civitai-manager/ping answers as our helper, and
+//  2. the helper's FRONTEND script is actually being served.
+//
+// Leg 2 is not belt-and-braces, it is the fix for a live-caught bug. ComfyUI
+// registers a custom node's python routes ONCE, at startup, and keeps the
+// handlers in memory: after the helper directory is deleted, the ping keeps
+// answering 200 with our exact body until ComfyUI restarts, while the static
+// asset route (served from disk) 404s immediately. The frontend script is the
+// half that does the work — ?cm_open= handling and the websocket listener — so
+// with leg 1 alone the app cheerfully reported "asked the tab to jump to it"
+// while literally nothing could happen. That is the exact failure a user hit.
 //
 // It is only ever called from a user action (never a page render): the probe is a
 // network round-trip, and a detection result that is stale by up to extProbeTTL is
@@ -113,14 +123,28 @@ func (s *Server) comfyExtensionProbe(ctx context.Context, client comfyClient) ex
 		pctx, cancel := context.WithTimeout(ctx, extProbeTimeout)
 		info, err := client.ExtensionPing(pctx)
 		cancel()
+		pingOK := false
 		switch {
 		case err == nil && info != nil:
-			res.present = true
+			pingOK = true
 			res.version = info.Version
 		case errors.Is(err, comfy.ErrExtensionAbsent):
 			// Expected: a stock ComfyUI. Cache the negative too.
 		case err != nil:
 			s.log.Debug("comfy helper probe failed", "err", err)
+		}
+		if pingOK {
+			actx, acancel := context.WithTimeout(ctx, extProbeTimeout)
+			aerr := client.ExtensionAsset(actx)
+			acancel()
+			if aerr == nil {
+				res.usable = true
+			} else {
+				// Routes live, script gone: the zombie. Report it as NOT usable and
+				// let the UI ask for the restart that actually fixes it.
+				res.zombie = true
+				s.log.Debug("comfy helper frontend script is not being served", "err", aerr)
+			}
 		}
 	}
 
@@ -142,28 +166,44 @@ func (s *Server) invalidateComfyExtensionProbe() {
 	s.extProbeMu.Unlock()
 }
 
-// comfyExtStatus inspects the helper's on-disk install state under the configured
-// comfy_root. It is a couple of stat() calls with no network and no writes, so it
-// is safe on a render path. An unset comfy_root yields a zero Status.
-func (s *Server) comfyExtStatus() comfyext.Status {
-	return comfyext.Inspect(strings.TrimSpace(s.cfg.ComfyRoot))
+// comfyHelperView is the helper's ON-DISK state, as rendered by the management
+// disclosure. It is a couple of stat() calls with no network and no writes, so it
+// is safe on a render path (unlike comfyExtensionProbe, which must never run
+// there). Its zero value means "no comfy_root configured".
+type comfyHelperView struct {
+	// disk is what Inspect found under comfy_root.
+	disk comfyext.Status
+	// rootSet reports whether a comfy_root is configured at all.
+	rootSet bool
+	// csrf powers the install/uninstall buttons.
+	csrf string
 }
 
-// handleWorkflowOpenInComfyUI writes a UI-format workflow into ComfyUI's user
-// workflow store (namespaced under civitai-manager/) and then does the best HONEST
-// thing available:
+// comfyHelperState builds the on-disk helper view for a render path.
+func (s *Server) comfyHelperState() comfyHelperView {
+	root := strings.TrimSpace(s.cfg.ComfyRoot)
+	return comfyHelperView{disk: comfyext.Inspect(root), rootSet: root != "", csrf: s.csrf}
+}
+
+// handleWorkflowOpenInComfyUI is the "Open in ComfyUI" action. It is submitted by
+// a real <form target="_blank">, so the click ALREADY opened a new tab by the time
+// this runs — which is the whole point: the browser opened it synchronously from
+// the user gesture, so no popup blocker is involved and no JS is needed.
 //
-//   - helper detected → ask it to jump any already-open editor tab to the saved
-//     workflow, and offer a ?cm_open= deep link for when no tab is open;
-//   - helper absent → say exactly where the workflow now lives (Workflows →
-//     civitai-manager → <file>) with a copy button, and offer the one-click
-//     helper install (which needs ONE ComfyUI restart).
+// With a USABLE helper it therefore does the thing the user asked for and nothing
+// else: save the workflow, broadcast the jump so an already-open editor tab
+// follows along, and REDIRECT the new tab straight into
+// <comfy_url>/?cm_open=<path>, where the helper opens the workflow. No
+// intermediate "here is what happened, now click this other link" page.
 //
-// It never emits a ?workflow= link: no ComfyUI frontend has ever supported one.
+// Without a usable helper it does NOT dump the user on a blank ComfyUI (there is
+// no supported deep link — see openComfyParam). It renders the honest result
+// instead: the exact Workflows-menu path, a copy button, and the one-click helper
+// install.
 //
 // It reaches (and writes to) the ComfyUI server, so it is CSRF-protected +
 // loopback-gated exactly like handleWorkflowRun. API-format graphs are refused
-// (they do not load into the editor) — but the button is only shown for UI-format
+// (they do not load into the editor) — but the control is only shown for UI-format
 // anyway.
 func (s *Server) handleWorkflowOpenInComfyUI(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
@@ -173,7 +213,12 @@ func (s *Server) handleWorkflowOpenInComfyUI(w http.ResponseWriter, r *http.Requ
 	if !s.verifyCSRF(w, r) {
 		return
 	}
-	if !s.gate(w) {
+	// Same loopback gate as every other path-taking / local-ComfyUI-reaching
+	// endpoint, worded identically — but rendered as a full page, because this
+	// response lands in a freshly opened tab rather than an htmx swap target.
+	if !s.extraPathsAllowed() {
+		s.renderOpenComfyPage(w, openComfyNote("amber",
+			"This control is disabled when the server is bound to a non-loopback address."), nil)
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -191,15 +236,16 @@ func (s *Server) handleWorkflowOpenInComfyUI(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	cid := openComfyContainerID(id)
+	backLink := openComfyBackLink(id)
 	if wf.Format != store.WorkflowFormatUI {
-		s.render(w, http.StatusOK, openComfyFailed(cid,
-			"Only UI-format workflows can be opened in the ComfyUI editor (API graphs don’t load into it)."))
+		s.renderOpenComfyPage(w, openComfyNote("amber",
+			"Only UI-format workflows can be opened in the ComfyUI editor (API graphs don’t load into it)."), backLink)
 		return
 	}
 	client := s.comfy()
 	if client == nil {
-		s.render(w, http.StatusOK, openComfyFailed(cid, "ComfyUI is not configured (set comfy_url)."))
+		s.renderOpenComfyPage(w, openComfyNote("amber",
+			"ComfyUI is not configured (set comfy_url)."), backLink)
 		return
 	}
 
@@ -208,106 +254,130 @@ func (s *Server) handleWorkflowOpenInComfyUI(w http.ResponseWriter, r *http.Requ
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	if err := client.SaveUserWorkflow(ctx, relPath, json.RawMessage(wf.Graph)); err != nil {
-		s.render(w, http.StatusOK, openComfyFailed(cid,
-			"Could not reach ComfyUI to save the workflow — is it running at "+s.cfg.ComfyURL+"?"))
+		s.renderOpenComfyPage(w, openComfyNote("amber",
+			"Could not reach ComfyUI to save the workflow — is it running at "+s.cfg.ComfyURL+"?"), backLink)
 		return
 	}
 
 	out := openComfyView{
-		containerID: cid,
-		extID:       extContainerID(id),
-		workflowID:  id,
-		relPath:     relPath,
-		csrf:        s.csrf,
-		comfyURL:    strings.TrimRight(s.cfg.ComfyURL, "/"),
-		disk:        s.comfyExtStatus(),
-		rootSet:     strings.TrimSpace(s.cfg.ComfyRoot) != "",
+		workflowID: id,
+		relPath:    relPath,
+		helper:     s.comfyHelperState(),
+		comfyURL:   strings.TrimRight(s.cfg.ComfyURL, "/"),
 	}
 
 	probe := s.comfyExtensionProbe(ctx, client)
-	if probe.present {
-		// Jump any already-open editor tab. A helper that vanished between the probe
-		// and this call (a restart, an uninstall) invalidates the cache and falls
-		// through to the honest fallback instead of pretending it worked.
+	out.version = probe.version
+	out.zombie = probe.zombie
+	if probe.usable {
+		out.usable = true
+		// Jump any ALREADY-OPEN editor tab as well, so the user does not end up
+		// with the workflow only in the new tab. A helper that vanished between the
+		// probe and this call invalidates the cache and falls through to the honest
+		// fallback instead of redirecting into a ComfyUI that cannot open anything.
 		octx, ocancel := context.WithTimeout(ctx, extOpenTimeout)
 		err := client.ExtensionOpen(octx, relPath)
 		ocancel()
 		switch {
 		case err == nil:
-			out.detected = true
-			out.version = probe.version
-			out.jumped = true
 		case errors.Is(err, comfy.ErrExtensionAbsent):
 			s.invalidateComfyExtensionProbe()
+			out.usable = false
 		default:
-			// The helper is there but the broadcast failed; the deep link still works.
+			// The helper is there but the broadcast failed; ?cm_open= still works.
 			s.log.Debug("comfy helper open broadcast failed", "err", err)
-			out.detected = true
-			out.version = probe.version
 		}
 	}
-	s.render(w, http.StatusOK, openComfyResult(out))
+
+	if out.usable {
+		if openURL := openComfyDeepLinkURL(out); openURL != "" {
+			// THE point of the whole feature: the tab the click opened becomes the
+			// ComfyUI tab, with the workflow loading in it.
+			http.Redirect(w, r, openURL, http.StatusSeeOther)
+			return
+		}
+		// A helper we cannot build a valid URL for is not usable.
+		out.usable = false
+		out.badURL = true
+	}
+	s.renderOpenComfyPage(w, openComfyResult(out), backLink)
 }
 
-// openComfyView is everything the result fragment needs. It is built entirely
+// openComfyView is everything the result page needs. It is built entirely
 // server-side; nothing in it is echoed back from the request.
 type openComfyView struct {
-	containerID string
-	extID       string
-	workflowID  int64
+	workflowID int64
 	// relPath is the saved workflow path relative to ComfyUI's workflows dir.
 	relPath string
-	csrf    string
 	// comfyURL is the (slash-trimmed) configured ComfyUI base URL.
 	comfyURL string
-	// detected is true when the civitai-manager helper answered its ping route;
-	// version is what it reported. jumped is true when the open broadcast landed.
-	detected bool
-	version  string
-	jumped   bool
-	// disk is the helper's on-disk install state under comfy_root; rootSet reports
-	// whether a comfy_root is configured at all.
-	disk    comfyext.Status
-	rootSet bool
+	// usable is true when the helper answered BOTH detection legs.
+	usable bool
+	// zombie is true for the ping-answers-but-script-is-gone state, which is fixed
+	// by restarting ComfyUI (and by nothing else).
+	zombie bool
+	// badURL is true when comfy_url is not a usable http(s) address to redirect to.
+	badURL bool
+	// version is the helper version the ping reported.
+	version string
+	// helper is the on-disk install state, for the install offer.
+	helper comfyHelperView
 }
 
-// openComfyFailed renders the amber, no-crash outcome (nothing was saved).
-func openComfyFailed(containerID, msg string) g.Node {
-	return h.Div(h.ID(containerID),
-		h.P(h.Class("text-xs text-amber-400"), g.Text(msg)),
+// renderOpenComfyPage renders a standalone page. The "Open in ComfyUI" click is a
+// form submit with target="_blank", so whatever this handler returns is a WHOLE
+// new tab — a bare htmx fragment would land there unstyled and contextless.
+func (s *Server) renderOpenComfyPage(w http.ResponseWriter, body, backLink g.Node) {
+	nodes := []g.Node{pageTitle("Open in ComfyUI"), card(body)}
+	if backLink != nil {
+		nodes = append(nodes, backLink)
+	}
+	s.render(w, http.StatusOK, page("Open in ComfyUI", s.currentTheme(), s.csrf, s.nsfwMode(), railData{}, nodes...))
+}
+
+func openComfyBackLink(id int64) g.Node {
+	return h.A(
+		h.Href("/workflows/"+strconv.FormatInt(id, 10)),
+		h.Class("text-sm text-indigo-400 hover:text-indigo-300"),
+		g.Text("← Back to the workflow"),
 	)
 }
 
-// openComfyResult renders the outcome of a successful save. There are exactly two
-// shapes and both are honest:
+// openComfyNote renders a single-line outcome. tone is "amber" (nothing happened)
+// or "ok".
+func openComfyNote(tone, msg string) g.Node {
+	cls := "text-xs cm-ok"
+	if tone == "amber" {
+		cls = "text-xs text-amber-400"
+	}
+	return h.P(h.Class(cls), g.Text(msg))
+}
+
+// openComfyResult renders the NOT-usable outcome. The workflow was saved, so the
+// job is to say exactly where it landed and how to make the one-click path work —
+// never to fabricate a deep link and never to dump the user in a blank ComfyUI.
 //
-//   - detected: the helper opened (or can open) the REAL saved workflow, so a
-//     ?cm_open= deep link is offered — it works because our helper implements it.
-//   - absent: NO deep link at all. The exact Workflows-menu path with a copy
-//     button, plus the one-click helper install and its restart caveat.
+// It deliberately carries NO uninstall control. A destructive "Remove helper"
+// button sat here before, inline with the success text, and a user clicked it
+// without knowing what it did — which disabled one-click open entirely. Helper
+// management now lives in its own labelled disclosure (comfyHelperDisclosure).
 func openComfyResult(v openComfyView) g.Node {
-	if v.detected {
-		return h.Div(h.ID(v.containerID), h.Class("flex flex-col gap-2"),
-			h.P(h.Class("text-xs cm-ok"), g.Text(openComfyJumpMessage(v.jumped))),
-			openComfyPathLine(v.relPath),
-			openComfyDeepLink(v),
-			h.Div(h.ID(v.extID), openComfyInstalledNote(v)),
-		)
-	}
-	return h.Div(h.ID(v.containerID), h.Class("flex flex-col gap-2"),
-		h.P(h.Class("text-xs cm-ok"),
-			g.Text("Saved into ComfyUI. Open it from the Workflows menu:")),
+	nodes := []g.Node{
+		openComfyNote("ok", "Saved into ComfyUI. Open it from the Workflows menu:"),
 		openComfyPathLine(v.relPath),
-		openComfyPlainLink(v),
-		h.Div(h.ID(v.extID), openComfyInstallOffer(v)),
-	)
-}
-
-func openComfyJumpMessage(jumped bool) string {
-	if jumped {
-		return "Saved into ComfyUI and asked any open ComfyUI tab to jump to it."
 	}
-	return "Saved into ComfyUI. The helper is installed but did not confirm the jump — use the link below."
+	if v.badURL {
+		nodes = append(nodes, openComfyNote("amber",
+			"The configured ComfyUI URL is not a valid http(s) address to open."))
+	}
+	if v.zombie {
+		// The live-caught state: routes still registered from startup, script gone.
+		nodes = append(nodes, openComfyNote("amber",
+			"The ComfyUI helper’s routes are still answering, but its frontend script is no longer being served — so it cannot actually open anything. This is what ComfyUI looks like after the helper is removed or updated: restart ComfyUI once to settle it."))
+	}
+	nodes = append(nodes, openComfyPlainLink(v))
+	nodes = append(nodes, h.Div(h.ID(comfyExtContainerID), openComfyInstallOffer(v)))
+	return h.Div(h.Class("flex flex-col gap-2"), g.Group(nodes))
 }
 
 // openComfyPathLine shows the EXACT menu path the workflow now lives at, with a
@@ -329,21 +399,16 @@ func openComfyPathLine(relPath string) g.Node {
 	)
 }
 
-// openComfyDeepLink renders the ?cm_open= link — ONLY reachable when the helper
-// was detected. The URL is scheme-validated before it becomes an href.
-func openComfyDeepLink(v openComfyView) g.Node {
+// openComfyDeepLinkURL builds the ?cm_open= URL the new tab is redirected to, or
+// "" when the configured ComfyUI URL is not a safe http(s) address. It is reached
+// ONLY when the helper answered both detection legs — the param works because our
+// helper implements it, and for no other reason.
+func openComfyDeepLinkURL(v openComfyView) string {
 	openURL := v.comfyURL + "/?" + openComfyParam + "=" + url.QueryEscape(v.relPath)
 	if !isSafeHTTPURL(openURL) {
-		return h.P(h.Class("text-xs text-amber-400"),
-			g.Text("Saved, but the configured ComfyUI URL is not a valid http(s) address to open."))
+		return ""
 	}
-	return h.A(
-		h.Href(openURL),
-		h.Target("_blank"),
-		g.Attr("rel", "noopener"),
-		h.Class("text-xs text-indigo-400 hover:underline"),
-		g.Text("No ComfyUI tab open? Open it here ↗"),
-	)
+	return openURL
 }
 
 // openComfyPlainLink links the ComfyUI root with NO parameters. Without the helper
@@ -362,49 +427,30 @@ func openComfyPlainLink(v openComfyView) g.Node {
 }
 
 // openComfyInstallOffer is the honest fallback's call to action: explain what the
-// helper is, that it needs one restart, and that it can be removed — or explain
-// why the install is unavailable.
+// helper is, that it needs one restart, and offer the one-click install — or
+// explain why the install is unavailable. It never offers an UNINSTALL.
 func openComfyInstallOffer(v openComfyView) g.Node {
+	hv := v.helper
 	switch {
-	case v.disk.Installed:
-		// On disk but not answering: ComfyUI has not been restarted since.
-		return h.Div(h.Class("flex flex-col gap-1"),
-			h.P(h.Class("text-xs text-amber-400"),
-				g.Text("The ComfyUI helper is installed but not active yet — restart ComfyUI once, then this button will open the workflow directly.")),
-			openComfyRemovalNote(v),
-		)
-	case v.disk.Foreign:
-		return h.P(h.Class("text-xs text-amber-400"),
-			g.Text("A directory named “"+comfyext.DirName+"” already exists in your ComfyUI custom_nodes but was not created by civitai-manager, so it will not be touched. Move or delete it to install the helper."))
-	case !v.rootSet:
+	case hv.disk.Installed && !v.zombie:
+		// On disk but not answering at all: ComfyUI has not been restarted since.
+		return openComfyNote("amber",
+			"The ComfyUI helper is installed but not active yet — restart ComfyUI once, then this button will open the workflow directly.")
+	case hv.disk.Installed:
+		return nil // the zombie note above already says "restart ComfyUI".
+	case hv.disk.Foreign:
+		return openComfyNote("amber",
+			"A directory named “"+comfyext.DirName+"” already exists in your ComfyUI custom_nodes but was not created by civitai-manager, so it will not be touched. Move or delete it to install the helper.")
+	case !hv.rootSet:
 		return h.P(h.Class("text-xs text-slate-500"),
 			g.Text("Tip: set comfy_root (or comfy_model_path) to your ComfyUI install to enable a one-click helper that opens workflows directly."))
 	default:
 		return h.Div(h.Class("flex flex-col gap-1"),
 			h.P(h.Class("text-xs text-slate-500"),
-				g.Text("ComfyUI has no built-in “open this workflow” link. civitai-manager can install a small helper into your ComfyUI ("+v.disk.Dir+") so this button opens the workflow directly. It adds no nodes, and ComfyUI must be restarted once.")),
-			openComfyInstallButton(v, "Install ComfyUI helper"),
+				g.Text("ComfyUI has no built-in “open this workflow” link. civitai-manager can install a small helper into your ComfyUI ("+hv.disk.Dir+") so this button opens the workflow directly. It adds no nodes, and ComfyUI must be restarted once.")),
+			comfyExtInstallButton(hv, "Install ComfyUI helper"),
 		)
 	}
-}
-
-// openComfyInstalledNote is the detected path's small footer: which helper version
-// is running, an update offer when it is out of date, and a way to back it out.
-func openComfyInstalledNote(v openComfyView) g.Node {
-	nodes := []g.Node{
-		h.P(h.Class("text-xs text-slate-500"),
-			g.Text("ComfyUI helper "+openComfyVersionLabel(v.version)+" is active.")),
-	}
-	if v.disk.Installed && v.disk.Outdated && v.rootSet {
-		nodes = append(nodes,
-			h.P(h.Class("text-xs text-amber-400"),
-				g.Text("A newer helper ("+comfyext.ExtensionVersion+") ships with this build — update it, then restart ComfyUI once.")),
-			openComfyInstallButton(v, "Update ComfyUI helper"))
-	}
-	if v.disk.Installed {
-		nodes = append(nodes, openComfyRemovalNote(v))
-	}
-	return h.Div(h.Class("flex flex-col gap-1"), g.Group(nodes))
 }
 
 func openComfyVersionLabel(version string) string {
@@ -414,48 +460,119 @@ func openComfyVersionLabel(version string) string {
 	return "v" + version
 }
 
-// openComfyRemovalNote pairs the uninstall button with what it ACTUALLY does:
-// removing the helper deletes its whole directory, including anything that ended
-// up inside it that civitai-manager did not write (ComfyUI's own __pycache__ is
-// always there). That is the correct behaviour — a partially deleted custom node
-// is worse than none — but the user should not have to guess it.
-func openComfyRemovalNote(v openComfyView) g.Node {
-	return h.Div(h.Class("flex flex-col gap-1"),
-		openComfyUninstallButton(v, "Remove helper"),
-		h.P(h.Class("text-xs text-slate-500"),
-			g.Text("Removing deletes the whole "+v.disk.Dir+" directory, including files civitai-manager did not write (e.g. ComfyUI's __pycache__). Restart ComfyUI once afterwards.")),
+// --- helper management (its own, deliberate surface) ---
+
+// comfyHelperDisclosure is where install/remove live: a COLLAPSED <details>
+// labelled "ComfyUI helper (advanced)", well away from the per-click result.
+//
+// It exists because the uninstall button used to sit inline in the success
+// message, one pixel from "it worked", and a user clicked it without knowing it
+// disabled one-click open. A destructive action that turns a feature off must be
+// somewhere you go on purpose, and must say what it costs BEFORE you click it —
+// this mirrors how the library page presents quarantine (explain the consequence
+// next to the control, not after it).
+//
+// The status shown here is on-disk only (stat calls). It never probes the network:
+// there is a test asserting zero probes on a render path.
+func comfyHelperDisclosure(hv comfyHelperView) g.Node {
+	return h.Details(
+		h.Class("mt-4"),
+		h.Summary(
+			h.Class("cursor-pointer select-none text-sm text-slate-400 hover:text-slate-200"),
+			g.Text("ComfyUI helper (advanced)"),
+		),
+		h.Div(h.Class("mt-3"),
+			h.Div(h.ID(comfyExtContainerID), comfyHelperControls(hv)),
+		),
 	)
 }
 
-func openComfyInstallButton(v openComfyView, label string) g.Node {
+// comfyHelperControls renders the helper's current on-disk status plus the
+// install/update and uninstall actions appropriate to it. It is also what the
+// install/uninstall endpoints swap back in, so the surface always re-states the
+// status after an action.
+func comfyHelperControls(hv comfyHelperView) g.Node {
+	nodes := []g.Node{comfyHelperStatusLine(hv)}
+	switch {
+	case hv.disk.Foreign:
+		nodes = append(nodes, h.P(h.Class("text-xs text-amber-400"),
+			g.Text("A directory named “"+comfyext.DirName+"” already exists in your ComfyUI custom_nodes but was not created by civitai-manager, so civitai-manager will neither overwrite nor remove it. Move or delete it yourself first.")))
+	case !hv.rootSet:
+		nodes = append(nodes, h.P(h.Class("text-xs text-slate-500"),
+			g.Text("Set comfy_root (or comfy_model_path) to your ComfyUI install directory to manage the helper from here.")))
+	case hv.disk.Installed:
+		if hv.disk.Outdated {
+			nodes = append(nodes,
+				h.P(h.Class("text-xs text-amber-400"),
+					g.Text("A newer helper ("+comfyext.ExtensionVersion+") ships with this build. Updating replaces the files in place; ComfyUI must be restarted once afterwards.")),
+				comfyExtInstallButton(hv, "Update ComfyUI helper"))
+		}
+		nodes = append(nodes, comfyHelperUninstallBlock(hv))
+	default:
+		nodes = append(nodes,
+			h.P(h.Class("text-xs text-slate-500"),
+				g.Text("The helper adds no nodes. It adds a feature-detection route, a route that tells an already-open ComfyUI tab to jump to a workflow, and a small script that honours the ?"+openComfyParam+"= link. ComfyUI must be restarted once after installing.")),
+			comfyExtInstallButton(hv, "Install ComfyUI helper"))
+	}
+	return h.Div(h.Class("flex flex-col gap-2"), g.Group(nodes))
+}
+
+func comfyHelperStatusLine(hv comfyHelperView) g.Node {
+	var msg string
+	switch {
+	case !hv.rootSet:
+		msg = "Status: no ComfyUI install directory configured."
+	case hv.disk.Foreign:
+		msg = "Status: not installed by civitai-manager (" + hv.disk.Dir + " exists but is not ours)."
+	case hv.disk.Installed:
+		msg = "Status: installed (" + openComfyVersionLabel(hv.disk.Version) + ") at " + hv.disk.Dir + "."
+	default:
+		msg = "Status: not installed. One-click “Open in ComfyUI” will save the workflow and tell you where it went, but cannot open it for you."
+	}
+	return h.P(h.Class("text-xs text-slate-300"), g.Text(msg))
+}
+
+// comfyHelperUninstallBlock states the CONSEQUENCE above the button, not after it.
+func comfyHelperUninstallBlock(hv comfyHelperView) g.Node {
+	return h.Div(h.Class("flex flex-col gap-1 border-t border-slate-800 pt-3"),
+		h.P(h.Class("text-xs text-amber-400"),
+			g.Text("Uninstall the ComfyUI helper — one-click open will stop working. “Open in ComfyUI” will still save the workflow into ComfyUI, but you will have to open it yourself from the Workflows menu.")),
+		h.P(h.Class("text-xs text-slate-500"),
+			g.Text("Removing deletes the whole "+hv.disk.Dir+" directory, including files civitai-manager did not write (e.g. ComfyUI’s __pycache__). ComfyUI must be restarted once afterwards to unregister its routes.")),
+		h.Div(comfyExtUninstallButton(hv, "Uninstall ComfyUI helper")),
+	)
+}
+
+func comfyExtInstallButton(hv comfyHelperView, label string) g.Node {
 	return civButton("outline", "sm", []g.Node{
 		h.Type("button"),
 		hx("post", "/comfy/extension/install"),
-		hx("vals", extActionVals(v)),
-		hx("target", "#"+v.extID),
+		hx("vals", comfyExtActionVals(hv)),
+		hx("target", "#"+comfyExtContainerID),
 		hx("swap", "innerHTML"),
 		hx("disabled-elt", "this"),
 		g.Attr("aria-label", "Install the civitai-manager helper into ComfyUI"),
 	}, g.Text(label))
 }
 
-func openComfyUninstallButton(v openComfyView, label string) g.Node {
+func comfyExtUninstallButton(hv comfyHelperView, label string) g.Node {
 	return civButton("subtle", "sm", []g.Node{
 		h.Type("button"),
 		hx("post", "/comfy/extension/uninstall"),
-		hx("vals", extActionVals(v)),
-		hx("target", "#"+v.extID),
+		hx("vals", comfyExtActionVals(hv)),
+		hx("target", "#"+comfyExtContainerID),
 		hx("swap", "innerHTML"),
 		hx("disabled-elt", "this"),
-		g.Attr("aria-label", "Remove the civitai-manager helper from ComfyUI"),
+		hx("confirm", "Uninstall the ComfyUI helper? One-click “Open in ComfyUI” will stop working until you install it again."),
+		g.Attr("aria-label", "Uninstall the civitai-manager helper from ComfyUI"),
 	}, g.Text(label))
 }
 
-// extActionVals builds the hx-vals JSON for an install/uninstall click. workflow_id
-// only ever names the container to swap; it is re-parsed as an int64 server-side,
-// so it can never inject markup.
-func extActionVals(v openComfyView) string {
-	return fmt.Sprintf(`{"csrf_token":%q,"workflow_id":%q}`, v.csrf, strconv.FormatInt(v.workflowID, 10))
+// comfyExtActionVals builds the hx-vals JSON for an install/uninstall click. It
+// carries the CSRF token and NOTHING else — the container these actions swap is a
+// constant, so no request value is ever reflected into the response markup.
+func comfyExtActionVals(hv comfyHelperView) string {
+	return fmt.Sprintf(`{"csrf_token":%q}`, hv.csrf)
 }
 
 // handleComfyExtensionInstall writes the embedded ComfyUI helper into the user's
@@ -485,19 +602,13 @@ func (s *Server) handleComfyExtensionAction(w http.ResponseWriter, r *http.Reque
 	if !s.gate(w) {
 		return
 	}
-	// workflow_id only names the container to swap. Parse it strictly and re-render
-	// it from the parsed int64 so nothing from the request reaches the markup.
-	wfID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("workflow_id")), 10, 64)
-	if err != nil || wfID < 0 {
-		http.Error(w, "bad workflow id", http.StatusBadRequest)
-		return
-	}
-	cid := extContainerID(wfID)
-
+	// These endpoints take NO request-supplied values beyond the CSRF token: the
+	// helper is a single server-wide install and the container they swap is a
+	// constant, so there is nothing to validate and nothing to reflect.
 	root := strings.TrimSpace(s.cfg.ComfyRoot)
 	if root == "" {
-		s.render(w, http.StatusOK, extActionResult(cid, false,
-			"No ComfyUI install directory is configured. Set comfy_root (or comfy_model_path, whose parent is used when it looks like a ComfyUI install)."))
+		s.renderComfyExtResult(w, false,
+			"No ComfyUI install directory is configured. Set comfy_root (or comfy_model_path, whose parent is used when it looks like a ComfyUI install).")
 		return
 	}
 
@@ -506,14 +617,18 @@ func (s *Server) handleComfyExtensionAction(w http.ResponseWriter, r *http.Reque
 		s.invalidateComfyExtensionProbe()
 		switch {
 		case err == nil:
-			s.render(w, http.StatusOK, extActionResult(cid, true,
-				"Removed the ComfyUI helper — the whole "+comfyext.Dir(root)+" directory is gone, including files civitai-manager did not write (e.g. ComfyUI's __pycache__). Restart ComfyUI once to finish removing it."))
+			// Be honest about the zombie: ComfyUI registered the helper's routes at
+			// startup and still holds them, so /civitai-manager/ping keeps answering
+			// until a restart. civitai-manager already reports the helper as NOT
+			// installed (detection also requires the frontend script, which is gone
+			// with the directory), but ComfyUI itself is not fully clean yet.
+			s.renderComfyExtResult(w, true,
+				"Removed the ComfyUI helper — the whole "+comfyext.Dir(root)+" directory is gone, including files civitai-manager did not write (e.g. ComfyUI’s __pycache__). One-click open is off from now on. RESTART ComfyUI once to finish removing it: its helper routes were registered at startup and stay live in memory until then.")
 		case errors.Is(err, comfyext.ErrNotInstalled):
-			s.render(w, http.StatusOK, extActionResult(cid, true,
-				"The ComfyUI helper is not installed — nothing to remove."))
+			s.renderComfyExtResult(w, true, "The ComfyUI helper is not installed — nothing to remove.")
 		default:
 			s.log.Warn("comfy helper uninstall failed", "err", err)
-			s.render(w, http.StatusOK, extActionResult(cid, false, err.Error()))
+			s.renderComfyExtResult(w, false, err.Error())
 		}
 		return
 	}
@@ -522,56 +637,65 @@ func (s *Server) handleComfyExtensionAction(w http.ResponseWriter, r *http.Reque
 	s.invalidateComfyExtensionProbe()
 	if err != nil {
 		s.log.Warn("comfy helper install failed", "root", root, "err", err)
-		s.render(w, http.StatusOK, extActionResult(cid, false, err.Error()))
+		s.renderComfyExtResult(w, false, err.Error())
 		return
 	}
-	s.render(w, http.StatusOK, extActionResult(cid, true,
+	s.renderComfyExtResult(w, true,
 		"Installed the ComfyUI helper (v"+comfyext.ExtensionVersion+") into "+st.Dir+
-			". RESTART ComfyUI once, then click “Open in ComfyUI” again — it will open the workflow directly."))
+			". RESTART ComfyUI once, then “Open in ComfyUI” will open the workflow directly.")
 }
 
-// extActionResult renders an install/uninstall outcome inside the nested helper
-// container. The message may embed a filesystem path or an OS error string, so it
-// is always emitted through g.Text (escaped).
-func extActionResult(containerID string, ok bool, msg string) g.Node {
+// renderComfyExtResult renders an install/uninstall outcome INSIDE the helper
+// container, followed by the freshly re-read management controls — so the surface
+// always shows the new status without a page reload. The message may embed a
+// filesystem path or an OS error string, so it is always emitted through g.Text
+// (escaped).
+func (s *Server) renderComfyExtResult(w http.ResponseWriter, ok bool, msg string) {
 	cls := "text-xs text-amber-400"
 	if ok {
 		cls = "text-xs cm-ok"
 	}
-	return h.Div(h.ID(containerID), h.P(h.Class(cls), g.Text(msg)))
+	s.render(w, http.StatusOK, h.Div(h.ID(comfyExtContainerID), h.Class("flex flex-col gap-2"),
+		h.P(h.Class(cls), g.Text(msg)),
+		comfyHelperControls(s.comfyHelperState()),
+	))
 }
 
 // workflowOpenComfyCard is the "Open in ComfyUI" affordance on the workflow detail
-// page — SEPARATE from the "Run on ComfyUI" panel. It writes the UI graph into the
-// editor's workflow store and then opens (or tells the user exactly how to open)
-// it. Rendered ONLY for UI-format workflows with a configured comfy_url (the caller
-// gates on both); the button POSTs the loopback-gated endpoint (CSRF via hx-vals)
-// and swaps its own container.
+// page — SEPARATE from the "Run on ComfyUI" panel.
 //
-// The card itself does NO helper probing: detection is a network round-trip and
-// must not run on every page render, so it happens once per click (cached for
-// extProbeTTL) and the outcome is rendered into the container below.
-func workflowOpenComfyCard(id int64, csrf string) g.Node {
-	cid := openComfyContainerID(id)
+// The control is a real <form method="post" target="_blank">, NOT an htmx button.
+// That is deliberate: a form submit opens the new tab synchronously from the click
+// itself, so the browser never treats it as a popup, and the handler can redirect
+// that tab straight into ComfyUI. An htmx POST could only respond with markup —
+// which is how this ended up rendering "we saved it, now click this OTHER link"
+// instead of just opening the workflow.
+//
+// The card does NO helper probing: detection is a network round-trip and must not
+// run on every page render. It happens once per click (cached for extProbeTTL).
+// The helper-management disclosure below it reads on-disk state only.
+func workflowOpenComfyCard(id int64, csrf string, hv comfyHelperView) g.Node {
 	ids := strconv.FormatInt(id, 10)
 	return card(
 		sectionTitle("Open in ComfyUI"),
 		h.P(h.Class("text-sm text-slate-400 mb-3"),
 			g.Text("Save this workflow into your ComfyUI editor (under the “"+openComfyDir+"” folder) and open it there.")),
-		h.Div(
-			h.ID(cid),
+		h.Form(
+			h.Method("post"),
+			h.Action("/workflows/"+ids+"/open-in-comfyui"),
+			// The new tab IS the ComfyUI tab: the handler redirects it to
+			// ?cm_open=<path> when the helper is usable.
+			h.Target("_blank"),
+			g.Attr("rel", "noopener"),
+			csrfInput(csrf),
 			civButton("outline", "md", []g.Node{
-				h.Type("button"),
-				hx("post", "/workflows/"+ids+"/open-in-comfyui"),
-				hx("vals", fmt.Sprintf(`{"csrf_token":%q}`, csrf)),
-				hx("target", "#"+cid),
-				hx("swap", "innerHTML"),
-				hx("disabled-elt", "this"),
+				h.Type("submit"),
 				g.Attr("aria-label", "Open this workflow in the ComfyUI editor"),
 			},
 				g.Text("Open in ComfyUI "),
 				h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("↗")),
 			),
 		),
+		comfyHelperDisclosure(hv),
 	)
 }

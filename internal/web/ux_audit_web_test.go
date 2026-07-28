@@ -75,7 +75,7 @@ func fullPages(t *testing.T) map[string]string {
 		"trash":             renderString(t, trashPage(nil, "csrf", "dark", NSFWBlur)),
 		"outputs":           renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", "dark", NSFWBlur)),
 		"generation":        renderString(t, generationDetailPage(gen, nil, "csrf", "dark", NSFWBlur)),
-		"workflow":          renderString(t, workflowDetailPage(wf, "{}", "csrf", "dark", NSFWBlur, nil, false, workflowResolver{})),
+		"workflow":          renderString(t, workflowDetailPage(wf, "{}", "csrf", "dark", NSFWBlur, nil, false, comfyHelperView{}, workflowResolver{})),
 		"discover-workflow": renderString(t, workflowDiscoverPage("", searchRes, "", "dark", NSFWBlur, "", "", "csrf")),
 		"discover-apps":     renderString(t, appsDiscoverPage(nil, "dark", NSFWBlur, "", "", "", "csrf")),
 	}
@@ -305,7 +305,7 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 		"workflow resources": renderString(t, workflowDetailPage(
 			&store.Workflow{ID: 1, Name: "w", Format: store.WorkflowFormatAPI, Graph: "{}",
 				Resources: []string{long}},
-			"{}", "csrf", "dark", NSFWBlur, nil, false, workflowResolver{})),
+			"{}", "csrf", "dark", NSFWBlur, nil, false, comfyHelperView{}, workflowResolver{})),
 		"run preflight missing list": renderString(t, missingList("Missing", []string{long})),
 		"structured graph listing": renderString(t, workflowGraphSection(
 			[]byte(`{"nodes":[{"id":1,"type":"`+long+`","inputs":[{"name":"`+long+`"}]}]}`),

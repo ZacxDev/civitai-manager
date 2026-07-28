@@ -60,7 +60,8 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 	runSection := g.Group(sectionNodes)
 	comfyConfigured := strings.TrimSpace(s.cfg.ComfyURL) != ""
 	s.render(w, http.StatusOK, workflowDetailPage(wf, prettyJSON(wf.Graph),
-		s.csrf, s.currentTheme(), s.nsfwMode(), runSection, comfyConfigured, s.workflowResolver(),
+		s.csrf, s.currentTheme(), s.nsfwMode(), runSection, comfyConfigured,
+		s.comfyHelperState(), s.workflowResolver(),
 		s.rail(r.Context())))
 }
 
