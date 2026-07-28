@@ -35,6 +35,9 @@ type comfyClient interface {
 	History(ctx context.Context, promptID string) (*comfy.HistoryEntry, error)
 	View(ctx context.Context, ref comfy.ImageRef) ([]byte, string, error)
 	Interrupt(ctx context.Context) error
+	// SaveUserWorkflow writes a UI-format graph into ComfyUI's user workflow store
+	// (the "Open in ComfyUI" path). relPath is sanitized by the caller.
+	SaveUserWorkflow(ctx context.Context, relPath string, graph json.RawMessage) error
 }
 
 // Run phases (job.phase).

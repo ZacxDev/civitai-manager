@@ -131,7 +131,7 @@ func workflowScanTerminal(wfs []store.Workflow, snap workflowScanSnapshot, csrf 
 		h.Class("space-y-4"),
 		workflowScanFormCard(csrf, extraAllowed),
 		g.If(status != nil, card(h.Class("space-y-1"), sectionTitle("Workflow scan"), status)),
-		workflowList(wfs, csrf, resolver),
+		workflowList(wfs, csrf, extraAllowed, resolver),
 	)
 }
 

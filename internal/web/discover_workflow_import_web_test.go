@@ -427,13 +427,12 @@ func TestImportResultDeepLinksSingle(t *testing.T) {
 	if len(wfs) != 1 {
 		t.Fatalf("stored %d workflows, want 1", len(wfs))
 	}
-	wantHref := fmt.Sprintf(`href="/workflows/%d"`, wfs[0].ID)
+	// The single-import "View in library" outcome now deep-links to the item IN the
+	// library list (#wf-<id> scroll-to + highlight), not the standalone detail page.
+	wantHref := fmt.Sprintf(`href="/library?tab=workflows#wf-%d"`, wfs[0].ID)
 	body := rec.Body.String()
 	if !strings.Contains(body, wantHref) {
 		t.Fatalf("expected single-import deep link %q, got:\n%s", wantHref, body)
-	}
-	if strings.Contains(body, "/library?tab=workflows") {
-		t.Errorf("single import should NOT fall back to the library tab:\n%s", body)
 	}
 }
 

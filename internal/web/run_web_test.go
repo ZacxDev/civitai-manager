@@ -28,6 +28,11 @@ type fakeComfy struct {
 	submitCalled    bool
 	submittedGraph  json.RawMessage
 	interruptCalled bool
+	// SaveUserWorkflow recording (the "Open in ComfyUI" path).
+	saveErr      error
+	savedRelPath string
+	savedGraph   json.RawMessage
+	saveCalled   bool
 }
 
 func (f *fakeComfy) SystemStats(context.Context) (*comfy.SystemStats, error) {
@@ -57,6 +62,12 @@ func (f *fakeComfy) View(context.Context, comfy.ImageRef) ([]byte, string, error
 func (f *fakeComfy) Interrupt(context.Context) error {
 	f.interruptCalled = true
 	return nil
+}
+func (f *fakeComfy) SaveUserWorkflow(_ context.Context, relPath string, graph json.RawMessage) error {
+	f.saveCalled = true
+	f.savedRelPath = relPath
+	f.savedGraph = graph
+	return f.saveErr
 }
 
 func seedWorkflow(t *testing.T, srv *Server, format, graph string) string {

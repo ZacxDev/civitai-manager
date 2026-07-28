@@ -651,3 +651,107 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 .cm-wf-group-header:first-child {
   margin-top: 0;
 }
+
+/*
+ * .cm-wf-highlight — the "View in library" deep-link pulse. The workflows-tab
+ * deep-link script (workflowDeeplinkScript) adds this class to the targeted
+ * #wf-<id> item so it briefly glows an accent ring that fades over ~1.5s, then
+ * removes it. Accent comes from the --civitai-* tokens so both data-theme paths
+ * render; kept here (not a Tailwind utility) so no new class enters the purged
+ * output.css build. Reduced-motion → a STATIC accent ring (no animation).
+ */
+.cm-wf-highlight {
+  border-radius: 0.5rem;
+  animation: cm-wf-pulse 1.5s ease-out 1;
+}
+@keyframes cm-wf-pulse {
+  0% {
+    box-shadow: 0 0 0 3px var(--civitai-color-primary),
+      0 0 14px 3px var(--civitai-color-primary);
+  }
+  70% {
+    box-shadow: 0 0 0 3px var(--civitai-color-primary),
+      0 0 10px 2px var(--civitai-color-primary);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-wf-highlight {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--civitai-color-primary);
+  }
+}
+
+/*
+ * .cm-lift — a SUBTLE hover-lift shared by the redesigned workflow list-item
+ * cards (piece 4) and the tab primary-action cards (piece 5): a small translate
+ * up + shadow on hover/focus-within, with a fast transition. Motion is disabled
+ * under prefers-reduced-motion (the border/color affordances still apply). Kept
+ * here (not a Tailwind utility) so no new class enters the purged output.css.
+ */
+.cm-lift {
+  transition: transform 0.15s ease, box-shadow 0.15s ease,
+    border-color 0.15s ease;
+}
+.cm-lift:hover,
+.cm-lift:focus-within {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px -8px rgba(0, 0, 0, 0.45);
+  border-color: var(--civitai-color-primary);
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-lift {
+    transition: border-color 0.15s ease;
+  }
+  .cm-lift:hover,
+  .cm-lift:focus-within {
+    transform: none;
+    box-shadow: none;
+  }
+}
+
+/*
+ * .cm-cta-icon — the animated leading glyph on the tab primary-action buttons
+ * (piece 5). A gentle horizontal nudge on hover/focus of the enclosing control.
+ * Disabled under prefers-reduced-motion.
+ */
+.cm-cta-icon {
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+[data-civitai-ui="button"]:hover .cm-cta-icon,
+[data-civitai-ui="button"]:focus-visible .cm-cta-icon,
+.cm-lift:hover .cm-cta-icon,
+.cm-lift:focus-within .cm-cta-icon {
+  transform: translateX(3px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-cta-icon {
+    transition: none;
+  }
+  [data-civitai-ui="button"]:hover .cm-cta-icon,
+  [data-civitai-ui="button"]:focus-visible .cm-cta-icon,
+  .cm-lift:hover .cm-cta-icon,
+  .cm-lift:focus-within .cm-cta-icon {
+    transform: none;
+  }
+}
+
+/*
+ * .cm-wf-thumbs — the redesigned workflow list-item showcase strip (piece 4). A
+ * graceful placeholder (.cm-wf-noimg) renders when a workflow has no linked
+ * model/showcase. Theme-aware via --civitai-* tokens.
+ */
+.cm-wf-noimg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 6rem;
+  border-radius: 0.5rem;
+  border: 1px dashed var(--civitai-color-border);
+  color: var(--civitai-color-text-dimmed);
+  font-size: 0.75rem;
+  background: var(--civitai-color-surface);
+}

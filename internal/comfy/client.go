@@ -485,6 +485,39 @@ func (c *Client) Interrupt(ctx context.Context) error {
 	return nil
 }
 
+// --- /userdata (save a workflow into the ComfyUI editor's library) ---
+
+// SaveUserWorkflow writes graph into ComfyUI's user workflow store so it appears
+// in the editor's Workflows menu. relPath is the destination RELATIVE to the
+// workflows directory (e.g. "civitai-manager/portrait-7.json"); the caller is
+// responsible for sanitizing it (no "..", no absolute path). The ComfyUI endpoint
+// is POST /userdata/{file} where {file} is the URL-encoded path INCLUDING the
+// "workflows/" prefix — verified live against ComfyUI 0.27.1: a 200 with the
+// stored path echoed back, listable via GET /userdata?dir=workflows&recurse=true.
+//
+// The body is written verbatim (ComfyUI stores the raw bytes); graph is the
+// UI-format editor graph. The response is bounded (untrusted server).
+func (c *Client) SaveUserWorkflow(ctx context.Context, relPath string, graph json.RawMessage) error {
+	// {file} is a single, URL-encoded path segment: encode each component and join
+	// with %2F so a slash in relPath maps to the encoded separator ComfyUI expects.
+	parts := strings.Split("workflows/"+strings.TrimLeft(relPath, "/"), "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	path := "/userdata/" + strings.Join(parts, "%2F")
+	resp, err := c.do(ctx, http.MethodPost, path, bytes.NewReader(graph))
+	if err != nil {
+		return fmt.Errorf("save workflow: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		data, _ := readBounded(resp.Body, maxJSONBytes)
+		return statusError("save workflow", resp.StatusCode, data)
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	return nil
+}
+
 // --- /system_stats ---
 
 // SystemStats is a health/version probe of the ComfyUI server.

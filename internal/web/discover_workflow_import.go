@@ -360,9 +360,12 @@ func workflowImportResult(modelID int, msg string, ok bool, workflowID int64) g.
 	if ok {
 		cls = "text-xs font-medium cm-ok"
 	}
+	// Deep-link to the imported item IN the library list (scroll-to + highlight via
+	// the workflows-tab deeplink script), not the standalone detail page — the user
+	// lands where the workflow lives among the others.
 	href := "/library?tab=workflows"
 	if workflowID > 0 {
-		href = fmt.Sprintf("/workflows/%d", workflowID)
+		href = fmt.Sprintf("/library?tab=workflows#wf-%d", workflowID)
 	}
 	return g.Group([]g.Node{
 		h.P(h.Class(cls), g.Text(msg)),

@@ -135,7 +135,7 @@ func TestLibraryTabStripUnderlineMarkup(t *testing.T) {
 // bare scan button) when no install directories have been selected yet.
 func TestFilesTabEmptyStateWhenNoDirs(t *testing.T) {
 	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf", true, nil, "dark", "files", nil, false, nil, NSFWBlur, libraryWorkflowsView{}))
-	if !strings.Contains(out, "Add install directories first") {
+	if !strings.Contains(out, "No install directories yet") {
 		t.Errorf("files tab with no dirs should show the empty state:\n%s", out)
 	}
 	if strings.Contains(out, "Scan for model files") {

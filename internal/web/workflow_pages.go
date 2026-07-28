@@ -22,6 +22,24 @@ type workflowResolver struct {
 	cachedModel func(id int) (name string, raw []byte, ok bool)
 	// haveFile reports whether a file with the given basename exists locally.
 	haveFile func(basename string) bool
+	// nsfwMode is the persisted NSFW display mode (hide|blur|show) threaded to the
+	// list-item showcase carousels so they honor it (carried on the resolver to
+	// avoid threading it through workflowList/Item/Card + the scan-terminal path).
+	nsfwMode string
+}
+
+// showcase returns the linked model's showcase gallery (from the LOCAL model_cache
+// raw — never a civitai fetch), capped like a search card. Nil when the model is
+// uncached or carries no inline images (the card then renders a placeholder).
+func (r workflowResolver) showcase(modelID int) []galleryImage {
+	if r.cachedModel == nil {
+		return nil
+	}
+	_, raw, ok := r.cachedModel(modelID)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	return cardCarouselImages(raw)
 }
 
 // modelName returns the cached, non-blank model name, ok=false when uncached (so
@@ -126,7 +144,11 @@ func workflowImportPanel(csrf string, extraAllowed bool) g.Node {
 		// Inline open — no external script. showModal() gives the native top-layer
 		// modal + backdrop; the dialog id is a constant, not user input.
 		g.Attr("onclick", "document.getElementById('"+workflowImportDialogID+"').showModal()"),
-	}, g.Text("Import a workflow"))
+		g.Attr("aria-label", "Add a workflow — paste JSON or upload a ComfyUI PNG"),
+	},
+		h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("＋ ")),
+		g.Text("Add a workflow"),
+	)
 
 	dialog := h.Dialog(
 		h.ID(workflowImportDialogID),
@@ -178,9 +200,10 @@ func workflowImportPanel(csrf string, extraAllowed bool) g.Node {
 	)
 
 	return card(
-		sectionTitle("Import a workflow"),
+		h.Class("cm-lift"),
+		sectionTitle("Add a workflow"),
 		h.P(h.Class("text-sm text-slate-400 mb-3"),
-			g.Text("Paste an API/UI graph or extract one from a ComfyUI PNG.")),
+			g.Text("Paste an API/UI graph or extract one from a ComfyUI PNG. To index workflows already saved in your ComfyUI installs, use “Scan for workflows” below.")),
 		trigger,
 		dialog,
 	)
@@ -227,10 +250,9 @@ var workflowFormatFilterOptions = []selectOption{
 // are workflows it prepends a read-only controls bar (sort / text filter / source +
 // format filter / group-by-base toggle) that a small INLINE script (no external
 // asset — offline-safe) drives entirely client-side over per-card data-* attributes.
-func workflowList(wfs []store.Workflow, csrf string, resolver workflowResolver) g.Node {
+func workflowList(wfs []store.Workflow, csrf string, extraAllowed bool, resolver workflowResolver) g.Node {
 	if len(wfs) == 0 {
-		return card(h.P(h.Class("text-slate-400 text-center py-6"),
-			g.Text("No workflows yet. Import one above to get started.")))
+		return workflowEmptyState(extraAllowed)
 	}
 	items := make([]g.Node, 0, len(wfs))
 	for _, wf := range wfs {
@@ -241,7 +263,72 @@ func workflowList(wfs []store.Workflow, csrf string, resolver workflowResolver) 
 		workflowControlsBar(),
 		h.Div(h.ID(workflowListID), h.Class("space-y-4"), g.Group(items)),
 		workflowControlsScript(),
+		workflowDeeplinkScript(),
+		// The shared lightbox + carousel scripts the card showcase strips reuse
+		// (the same ones the model-search / discover cards rely on). Included once
+		// here in the swapped fragment (idempotent re-definition), so a card tile can
+		// open the lightbox and the prev/next buttons scroll — offline/vendored only.
+		lightboxOverlay(),
+		modelPageScript(),
+		libraryCarouselScript(),
 	)
+}
+
+// workflowDeeplinkScript is the self-contained (no-CDN, offline-safe) "View in
+// library" deep-link handler. On load — and after every htmx swap settles — it
+// checks location.hash for a #wf-<id> anchor; when it matches a rendered item it
+// scrolls it into view and briefly applies the .cm-wf-highlight pulse (a subtle
+// accent ring that fades ~1.5s; reduced-motion → a static ring, honored entirely
+// in CSS). It binds its htmx:afterSettle listener exactly ONCE (a window guard),
+// so re-emitting this script after a scan-poller innerHTML swap never stacks
+// duplicate listeners and never orphans the scan poller. NON-DOM caveat: the
+// scroll/highlight behavior is markup-verified only (no browser here).
+func workflowDeeplinkScript() g.Node {
+	const js = `
+function cmWfDeeplink(){
+  var m = (window.location.hash || '').match(/^#wf-(\d+)$/);
+  if(!m){ return; }
+  var el = document.getElementById('wf-' + m[1]);
+  if(!el){ return; }
+  try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+  catch(e) { el.scrollIntoView(); }
+  el.classList.remove('cm-wf-highlight');
+  void el.offsetWidth; // reflow so re-adding the class restarts the animation
+  el.classList.add('cm-wf-highlight');
+  window.setTimeout(function(){ el.classList.remove('cm-wf-highlight'); }, 2000);
+}
+if(!window.__cmWfDeeplinkBound){
+  window.__cmWfDeeplinkBound = true;
+  document.body.addEventListener('htmx:afterSettle', cmWfDeeplink);
+}
+cmWfDeeplink();
+`
+	return h.Script(g.Raw(js))
+}
+
+// workflowEmptyState is the friendly, guided empty state shown when the library
+// holds no workflows: a short heading + explainer and (on a loopback bind, where
+// the import dialog exists) a single primary CTA that opens the SAME "Add a
+// workflow" dialog. When import is gated off (non-loopback) the CTA is omitted —
+// the panel's gating note already explains why — so the button can never open a
+// dialog that was not rendered.
+func workflowEmptyState(extraAllowed bool) g.Node {
+	children := []g.Node{
+		h.H3(h.Class("text-base font-semibold text-slate-200"), g.Text("No workflows yet")),
+		h.P(h.Class("mx-auto mt-1 mb-3 max-w-md text-sm text-slate-400"),
+			g.Text("Add a ComfyUI workflow to run it locally, organize it, and link it to your models — paste an API/UI graph, extract one from a PNG, or scan your installs.")),
+	}
+	if extraAllowed {
+		children = append(children, civButton("filled", "md", []g.Node{
+			h.Type("button"),
+			g.Attr("onclick", "document.getElementById('"+workflowImportDialogID+"').showModal()"),
+			g.Attr("aria-label", "Add your first workflow"),
+		},
+			h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("＋ ")),
+			g.Text("Add a workflow"),
+		))
+	}
+	return card(h.Class("cm-lift py-6 text-center"), g.Group(children))
 }
 
 // workflowListItem wraps one workflowCard in a data-attributed container the
@@ -255,6 +342,9 @@ func workflowListItem(wf store.Workflow, csrf string, resolver workflowResolver)
 		name = "workflow #" + strconv.FormatInt(wf.ID, 10)
 	}
 	return h.Div(
+		// Stable anchor for the "View in library" deep-link (#wf-<id>): the
+		// workflows-tab deeplink script scrolls to + briefly highlights this node.
+		h.ID("wf-"+strconv.FormatInt(wf.ID, 10)),
 		h.Class("cm-wf-item"),
 		dataAttr("name", name),
 		dataAttr("source", wf.Source),
@@ -393,7 +483,36 @@ cmWfApply();
 	return h.Script(g.Raw(js))
 }
 
-// workflowCard renders one stored workflow.
+// workflowFormatBadge renders the format badge with a friendly label: an API
+// graph is "Runnable API" (green — it can be submitted to ComfyUI), a UI graph is
+// "UI" (neutral). Shared by the list card and elsewhere.
+func workflowFormatBadge(format string) g.Node {
+	if format == store.WorkflowFormatAPI {
+		return badge("Runnable API", "green")
+	}
+	return badge("UI", "slate")
+}
+
+// workflowCardShowcase renders the list card's CivitAI showcase strip, REUSING the
+// same NSFW-aware carousel the model-search / Discover-workflows cards use
+// (modelCardCarousel). The images come from the workflow's linked model's LOCAL
+// model_cache raw (never a fetch). When there is no linked model or no cached
+// showcase it degrades to a tasteful placeholder — never a broken image.
+func workflowCardShowcase(wf store.Workflow, resolver workflowResolver) g.Node {
+	if wf.ModelID != nil {
+		if imgs := resolver.showcase(*wf.ModelID); len(imgs) > 0 {
+			return modelCardCarousel(*wf.ModelID, imgs, resolver.nsfwMode)
+		}
+	}
+	return h.Div(h.Class("cm-wf-noimg"), g.Text("No preview"))
+}
+
+// workflowCard renders one stored workflow as a richer, scannable card: a CivitAI
+// showcase strip (NSFW-aware, reused from the discover cards), the name, base-model
+// + format badges, model/version linkage, and the action row. A subtle hover-lift
+// (.cm-lift, reduced-motion-safe) is applied. The sort/filter data-* attributes
+// and the #wf-<id> anchor live on the wrapping .cm-wf-item (workflowListItem), so
+// this redesign leaves the client-side controls + deep-link untouched.
 func workflowCard(wf store.Workflow, csrf string, resolver workflowResolver) g.Node {
 	id := strconv.FormatInt(wf.ID, 10)
 
@@ -402,15 +521,12 @@ func workflowCard(wf store.Workflow, csrf string, resolver workflowResolver) g.N
 		name = "workflow #" + id
 	}
 
-	// Format badge: api (runnable) is highlighted, ui is neutral.
-	fmtVariant := "slate"
-	if wf.Format == store.WorkflowFormatAPI {
-		fmtVariant = "green"
-	}
-
 	var meta []g.Node
-	meta = append(meta, badge(wf.Format, fmtVariant))
-	meta = append(meta, badge(wf.Source, "slate"))
+	meta = append(meta, workflowFormatBadge(wf.Format))
+	if b := strings.TrimSpace(wf.BaseModel); b != "" {
+		meta = append(meta, badge(b, "blue"))
+	}
+	meta = append(meta, badge(optionLabel(workflowSourceFilterOptions, wf.Source), "slate"))
 	if wf.IsGolden {
 		meta = append(meta, badge("golden ✓", "amber"))
 	}
@@ -461,14 +577,69 @@ func workflowCard(wf store.Workflow, csrf string, resolver workflowResolver) g.N
 	actions = append(actions, postButton("/workflows/"+id+"/delete", csrf, nil, "subtle", "Delete"))
 
 	return card(
+		h.Class("cm-lift"),
+		// CivitAI showcase strip (NSFW-aware) — reused from the discover cards; a
+		// placeholder renders when the workflow has no linked model/showcase.
+		h.Div(h.Class("mb-3"), workflowCardShowcase(wf, resolver)),
 		h.Div(h.Class("flex items-start justify-between gap-4"),
 			h.Div(
-				h.H3(h.Class("text-lg font-semibold text-slate-100"), g.Text(name)),
+				h.A(h.Href("/workflows/"+id),
+					h.Class("text-lg font-semibold text-slate-100 hover:text-white"),
+					g.Text(name)),
 				h.Div(h.Class("flex flex-wrap items-center gap-2 mt-2"), g.Group(meta)),
 			),
 		),
 		h.Div(h.Class("flex flex-wrap items-center gap-2 mt-4"), g.Group(actions)),
 	)
+}
+
+// workflowSourceLinks renders the workflow's PROVENANCE block at the top of the
+// detail "Details" card: a source chip (Imported / Discovered / Scanned / PNG /
+// Authored), the CivitAI links when the workflow is model-linked (an EXTERNAL
+// "View on CivitAI ↗" to civitai.com/models/<id>[?modelVersionId=<vid>] — scheme/
+// host-validated, escaped, rel=noopener, new tab — plus the in-app model link via
+// workflowModelLink), and, for a SCANNED workflow, the on-disk source path
+// (escaped). Untrusted values (model name, path) all route through g.Text.
+func workflowSourceLinks(wf *store.Workflow, resolver workflowResolver) g.Node {
+	var rows []g.Node
+
+	// Provenance chip.
+	rows = append(rows, h.Div(
+		h.Class("flex items-center gap-2"),
+		h.Span(h.Class("text-xs text-slate-500"), g.Text("Source")),
+		badge(optionLabel(workflowSourceFilterOptions, wf.Source), "slate"),
+	))
+
+	// CivitAI provenance: external civitai.com link + the in-app model page link.
+	if wf.ModelID != nil {
+		modelURL := fmt.Sprintf("https://civitai.com/models/%d", *wf.ModelID)
+		if wf.VersionID != nil {
+			modelURL += fmt.Sprintf("?modelVersionId=%d", *wf.VersionID)
+		}
+		var links []g.Node
+		// The URL is built from integers (never user text), but validate the scheme/
+		// host anyway before it becomes an href (defense in depth, mirrors apps).
+		if isSafeHTTPURL(modelURL) {
+			links = append(links, h.A(
+				h.Href(modelURL), h.Target("_blank"), g.Attr("rel", "noopener"),
+				h.Class("text-sm text-indigo-400 hover:text-indigo-300"),
+				g.Text("View on CivitAI ↗"),
+			))
+		}
+		links = append(links, workflowModelLink(*wf.ModelID, resolver))
+		rows = append(rows, h.Div(h.Class("flex flex-wrap items-center gap-3"), g.Group(links)))
+	}
+
+	// Scanned on-disk source path (escaped — arbitrary filesystem path).
+	if strings.TrimSpace(wf.SourcePath) != "" {
+		rows = append(rows, h.Div(
+			h.Class("flex items-start gap-2"),
+			h.Span(h.Class("shrink-0 text-xs text-slate-500"), g.Text("On disk")),
+			h.Span(h.Class("font-mono text-xs text-slate-300 break-all"), g.Text(wf.SourcePath)),
+		))
+	}
+
+	return h.Div(h.Class("mb-3 space-y-2"), g.Group(rows))
 }
 
 // workflowModelLink renders the "→ model page" chip: an <a> to /models/{id} whose
@@ -528,7 +699,7 @@ func workflowResourcesDisclosure(resources []string, resolver workflowResolver) 
 // workflowDetailPage renders a single workflow: its pretty-printed graph (escaped
 // — untrusted), resources, attachment controls, and metadata. runSection is the
 // live Run panel (nil renders no run controls).
-func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode string, runSection g.Node) g.Node {
+func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode string, runSection g.Node, comfyConfigured bool, resolver workflowResolver) g.Node {
 	id := strconv.FormatInt(wf.ID, 10)
 	name := wf.Name
 	if strings.TrimSpace(name) == "" {
@@ -538,7 +709,7 @@ func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode s
 	var body []g.Node
 	body = append(body, h.Div(h.Class("flex items-center justify-between"),
 		h.H1(h.Class("text-2xl font-semibold text-slate-100"), g.Text(name)),
-		h.A(h.Href("/library?tab=workflows"), h.Class("text-sm text-indigo-400 hover:text-indigo-300"),
+		h.A(h.Href("/library?tab=workflows#wf-"+id), h.Class("text-sm text-indigo-400 hover:text-indigo-300"),
 			g.Text("← Back to Workflows")),
 	))
 
@@ -557,7 +728,14 @@ func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode s
 		meta = append(meta, metaRow("Attached model", strconv.Itoa(*wf.ModelID)))
 	}
 	meta = append(meta, metaRow("Golden", boolText(wf.IsGolden)))
-	body = append(body, card(sectionTitle("Details"), h.Dl(h.Class("space-y-1"), g.Group(meta))))
+	body = append(body, card(sectionTitle("Details"), workflowSourceLinks(wf, resolver), h.Dl(h.Class("space-y-1"), g.Group(meta))))
+
+	// "Open in ComfyUI" (load into the editor) — SEPARATE from the run panel.
+	// Shown only for UI-format graphs with a configured comfy_url: API graphs do
+	// not load into the editor, and there is nothing to reach without comfy_url.
+	if comfyConfigured && wf.Format == store.WorkflowFormatUI {
+		body = append(body, workflowOpenComfyCard(wf.ID, csrf))
+	}
 
 	// Run panel (local ComfyUI execution).
 	if runSection != nil {

@@ -54,8 +54,9 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 		runPanel(wf, s.runJobState(), s.csrf, s.extraPathsAllowed(), s.comfyDownloadEligible(), s.nsfwMode()),
 		cloudEntryCard(wf.ID),
 	})
+	comfyConfigured := strings.TrimSpace(s.cfg.ComfyURL) != ""
 	s.render(w, http.StatusOK, workflowDetailPage(wf, prettyJSON(wf.Graph),
-		s.csrf, s.currentTheme(), s.nsfwMode(), runSection))
+		s.csrf, s.currentTheme(), s.nsfwMode(), runSection, comfyConfigured, s.workflowResolver()))
 }
 
 // handleWorkflowImport ingests a pasted API/UI graph. CSRF-protected and
@@ -299,6 +300,7 @@ func (s *Server) workflowResolver() workflowResolver {
 			ok, _ := s.store.HasLocalFileNamed(basename)
 			return ok
 		},
+		nsfwMode: s.nsfwMode(),
 	}
 }
 
