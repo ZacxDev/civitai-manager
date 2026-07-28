@@ -384,9 +384,14 @@ func versionBreakdownSection(v matchedModelCardView, csrf string) g.Node {
 		if label == "" {
 			label = fmt.Sprintf("Version #%d", v.LatestID)
 		}
+		// The fill/border/hover live in .cm-fix-cta (app.css), NOT in bg-amber-950/30
+		// + hover:bg-amber-950/50: amber-950 is a color-mix() tint in tailwind.config.js
+		// and Tailwind cannot combine a color-mix() with an /<alpha-value> modifier, so
+		// BOTH of those utilities were silently dropped from the purged build and the
+		// banner rendered fully transparent with no hover feedback at all.
 		parts = append(parts, h.A(
 			h.Href(fmt.Sprintf("/models/%d?version=%d", v.ModelID, v.LatestID)),
-			h.Class("block rounded-md border border-amber-600/60 bg-amber-950/30 px-3 py-2 text-sm font-medium text-amber-300 hover:bg-amber-950/50"),
+			h.Class("cm-fix-cta block rounded-md px-3 py-2 text-sm font-medium"),
 			g.Text("Update available: "+label+" →"),
 		))
 	}
@@ -466,7 +471,7 @@ func availableVersionRows(modelID int, avs []availableVersion) []g.Node {
 				g.Text("newer →"),
 			)
 		default:
-			mark = h.Span(h.Class("text-slate-600"), g.Text("—"))
+			mark = h.Span(h.Class("cm-disabled text-slate-500"), g.Text("—"))
 		}
 		rows = append(rows, h.Div(
 			h.Class("flex items-center justify-between gap-2"),
@@ -590,7 +595,10 @@ func subscribeControlSubscribed(modelID int, sub *store.Subscription, csrf, note
 	)
 	return h.Div(h.ID(id), h.Class("flex flex-col items-start gap-1"),
 		h.Div(h.Class("flex items-center gap-2"),
-			h.Span(h.Class("text-sm font-medium text-green-500"), g.Text("Subscribed ✓ · "+mode)),
+			// text-emerald-400, NOT text-green-500: tailwind.config.js REPLACES
+			// theme.colors, so no `green` scale exists and text-green-500 was never
+			// emitted. emerald maps to --civitai-color-success in both themes.
+			h.Span(h.Class("text-sm font-medium text-emerald-400"), g.Text("Subscribed ✓ · "+mode)),
 			unsub,
 		),
 		subscribeNote(note),

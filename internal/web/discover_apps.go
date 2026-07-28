@@ -139,7 +139,7 @@ func (s *Server) handleDiscoverApps(w http.ResponseWriter, r *http.Request) {
 func appsDiscoverPage(results g.Node, theme, mode, kindSel, catSel, sortSel, csrf string, rail ...railData) g.Node {
 	return page("Apps", theme, csrf, mode, railOf(rail),
 		card(
-			sectionTitle("Apps"),
+			pageTitle("Apps"), // the page's single <h1>
 			h.P(h.Class("text-sm text-slate-400 mb-3"),
 				g.Text("Browse published CivitAI Apps. Your chosen filters are sent to civitai.com; opening an app launches it in your browser (on civitai.com or the app's own site).")),
 			h.Form(

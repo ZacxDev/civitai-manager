@@ -164,7 +164,7 @@ func workflowScanResultCard(wr library.WorkflowResult) g.Node {
 	}
 	return h.Div(
 		h.Class("rounded-md border border-slate-800 bg-slate-900 p-2"),
-		h.Div(h.Class("truncate text-sm text-slate-200"), g.Text(wr.Name)),
+		h.Div(h.Class("truncate text-sm text-slate-200"), h.Title(wr.Name), g.Text(wr.Name)),
 		h.Div(h.Class("flex flex-wrap items-center gap-1 mt-1"), g.Group(meta)),
 	)
 }

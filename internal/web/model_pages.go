@@ -731,7 +731,9 @@ func modelDescriptionCard(rawHTML string) g.Node {
 				// cm-model-desc deterministically constrains the sanitized author HTML
 				// so wide images / <pre> / <table> / long unbroken tokens cannot overflow
 				// the card (see .cm-model-desc in app.css).
-				h.Class("cm-model-desc cm-desc-content prose-invert max-w-none text-sm text-slate-300 space-y-2 [&_a]:text-indigo-400 [&_a]:underline"),
+				// (No prose-invert: @tailwindcss/typography is not installed, so it was
+				// an inert no-op class. .cm-model-desc carries the real constraints.)
+				h.Class("cm-model-desc cm-desc-content max-w-none text-sm text-slate-300 space-y-2 [&_a]:text-indigo-400 [&_a]:underline"),
 				g.Raw(sanitizeDescription(rawHTML)),
 			),
 			// Bottom fade, shown only while collapsed (CSS).
@@ -980,7 +982,11 @@ func triggerWordChips(words []string) g.Node {
 				h.Type("button"),
 				g.Attr("data-copy", word),
 				g.Attr("onclick", "cmCopy(this)"),
-				h.Class("cm-chip inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-200 hover:bg-slate-700"),
+				// .cm-chip now carries a REAL rest/hover pair (app.css). It replaces
+				// `bg-slate-800 hover:bg-slate-700`, which was a no-op affordance:
+				// tailwind.config.js maps slate 600/700/800 all to --civitai-color-border,
+				// so rest and hover painted the identical color.
+				h.Class("cm-chip inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs text-slate-200"),
 				h.Title("Click to copy"),
 				g.Text(word),
 				h.Span(h.Class("text-slate-500"), g.Text("⧉")),
@@ -1025,7 +1031,7 @@ func downloadFileID(modelID, versionID, fileID int) string {
 // destination path from the model/version/file metadata (no client path).
 func downloadFileButton(modelID, versionID, fileID int, csrf string, hasURL bool) g.Node {
 	if !hasURL {
-		return h.Span(h.Class("text-slate-600"), h.Title("No download URL available"), g.Text("no URL"))
+		return h.Span(h.Class("cm-disabled text-slate-500"), h.Title("No download URL available"), g.Text("no URL"))
 	}
 	id := downloadFileID(modelID, versionID, fileID)
 	return civButton("outline", "sm", []g.Node{
@@ -1180,7 +1186,10 @@ func galleryTileW(im galleryImage, metaID string, blur bool, thumbW int) g.Node 
 		children = append(children, h.Button(
 			h.Type("button"),
 			g.Attr("onclick", "cmReveal(this)"),
-			h.Class("cm-reveal absolute inset-0 z-10 flex items-center justify-center bg-slate-950/40 text-xs font-medium text-slate-100"),
+			// No cm-reveal marker class: nothing selects it (cmReveal is reached via the
+			// inline onclick and walks the DOM), and it carries no rule — the button is
+			// entirely utility-styled.
+			h.Class("absolute inset-0 z-10 flex items-center justify-center bg-slate-950/40 text-xs font-medium text-slate-100"),
 			g.Text("reveal"),
 		))
 	}
@@ -1255,7 +1264,11 @@ func lightboxOverlay() g.Node {
 		h.Button(
 			h.Type("button"),
 			g.Attr("onclick", "cmCloseLightbox()"),
-			h.Class("absolute right-4 top-4 rounded-md bg-slate-800 px-3 py-1 text-sm text-slate-200 hover:bg-slate-700"),
+			// .cm-lightbox-close (app.css) replaces `bg-slate-800 hover:bg-slate-700`,
+			// which painted the identical color at rest and on hover (slate 700/800 both
+			// map to --civitai-color-border) — i.e. no hover feedback on the ONLY way
+			// out of the lightbox.
+			h.Class("cm-lightbox-close absolute right-4 top-4 rounded-md px-3 py-1 text-sm"),
 			g.Text("Close ✕"),
 		),
 	)

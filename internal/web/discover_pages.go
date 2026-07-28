@@ -55,7 +55,7 @@ func selectedDirsList(dirs []string, csrf string) g.Node {
 				h.Class("flex items-center gap-2 min-w-0"),
 				h.Input(h.Type("checkbox"), h.Name("scan_dir"), h.Value(d), g.Attr("checked"),
 					h.Class("rounded border-slate-600 bg-slate-800 text-indigo-500")),
-				h.Span(h.Class("truncate text-xs text-slate-300"), g.Text(d)),
+				h.Span(h.Class("truncate text-xs text-slate-300"), h.Title(d), g.Text(d)),
 			),
 			h.Button(
 				h.Type("button"),
@@ -300,7 +300,7 @@ func discoverCard(in library.Install, added, scanRunning bool, csrf string) g.No
 		h.Class("flex items-center justify-between gap-3 rounded-md border border-slate-800 bg-slate-900 p-2"),
 		h.Div(
 			h.Class("min-w-0 space-y-1"),
-			h.Div(h.Class("truncate text-sm text-slate-200"), g.Text(in.Path)),
+			h.Div(h.Class("truncate text-sm text-slate-200"), h.Title(in.Path), g.Text(in.Path)),
 			h.Div(h.Class("flex flex-wrap items-center gap-1"), g.Group(meta)),
 		),
 		action,
@@ -339,7 +339,7 @@ func directoryBrowser(csrf string) g.Node {
 func browseResults(path string, dirs []browseEntry, canAdd bool, csrf string) g.Node {
 	header := []g.Node{
 		h.Class("flex items-center justify-between gap-2"),
-		h.Span(h.Class("truncate text-xs text-slate-300"), g.Text(path)),
+		h.Span(h.Class("truncate text-xs text-slate-300"), h.Title(path), g.Text(path)),
 	}
 	if canAdd {
 		header = append(header, civButton("light", "sm", []g.Node{
@@ -383,6 +383,7 @@ func browseDirButton(label, path, csrf string) g.Node {
 			hx("swap", "innerHTML"),
 			g.Attr("hx-on:click", "document.getElementById('browse-path').value="+jsString(path)),
 			h.Class("w-full truncate rounded px-2 py-1 text-left text-xs text-slate-300 hover:bg-slate-800"),
+			h.Title(path), // the label truncates; the full destination stays reachable
 			g.Text("📁 "+label),
 		),
 	)

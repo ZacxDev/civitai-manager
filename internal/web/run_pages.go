@@ -469,7 +469,9 @@ func optionSelect(id string, opts []selectOption, selected string, required bool
 func missingList(title string, items []string) g.Node {
 	lis := make([]g.Node, 0, len(items))
 	for _, it := range items {
-		lis = append(lis, h.Li(h.Class("font-mono text-xs text-slate-300"), g.Text(it)))
+		// break-all: these are untrusted node names / model filenames / warnings with
+		// no guaranteed break opportunity.
+		lis = append(lis, h.Li(h.Class("font-mono text-xs text-slate-300 break-all"), g.Text(it)))
 	}
 	return h.Div(h.Class("mt-2"),
 		h.Div(h.Class("text-xs font-semibold text-slate-200"), g.Text(title)),

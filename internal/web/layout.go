@@ -226,8 +226,52 @@ func card(children ...g.Node) g.Node {
 	return h.Div(all...)
 }
 
+// pageTitle is the ONE <h1> of a page; sectionTitle is every heading below it.
+//
+// sectionTitle hardcodes <h2> and was being used as the page-level title on most
+// pages, so six of seven top-level pages shipped with NO <h1> at all: a screen
+// reader's "jump to main heading" landed nowhere and the outline started at level
+// 2 with no level 1 above it. pageTitle emits the identical classes — this is a
+// pure semantics fix with zero visual change — and every page that already had a
+// real <h1> (model detail, creator, workflow detail, outputs, generation detail)
+// keeps its own.
+func pageTitle(text string) g.Node {
+	return h.H1(h.Class("text-lg font-semibold text-slate-100 mb-3"), g.Text(text))
+}
+
 func sectionTitle(text string) g.Node {
 	return h.H2(h.Class("text-lg font-semibold text-slate-100 mb-3"), g.Text(text))
+}
+
+// emptyState renders the app's ONE empty-state shape: a heading naming what is
+// missing, a sentence explaining why the surface is empty and what fills it, and a
+// primary action that actually does that.
+//
+// Several surfaces shipped a bare sentence instead — /trash was literally one <p>
+// reading "Trash is empty.", and the outputs gallery and a no-result search were
+// the same — which tells a first-time user nothing about how the feature works or
+// what to do next. This mirrors the guided empty state the Model-files tab already
+// had (scanForModelsCTA in library_pages.go).
+//
+// It returns the CONTENT, not a card, so a caller that is already inside a card
+// (trash, outputs) does not end up with a card inside a card. ctaHref/ctaLabel may
+// be empty for a surface with no meaningful next action.
+func emptyState(heading, explanation, ctaHref, ctaLabel string) g.Node {
+	var cta g.Node
+	if ctaHref != "" && ctaLabel != "" {
+		cta = h.A(
+			h.Href(ctaHref),
+			dataAttr("civitai-ui", "button"), dataAttr("variant", "filled"), dataAttr("size", "md"),
+			h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("→ ")),
+			g.Text(ctaLabel),
+		)
+	}
+	return h.Div(
+		h.Class("py-6 text-center"),
+		h.H3(h.Class("text-base font-semibold text-slate-200"), g.Text(heading)),
+		h.P(h.Class("mx-auto mt-1 mb-3 max-w-md text-sm text-slate-400"), g.Text(explanation)),
+		cta,
+	)
 }
 
 // badge renders a @civitai/components badge (light variant, small).

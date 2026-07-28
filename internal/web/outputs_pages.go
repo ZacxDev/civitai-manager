@@ -83,10 +83,10 @@ func generationTile(gen store.Generation) g.Node {
 	return h.A(append([]g.Node{h.Href(detailHref)}, children...)...)
 }
 
-// generationGrid renders a masonry grid of tiles, or an empty-state note.
-func generationGrid(gens []store.Generation, emptyMsg string) g.Node {
+// generationGrid renders a masonry grid of tiles, or the guided empty state.
+func generationGrid(gens []store.Generation, empty g.Node) g.Node {
 	if len(gens) == 0 {
-		return h.P(h.Class("text-sm text-slate-400"), g.Text(emptyMsg))
+		return empty
 	}
 	tiles := make([]g.Node, 0, len(gens))
 	for _, gen := range gens {
@@ -112,7 +112,8 @@ func outputsGalleryPage(gens []store.Generation, wfRefs []store.GenerationWorkfl
 	filter := h.Form(
 		h.Method("get"), h.Action("/outputs"),
 		h.Class("flex items-end gap-3"),
-		h.Div(h.Class("w-80"),
+		// max-w-full — see labeledInput: a fixed 320px overflows a phone card.
+		h.Div(h.Class("w-80 max-w-full"),
 			// onchange submits the GET form — no JS framework, offline-safe.
 			g.El("span", g.Attr("onchange", "this.closest('form').submit()"),
 				labeledSelect("outputs-wf", "workflow", "Filter by workflow", opts, selectedWorkflow)),
@@ -128,7 +129,12 @@ func outputsGalleryPage(gens []store.Generation, wfRefs []store.GenerationWorkfl
 		header,
 		h.P(h.Class("text-sm text-slate-400"),
 			g.Text("Images captured from your successful workflow runs. These are your own local generations and render plain.")),
-		card(generationGrid(gens, "No generations yet — run a workflow and its outputs will appear here.")),
+		card(generationGrid(gens, emptyState(
+			"No generations yet",
+			"Every image a workflow run produces is captured here automatically, with the "+
+				"parameters it was made with, so you can re-run or delete it later. Run a "+
+				"workflow from your library and its outputs will appear on this page.",
+			"/library?tab=workflows", "Go to your workflows"))),
 	}
 
 	// Pagination controls (server-side page).
@@ -154,7 +160,7 @@ func outputsPagination(selectedWorkflow string, page, total int) g.Node {
 		controls = append(controls, h.A(h.Href(href(page-1)),
 			h.Class("text-sm text-indigo-400 hover:text-indigo-300"), g.Text("← Newer")))
 	} else {
-		controls = append(controls, h.Span(h.Class("text-sm text-slate-600"), g.Text("← Newer")))
+		controls = append(controls, h.Span(h.Class("cm-disabled text-sm text-slate-500"), g.Text("← Newer")))
 	}
 	controls = append(controls, h.Span(h.Class("text-sm text-slate-400"),
 		g.Text(fmt.Sprintf("Page %d of %d", page+1, lastPage+1))))
@@ -162,7 +168,7 @@ func outputsPagination(selectedWorkflow string, page, total int) g.Node {
 		controls = append(controls, h.A(h.Href(href(page+1)),
 			h.Class("text-sm text-indigo-400 hover:text-indigo-300"), g.Text("Older →")))
 	} else {
-		controls = append(controls, h.Span(h.Class("text-sm text-slate-600"), g.Text("Older →")))
+		controls = append(controls, h.Span(h.Class("cm-disabled text-sm text-slate-500"), g.Text("Older →")))
 	}
 	return h.Div(h.Class("flex items-center justify-center gap-6 pt-2"), g.Group(controls))
 }
@@ -212,6 +218,12 @@ func generationDetailPage(gen *store.Generation, images []store.GenerationImage,
 }
 
 // generationParamsCard renders the stored run params + snapshots, all escaped.
+//
+// Every list below prints UNTRUSTED, often unbreakable strings (model filenames,
+// substitution pairs, node/widget values, resource URNs), so each carries
+// break-all — without it a single long token widens the card past a phone
+// viewport and puts the whole page into a horizontal scroll. metaRow does the
+// same for the <dl> rows (the "Graph hash" sha256 is the worst case there).
 func generationParamsCard(gen *store.Generation) g.Node {
 	snap := parseRunParams(gen.Params)
 	rows := []g.Node{
@@ -234,7 +246,7 @@ func generationParamsCard(gen *store.Generation) g.Node {
 	if len(snap.Substitute) > 0 {
 		var items []g.Node
 		for from, to := range snap.Substitute {
-			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono"), g.Text(from+" → "+to)))
+			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono break-all"), g.Text(from+" → "+to)))
 		}
 		extra = append(extra, h.Div(
 			h.H3(h.Class("text-sm font-semibold text-slate-200 mt-3 mb-2"), g.Text("Model substitutions")),
@@ -247,11 +259,11 @@ func generationParamsCard(gen *store.Generation) g.Node {
 	if len(snap.UIWidgetOverrides) > 0 || len(snap.WidgetOverrides) > 0 {
 		var items []g.Node
 		for _, wo := range snap.UIWidgetOverrides {
-			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono"),
+			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono break-all"),
 				g.Text(fmt.Sprintf("node %s · widget %s = %s", wo.NodeID, wo.widgetDisplay(), wo.Value))))
 		}
 		for _, wo := range snap.WidgetOverrides {
-			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono"),
+			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono break-all"),
 				g.Text(fmt.Sprintf("node %s · %s = %s", wo.NodeID, wo.InputName, wo.Value))))
 		}
 		extra = append(extra, h.Div(
@@ -261,7 +273,7 @@ func generationParamsCard(gen *store.Generation) g.Node {
 	if len(snap.OptionFixes) > 0 {
 		var items []g.Node
 		for _, of := range snap.OptionFixes {
-			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono"),
+			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono break-all"),
 				g.Text(fmt.Sprintf("%s: %s → %s", of.InputName, of.OldValue, of.NewValue))))
 		}
 		extra = append(extra, h.Div(
@@ -271,7 +283,7 @@ func generationParamsCard(gen *store.Generation) g.Node {
 	if len(snap.Resources) > 0 {
 		var items []g.Node
 		for _, r := range snap.Resources {
-			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono"), g.Text(r)))
+			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono break-all"), g.Text(r)))
 		}
 		extra = append(extra, h.Div(
 			h.H3(h.Class("text-sm font-semibold text-slate-200 mt-3 mb-2"), g.Text("Referenced resources")),

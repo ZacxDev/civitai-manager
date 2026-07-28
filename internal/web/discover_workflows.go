@@ -128,7 +128,9 @@ func workflowDiscoverPage(query string, res *civitai.ModelSearchResult, heading,
 	// page + its results need the CSRF token threaded through.
 	return page("Discover workflows", theme, csrf, mode, railOf(rail),
 		card(
-			sectionTitle("Discover workflows"),
+			// The page's single <h1>. workflowDiscoverResults' grid label ("Popular this
+			// month") stays an <h2> — it is a section heading inside an htmx fragment.
+			pageTitle("Discover workflows"),
 			h.P(h.Class("text-sm text-slate-400 mb-3"),
 				g.Text("Browse ComfyUI workflows on CivitAI. Your search query is sent to civitai.com. Importing downloads the workflow zip with your token and stores each workflow locally.")),
 			h.Form(

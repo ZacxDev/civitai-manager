@@ -64,6 +64,11 @@ func librarySubscribeSuggestions(files []store.LocalFile, subs []store.Subscript
 // activity feed, and queue.
 func dashboardPage(subs []store.Subscription, suggestions []suggestion, csrf, theme, nsfwMode string, rail ...railData) g.Node {
 	return page("Dashboard", theme, csrf, nsfwMode, railOf(rail),
+		// The page's single <h1>. The dashboard is a stack of equal-weight cards with
+		// no natural title card, so the heading is emitted on its own above them —
+		// otherwise the outline would start at <h2> ("Add a subscription") with no
+		// level-1 heading anywhere on the page.
+		pageTitle("Dashboard"),
 		card(
 			sectionTitle("Add a subscription"),
 			// Primary: search civitai and subscribe with one click.
@@ -269,7 +274,10 @@ func labeledInput(name, label, placeholder string, required bool) g.Node {
 	if required {
 		ctrl = append(ctrl, g.Attr("required"))
 	}
-	return h.Div(h.Class("w-80"), textInput("text-input", "f-"+name, label, ctrl...))
+	// max-w-full: a bare w-80 is a FIXED 320px, which overflows the ~326px content
+	// box a card leaves on a 360/375px device once padding is taken out. The cap
+	// lets it shrink on a phone while keeping the 320px width everywhere else.
+	return h.Div(h.Class("w-80 max-w-full"), textInput("text-input", "f-"+name, label, ctrl...))
 }
 
 func checkbox(name, label string, checked bool) g.Node {
@@ -517,7 +525,9 @@ func progressBar(it store.QueueItem) g.Node {
 func searchPage(query string, res *civitai.ModelSearchResult, subs map[int]*store.Subscription, csrf, theme, mode, heading, sortSel, periodSel string, rail ...railData) g.Node {
 	return page("Models", theme, csrf, mode, railOf(rail),
 		card(
-			sectionTitle("Search models"),
+			// The page's single <h1>. searchResults' own heading (the "Popular this
+			// month" label on the result grid below) stays an <h2>.
+			pageTitle("Search models"),
 			h.Form(
 				h.Class("flex flex-wrap items-end gap-3"),
 				hx("get", "/search"),
@@ -553,7 +563,12 @@ func searchResults(res *civitai.ModelSearchResult, subs map[int]*store.Subscript
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("Enter a query to search CivitAI."))
 	}
 	if len(res.Items) == 0 {
-		return h.P(h.Class("text-sm text-slate-500"), g.Text("No results."))
+		return card(emptyState(
+			"No models matched that search",
+			"CivitAI matched nothing for this query with these filters. Try a shorter or "+
+				"more general term, or widen the Sort/Period filters — an empty query "+
+				"shows what is popular this month.",
+			"/search", "Browse popular models"))
 	}
 	images := parseSearchImages(res.Raw)
 	// Per-model newest version info (from the SAME raw already parsed for images) →
@@ -713,7 +728,9 @@ func subscribeCreatorInline(username, label, csrf string) g.Node {
 		h.Input(h.Type("hidden"), h.Name("creator"), h.Value(username)),
 		h.Input(h.Type("hidden"), h.Name("auto_download"), h.Value("true")),
 		btnPrimary(g.Text(label)),
-		h.Span(g.Attr("data-sub-note", ""), h.Class("hidden text-sm font-medium text-green-500"),
+		// text-emerald-400, NOT text-green-500 — see subscribedState in
+		// model_card_pages.go: the config replaces theme.colors, so `green` has no scale.
+		h.Span(g.Attr("data-sub-note", ""), h.Class("hidden text-sm font-medium text-emerald-400"),
 			g.Text("Subscribed ✓")),
 	)
 }

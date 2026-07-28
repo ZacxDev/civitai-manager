@@ -130,7 +130,7 @@ func (s *Server) communityImageTile(it civitai.ImageItem, mode string) g.Node {
 		children = append(children, h.Button(
 			h.Type("button"),
 			g.Attr("onclick", "event.preventDefault();event.stopPropagation();cmReveal(this)"),
-			h.Class("cm-reveal absolute inset-0 z-10 flex items-center justify-center bg-slate-950/40 text-xs font-medium text-slate-100"),
+			h.Class("absolute inset-0 z-10 flex items-center justify-center bg-slate-950/40 text-xs font-medium text-slate-100"),
 			g.Text("reveal"),
 		))
 	}

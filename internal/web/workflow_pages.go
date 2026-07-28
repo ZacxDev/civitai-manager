@@ -763,7 +763,8 @@ func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode s
 	if len(wf.Resources) > 0 {
 		items := make([]g.Node, 0, len(wf.Resources))
 		for _, r := range wf.Resources {
-			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono"), g.Text(r)))
+			// break-all: a resource is an arbitrary, often long unbroken filename/path.
+			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono break-all"), g.Text(r)))
 		}
 		body = append(body, card(sectionTitle("Referenced resources"),
 			h.Ul(h.Class("list-disc pl-5 space-y-1"), g.Group(items))))
@@ -845,10 +846,20 @@ func postButton(path, csrf string, fields map[string]string, variant, label stri
 	return h.Form(inner...)
 }
 
+// metaRow is the shared label/value row of every detail <dl> (workflow details,
+// generation run parameters, …).
+//
+// MOBILE: the label was a flat w-40 — 160px, ~49% of the ~326px content box a
+// 390px phone leaves inside a card — and the value had neither min-w-0 nor a
+// break opportunity. A flex item's default min-width:auto refuses to shrink below
+// its content, so an unbreakable value (the worst caller is "Graph hash": a
+// 64-char sha256, ~490px of unbreakable mono text) forced the row ~660px wide
+// inside 326px and pushed the whole page into a horizontal scroll. w-28 until sm
+// gives the value 48 more px, and break-all + min-w-0 let it actually wrap.
 func metaRow(label, value string) g.Node {
 	return h.Div(h.Class("flex gap-2 text-sm"),
-		h.Dt(h.Class("text-slate-500 w-40 shrink-0"), g.Text(label)),
-		h.Dd(h.Class("text-slate-200"), g.Text(value)),
+		h.Dt(h.Class("text-slate-500 w-28 sm:w-40 shrink-0"), g.Text(label)),
+		h.Dd(h.Class("text-slate-200 min-w-0 break-all"), g.Text(value)),
 	)
 }
 
