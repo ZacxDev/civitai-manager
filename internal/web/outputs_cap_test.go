@@ -164,11 +164,16 @@ func TestOutputsCapMissingFileStillRemovesRow(t *testing.T) {
 	}
 }
 
-// TestOutputsCapNeverEvictsFresherThanKeep is the F2 regression: captures are NOT
-// serialized against each other (the run job clears `running` before the capture
-// runs off runMu), so a second capture can insert a FRESHER generation while this
-// pass is running. Protecting only keepID by equality let that fresher row be
-// evicted; nothing with an id >= keepID may go.
+// TestOutputsCapNeverEvictsFresherThanKeep is the F2 regression for the ID GUARD
+// specifically — it is the ONLY test that pins `cand.ID >= keepID`, and it does so
+// deterministically, single-threaded. (The concurrent test below does NOT pin it:
+// with evictMu in place that test still passes when the guard is weakened back to
+// `==`. Do not delete this one as "redundant".)
+//
+// Captures are NOT serialized against each other (the run job clears `running`
+// before the capture runs off runMu), so a second capture can insert a FRESHER
+// generation while this pass is running. Protecting only keepID by equality let
+// that fresher row be evicted; nothing with an id >= keepID may go.
 func TestOutputsCapNeverEvictsFresherThanKeep(t *testing.T) {
 	srv, root, _ := newCaptureServer(t, &fakeComfy{})
 	srv.cfg.OutputsMaxBytes = 50
@@ -267,10 +272,17 @@ func TestOutputsCapZeroByteRowsDoNotStarveTheBatch(t *testing.T) {
 
 // TestOutputsCapConcurrentCapturesKeepEachOther exercises the REAL overlap: four
 // captures run at once, each inserting its own generation and then enforcing the
-// cap. Without serialization + the id guard, passes racing on the same candidate
-// list hit ErrNotFound on rows a sibling already deleted, fail to decrement their
-// stale total, walk past the old rows and delete each other's fresh generations.
-// Every fresh capture must survive.
+// cap. Every fresh capture must survive.
+//
+// What it pins: **evictMu + the ErrNotFound byte subtraction**. Without them,
+// passes racing on the same candidate list hit ErrNotFound on rows a sibling
+// already deleted, fail to decrement their now-stale total, and therefore walk
+// past the old rows into the fresh ones.
+//
+// What it does NOT pin: the `cand.ID >= keepID` guard — with evictMu in place this
+// test still passes when that guard is weakened to `==`, because a serialized pass
+// re-measures and stops before reaching a sibling's row.
+// TestOutputsCapNeverEvictsFresherThanKeep above is what pins the id guard.
 func TestOutputsCapConcurrentCapturesKeepEachOther(t *testing.T) {
 	fake := &fakeComfy{viewData: []byte("PNGBYTES"), viewCT: "image/png"} // 8 bytes
 	srv, root, wf := newCaptureServer(t, fake)
