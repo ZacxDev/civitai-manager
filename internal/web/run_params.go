@@ -41,21 +41,23 @@ func (s *Server) handleWorkflowRunWithParams(w http.ResponseWriter, r *http.Requ
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	s.startRun(wf, runOptions{WidgetOverrides: parseWidgetOverrides(r.Form, wf)})
+	s.startRun(wf, runOptions{UIWidgetOverrides: parseWidgetOverrides(r.Form, wf)})
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 }
 
-// parseWidgetOverrides reads the parallel wp_node / wp_input / wp_value form arrays
+// parseWidgetOverrides reads the parallel wp_node / wp_widget / wp_value form arrays
 // (one triple per Parameters field, index-aligned in DOM order) into an override
-// map. It keeps ONLY keys that DetectRunInputs surfaces for THIS workflow, so a
-// caller can never target an input outside the curated, editable set. The values are
-// applied by comfy.ApplyWidgetOverrides, which additionally refuses to touch links or
-// add keys — so this is a lenient parse backed by a structural guarantee downstream.
-func parseWidgetOverrides(form url.Values, wf *store.Workflow) map[comfy.WidgetOverrideKey]string {
-	nodes, inputs, values := form["wp_node"], form["wp_input"], form["wp_value"]
+// map keyed by (node id, widgets_values index). It keeps ONLY keys that
+// DetectRunInputs surfaces for THIS workflow, so a caller can never target a widget
+// outside the curated, editable set. The values are applied by
+// comfy.ApplyUIWidgetOverrides, which additionally refuses to add slots or rewrite a
+// non-scalar one — so this is a lenient parse backed by a structural guarantee
+// downstream.
+func parseWidgetOverrides(form url.Values, wf *store.Workflow) map[comfy.UIWidgetKey]string {
+	nodes, widgets, values := form["wp_node"], form["wp_widget"], form["wp_value"]
 	n := len(nodes)
-	if len(inputs) < n {
-		n = len(inputs)
+	if len(widgets) < n {
+		n = len(widgets)
 	}
 	if len(values) < n {
 		n = len(values)
@@ -63,15 +65,19 @@ func parseWidgetOverrides(form url.Values, wf *store.Workflow) map[comfy.WidgetO
 	if n == 0 {
 		return nil
 	}
-	allowed := make(map[comfy.WidgetOverrideKey]bool)
+	allowed := make(map[comfy.UIWidgetKey]bool)
 	for _, ri := range comfy.DetectRunInputs([]byte(wf.Graph), nil) {
-		allowed[comfy.WidgetOverrideKey{NodeID: ri.NodeID, InputName: ri.InputName}] = true
+		allowed[comfy.UIWidgetKey{NodeID: ri.NodeID, Widget: ri.WidgetIndex}] = true
 	}
-	out := make(map[comfy.WidgetOverrideKey]string, n)
+	out := make(map[comfy.UIWidgetKey]string, n)
 	for i := 0; i < n; i++ {
-		key := comfy.WidgetOverrideKey{NodeID: nodes[i], InputName: inputs[i]}
+		widx, err := strconv.Atoi(widgets[i])
+		if err != nil {
+			continue
+		}
+		key := comfy.UIWidgetKey{NodeID: nodes[i], Widget: widx}
 		if !allowed[key] {
-			continue // not a curated, editable input for this workflow
+			continue // not a curated, editable widget for this workflow
 		}
 		out[key] = values[i]
 	}
@@ -128,14 +134,14 @@ func runParametersPanel(wf *store.Workflow, csrf string) g.Node {
 }
 
 // runParamField renders one Parameters control, preceded by the hidden wp_node /
-// wp_input fields that pair (index-aligned in DOM order) with the wp_value control —
+// wp_widget fields that pair (index-aligned in DOM order) with the wp_value control —
 // the same parallel-array shape parseWidgetOverrides reads. Every pre-filled value is
 // escaped (g.Text for textareas, attribute escaping for value=).
 func runParamField(idx int, ri comfy.RunInput) g.Node {
 	fid := "cm-param-" + strconv.Itoa(idx)
 	hidden := []g.Node{
 		h.Input(h.Type("hidden"), h.Name("wp_node"), h.Value(ri.NodeID)),
-		h.Input(h.Type("hidden"), h.Name("wp_input"), h.Value(ri.InputName)),
+		h.Input(h.Type("hidden"), h.Name("wp_widget"), h.Value(strconv.Itoa(ri.WidgetIndex))),
 	}
 
 	var control g.Node
@@ -178,6 +184,11 @@ func runParamField(idx int, ri comfy.RunInput) g.Node {
 		h.Label(dataFlag("civitai-ui-label"), h.For(fid), g.Text(ri.Label)),
 		g.Group(hidden),
 		control,
+		// When the value lives on an upstream node (a widget converted to an input and
+		// wired from a primitive/custom node), say so — the edit lands there, not on the
+		// node the label names, and that indirection is otherwise invisible.
+		g.If(ri.Resolved, h.P(h.Class("text-xs text-slate-500"),
+			g.Text("from #"+ri.NodeID+" "+ri.SourceClassType))),
 	)
 }
 

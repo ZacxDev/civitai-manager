@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,12 +23,16 @@ const captureBudget = 60 * time.Second
 // snapshots. The map-keyed override sets are flattened to explicit lists so they
 // round-trip cleanly through JSON and back into runOptions (runOptionsFromParams).
 type runParamsSnapshot struct {
-	Substitute      map[string]string     `json:"substitute,omitempty"`
-	OptionFixes     []optionFixEntry      `json:"option_fixes,omitempty"`
-	WidgetOverrides []widgetOverrideEntry `json:"widget_overrides,omitempty"`
-	Resources       []string              `json:"resources,omitempty"`
-	BaseModel       string                `json:"base_model,omitempty"`
-	Format          string                `json:"format,omitempty"`
+	Substitute  map[string]string `json:"substitute,omitempty"`
+	OptionFixes []optionFixEntry  `json:"option_fixes,omitempty"`
+	// WidgetOverrides is the LEGACY api-graph-keyed override list (node + input name),
+	// kept so generations recorded before the Parameters panel moved to UI-graph
+	// widget indices still replay.
+	WidgetOverrides   []widgetOverrideEntry   `json:"widget_overrides,omitempty"`
+	UIWidgetOverrides []uiWidgetOverrideEntry `json:"ui_widget_overrides,omitempty"`
+	Resources         []string                `json:"resources,omitempty"`
+	BaseModel         string                  `json:"base_model,omitempty"`
+	Format            string                  `json:"format,omitempty"`
 }
 
 type optionFixEntry struct {
@@ -40,6 +45,14 @@ type widgetOverrideEntry struct {
 	NodeID    string `json:"node_id"`
 	InputName string `json:"input_name"`
 	Value     string `json:"value"`
+}
+
+// uiWidgetOverrideEntry is one Parameters-panel edit, keyed the way the panel emits
+// it: the UI-graph node that HOLDS the value plus that value's widgets_values index.
+type uiWidgetOverrideEntry struct {
+	NodeID string `json:"node_id"`
+	Widget int    `json:"widget"`
+	Value  string `json:"value"`
 }
 
 // buildRunParamsSnapshot captures the applied runOptions + workflow resource/base
@@ -62,6 +75,19 @@ func buildRunParamsSnapshot(wf *store.Workflow, opts runOptions) runParamsSnapsh
 			NodeID: key.NodeID, InputName: key.InputName, Value: val,
 		})
 	}
+	for key, val := range opts.UIWidgetOverrides {
+		snap.UIWidgetOverrides = append(snap.UIWidgetOverrides, uiWidgetOverrideEntry{
+			NodeID: key.NodeID, Widget: key.Widget, Value: val,
+		})
+	}
+	// Map iteration is unordered — sort so the persisted params JSON is stable for a
+	// given run (comparable across re-runs, diffable in the gallery).
+	sort.Slice(snap.UIWidgetOverrides, func(i, j int) bool {
+		if snap.UIWidgetOverrides[i].NodeID != snap.UIWidgetOverrides[j].NodeID {
+			return snap.UIWidgetOverrides[i].NodeID < snap.UIWidgetOverrides[j].NodeID
+		}
+		return snap.UIWidgetOverrides[i].Widget < snap.UIWidgetOverrides[j].Widget
+	})
 	if wf != nil {
 		snap.Resources = wf.Resources
 		snap.BaseModel = wf.BaseModel
@@ -115,6 +141,12 @@ func runOptionsFromParams(params string) runOptions {
 		opts.WidgetOverrides = make(map[comfy.WidgetOverrideKey]string, len(snap.WidgetOverrides))
 		for _, e := range snap.WidgetOverrides {
 			opts.WidgetOverrides[comfy.WidgetOverrideKey{NodeID: e.NodeID, InputName: e.InputName}] = e.Value
+		}
+	}
+	if len(snap.UIWidgetOverrides) > 0 {
+		opts.UIWidgetOverrides = make(map[comfy.UIWidgetKey]string, len(snap.UIWidgetOverrides))
+		for _, e := range snap.UIWidgetOverrides {
+			opts.UIWidgetOverrides[comfy.UIWidgetKey{NodeID: e.NodeID, Widget: e.Widget}] = e.Value
 		}
 	}
 	return opts
