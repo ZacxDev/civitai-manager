@@ -507,6 +507,55 @@ func workflowCard(wf store.Workflow, csrf string, resolver workflowResolver) g.N
 	)
 }
 
+// workflowSourceLinks renders the workflow's PROVENANCE block at the top of the
+// detail "Details" card: a source chip (Imported / Discovered / Scanned / PNG /
+// Authored), the CivitAI links when the workflow is model-linked (an EXTERNAL
+// "View on CivitAI ↗" to civitai.com/models/<id>[?modelVersionId=<vid>] — scheme/
+// host-validated, escaped, rel=noopener, new tab — plus the in-app model link via
+// workflowModelLink), and, for a SCANNED workflow, the on-disk source path
+// (escaped). Untrusted values (model name, path) all route through g.Text.
+func workflowSourceLinks(wf *store.Workflow, resolver workflowResolver) g.Node {
+	var rows []g.Node
+
+	// Provenance chip.
+	rows = append(rows, h.Div(
+		h.Class("flex items-center gap-2"),
+		h.Span(h.Class("text-xs text-slate-500"), g.Text("Source")),
+		badge(optionLabel(workflowSourceFilterOptions, wf.Source), "slate"),
+	))
+
+	// CivitAI provenance: external civitai.com link + the in-app model page link.
+	if wf.ModelID != nil {
+		modelURL := fmt.Sprintf("https://civitai.com/models/%d", *wf.ModelID)
+		if wf.VersionID != nil {
+			modelURL += fmt.Sprintf("?modelVersionId=%d", *wf.VersionID)
+		}
+		var links []g.Node
+		// The URL is built from integers (never user text), but validate the scheme/
+		// host anyway before it becomes an href (defense in depth, mirrors apps).
+		if isSafeHTTPURL(modelURL) {
+			links = append(links, h.A(
+				h.Href(modelURL), h.Target("_blank"), g.Attr("rel", "noopener"),
+				h.Class("text-sm text-indigo-400 hover:text-indigo-300"),
+				g.Text("View on CivitAI ↗"),
+			))
+		}
+		links = append(links, workflowModelLink(*wf.ModelID, resolver))
+		rows = append(rows, h.Div(h.Class("flex flex-wrap items-center gap-3"), g.Group(links)))
+	}
+
+	// Scanned on-disk source path (escaped — arbitrary filesystem path).
+	if strings.TrimSpace(wf.SourcePath) != "" {
+		rows = append(rows, h.Div(
+			h.Class("flex items-start gap-2"),
+			h.Span(h.Class("shrink-0 text-xs text-slate-500"), g.Text("On disk")),
+			h.Span(h.Class("font-mono text-xs text-slate-300 break-all"), g.Text(wf.SourcePath)),
+		))
+	}
+
+	return h.Div(h.Class("mb-3 space-y-2"), g.Group(rows))
+}
+
 // workflowModelLink renders the "→ model page" chip: an <a> to /models/{id} whose
 // text is the resolved model name. When the name is cached it renders inline;
 // otherwise the span lazy-loads it (hx-get=/models/{id}/title, hx-trigger=load —
@@ -564,7 +613,7 @@ func workflowResourcesDisclosure(resources []string, resolver workflowResolver) 
 // workflowDetailPage renders a single workflow: its pretty-printed graph (escaped
 // — untrusted), resources, attachment controls, and metadata. runSection is the
 // live Run panel (nil renders no run controls).
-func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode string, runSection g.Node) g.Node {
+func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode string, runSection g.Node, comfyConfigured bool, resolver workflowResolver) g.Node {
 	id := strconv.FormatInt(wf.ID, 10)
 	name := wf.Name
 	if strings.TrimSpace(name) == "" {
@@ -593,7 +642,14 @@ func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode s
 		meta = append(meta, metaRow("Attached model", strconv.Itoa(*wf.ModelID)))
 	}
 	meta = append(meta, metaRow("Golden", boolText(wf.IsGolden)))
-	body = append(body, card(sectionTitle("Details"), h.Dl(h.Class("space-y-1"), g.Group(meta))))
+	body = append(body, card(sectionTitle("Details"), workflowSourceLinks(wf, resolver), h.Dl(h.Class("space-y-1"), g.Group(meta))))
+
+	// "Open in ComfyUI" (load into the editor) — SEPARATE from the run panel.
+	// Shown only for UI-format graphs with a configured comfy_url: API graphs do
+	// not load into the editor, and there is nothing to reach without comfy_url.
+	if comfyConfigured && wf.Format == store.WorkflowFormatUI {
+		body = append(body, workflowOpenComfyCard(wf.ID, csrf))
+	}
 
 	// Run panel (local ComfyUI execution).
 	if runSection != nil {
