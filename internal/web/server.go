@@ -153,6 +153,11 @@ type Server struct {
 	// Nil (production) builds a comfy.Client from cfg.ComfyURL/ComfyToken; tests
 	// inject a fake to exercise the real run orchestration and the view proxy.
 	comfyClientFn func() comfyClient
+	// captureFn is the output-capture seam invoked after a successful run settles
+	// (off runMu, success path only). Nil (production) uses captureGeneration
+	// (View → atomic write → InsertGeneration, best-effort); tests inject a seam to
+	// assert capture is (or is not) invoked without touching a real ComfyUI/FS.
+	captureFn func(wf *store.Workflow, opts runOptions, res *runResult)
 	// runMu guards runJob. One workflow run is active at a time (global MVP guard).
 	runMu sync.Mutex
 	// runJob is the current (or most recent) background run, or nil before the first.

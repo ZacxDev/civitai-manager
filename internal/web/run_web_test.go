@@ -24,6 +24,10 @@ type fakeComfy struct {
 	history         *comfy.HistoryEntry
 	viewData        []byte
 	viewCT          string
+	// viewFunc, when set, overrides View entirely (per-ref bytes/CT/error) — used by
+	// the capture tests to model a partial fetch failure. Nil falls back to the
+	// static viewData/viewCT.
+	viewFunc func(comfy.ImageRef) ([]byte, string, error)
 	objectInfoCalls int
 	submitCalled    bool
 	submittedGraph  json.RawMessage
@@ -56,7 +60,10 @@ func (f *fakeComfy) QueueState(context.Context, string) (bool, int, bool, error)
 func (f *fakeComfy) History(context.Context, string) (*comfy.HistoryEntry, error) {
 	return f.history, nil
 }
-func (f *fakeComfy) View(context.Context, comfy.ImageRef) ([]byte, string, error) {
+func (f *fakeComfy) View(_ context.Context, ref comfy.ImageRef) ([]byte, string, error) {
+	if f.viewFunc != nil {
+		return f.viewFunc(ref)
+	}
 	return f.viewData, f.viewCT, nil
 }
 func (f *fakeComfy) Interrupt(context.Context) error {
