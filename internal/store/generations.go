@@ -341,6 +341,53 @@ func (s *Store) DeleteGenerationsByWorkflow(ctx context.Context, workflowID int6
 	return paths, nil
 }
 
+// SumGenerationImageBytes returns the TOTAL stored bytes of every captured output
+// image (the sum of generation_images.size_bytes). It is the measured size of the
+// outputs tree used to enforce the disk cap — DB-side rather than a filesystem
+// walk, so it stays O(1) work for the capture path. An empty gallery yields 0.
+func (s *Store) SumGenerationImageBytes(ctx context.Context) (int64, error) {
+	var total int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(size_bytes), 0) FROM generation_images`).Scan(&total)
+	return total, err
+}
+
+// GenerationSize pairs a generation id with the total bytes of its images, for
+// eviction accounting (delete the oldest until the tree is back under the cap).
+type GenerationSize struct {
+	ID    int64
+	Bytes int64
+}
+
+// ListOldestGenerations returns up to limit generations OLDEST-FIRST (created_at
+// ASC, id ASC — the reverse of the gallery order) with each one's total image
+// bytes, so the cap enforcer can evict in age order and account for what it
+// reclaimed. limit<=0 returns nil (the caller must bound the eviction batch).
+func (s *Store) ListOldestGenerations(ctx context.Context, limit int) ([]GenerationSize, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT g.id, COALESCE((SELECT SUM(gi.size_bytes) FROM generation_images gi
+		                       WHERE gi.generation_id = g.id), 0) AS bytes
+		FROM generations g
+		ORDER BY g.created_at ASC, g.id ASC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GenerationSize
+	for rows.Next() {
+		var gs GenerationSize
+		if err := rows.Scan(&gs.ID, &gs.Bytes); err != nil {
+			return nil, err
+		}
+		out = append(out, gs)
+	}
+	return out, rows.Err()
+}
+
 // GenerationWorkflowRef is a distinct source workflow that has at least one
 // generation, for the gallery's workflow filter select.
 type GenerationWorkflowRef struct {
