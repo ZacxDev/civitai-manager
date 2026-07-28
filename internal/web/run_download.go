@@ -562,6 +562,9 @@ func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opt
 // file is there, so the run can proceed.
 func (s *Server) downloadModelFile(ctx context.Context, pd pendingDownload, cb func(string)) error {
 	cb("Downloading " + pd.FileName + "…")
+	if err := assertHTTPSDownloadURL(pd.URL); err != nil {
+		return err
+	}
 	resp, err := s.modelDownloader(pd).DownloadFile(ctx, pd.URL)
 	if err != nil {
 		return fmt.Errorf("download %s: %w", pd.FileName, err)
@@ -590,6 +593,30 @@ func (s *Server) downloadModelFile(ctx context.Context, pd pendingDownload, cb f
 		return err
 	}
 	cb("Download complete — starting run…")
+	return nil
+}
+
+// assertHTTPSDownloadURL is a cheap, app-level belt on every API-supplied download
+// URL (CivitAI `downloadUrl`, HF resolve URL) before it is handed to a downloader:
+// the scheme MUST be https, else we refuse WITHOUT egressing. This catches an
+// http:/file:/other-scheme URL from a malicious or compromised API response at the
+// app layer. It is intentionally NOT a host allowlist — that risks breaking legit
+// downloads for marginal gain.
+//
+// The private-IP / SSRF dial-time block (and token host-scoping) remains the SDK's
+// job: the `github.com/civitai/cli` downloader's dialer blocks private/link-local
+// dial targets and scopes the bearer token to civitai hosts (covered by its
+// download_ssrf_test.go — IsBlockedDownloadIP / RequireHTTPSDownload / loopback
+// refusal; at the pinned v0.1.82 that lives in pkg/civitai/). RE-VERIFY that guard
+// on any civitai/cli bump — this app-level assertion does not replace it.
+func assertHTTPSDownloadURL(rawURL string) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("refusing download: unparseable URL")
+	}
+	if !strings.EqualFold(u.Scheme, "https") {
+		return fmt.Errorf("refusing download: URL scheme %q is not https", u.Scheme)
+	}
 	return nil
 }
 

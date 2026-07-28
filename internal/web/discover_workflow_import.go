@@ -262,6 +262,11 @@ func (s *Server) importOneArchive(ctx context.Context, dl civitai.Downloader, m 
 // into memory, erroring if the body exceeds that cap or the server returns a
 // non-2xx status.
 func fetchBounded(ctx context.Context, dl civitai.Downloader, url string) ([]byte, error) {
+	// App-level belt: refuse a non-https download URL before egressing (see
+	// assertHTTPSDownloadURL). Private-IP SSRF containment stays the SDK's job.
+	if err := assertHTTPSDownloadURL(url); err != nil {
+		return nil, err
+	}
 	resp, err := dl.DownloadFile(ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("download failed: %w", err)
