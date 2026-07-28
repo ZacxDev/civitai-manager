@@ -57,6 +57,17 @@ const (
 	// presence is what makes a directory recognizable as a ComfyUI install.
 	CustomNodesDir = "custom_nodes"
 
+	// AssetName is the helper's FRONTEND half — the script inside its web/
+	// directory. ComfyUI serves it at AssetURLPath, and it is the half that
+	// actually honours ?cm_open= and the websocket jump event.
+	AssetName = "civitai_manager.js"
+
+	// AssetMarker is a string the served frontend script MUST contain (it is the
+	// extension name the script registers with ComfyUI). Requiring it means a
+	// proxy/error page that answers the asset URL with a 200 can never be mistaken
+	// for the real script.
+	AssetMarker = "civitai-manager.open-workflow"
+
 	// MarkerName is the ownership marker written into an installed directory. Its
 	// presence (with a matching tool field) is the ONLY thing that authorizes
 	// overwriting or removing the directory.
@@ -137,6 +148,14 @@ type Status struct {
 func Dir(root string) string {
 	return filepath.Join(root, CustomNodesDir, DirName)
 }
+
+// AssetURLPath is the URL ComfyUI serves the helper's frontend script from.
+// ComfyUI derives it from the custom-node directory name + WEB_DIRECTORY, and it
+// is served FROM DISK on every request — unlike the python routes, which are
+// registered once at startup and stay live in memory even after the directory is
+// deleted. That asymmetry is exactly why feature detection must check this URL
+// and not the ping route alone (a deleted helper leaves a "zombie" ping).
+const AssetURLPath = "/extensions/" + DirName + "/" + AssetName
 
 // rootMarkerFiles are files that, alongside custom_nodes/, identify a directory
 // as the ComfyUI install ITSELF rather than merely a directory that happens to

@@ -571,6 +571,35 @@ func TestRootFingerprintRequired(t *testing.T) {
 	}
 }
 
+// TestAssetConstantsMatchTheEmbeddedScript pins the feature-detection contract to
+// the actual shipped file. Detection fetches AssetURLPath and requires the body to
+// contain AssetMarker, so if the script is renamed or the extension name inside it
+// changes, detection would silently start reporting "not installed" for a perfectly
+// good install. This test fails first instead.
+func TestAssetConstantsMatchTheEmbeddedScript(t *testing.T) {
+	data, err := extFS.ReadFile(embedRoot + "/web/" + AssetName)
+	if err != nil {
+		t.Fatalf("the embedded helper must ship web/%s: %v", AssetName, err)
+	}
+	if !strings.Contains(string(data), AssetMarker) {
+		t.Errorf("the embedded %s must contain the detection marker %q", AssetName, AssetMarker)
+	}
+	// ComfyUI derives the static URL from the custom-node directory name.
+	if want := "/extensions/" + DirName + "/" + AssetName; AssetURLPath != want {
+		t.Errorf("AssetURLPath = %q, want %q", AssetURLPath, want)
+	}
+	// The install must actually place it where the URL implies.
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, CustomNodesDir))
+	mustWrite(t, filepath.Join(root, "main.py"), "# comfyui")
+	if _, err := Install(root); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(Dir(root), "web", AssetName)); err != nil {
+		t.Errorf("install did not write web/%s: %v", AssetName, err)
+	}
+}
+
 // entryNames renders a stable, comparable listing of a directory.
 func entryNames(t *testing.T, dir string) string {
 	t.Helper()
