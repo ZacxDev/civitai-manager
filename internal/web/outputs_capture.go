@@ -258,13 +258,16 @@ func (s *Server) enforceOutputsCap(keepID int64) {
 	if base == nil {
 		base = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(base, evictionBudget)
-	defer cancel()
 
 	// One pass at a time: the measure→delete sequence below is only sound if no
-	// other pass deletes rows underneath it.
+	// other pass deletes rows underneath it. Take the lock BEFORE starting the
+	// budget clock — a pass queued behind another must get its full budget for its
+	// own work, not spend it waiting.
 	s.evictMu.Lock()
 	defer s.evictMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(base, evictionBudget)
+	defer cancel()
 
 	total, err := s.store.SumGenerationImageBytes(ctx)
 	if err != nil {
@@ -275,7 +278,7 @@ func (s *Server) enforceOutputsCap(keepID int64) {
 		return
 	}
 
-	candidates, err := s.store.ListOldestGenerations(ctx, maxEvictionBatch)
+	candidates, err := s.store.ListOldestEvictableGenerations(ctx, maxEvictionBatch)
 	if err != nil {
 		s.log.Warn("outputs cap: list oldest generations failed", "err", err)
 		return
@@ -298,8 +301,8 @@ func (s *Server) enforceOutputsCap(keepID int64) {
 			continue
 		}
 		if cand.Bytes <= 0 {
-			// Frees nothing — evicting it would be pure data loss that does not move
-			// the total, so the loop would keep going and overshoot the cap.
+			// Belt-and-suspenders: the query already excludes these. Evicting one frees
+			// nothing, so counting it as progress would walk the loop past the cap.
 			continue
 		}
 		relPaths, err := s.store.DeleteGeneration(ctx, cand.ID)

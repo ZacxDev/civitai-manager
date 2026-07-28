@@ -232,6 +232,39 @@ func TestOutputsCapZeroByteRowsAreNotEvicted(t *testing.T) {
 	}
 }
 
+// TestOutputsCapZeroByteRowsDoNotStarveTheBatch pins the SQL-side half of the
+// zero-byte handling: skipping them only in the Go loop happened AFTER the bounded
+// batch was drawn, so once more than maxEvictionBatch zero-byte generations
+// existed they filled every slot, the real candidate was never seen, and the cap
+// became permanently unenforceable (a silent no-op on every future capture).
+func TestOutputsCapZeroByteRowsDoNotStarveTheBatch(t *testing.T) {
+	srv, root, _ := newCaptureServer(t, &fakeComfy{})
+	srv.cfg.OutputsMaxBytes = 100
+
+	base := time.Now().UTC().Add(-time.Hour)
+	// MORE zero-byte generations than one batch holds, all older than the big row.
+	zeroes := maxEvictionBatch + 20
+	for i := 0; i < zeroes; i++ {
+		seedCapGeneration(t, srv, root, fmt.Sprintf("zero%d", i), 0,
+			base.Add(time.Duration(i)*time.Second))
+	}
+	big := seedCapGeneration(t, srv, root, "big", 5000, base.Add(time.Hour))
+
+	srv.enforceOutputsCap(0)
+
+	if genExists(t, srv, big) {
+		t.Error("the real candidate must still be evicted: zero-byte rows must not consume the batch")
+	}
+	total, _ := srv.store.SumGenerationImageBytes(context.Background())
+	if total > srv.cfg.OutputsMaxBytes {
+		t.Errorf("total = %d, want <= cap %d", total, srv.cfg.OutputsMaxBytes)
+	}
+	// The zero-byte rows are untouched — evicting them frees nothing.
+	if n, _ := srv.store.CountGenerations(context.Background(), nil); n != zeroes {
+		t.Errorf("remaining generations = %d, want the %d zero-byte rows", n, zeroes)
+	}
+}
+
 // TestOutputsCapConcurrentCapturesKeepEachOther exercises the REAL overlap: four
 // captures run at once, each inserting its own generation and then enforcing the
 // cap. Without serialization + the id guard, passes racing on the same candidate

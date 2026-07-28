@@ -359,18 +359,30 @@ type GenerationSize struct {
 	Bytes int64
 }
 
-// ListOldestGenerations returns up to limit generations OLDEST-FIRST (created_at
-// ASC, id ASC — the reverse of the gallery order) with each one's total image
-// bytes, so the cap enforcer can evict in age order and account for what it
-// reclaimed. limit<=0 returns nil (the caller must bound the eviction batch).
-func (s *Store) ListOldestGenerations(ctx context.Context, limit int) ([]GenerationSize, error) {
+// ListOldestEvictableGenerations returns up to limit generations OLDEST-FIRST
+// (created_at ASC, id ASC — the reverse of the gallery order) with each one's
+// total image bytes, so the cap enforcer can evict in age order and account for
+// what it reclaimed. limit<=0 returns nil (the caller must bound the eviction
+// batch).
+//
+// It returns only generations whose recorded size is > 0 — that is what
+// "evictable" means here. Deleting a zero-byte generation frees nothing, so it is
+// never a useful eviction candidate; more importantly, letting such rows occupy
+// slots in the caller's bounded batch would starve the batch of the real
+// candidates and make the cap silently unenforceable once enough of them exist.
+// The filter therefore belongs in SQL, not only in the caller's loop.
+func (s *Store) ListOldestEvictableGenerations(ctx context.Context, limit int) ([]GenerationSize, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
+	// An INNER JOIN drops image-less generations (0 bytes by definition) and the
+	// HAVING drops those whose images are all zero-length.
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT g.id, COALESCE((SELECT SUM(gi.size_bytes) FROM generation_images gi
-		                       WHERE gi.generation_id = g.id), 0) AS bytes
+		SELECT g.id, SUM(gi.size_bytes) AS bytes
 		FROM generations g
+		JOIN generation_images gi ON gi.generation_id = g.id
+		GROUP BY g.id, g.created_at
+		HAVING SUM(gi.size_bytes) > 0
 		ORDER BY g.created_at ASC, g.id ASC
 		LIMIT ?`, limit)
 	if err != nil {

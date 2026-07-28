@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -45,7 +46,7 @@ func TestSumGenerationImageBytes(t *testing.T) {
 	}
 }
 
-func TestListOldestGenerations(t *testing.T) {
+func TestListOldestEvictableGenerations(t *testing.T) {
 	st := newGenTestStore(t)
 	ctx := context.Background()
 	base := time.Now().UTC().Add(-time.Hour)
@@ -53,7 +54,7 @@ func TestListOldestGenerations(t *testing.T) {
 	mid := mkSizedGeneration(t, st, "mid", 20, base.Add(time.Minute))
 	newest := mkSizedGeneration(t, st, "new", 30, base.Add(2*time.Minute))
 
-	got, err := st.ListOldestGenerations(ctx, 10)
+	got, err := st.ListOldestEvictableGenerations(ctx, 10)
 	if err != nil {
 		t.Fatalf("list oldest: %v", err)
 	}
@@ -68,7 +69,7 @@ func TestListOldestGenerations(t *testing.T) {
 	}
 
 	// The limit truncates from the NEWEST end (oldest-first ordering).
-	got, err = st.ListOldestGenerations(ctx, 1)
+	got, err = st.ListOldestEvictableGenerations(ctx, 1)
 	if err != nil {
 		t.Fatalf("list oldest (limit 1): %v", err)
 	}
@@ -77,14 +78,14 @@ func TestListOldestGenerations(t *testing.T) {
 	}
 
 	// A non-positive limit returns nothing (the caller must bound the batch).
-	if got, err := st.ListOldestGenerations(ctx, 0); err != nil || got != nil {
+	if got, err := st.ListOldestEvictableGenerations(ctx, 0); err != nil || got != nil {
 		t.Errorf("limit 0 = (%+v, %v), want (nil, nil)", got, err)
 	}
 }
 
-// TestListOldestGenerationsCountsAllImages asserts the per-generation byte total
+// TestListOldestEvictableGenerationsCountsAllImages asserts the per-generation byte total
 // sums EVERY image, not just the first.
-func TestListOldestGenerationsCountsAllImages(t *testing.T) {
+func TestListOldestEvictableGenerationsCountsAllImages(t *testing.T) {
 	st := newGenTestStore(t)
 	ctx := context.Background()
 	id, err := st.InsertGeneration(ctx, &Generation{PromptID: "multi"}, []GenerationImage{
@@ -94,11 +95,54 @@ func TestListOldestGenerationsCountsAllImages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	got, err := st.ListOldestGenerations(ctx, 10)
+	got, err := st.ListOldestEvictableGenerations(ctx, 10)
 	if err != nil {
 		t.Fatalf("list oldest: %v", err)
 	}
 	if len(got) != 1 || got[0].ID != id || got[0].Bytes != 18 {
 		t.Errorf("got %+v, want one row {%d 18}", got, id)
+	}
+}
+
+// TestListOldestEvictableGenerationsExcludesZeroByteRows pins the SQL predicate:
+// a zero-byte generation is not an eviction candidate and — crucially — must not
+// consume a slot in the caller's bounded batch, or enough of them would starve the
+// batch of real candidates and make the cap unenforceable.
+func TestListOldestEvictableGenerationsExcludesZeroByteRows(t *testing.T) {
+	st := newGenTestStore(t)
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-time.Hour)
+
+	// 20 zero-byte generations, all OLDER than the one real candidate.
+	for i := 0; i < 20; i++ {
+		mkSizedGeneration(t, st, fmt.Sprintf("zero%d", i), 0, base.Add(time.Duration(i)*time.Second))
+	}
+	// A generation whose images are ALL zero-length is excluded too.
+	if _, err := st.InsertGeneration(ctx,
+		&Generation{PromptID: "multizero", CreatedAt: base.Add(time.Minute)},
+		[]GenerationImage{
+			{Idx: 0, RelPath: "multizero/0-a.png", Filename: "a.png", SizeBytes: 0},
+			{Idx: 1, RelPath: "multizero/1-b.png", Filename: "b.png", SizeBytes: 0},
+		}); err != nil {
+		t.Fatalf("insert multizero: %v", err)
+	}
+	// A generation with NO images at all is likewise not a candidate.
+	if _, err := st.InsertGeneration(ctx,
+		&Generation{PromptID: "noimages", CreatedAt: base.Add(2 * time.Minute)}, nil); err != nil {
+		t.Fatalf("insert noimages: %v", err)
+	}
+	real1 := mkSizedGeneration(t, st, "real", 5000, base.Add(3*time.Minute))
+
+	// Even with a batch of 5 — far smaller than the 22 non-candidates that sort
+	// FIRST by age — the real candidate is the one returned.
+	got, err := st.ListOldestEvictableGenerations(ctx, 5)
+	if err != nil {
+		t.Fatalf("list oldest evictable: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1 (only the non-zero-byte row)", len(got))
+	}
+	if got[0].ID != real1 || got[0].Bytes != 5000 {
+		t.Errorf("got %+v, want {%d 5000}", got[0], real1)
 	}
 }
