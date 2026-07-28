@@ -66,8 +66,13 @@ const (
 	// tree under OutputsDir: 20 GiB. Captured generations accumulate forever
 	// otherwise, so the gallery ships bounded by default; once the total exceeds
 	// the cap, the OLDEST generations are evicted (rows + files) until it is back
-	// under. An explicit `outputs_max_bytes: 0` disables the cap entirely.
+	// under. An explicit `outputs_max_bytes: "0"` disables the cap entirely.
 	DefaultOutputsMaxBytes = int64(20) << 30
+	// MinOutputsMaxBytes is the floor for a POSITIVE outputs_max_bytes. A cap of a
+	// handful of bytes would evict essentially the entire gallery on the very next
+	// capture, so anything under 1 MiB is refused at load as an almost-certain unit
+	// mistake (`outputs_max_bytes: 20` intending 20 GB). Use "0" for unlimited.
+	MinOutputsMaxBytes = int64(1) << 20
 
 	appDir = "civitai-manager"
 )
@@ -137,14 +142,23 @@ type Config struct {
 	// ModelRoot. Empty resolves to that default. It is created on first write (no
 	// pre-existence requirement), and ~ is expanded on load.
 	OutputsDir string `yaml:"outputs_dir"`
-	// OutputsMaxBytes caps the TOTAL bytes stored under OutputsDir. It is a POINTER
-	// so "unset" is distinguishable from an explicit 0: unset (nil) resolves to
-	// DefaultOutputsMaxBytes (20 GiB), while an explicit 0 — or any negative value —
-	// means UNLIMITED (no eviction ever). Read it through OutputsCapBytes(), never
-	// directly. When the cap is exceeded after a capture, the OLDEST generations are
-	// deleted (DB rows + their files) until the total is back under it; eviction is
+	// OutputsMaxBytes caps the TOTAL bytes stored under OutputsDir. Like its
+	// siblings max_file_size / max_preview_size it is a human SIZE STRING ("20GB",
+	// "500MB") or a plain byte count, parsed by ParseSize into
+	// OutputsMaxBytesResolved — read the cap through OutputsCapBytes(), never this
+	// field.
+	//
+	// EMPTY (the key is absent) means "not configured" and resolves to
+	// DefaultOutputsMaxBytes (20 GiB). An explicit "0" means UNLIMITED (no eviction
+	// ever). A POSITIVE value below MinOutputsMaxBytes is REJECTED at load: a
+	// cap of a few bytes would evict essentially the whole gallery on the next
+	// capture, and is far more likely a unit mistake (`outputs_max_bytes: 20`
+	// meaning 20 GB) than an intent.
+	//
+	// When the cap is exceeded after a capture, the OLDEST generations are deleted
+	// (DB rows + their files, no undo) until the total is back under it; eviction is
 	// best-effort and never affects a run's outcome.
-	OutputsMaxBytes *int64 `yaml:"outputs_max_bytes"`
+	OutputsMaxBytes SizeString `yaml:"outputs_max_bytes"`
 	// ComfyModelPath is the local filesystem root of ComfyUI's `models` directory
 	// (the folder holding checkpoints/, loras/, vae/, …). It is SEPARATE from
 	// ModelRoot (this app's own download layout) and is used ONLY by the
@@ -176,7 +190,35 @@ type Config struct {
 	MaxFileSizeBytes int64 `yaml:"-"`
 	// MaxPreviewSizeBytes is the resolved byte value of MaxPreviewSize (0 = no cap).
 	MaxPreviewSizeBytes int64 `yaml:"-"`
+	// OutputsMaxBytesResolved is the resolved byte value of OutputsMaxBytes: the
+	// 20 GiB default when unset, 0 when explicitly unlimited. Set by normalize; read
+	// it through OutputsCapBytes().
+	OutputsMaxBytesResolved int64 `yaml:"-"`
 }
+
+// SizeString is a human file-size string ("20GB", "500MB", "1048576") that also
+// tolerates a BARE YAML INTEGER (`outputs_max_bytes: 20`), which would otherwise
+// fail to decode into a string field. Decoding never interprets the value — it is
+// parsed later by ParseSize — so an out-of-range or nonsensical value still gets a
+// clear, unit-aware validation error rather than a YAML type error.
+type SizeString string
+
+// UnmarshalYAML accepts either a quoted string or a bare scalar number.
+func (s *SizeString) UnmarshalYAML(value *yaml.Node) error {
+	var raw string
+	if err := value.Decode(&raw); err != nil {
+		var n float64
+		if err2 := value.Decode(&n); err2 != nil {
+			return err // report the string error — the key is documented as a string
+		}
+		raw = strconv.FormatFloat(n, 'f', -1, 64)
+	}
+	*s = SizeString(strings.TrimSpace(raw))
+	return nil
+}
+
+// String returns the raw configured text.
+func (s SizeString) String() string { return string(s) }
 
 // Flags carries the command-line overrides. Empty-string / nil fields mean "not
 // set on the command line" and fall through to the env/file/default layers.
@@ -225,18 +267,36 @@ func (c *Config) HFFallbackEnabled() bool {
 	return c.HFFallback == nil || *c.HFFallback
 }
 
-// OutputsCapBytes resolves the output-gallery total disk cap in bytes. An unset
-// `outputs_max_bytes` key yields DefaultOutputsMaxBytes (20 GiB); an explicit 0 —
-// or any negative value — yields 0, which callers MUST treat as UNLIMITED (no
-// eviction).
+// OutputsCapBytes returns the resolved output-gallery total disk cap in bytes: the
+// 20 GiB default when `outputs_max_bytes` is unset, or 0 for an explicit "0",
+// which callers MUST treat as UNLIMITED (no eviction). It reads the value
+// normalize resolved, so it is only meaningful on a Config returned by Resolve.
 func (c *Config) OutputsCapBytes() int64 {
-	if c.OutputsMaxBytes == nil {
-		return DefaultOutputsMaxBytes
-	}
-	if *c.OutputsMaxBytes < 0 {
+	if c.OutputsMaxBytesResolved < 0 {
 		return 0
 	}
-	return *c.OutputsMaxBytes
+	return c.OutputsMaxBytesResolved
+}
+
+// resolveOutputsMaxBytes parses OutputsMaxBytes into OutputsMaxBytesResolved,
+// applying the unset→default rule and rejecting an implausibly small positive cap.
+func (c *Config) resolveOutputsMaxBytes() error {
+	raw := strings.TrimSpace(string(c.OutputsMaxBytes))
+	if raw == "" {
+		c.OutputsMaxBytesResolved = DefaultOutputsMaxBytes
+		return nil
+	}
+	n, err := ParseSize(raw)
+	if err != nil {
+		return fmt.Errorf("invalid outputs_max_bytes %q: %w", raw, err)
+	}
+	if n > 0 && n < MinOutputsMaxBytes {
+		return fmt.Errorf("outputs_max_bytes %q resolves to %d bytes, below the %d-byte (1 MiB) minimum — "+
+			"a cap this small would delete almost the whole output gallery on the next run; "+
+			"did you mean %qGB or %qMB? (use \"0\" for unlimited)", raw, n, MinOutputsMaxBytes, raw, raw)
+	}
+	c.OutputsMaxBytesResolved = n
+	return nil
 }
 
 // Duration is a time.Duration that (un)marshals from a Go duration string
@@ -473,12 +533,9 @@ func Resolve(flags Flags) (*Config, error) {
 		cfg.OutputsDir = flags.OutputsDir
 	}
 	if strings.TrimSpace(flags.OutputsMaxBytes) != "" {
-		n, err := ParseSize(flags.OutputsMaxBytes)
-		if err != nil {
-			return nil, fmt.Errorf("invalid --outputs-max-bytes %q: %w", flags.OutputsMaxBytes, err)
-		}
-		// An explicit flag always wins, including "0" (unlimited).
-		cfg.OutputsMaxBytes = &n
+		// An explicit flag always wins, including "0" (unlimited). It is parsed +
+		// floor-checked by normalize, exactly like the config-file value.
+		cfg.OutputsMaxBytes = SizeString(strings.TrimSpace(flags.OutputsMaxBytes))
 	}
 
 	if err := cfg.normalize(); err != nil {
@@ -562,6 +619,9 @@ func (c *Config) normalize() error {
 		return fmt.Errorf("invalid max_preview_size %q: %w", c.MaxPreviewSize, err)
 	}
 	c.MaxPreviewSizeBytes = previewBytes
+	if err := c.resolveOutputsMaxBytes(); err != nil {
+		return err
+	}
 	return nil
 }
 
