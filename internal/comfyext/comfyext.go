@@ -59,9 +59,14 @@ const (
 	// overwriting or removing the directory.
 	MarkerName = ".civitai-manager-install.json"
 
+	// ToolName identifies this tool in the install marker AND in the helper's
+	// /civitai-manager/ping response, so feature detection cannot be satisfied by
+	// some unrelated server answering that path.
+	ToolName = "civitai-manager"
+
 	// markerTool is the marker's tool field — a foreign directory that happens to
 	// carry a same-named file is still refused unless this matches.
-	markerTool = "civitai-manager"
+	markerTool = ToolName
 
 	// embedRoot is the embedded source directory holding the extension tree.
 	embedRoot = "extension"
