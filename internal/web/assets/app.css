@@ -176,9 +176,19 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  * taller; the shared .cm-carousel-item (10rem, used by search/library cards) is
  * left untouched. Tiles derive their width from the taller height via the
  * aspect-ratio set inline on each tile box, so nothing crops. Theme-agnostic.
+ *
+ * MOBILE: 22rem was applied at EVERY viewport — 352px, i.e. 42% of a 390x844
+ * phone's height spent on one showcase strip, pushing the model's own title,
+ * stats and actions below the fold. It now steps up at >=640px only; a phone
+ * gets 14rem (~26% of the same viewport, still a comfortable strip).
  */
 .cm-showcase-lg .cm-carousel-item {
-  height: 22rem;
+  height: 14rem;
+}
+@media (min-width: 640px) {
+  .cm-showcase-lg .cm-carousel-item {
+    height: 22rem;
+  }
 }
 
 /*
@@ -811,6 +821,71 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   color: var(--civitai-color-text-dimmed);
   font-size: 0.75rem;
   background: var(--civitai-color-surface);
+}
+
+/*
+ * Workflow graph preview palette (.cm-graph / .cm-g-*) — see workflowGraphSVG in
+ * workflow_graph.go.
+ *
+ * The server-rendered SVG hardcoded a DARK palette (node #334155, title #1e293b,
+ * text #e2e8f0, widget #cbd5e1, slots #64748b) that never flipped with
+ * data-theme, so on the light theme the graph card was a dark slab and its group
+ * TITLES (#e2e8f0 on the near-white card) were effectively invisible.
+ *
+ * AUTHOR COLORS STILL WIN. A litegraph node/group that carries its own
+ * color/bgcolor is emitted with that (sanitized) hex as a fill=/stroke=
+ * presentation attribute and NO .cm-g-* class, so nothing here touches it — the
+ * user's visual grouping is preserved exactly. Only elements painted from the
+ * fallback get a class, and only those are re-painted below. Text follows the
+ * surface it sits on (title text only when the title bar is themed, widget text
+ * only when the body is), so a light-theme flip can never put near-black text on
+ * an author's dark node.
+ *
+ * The dark values are duplicated as presentation attributes in the Go so the SVG
+ * is still legible with no stylesheet at all; these rules are the theme layer.
+ */
+.cm-graph {
+  --cm-g-body: #334155;
+  --cm-g-title: #1e293b;
+  --cm-g-stroke: #475569;
+  --cm-g-text: #e2e8f0;
+  --cm-g-widget: #cbd5e1;
+  --cm-g-slot: #64748b;
+  --cm-g-slot-stroke: #0f172a;
+  --cm-g-group: #475569;
+}
+[data-theme="light"] .cm-graph {
+  --cm-g-body: #e2e8f0;
+  --cm-g-title: #cbd5e1;
+  --cm-g-stroke: #94a3b8;
+  --cm-g-text: #0f172a;
+  --cm-g-widget: #334155;
+  --cm-g-slot: #64748b;
+  --cm-g-slot-stroke: #f8fafc;
+  --cm-g-group: #64748b;
+}
+.cm-graph .cm-g-body {
+  fill: var(--cm-g-body);
+}
+.cm-graph .cm-g-title {
+  fill: var(--cm-g-title);
+}
+.cm-graph .cm-g-text {
+  fill: var(--cm-g-text);
+}
+.cm-graph .cm-g-widget {
+  fill: var(--cm-g-widget);
+}
+.cm-graph .cm-g-stroke {
+  stroke: var(--cm-g-stroke);
+}
+.cm-graph .cm-g-slot {
+  fill: var(--cm-g-slot);
+  stroke: var(--cm-g-slot-stroke);
+}
+.cm-graph .cm-g-group {
+  fill: var(--cm-g-group);
+  stroke: var(--cm-g-group);
 }
 
 /*

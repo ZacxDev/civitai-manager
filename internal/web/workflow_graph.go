@@ -38,6 +38,11 @@ const (
 	// nodes are title-only, ~80px wide, growing with the title text).
 	gCollapsedMinW = 80.0
 	gCollapsedMaxW = 220.0
+	// gMinRenderW is the SVG's rendered min-width floor, in CSS px: the widest the
+	// preview may be forced to be so its overflow-auto container actually scrolls
+	// horizontally instead of shrink-to-fitting a 4000px graph into a 326px phone
+	// column. A graph narrower than this keeps its natural width (never stretched).
+	gMinRenderW = 900.0
 )
 
 // hexColorRe bounds what may be echoed into an SVG fill/stroke attribute from the
@@ -47,12 +52,42 @@ var hexColorRe = regexp.MustCompile(`^#[0-9a-fA-F]{3,8}$`)
 
 // safeHexColor returns c when it is a plain hex color literal, else fallback.
 func safeHexColor(raw json.RawMessage, fallback string) string {
-	c := strings.TrimSpace(rawString(raw))
-	if hexColorRe.MatchString(c) {
+	if c := authorHex(raw); c != "" {
 		return c
 	}
 	return fallback
 }
+
+// authorHex returns the graph's OWN sanitized hex color, or "" when the graph
+// specified none (or specified something that is not a hex literal).
+//
+// The distinction matters for theming: an author-specified color is the user's
+// deliberate visual grouping and is emitted as a fill=/stroke= presentation
+// attribute, which always wins. Only when this returns "" does the element also
+// get a .cm-g-* class, whose rule in app.css re-paints it per data-theme (see the
+// graph palette block there) — so the FALLBACK palette flips with the theme and
+// the author's palette never does.
+func authorHex(raw json.RawMessage) string {
+	c := strings.TrimSpace(rawString(raw))
+	if hexColorRe.MatchString(c) {
+		return c
+	}
+	return ""
+}
+
+// The dark-theme fallback palette. These stay on the elements as presentation
+// attributes (so the SVG is still legible with no stylesheet at all); the
+// .cm-g-* classes below re-paint them for the light theme.
+const (
+	gDarkBody       = "#334155"
+	gDarkTitle      = "#1e293b"
+	gDarkStroke     = "#475569"
+	gDarkText       = "#e2e8f0"
+	gDarkWidget     = "#cbd5e1"
+	gDarkSlot       = "#64748b"
+	gDarkSlotStroke = "#0f172a"
+	gDarkGroup      = "#475569"
+)
 
 // linkTypeColor maps a litegraph link data type to a wire color (litegraph
 // conventions). Unknown/blank types render in neutral gray. The palette is chosen
@@ -270,13 +305,27 @@ func buildWorkflowGraphSVG(graph []byte) (g.Node, graphRenderStats, bool) {
 	maxX, maxY = maxX+gPad, maxY+gPad
 	vbW, vbH := maxX-minX, maxY-minY
 
+	// PANNING FLOOR. The SVG used to be `width:100%;max-width:100%`, which made it
+	// mathematically incapable of exceeding its overflow-auto container — so
+	// overflow-x could never engage and the "scrollable both ways" claim below was
+	// false. A ~4000px graph simply scaled to ~8% of its size on a phone, with
+	// sub-pixel unreadable text, and there was nothing to pan.
+	//
+	// min-width gives it a real floor (min-width beats max-width in CSS), so on a
+	// narrow viewport the SVG stays legible and the container scrolls horizontally.
+	// The floor is capped at gMinRenderW so a SMALL graph is never stretched past
+	// its natural size — a 400px graph keeps rendering at 400px.
+	minW := vbW
+	if minW > gMinRenderW {
+		minW = gMinRenderW
+	}
 	children := []g.Node{
 		g.Attr("xmlns", "http://www.w3.org/2000/svg"),
 		g.Attr("viewBox", fmt.Sprintf("%s %s %s %s", f(minX), f(minY), f(vbW), f(vbH))),
 		// Responsive: fill the scroll container's width, cap intrinsic height.
 		g.Attr("width", f(vbW)),
 		g.Attr("height", f(vbH)),
-		h.Style("width:100%;height:auto;max-width:100%;display:block"),
+		h.Style("width:100%;height:auto;max-width:100%;min-width:"+f(minW)+"px;display:block"),
 		g.Attr("role", "img"),
 		g.Attr("preserveAspectRatio", "xMidYMid meet"),
 	}
@@ -285,9 +334,11 @@ func buildWorkflowGraphSVG(graph []byte) (g.Node, graphRenderStats, bool) {
 	children = append(children, nodeEls...)
 	svg := g.El("svg", children...)
 
-	// Scrollable both ways, bounded height, so a huge graph never blows the layout.
+	// Genuinely scrollable BOTH ways now (see the min-width floor above), with a
+	// bounded height, so a huge graph never blows the layout.
 	kids := []g.Node{
-		h.Class("overflow-auto rounded border border-slate-800 bg-slate-900 p-2"),
+		// cm-graph scopes the theme-aware fallback palette (app.css) to this render.
+		h.Class("cm-graph overflow-auto rounded border border-slate-800 bg-slate-900 p-2"),
 		h.Style("max-height:32rem"),
 	}
 	if note := graphRenderNotice(st); note != nil {
@@ -380,18 +431,27 @@ func svgGroups(groups []lgGroup, st *graphRenderStats, grow func(x0, y0, x1, y1 
 			continue // malformed bounding — skip (groups are decoration, not topology)
 		}
 		x, y, w, hh := b[0], b[1], b[2], b[3]
-		color := safeHexColor(gr.Color, "#475569")
+		// The group BOX keeps the author's color when there is one; the group TITLE
+		// is never author-colored, so it is always theme-aware (at #e2e8f0 it was
+		// invisible on the light theme's near-white card).
+		color := authorHex(gr.Color)
+		themedBox := color == ""
+		if themedBox {
+			color = gDarkGroup
+		}
 		out = append(out, g.El("g",
 			g.El("rect",
 				g.Attr("x", f(x)), g.Attr("y", f(y)),
 				g.Attr("width", f(w)), g.Attr("height", f(hh)),
 				g.Attr("rx", "6"),
+				g.If(themedBox, h.Class("cm-g-group")),
 				g.Attr("fill", color), g.Attr("fill-opacity", "0.18"),
 				g.Attr("stroke", color), g.Attr("stroke-width", "1.5"),
 			),
 			g.El("text",
 				g.Attr("x", f(x+8)), g.Attr("y", f(y+20)),
-				g.Attr("fill", "#e2e8f0"), g.Attr("font-size", "16"),
+				h.Class("cm-g-text"),
+				g.Attr("fill", gDarkText), g.Attr("font-size", "16"),
 				g.Attr("font-family", "sans-serif"),
 				g.Text(truncate(strings.TrimSpace(rawString(gr.Title)), 40)),
 			),
@@ -409,32 +469,48 @@ func svgGroups(groups []lgGroup, st *graphRenderStats, grow func(x0, y0, x1, y1 
 func svgNode(n lgNode, p placedNode) g.Node {
 	title := nodeDisplayTitle(n)
 
-	// Defaults read on light + dark card surfaces; the graph's own color (title bar)
-	// and bgcolor (body) win when present, since they are the user's visual grouping.
-	bodyFill := safeHexColor(n.BgColor, "#334155")
-	titleFill := safeHexColor(n.Color, "#1e293b")
-	stroke := "#475569"
-	textColor := "#e2e8f0"
+	// The graph's own color (title bar) and bgcolor (body) WIN when present — they
+	// are the user's deliberate visual grouping. Only the fallbacks are theme-aware:
+	// an element painted from the fallback also carries a .cm-g-* class whose
+	// app.css rule re-paints it per data-theme.
+	//
+	// The text colors follow the surface they sit on: title text is themed only when
+	// the title bar is, widget text only when the BODY is. Otherwise a light-theme
+	// flip would put near-black text on an author's dark node and make it
+	// unreadable — the exact regression the author-wins rule exists to prevent.
+	bodyFill, themedBody := authorHex(n.BgColor), false
+	if bodyFill == "" {
+		bodyFill, themedBody = gDarkBody, true
+	}
+	titleFill, themedTitle := authorHex(n.Color), false
+	if titleFill == "" {
+		titleFill, themedTitle = gDarkTitle, true
+	}
 
 	if p.collapsed {
-		return svgCollapsedNode(title, p, titleFill, stroke, textColor)
+		return svgCollapsedNode(title, p, titleFill, themedTitle)
 	}
 
 	body := g.El("rect",
 		g.Attr("x", f(p.x)), g.Attr("y", f(p.y)),
 		g.Attr("width", f(p.w)), g.Attr("height", f(p.hgt)),
 		g.Attr("rx", "6"),
-		g.Attr("fill", bodyFill), g.Attr("stroke", stroke), g.Attr("stroke-width", "1"),
+		g.If(themedBody, h.Class("cm-g-body cm-g-stroke")),
+		g.If(!themedBody, h.Class("cm-g-stroke")),
+		g.Attr("fill", bodyFill), g.Attr("stroke", gDarkStroke), g.Attr("stroke-width", "1"),
 	)
 	titleBar := g.El("rect",
 		g.Attr("x", f(p.x)), g.Attr("y", f(p.y-gTitleH)),
 		g.Attr("width", f(p.w)), g.Attr("height", f(gTitleH)),
 		g.Attr("rx", "6"),
-		g.Attr("fill", titleFill), g.Attr("stroke", stroke), g.Attr("stroke-width", "1"),
+		g.If(themedTitle, h.Class("cm-g-title cm-g-stroke")),
+		g.If(!themedTitle, h.Class("cm-g-stroke")),
+		g.Attr("fill", titleFill), g.Attr("stroke", gDarkStroke), g.Attr("stroke-width", "1"),
 	)
 	titleText := g.El("text",
 		g.Attr("x", f(p.x+7)), g.Attr("y", f(p.y-7)),
-		g.Attr("fill", textColor), g.Attr("font-size", "12"), g.Attr("font-family", "sans-serif"),
+		g.If(themedTitle, h.Class("cm-g-text")),
+		g.Attr("fill", gDarkText), g.Attr("font-size", "12"), g.Attr("font-family", "sans-serif"),
 		g.Text(truncate(title, 30)),
 	)
 
@@ -444,17 +520,18 @@ func svgNode(n lgNode, p placedNode) g.Node {
 	for i, wv := range widgetScalars(n.WidgetsValues, gMaxWidgets) {
 		els = append(els, g.El("text",
 			g.Attr("x", f(p.x+7)), g.Attr("y", f(p.y+16+float64(i)*14)),
-			g.Attr("fill", "#cbd5e1"), g.Attr("font-size", "10"), g.Attr("font-family", "monospace"),
+			g.If(themedBody, h.Class("cm-g-widget")),
+			g.Attr("fill", gDarkWidget), g.Attr("font-size", "10"), g.Attr("font-family", "monospace"),
 			g.Text(truncate(wv, 30)),
 		))
 	}
 
-	// Slot circles: inputs LEFT, outputs RIGHT.
+	// Slot circles: inputs LEFT, outputs RIGHT. Never author-colored → always themed.
 	for i := 0; i < p.inCount; i++ {
-		els = append(els, slotCircle(p.x, p.y+gSlotStart+float64(i)*gSlotSpacing, "#64748b"))
+		els = append(els, slotCircle(p.x, p.y+gSlotStart+float64(i)*gSlotSpacing))
 	}
 	for i := 0; i < p.outCount; i++ {
-		els = append(els, slotCircle(p.x+p.w, p.y+gSlotStart+float64(i)*gSlotSpacing, "#64748b"))
+		els = append(els, slotCircle(p.x+p.w, p.y+gSlotStart+float64(i)*gSlotSpacing))
 	}
 
 	attrs := []g.Node{}
@@ -465,7 +542,9 @@ func svgNode(n lgNode, p placedNode) g.Node {
 			g.Attr("x", f(p.x)), g.Attr("y", f(p.y)),
 			g.Attr("width", f(p.w)), g.Attr("height", f(p.hgt)),
 			g.Attr("rx", "6"),
-			g.Attr("fill", bodyFill), g.Attr("stroke", stroke),
+			g.If(themedBody, h.Class("cm-g-body cm-g-stroke")),
+			g.If(!themedBody, h.Class("cm-g-stroke")),
+			g.Attr("fill", bodyFill), g.Attr("stroke", gDarkStroke),
 			g.Attr("stroke-width", "1.5"), g.Attr("stroke-dasharray", "5 3"),
 		)
 	}
@@ -475,27 +554,32 @@ func svgNode(n lgNode, p placedNode) g.Node {
 
 // svgCollapsedNode draws a collapsed node: the title pill (the only thing ComfyUI
 // shows) plus the single dot each side where every wire converges.
-func svgCollapsedNode(title string, p placedNode, titleFill, stroke, textColor string) g.Node {
+// themedTitle reports that titleFill is the FALLBACK (not an author color), so the
+// pill and its text may be re-painted per data-theme.
+func svgCollapsedNode(title string, p placedNode, titleFill string, themedTitle bool) g.Node {
 	els := []g.Node{
 		g.El("rect",
 			g.Attr("x", f(p.x)), g.Attr("y", f(p.y-gTitleH)),
 			g.Attr("width", f(p.w)), g.Attr("height", f(gTitleH)),
 			g.Attr("rx", f(gTitleH/2)),
-			g.Attr("fill", titleFill), g.Attr("stroke", stroke), g.Attr("stroke-width", "1"),
+			g.If(themedTitle, h.Class("cm-g-title cm-g-stroke")),
+			g.If(!themedTitle, h.Class("cm-g-stroke")),
+			g.Attr("fill", titleFill), g.Attr("stroke", gDarkStroke), g.Attr("stroke-width", "1"),
 		),
 		g.El("text",
 			g.Attr("x", f(p.x+10)), g.Attr("y", f(p.y-7)),
-			g.Attr("fill", textColor), g.Attr("font-size", "11"), g.Attr("font-family", "sans-serif"),
+			g.If(themedTitle, h.Class("cm-g-text")),
+			g.Attr("fill", gDarkText), g.Attr("font-size", "11"), g.Attr("font-family", "sans-serif"),
 			g.Text(truncate(title, 30)),
 		),
 	}
 	if p.inCount > 0 {
 		cx, cy := p.inPoint(0)
-		els = append(els, slotCircle(cx, cy, "#64748b"))
+		els = append(els, slotCircle(cx, cy))
 	}
 	if p.outCount > 0 {
 		cx, cy := p.outPoint(0)
-		els = append(els, slotCircle(cx, cy, "#64748b"))
+		els = append(els, slotCircle(cx, cy))
 	}
 	attrs := []g.Node{}
 	if p.bypassed {
@@ -504,10 +588,11 @@ func svgCollapsedNode(title string, p placedNode, titleFill, stroke, textColor s
 	return g.El("g", append(attrs, els...)...)
 }
 
-func slotCircle(cx, cy float64, fill string) g.Node {
+func slotCircle(cx, cy float64) g.Node {
 	return g.El("circle",
 		g.Attr("cx", f(cx)), g.Attr("cy", f(cy)), g.Attr("r", f(gSlotR)),
-		g.Attr("fill", fill), g.Attr("stroke", "#0f172a"), g.Attr("stroke-width", "0.5"),
+		h.Class("cm-g-slot"),
+		g.Attr("fill", gDarkSlot), g.Attr("stroke", gDarkSlotStroke), g.Attr("stroke-width", "0.5"),
 	)
 }
 
@@ -738,7 +823,7 @@ func structuredInputRow(name string, raw json.RawMessage) g.Node {
 		src := rawIDToString(arr[0])
 		slot, _ := rawInt(arr[1])
 		if src != "" {
-			return h.Li(h.Class("text-xs text-slate-300 font-mono"),
+			return h.Li(h.Class("text-xs text-slate-300 font-mono break-all"),
 				g.Text(label),
 				h.Span(h.Class("text-indigo-400"),
 					g.Text(fmt.Sprintf("← #%s[%d]", src, slot))))
@@ -748,7 +833,7 @@ func structuredInputRow(name string, raw json.RawMessage) g.Node {
 	if val == "" {
 		val = strings.TrimSpace(string(raw))
 	}
-	return h.Li(h.Class("text-xs text-slate-300 font-mono"),
+	return h.Li(h.Class("text-xs text-slate-300 font-mono break-all"),
 		g.Text(label+truncate(val, 60)))
 }
 
@@ -777,7 +862,7 @@ func structuredUINodes(graph []byte) g.Node {
 			if strings.TrimSpace(in.Name) == "" {
 				continue
 			}
-			rows = append(rows, h.Li(h.Class("text-xs text-slate-300 font-mono"), g.Text(in.Name)))
+			rows = append(rows, h.Li(h.Class("text-xs text-slate-300 font-mono break-all"), g.Text(in.Name)))
 		}
 		cards = append(cards, h.Div(h.Class("py-2 border-b border-slate-800 last:border-0"),
 			h.Div(h.Class("flex items-baseline gap-2"),

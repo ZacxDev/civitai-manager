@@ -112,7 +112,8 @@ func outputsGalleryPage(gens []store.Generation, wfRefs []store.GenerationWorkfl
 	filter := h.Form(
 		h.Method("get"), h.Action("/outputs"),
 		h.Class("flex items-end gap-3"),
-		h.Div(h.Class("w-80"),
+		// max-w-full — see labeledInput: a fixed 320px overflows a phone card.
+		h.Div(h.Class("w-80 max-w-full"),
 			// onchange submits the GET form — no JS framework, offline-safe.
 			g.El("span", g.Attr("onchange", "this.closest('form').submit()"),
 				labeledSelect("outputs-wf", "workflow", "Filter by workflow", opts, selectedWorkflow)),
@@ -212,6 +213,12 @@ func generationDetailPage(gen *store.Generation, images []store.GenerationImage,
 }
 
 // generationParamsCard renders the stored run params + snapshots, all escaped.
+//
+// Every list below prints UNTRUSTED, often unbreakable strings (model filenames,
+// substitution pairs, node/widget values, resource URNs), so each carries
+// break-all — without it a single long token widens the card past a phone
+// viewport and puts the whole page into a horizontal scroll. metaRow does the
+// same for the <dl> rows (the "Graph hash" sha256 is the worst case there).
 func generationParamsCard(gen *store.Generation) g.Node {
 	snap := parseRunParams(gen.Params)
 	rows := []g.Node{
@@ -234,7 +241,7 @@ func generationParamsCard(gen *store.Generation) g.Node {
 	if len(snap.Substitute) > 0 {
 		var items []g.Node
 		for from, to := range snap.Substitute {
-			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono"), g.Text(from+" → "+to)))
+			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono break-all"), g.Text(from+" → "+to)))
 		}
 		extra = append(extra, h.Div(
 			h.H3(h.Class("text-sm font-semibold text-slate-200 mt-3 mb-2"), g.Text("Model substitutions")),
@@ -247,11 +254,11 @@ func generationParamsCard(gen *store.Generation) g.Node {
 	if len(snap.UIWidgetOverrides) > 0 || len(snap.WidgetOverrides) > 0 {
 		var items []g.Node
 		for _, wo := range snap.UIWidgetOverrides {
-			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono"),
+			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono break-all"),
 				g.Text(fmt.Sprintf("node %s · widget %s = %s", wo.NodeID, wo.widgetDisplay(), wo.Value))))
 		}
 		for _, wo := range snap.WidgetOverrides {
-			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono"),
+			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono break-all"),
 				g.Text(fmt.Sprintf("node %s · %s = %s", wo.NodeID, wo.InputName, wo.Value))))
 		}
 		extra = append(extra, h.Div(
@@ -261,7 +268,7 @@ func generationParamsCard(gen *store.Generation) g.Node {
 	if len(snap.OptionFixes) > 0 {
 		var items []g.Node
 		for _, of := range snap.OptionFixes {
-			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono"),
+			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono break-all"),
 				g.Text(fmt.Sprintf("%s: %s → %s", of.InputName, of.OldValue, of.NewValue))))
 		}
 		extra = append(extra, h.Div(
@@ -271,7 +278,7 @@ func generationParamsCard(gen *store.Generation) g.Node {
 	if len(snap.Resources) > 0 {
 		var items []g.Node
 		for _, r := range snap.Resources {
-			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono"), g.Text(r)))
+			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono break-all"), g.Text(r)))
 		}
 		extra = append(extra, h.Div(
 			h.H3(h.Class("text-sm font-semibold text-slate-200 mt-3 mb-2"), g.Text("Referenced resources")),

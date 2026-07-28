@@ -269,7 +269,10 @@ func labeledInput(name, label, placeholder string, required bool) g.Node {
 	if required {
 		ctrl = append(ctrl, g.Attr("required"))
 	}
-	return h.Div(h.Class("w-80"), textInput("text-input", "f-"+name, label, ctrl...))
+	// max-w-full: a bare w-80 is a FIXED 320px, which overflows the ~326px content
+	// box a card leaves on a 360/375px device once padding is taken out. The cap
+	// lets it shrink on a phone while keeping the 320px width everywhere else.
+	return h.Div(h.Class("w-80 max-w-full"), textInput("text-input", "f-"+name, label, ctrl...))
 }
 
 func checkbox(name, label string, checked bool) g.Node {
