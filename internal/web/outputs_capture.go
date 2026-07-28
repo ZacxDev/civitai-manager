@@ -196,7 +196,90 @@ func (s *Server) captureGeneration(wf *store.Workflow, opts runOptions, res *run
 		Params:       marshalRunParams(buildRunParamsSnapshot(wf, opts)),
 		Status:       status,
 	}
-	if _, err := s.store.InsertGeneration(ctx, gen, images); err != nil {
+	genID, err := s.store.InsertGeneration(ctx, gen, images)
+	if err != nil {
 		s.log.Warn("output capture: insert generation failed", "prompt", res.PromptID, "err", err)
+		return
+	}
+	// Bound the outputs tree: evict the oldest generations if this capture pushed
+	// the total over the configured disk cap. Best-effort — every error is logged
+	// and swallowed, exactly like the rest of capture.
+	s.enforceOutputsCap(genID)
+}
+
+// evictionBudget bounds one cap-enforcement pass. It is a SEPARATE budget from
+// captureBudget (and a separate context) so a slow /view fetch that ate most of
+// the capture budget cannot leave the tree permanently over-cap.
+const evictionBudget = 30 * time.Second
+
+// maxEvictionBatch bounds how many generations ONE pass may consider/delete. It
+// makes the loop provably finite (no unbounded delete loop if the recorded sizes
+// do not add up to the on-disk reality) while still being far more than a single
+// capture can ever push over the cap. Anything left over is reported and handled
+// by the next capture's pass.
+const maxEvictionBatch = 500
+
+// enforceOutputsCap deletes the OLDEST generations (rows + their files) until the
+// total captured bytes are back under cfg.OutputsMaxBytes. keepID is the
+// just-inserted generation, which is NEVER evicted (capturing a run only to
+// immediately delete it would be a silent, confusing no-op).
+//
+// A cap of 0 (or negative) means UNLIMITED — the function returns immediately.
+// Every failure is logged and swallowed: eviction must never alter a run outcome.
+// Each eviction is logged at INFO level with the id and bytes reclaimed, because
+// silently deleting the user's own generated images must be observable.
+func (s *Server) enforceOutputsCap(keepID int64) {
+	capBytes := s.cfg.OutputsMaxBytes
+	if capBytes <= 0 {
+		return // unlimited
+	}
+	base := s.baseCtx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(base, evictionBudget)
+	defer cancel()
+
+	total, err := s.store.SumGenerationImageBytes(ctx)
+	if err != nil {
+		s.log.Warn("outputs cap: sum captured bytes failed", "err", err)
+		return
+	}
+	if total <= capBytes {
+		return
+	}
+
+	candidates, err := s.store.ListOldestGenerations(ctx, maxEvictionBatch)
+	if err != nil {
+		s.log.Warn("outputs cap: list oldest generations failed", "err", err)
+		return
+	}
+	evicted := 0
+	for _, cand := range candidates {
+		if total <= capBytes {
+			break // back under the cap — stop immediately
+		}
+		if cand.ID == keepID {
+			continue // never evict the generation we just captured
+		}
+		relPaths, err := s.store.DeleteGeneration(ctx, cand.ID)
+		if err != nil {
+			s.log.Warn("outputs cap: delete generation failed", "generation_id", cand.ID, "err", err)
+			continue
+		}
+		// Shared with the delete handler: path-contained, error-swallowing unlink
+		// (a file already gone on disk still leaves the row deleted).
+		s.removeOutputFiles(relPaths)
+		total -= cand.Bytes
+		evicted++
+		s.log.Info("outputs cap: evicted oldest generation",
+			"generation_id", cand.ID, "bytes_reclaimed", cand.Bytes,
+			"total_bytes", total, "cap_bytes", capBytes)
+	}
+	if total > capBytes {
+		// Not an error: the batch bound (or a gallery of one huge generation) can
+		// leave the tree over-cap. Say so rather than looping forever.
+		s.log.Warn("outputs cap: still over the disk cap after eviction",
+			"total_bytes", total, "cap_bytes", capBytes, "evicted", evicted)
 	}
 }

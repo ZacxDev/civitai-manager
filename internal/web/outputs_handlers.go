@@ -247,6 +247,11 @@ func (s *Server) handleGenerationDelete(w http.ResponseWriter, r *http.Request) 
 // removeOutputFiles best-effort unlinks the given root-relative output files and
 // prunes their now-empty prompt-id directories. Every step is path-contained and
 // error-swallowing (a failed unlink is a benign leak, never a request failure).
+//
+// It is the SHARED file-removal helper for every path that drops generations: the
+// delete handler above and the disk-cap eviction in outputs_capture.go. Every
+// unlink routes through safeOutputPath — path containment is a hard invariant, so
+// do not open-code an os.Remove on a rel_path anywhere else.
 func (s *Server) removeOutputFiles(relPaths []string) {
 	root := strings.TrimSpace(s.cfg.OutputsDir)
 	if root == "" {
