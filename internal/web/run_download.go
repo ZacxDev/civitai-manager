@@ -531,6 +531,10 @@ func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opt
 	if run == nil {
 		run = s.realRun
 	}
+	download := s.downloadFn
+	if download == nil {
+		download = s.downloadModelFile
+	}
 
 	go func() {
 		defer cancel()
@@ -542,7 +546,7 @@ func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opt
 					err = fmt.Errorf("download-and-run panicked: %v", r)
 				}
 			}()
-			err = s.downloadModelFile(ctx, pd, func(msg string) {
+			err = download(ctx, pd, func(msg string) {
 				up.setPhase(runPhaseDownloading, msg, 0)
 			})
 			if err != nil {
@@ -550,9 +554,11 @@ func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opt
 			}
 			res, err = run(ctx, wf, up, opts)
 		}()
-		s.runMu.Lock()
-		defer s.runMu.Unlock()
-		s.applyRunOutcomeLocked(job, res, err)
+		// Settle + capture through the SHARED tail so a successful download-and-run
+		// lands in the output gallery exactly like a plain run. Note this deliberately
+		// does NOT `defer s.runMu.Unlock()`: settleAndCapture unlocks before the
+		// capture, which must run off the run mutex.
+		s.settleAndCapture(job, wf, opts, res, err)
 	}()
 }
 

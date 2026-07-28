@@ -158,6 +158,11 @@ type Server struct {
 	// (View → atomic write → InsertGeneration, best-effort); tests inject a seam to
 	// assert capture is (or is not) invoked without touching a real ComfyUI/FS.
 	captureFn func(wf *store.Workflow, opts runOptions, res *runResult)
+	// downloadFn fetches the missing model file for the "Download & run" path. Nil
+	// (production) uses downloadModelFile (HTTPS-checked fetch → size-capped atomic
+	// write under comfy_model_path); tests inject a seam to drive the
+	// download-and-run goroutine without network or disk.
+	downloadFn func(ctx context.Context, pd pendingDownload, cb func(string)) error
 	// runMu guards runJob. One workflow run is active at a time (global MVP guard).
 	runMu sync.Mutex
 	// runJob is the current (or most recent) background run, or nil before the first.
