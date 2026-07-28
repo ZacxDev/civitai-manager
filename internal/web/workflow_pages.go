@@ -713,6 +713,21 @@ func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode s
 			g.Text("← Back to Workflows")),
 	))
 
+	// CivitAI showcase carousel for the linked model — REUSES the exact card the
+	// model detail page uses (showcaseCard → modelCardCarouselW + the shared
+	// lightbox), fed entirely from the LOCAL model_cache (never a fetch). NSFW-aware
+	// (hide omits, blur obscures, show reveals — all inside modelCardCarouselW).
+	// Rendered only when the workflow is model-linked AND that model has cached
+	// images; otherwise nothing is emitted (no broken markup). The shared lightbox +
+	// carousel scripts are appended once, at the end of the body, when it is shown.
+	showcaseShown := false
+	if wf.ModelID != nil {
+		if imgs := resolver.showcase(*wf.ModelID); len(imgs) > 0 {
+			body = append(body, showcaseCard(*wf.ModelID, imgs, nsfwMode))
+			showcaseShown = true
+		}
+	}
+
 	// Metadata card.
 	meta := []g.Node{
 		metaRow("Format", wf.Format),
@@ -785,6 +800,14 @@ func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode s
 			),
 		),
 	))
+
+	// The shared full-size lightbox + carousel scripts the showcase tiles reuse
+	// (the same ones the model/library pages rely on). Appended ONCE, only when the
+	// showcase is present, so a tile can open the lightbox and prev/next can scroll —
+	// offline/vendored only, no external asset.
+	if showcaseShown {
+		body = append(body, lightboxOverlay(), modelPageScript(), libraryCarouselScript())
+	}
 
 	return page(name+" · Workflow", theme, csrf, nsfwMode, body...)
 }
