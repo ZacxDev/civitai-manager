@@ -62,6 +62,12 @@ const (
 	// DefaultComfyURL is the default local ComfyUI server address. ComfyUI listens
 	// on loopback with no auth by default.
 	DefaultComfyURL = "http://127.0.0.1:8188"
+	// DefaultOutputsMaxBytes is the default TOTAL size cap of the output-gallery
+	// tree under OutputsDir: 20 GiB. Captured generations accumulate forever
+	// otherwise, so the gallery ships bounded by default; once the total exceeds
+	// the cap, the OLDEST generations are evicted (rows + files) until it is back
+	// under. An explicit `outputs_max_bytes: 0` disables the cap entirely.
+	DefaultOutputsMaxBytes = int64(20) << 30
 
 	appDir = "civitai-manager"
 )
@@ -131,6 +137,14 @@ type Config struct {
 	// ModelRoot. Empty resolves to that default. It is created on first write (no
 	// pre-existence requirement), and ~ is expanded on load.
 	OutputsDir string `yaml:"outputs_dir"`
+	// OutputsMaxBytes caps the TOTAL bytes stored under OutputsDir. It is a POINTER
+	// so "unset" is distinguishable from an explicit 0: unset (nil) resolves to
+	// DefaultOutputsMaxBytes (20 GiB), while an explicit 0 — or any negative value —
+	// means UNLIMITED (no eviction ever). Read it through OutputsCapBytes(), never
+	// directly. When the cap is exceeded after a capture, the OLDEST generations are
+	// deleted (DB rows + their files) until the total is back under it; eviction is
+	// best-effort and never affects a run's outcome.
+	OutputsMaxBytes *int64 `yaml:"outputs_max_bytes"`
 	// ComfyModelPath is the local filesystem root of ComfyUI's `models` directory
 	// (the folder holding checkpoints/, loras/, vae/, …). It is SEPARATE from
 	// ModelRoot (this app's own download layout) and is used ONLY by the
@@ -194,6 +208,10 @@ type Flags struct {
 	// OutputsDir overrides the output-gallery storage directory. Empty means "not
 	// set on the command line" (falls through to file/default).
 	OutputsDir string
+	// OutputsMaxBytes overrides the output-gallery total disk cap. It is a human
+	// size string ("20GB", "500MB") or a byte count; "0" means unlimited. Empty
+	// means "not set on the command line" (falls through to file/default).
+	OutputsMaxBytes string
 	// HFToken overrides the optional HuggingFace token (secret; never logged). Empty
 	// means "not set on the command line".
 	HFToken string
@@ -205,6 +223,20 @@ type Flags struct {
 // (an unset hf_fallback key); only an explicit `hf_fallback: false` disables it.
 func (c *Config) HFFallbackEnabled() bool {
 	return c.HFFallback == nil || *c.HFFallback
+}
+
+// OutputsCapBytes resolves the output-gallery total disk cap in bytes. An unset
+// `outputs_max_bytes` key yields DefaultOutputsMaxBytes (20 GiB); an explicit 0 —
+// or any negative value — yields 0, which callers MUST treat as UNLIMITED (no
+// eviction).
+func (c *Config) OutputsCapBytes() int64 {
+	if c.OutputsMaxBytes == nil {
+		return DefaultOutputsMaxBytes
+	}
+	if *c.OutputsMaxBytes < 0 {
+		return 0
+	}
+	return *c.OutputsMaxBytes
 }
 
 // Duration is a time.Duration that (un)marshals from a Go duration string
@@ -439,6 +471,14 @@ func Resolve(flags Flags) (*Config, error) {
 	}
 	if flags.OutputsDir != "" {
 		cfg.OutputsDir = flags.OutputsDir
+	}
+	if strings.TrimSpace(flags.OutputsMaxBytes) != "" {
+		n, err := ParseSize(flags.OutputsMaxBytes)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --outputs-max-bytes %q: %w", flags.OutputsMaxBytes, err)
+		}
+		// An explicit flag always wins, including "0" (unlimited).
+		cfg.OutputsMaxBytes = &n
 	}
 
 	if err := cfg.normalize(); err != nil {

@@ -64,6 +64,12 @@ type Config struct {
 	// set by config resolution (defaults to <db-dir>/outputs). Capture is skipped
 	// when empty (e.g. an unconfigured test server).
 	OutputsDir string
+	// OutputsMaxBytes is the TOTAL disk cap of the outputs tree, in bytes. After a
+	// successful capture the oldest generations (rows + files) are evicted until the
+	// total is back under it. 0 (or negative) means UNLIMITED — no eviction ever.
+	// Resolved by config (default 20 GiB); an unset zero value in a test server is
+	// therefore "unlimited", matching the pre-cap behaviour.
+	OutputsMaxBytes int64
 	// MaxFileSizeBytes caps a "Download & run" model download (0 = the built-in
 	// safety guard). It reuses the poller's max_file_size setting so a single knob
 	// bounds every download the app makes.
