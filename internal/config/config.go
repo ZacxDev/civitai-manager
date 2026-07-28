@@ -658,6 +658,16 @@ func (c *Config) normalize() error {
 	} else {
 		c.ComfyRoot = comfyext.DeriveRoot(c.ComfyModelPath)
 	}
+	// Resolve symlinks so the path the UI SHOWS (and the install writes to) is the
+	// real location. Without this, "installed into /a/comfyui/custom_nodes/…" can
+	// name a symlink while the running ComfyUI reports a different path, which
+	// makes a failed install impossible to diagnose. Best-effort: a resolution
+	// failure keeps the configured value rather than rejecting a usable config.
+	if c.ComfyRoot != "" {
+		if resolved, rerr := filepath.EvalSymlinks(c.ComfyRoot); rerr == nil {
+			c.ComfyRoot = resolved
+		}
+	}
 	if c.DefaultPollInterval.D() <= 0 {
 		c.DefaultPollInterval = Duration(DefaultPollInterval)
 	}

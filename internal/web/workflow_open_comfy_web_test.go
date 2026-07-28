@@ -218,11 +218,46 @@ func TestOpenComfyProbeIsCachedAndNotRunOnRender(t *testing.T) {
 		t.Errorf("pingCalls = %d across 3 clicks, want 1 (cached)", fake.pingCalls)
 	}
 
-	// An install invalidates the cache, so the next click re-probes.
-	srv.invalidateComfyExtensionProbe()
+	// An install/uninstall must invalidate the cache — driven through the REAL
+	// endpoint, not by poking the invalidator, so the wiring itself is covered.
+	srv.cfg.ComfyRoot = fakeComfyRoot(t)
+	if rec := postForm(srv, "/comfy/extension/install", extForm(itoa64(id)), true); rec.Code != http.StatusOK {
+		t.Fatalf("install status = %d", rec.Code)
+	}
 	postForm(srv, "/workflows/"+itoa64(id)+"/open-in-comfyui", "", true)
 	if fake.pingCalls != 2 {
-		t.Errorf("pingCalls = %d after invalidation, want 2", fake.pingCalls)
+		t.Errorf("pingCalls = %d after an install, want 2 (the install must invalidate the cache)", fake.pingCalls)
+	}
+	if rec := postForm(srv, "/comfy/extension/uninstall", extForm(itoa64(id)), true); rec.Code != http.StatusOK {
+		t.Fatalf("uninstall status = %d", rec.Code)
+	}
+	postForm(srv, "/workflows/"+itoa64(id)+"/open-in-comfyui", "", true)
+	if fake.pingCalls != 3 {
+		t.Errorf("pingCalls = %d after an uninstall, want 3 (the uninstall must invalidate the cache)", fake.pingCalls)
+	}
+}
+
+// TestOpenComfyExtensionOpenGetsATightBudget proves the jump broadcast cannot hold
+// the user's click for the whole save budget: the deadline handed to ExtensionOpen
+// is the tight extOpenTimeout, not the enclosing 15s handler context.
+func TestOpenComfyExtensionOpenGetsATightBudget(t *testing.T) {
+	fake := &fakeComfy{pingInfo: &comfy.ExtensionInfo{Tool: "civitai-manager", Version: "1"}}
+	var budget time.Duration
+	fake.openFunc = func(ctx context.Context, _ string) error {
+		if dl, ok := ctx.Deadline(); ok {
+			budget = time.Until(dl)
+		}
+		return nil
+	}
+	srv := openComfyServer(t, fake)
+	id := seedUIWorkflow(t, srv, "wf", "{}")
+	postForm(srv, "/workflows/"+itoa64(id)+"/open-in-comfyui", "", true)
+
+	if budget <= 0 {
+		t.Fatal("ExtensionOpen got no deadline at all")
+	}
+	if budget > extOpenTimeout {
+		t.Errorf("ExtensionOpen budget = %s, want <= %s (a wedged helper must not hold the click)", budget, extOpenTimeout)
 	}
 }
 

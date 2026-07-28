@@ -43,6 +43,12 @@ const extProbeTTL = 30 * time.Second
 // stall the click that triggered it.
 const extProbeTimeout = 1500 * time.Millisecond
 
+// extOpenTimeout bounds the jump-an-open-tab broadcast. It is deliberately tight
+// and SEPARATE from the enclosing handler budget: the broadcast is a nice-to-have
+// (the deep link works without it), so a wedged helper must not hold the user's
+// click for the full save timeout.
+const extOpenTimeout = 2 * time.Second
+
 // openComfyContainerID is the stable element the "Open in ComfyUI" button and its
 // POST result share, so the action swaps its own container inline (mirrors
 // workflowImportContainerID).
@@ -223,7 +229,9 @@ func (s *Server) handleWorkflowOpenInComfyUI(w http.ResponseWriter, r *http.Requ
 		// Jump any already-open editor tab. A helper that vanished between the probe
 		// and this call (a restart, an uninstall) invalidates the cache and falls
 		// through to the honest fallback instead of pretending it worked.
-		err := client.ExtensionOpen(ctx, relPath)
+		octx, ocancel := context.WithTimeout(ctx, extOpenTimeout)
+		err := client.ExtensionOpen(octx, relPath)
+		ocancel()
 		switch {
 		case err == nil:
 			out.detected = true
@@ -363,7 +371,7 @@ func openComfyInstallOffer(v openComfyView) g.Node {
 		return h.Div(h.Class("flex flex-col gap-1"),
 			h.P(h.Class("text-xs text-amber-400"),
 				g.Text("The ComfyUI helper is installed but not active yet — restart ComfyUI once, then this button will open the workflow directly.")),
-			openComfyUninstallButton(v, "Remove helper"),
+			openComfyRemovalNote(v),
 		)
 	case v.disk.Foreign:
 		return h.P(h.Class("text-xs text-amber-400"),
@@ -394,7 +402,7 @@ func openComfyInstalledNote(v openComfyView) g.Node {
 			openComfyInstallButton(v, "Update ComfyUI helper"))
 	}
 	if v.disk.Installed {
-		nodes = append(nodes, openComfyUninstallButton(v, "Remove helper"))
+		nodes = append(nodes, openComfyRemovalNote(v))
 	}
 	return h.Div(h.Class("flex flex-col gap-1"), g.Group(nodes))
 }
@@ -404,6 +412,19 @@ func openComfyVersionLabel(version string) string {
 		return "(unknown version)"
 	}
 	return "v" + version
+}
+
+// openComfyRemovalNote pairs the uninstall button with what it ACTUALLY does:
+// removing the helper deletes its whole directory, including anything that ended
+// up inside it that civitai-manager did not write (ComfyUI's own __pycache__ is
+// always there). That is the correct behaviour — a partially deleted custom node
+// is worse than none — but the user should not have to guess it.
+func openComfyRemovalNote(v openComfyView) g.Node {
+	return h.Div(h.Class("flex flex-col gap-1"),
+		openComfyUninstallButton(v, "Remove helper"),
+		h.P(h.Class("text-xs text-slate-500"),
+			g.Text("Removing deletes the whole "+v.disk.Dir+" directory, including files civitai-manager did not write (e.g. ComfyUI's __pycache__). Restart ComfyUI once afterwards.")),
+	)
 }
 
 func openComfyInstallButton(v openComfyView, label string) g.Node {
@@ -486,7 +507,7 @@ func (s *Server) handleComfyExtensionAction(w http.ResponseWriter, r *http.Reque
 		switch {
 		case err == nil:
 			s.render(w, http.StatusOK, extActionResult(cid, true,
-				"Removed the ComfyUI helper from "+comfyext.Dir(root)+". Restart ComfyUI once to finish removing it."))
+				"Removed the ComfyUI helper — the whole "+comfyext.Dir(root)+" directory is gone, including files civitai-manager did not write (e.g. ComfyUI's __pycache__). Restart ComfyUI once to finish removing it."))
 		case errors.Is(err, comfyext.ErrNotInstalled):
 			s.render(w, http.StatusOK, extActionResult(cid, true,
 				"The ComfyUI helper is not installed — nothing to remove."))

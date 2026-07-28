@@ -45,6 +45,9 @@ type fakeComfy struct {
 	openErr     error
 	openRelPath string
 	openCalls   int
+	// openFunc, when set, overrides ExtensionOpen entirely so a test can inspect
+	// the context (deadline) the handler hands it.
+	openFunc func(context.Context, string) error
 }
 
 func (f *fakeComfy) SystemStats(context.Context) (*comfy.SystemStats, error) {
@@ -94,9 +97,12 @@ func (f *fakeComfy) ExtensionPing(context.Context) (*comfy.ExtensionInfo, error)
 	}
 	return f.pingInfo, nil
 }
-func (f *fakeComfy) ExtensionOpen(_ context.Context, relPath string) error {
+func (f *fakeComfy) ExtensionOpen(ctx context.Context, relPath string) error {
 	f.openCalls++
 	f.openRelPath = relPath
+	if f.openFunc != nil {
+		return f.openFunc(ctx, relPath)
+	}
 	return f.openErr
 }
 
