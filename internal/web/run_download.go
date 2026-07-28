@@ -183,7 +183,108 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 		ExpectedSHA256:    plan.ExpectedSHA256,
 		SourceHF:          plan.SourceHF,
 	}
-	s.startDownloadAndRun(wf, pd)
+	s.startDownloadAndRun(wf, pd, runOptions{})
+	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, true, s.nsfwMode()))
+}
+
+// handleWorkflowInstallOptionAndRun installs the model FILE behind ONE model-file
+// incompatible-option (resolve → download into the local ComfyUI models dir) AND
+// applies the user's picked fixes for the OTHER options in the section, then runs the
+// ORIGINAL workflow ephemerally — the stored workflow is never mutated. It is
+// CSRF-protected + loopback-gated (same prologue as handleWorkflowDownloadAndRun) and
+// reaches civitai.com/HuggingFace (egress) + the local filesystem + ComfyUI.
+//
+// The section form hx-includes carry the whole group's opt_input/opt_old/opt_new
+// arrays; parseOptionFixes turns the picked ones into fixes. The install target's own
+// fix is DROPPED (we install the exact file, not substitute it). It degrades safely
+// exactly like download-and-run: not eligible / unroutable / ambiguous → writes
+// NOTHING and returns the resolve/link fragment.
+func (s *Server) handleWorkflowInstallOptionAndRun(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	if !s.gate(w) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad workflow id", http.StatusBadRequest)
+		return
+	}
+	filename := strings.TrimSpace(r.FormValue("install_filename"))
+	if filename == "" {
+		http.Error(w, "missing install_filename", http.StatusBadRequest)
+		return
+	}
+	typ := civitaiTypeParam(r.FormValue("install_type"))
+
+	// Fixes for the OTHER groups (the picks). Drop any fix keyed on the install
+	// target's own value — installing the exact file makes the original value valid,
+	// so it must NOT also be rewritten to a substitute.
+	fixes := parseOptionFixes(r.Form)
+	for k := range fixes {
+		if k.OldValue == filename {
+			delete(fixes, k)
+		}
+	}
+	opts := runOptions{OptionFixes: fixes}
+
+	// Not eligible → link-only fallback (never attempt a write/download).
+	if !s.comfyDownloadEligible() {
+		s.renderResolveFallback(w, r, filename, typ)
+		return
+	}
+
+	wf, err := s.store.GetWorkflow(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.renderError(w, "load workflow", err)
+		return
+	}
+
+	// Fast path: a routable CivitAI type whose destination already exists → skip the
+	// network and run with the picked option-fixes (the original value is valid).
+	if subdir, ok := comfy.TypeSubdir(typ); ok {
+		if dest, derr := comfy.SafeModelDest(s.cfg.ComfyModelPath, subdir, filename); derr == nil && fileExists(dest) {
+			s.startRun(wf, opts)
+			s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
+			return
+		}
+	}
+
+	// Resolve the install source (CivitAI first, then the auto-eligible HF fallback).
+	// A bad-option install never disambiguates to a chosen model (chosenModel = 0), so
+	// the detector's HF curated path is reachable. Ambiguous/zero → resolve cards.
+	plan, ok := s.resolveInstallPlan(r.Context(), filename, typ, 0)
+	if !ok {
+		s.renderResolveFallback(w, r, filename, typ)
+		return
+	}
+
+	// Already installed at the resolved destination → skip the download, run with fixes.
+	if fileExists(plan.DestPath) {
+		s.startRun(wf, opts)
+		s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
+		return
+	}
+
+	pd := pendingDownload{
+		FileName:          plan.FileName,
+		URL:               plan.URL,
+		DestPath:          plan.DestPath,
+		MaxBytes:          s.cfg.MaxFileSizeBytes,
+		ContentLengthHint: plan.ContentLengthHint,
+		ExpectedSHA256:    plan.ExpectedSHA256,
+		SourceHF:          plan.SourceHF,
+	}
+	s.startDownloadAndRun(wf, pd, opts)
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, true, s.nsfwMode()))
 }
 
@@ -399,11 +500,15 @@ func (m modelWithVersions) pickFile(want string) (resolvedDownload, bool) {
 
 // startDownloadAndRun launches a background job that FIRST downloads pd into the
 // ComfyUI models dir (streaming progress into the run-status container), then runs
-// the workflow normally. It respects the one-run-at-a-time invariant (a click
-// while any run/download is in flight is a no-op). The run uses EMPTY runOptions —
-// no substitution — because the referenced file now exists on disk, so the
-// original graph resolves unchanged.
-func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload) {
+// the workflow with opts. It respects the one-run-at-a-time invariant (a click while
+// any run/download is in flight is a no-op).
+//
+// opts is EMPTY for the plain download-and-run (the referenced file now exists on
+// disk, so the original graph resolves unchanged). For install-option-and-run it
+// carries the OTHER incompatible-options' picked fixes, applied to the ephemeral graph
+// after the file lands — so the whole section resolves in one action. The stored
+// workflow is never touched.
+func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opts runOptions) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	if s.runJob != nil && s.runJob.running {
@@ -443,7 +548,7 @@ func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload) {
 			if err != nil {
 				return
 			}
-			res, err = run(ctx, wf, up, runOptions{})
+			res, err = run(ctx, wf, up, opts)
 		}()
 		s.runMu.Lock()
 		defer s.runMu.Unlock()
