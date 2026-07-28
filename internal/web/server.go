@@ -59,6 +59,12 @@ type Config struct {
 	// missing-models panel then degrades to CivitAI-link-only. Validated at config
 	// load (existing writable dir when set).
 	ComfyModelPath string
+	// ComfyRoot is the local ComfyUI INSTALL root (the folder holding
+	// custom_nodes/). It is used ONLY by the explicit, user-triggered install of
+	// the civitai-manager ComfyUI helper extension. Empty disables that action.
+	// Resolved by config (explicit comfy_root, else the comfy_model_path parent
+	// when it looks like a ComfyUI install).
+	ComfyRoot string
 	// OutputsDir is the civitai-manager-owned directory the output gallery copies
 	// successful workflow-run images into (app-owned data next to the DB). Always
 	// set by config resolution (defaults to <db-dir>/outputs). Capture is skipped
