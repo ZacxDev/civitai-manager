@@ -50,10 +50,17 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	runSection := g.Group([]g.Node{
+	sectionNodes := []g.Node{
 		runPanel(wf, s.runJobState(), s.csrf, s.extraPathsAllowed(), s.comfyDownloadEligible(), s.nsfwMode()),
 		cloudEntryCard(wf.ID),
-	})
+	}
+	// Per-workflow "Recent outputs" — the shared gallery grid limited to this
+	// workflow's most recent generations, inserted right after the run panel.
+	// Omitted entirely when this workflow has no captured generations.
+	if outputs := s.renderWorkflowOutputs(r.Context(), wf.ID); outputs != nil {
+		sectionNodes = append(sectionNodes, outputs)
+	}
+	runSection := g.Group(sectionNodes)
 	comfyConfigured := strings.TrimSpace(s.cfg.ComfyURL) != ""
 	s.render(w, http.StatusOK, workflowDetailPage(wf, prettyJSON(wf.Graph),
 		s.csrf, s.currentTheme(), s.nsfwMode(), runSection, comfyConfigured, s.workflowResolver()))

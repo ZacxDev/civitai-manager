@@ -68,6 +68,7 @@ func navbar(theme, csrf, nsfwMode string) g.Node {
 			navLink("/", "Dashboard"),
 			navLink("/search", "Models"),
 			navLink("/workflows/discover", "Workflows"),
+			navLink("/outputs", "Outputs"),
 			navLink("/apps/discover", "Apps"),
 			navLink("/library", "Library"),
 			navLink("/trash", "Trash"),

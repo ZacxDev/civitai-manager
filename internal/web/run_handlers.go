@@ -185,8 +185,29 @@ func (s *Server) startRun(wf *store.Workflow, opts runOptions) {
 			res, err = run(ctx, wf, up, opts)
 		}()
 		s.runMu.Lock()
-		defer s.runMu.Unlock()
 		s.applyRunOutcomeLocked(job, res, err)
+		phase := job.phase
+		s.runMu.Unlock()
+
+		// Best-effort output capture: OUTSIDE runMu (it does network /view fetches +
+		// disk writes — must never block a status poll or hold the run mutex), on the
+		// SUCCESS path only, and fully panic-guarded so a capture failure can NEVER
+		// change or crash the settled run. captureGeneration itself swallows its own
+		// errors; this recover is the last-resort guard around a seam/panic.
+		if phase == runPhaseDone && res != nil && len(res.Images) > 0 {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						s.log.Error("output capture panicked", "err", r)
+					}
+				}()
+				capture := s.captureFn
+				if capture == nil {
+					capture = s.captureGeneration
+				}
+				capture(wf, opts, res)
+			}()
+		}
 	}()
 }
 

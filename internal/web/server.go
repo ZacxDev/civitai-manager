@@ -59,6 +59,11 @@ type Config struct {
 	// missing-models panel then degrades to CivitAI-link-only. Validated at config
 	// load (existing writable dir when set).
 	ComfyModelPath string
+	// OutputsDir is the civitai-manager-owned directory the output gallery copies
+	// successful workflow-run images into (app-owned data next to the DB). Always
+	// set by config resolution (defaults to <db-dir>/outputs). Capture is skipped
+	// when empty (e.g. an unconfigured test server).
+	OutputsDir string
 	// MaxFileSizeBytes caps a "Download & run" model download (0 = the built-in
 	// safety guard). It reuses the poller's max_file_size setting so a single knob
 	// bounds every download the app makes.
@@ -148,6 +153,11 @@ type Server struct {
 	// Nil (production) builds a comfy.Client from cfg.ComfyURL/ComfyToken; tests
 	// inject a fake to exercise the real run orchestration and the view proxy.
 	comfyClientFn func() comfyClient
+	// captureFn is the output-capture seam invoked after a successful run settles
+	// (off runMu, success path only). Nil (production) uses captureGeneration
+	// (View → atomic write → InsertGeneration, best-effort); tests inject a seam to
+	// assert capture is (or is not) invoked without touching a real ComfyUI/FS.
+	captureFn func(wf *store.Workflow, opts runOptions, res *runResult)
 	// runMu guards runJob. One workflow run is active at a time (global MVP guard).
 	runMu sync.Mutex
 	// runJob is the current (or most recent) background run, or nil before the first.
@@ -450,6 +460,15 @@ func (s *Server) Handler() http.Handler {
 	// GET like the model search, not an arbitrary-path primitive). The same
 	// handler serves the full page and the HX results fragment.
 	mux.HandleFunc("GET /apps/discover", s.handleDiscoverApps)
+
+	// Output gallery — durable capture + browse of ComfyUI run outputs. The image
+	// byte route is registered before /outputs/{id} but ServeMux prefers the more
+	// specific literal-prefixed pattern regardless of order.
+	mux.HandleFunc("GET /outputs", s.handleOutputs)
+	mux.HandleFunc("GET /outputs/img/{imageID}", s.handleOutputsImage)
+	mux.HandleFunc("GET /outputs/{id}", s.handleGenerationDetail)
+	mux.HandleFunc("POST /outputs/{id}/rerun", s.handleGenerationRerun)
+	mux.HandleFunc("POST /outputs/{id}/delete", s.handleGenerationDelete)
 
 	mux.HandleFunc("GET /workflows", s.handleWorkflows)
 	// Browse-only workflow discovery (Slice D1). Registered before the {id} route;
