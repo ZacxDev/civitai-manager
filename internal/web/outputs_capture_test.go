@@ -102,13 +102,116 @@ func TestCaptureGenerationWritesFilesAndRows(t *testing.T) {
 		t.Errorf("widget overrides not snapshotted: %+v", snap.WidgetOverrides)
 	}
 
-	// runOptionsFromParams reconstructs the overrides for a re-run.
-	back := runOptionsFromParams(g.Params)
+	// runOptionsFromParams reconstructs the overrides for a re-run. The legacy
+	// name-keyed set is position-independent, so it replays regardless of the graph.
+	back, stale := runOptionsFromParams(g.Params, g.GraphHash, wf.GraphHash)
+	if stale != "" {
+		t.Fatalf("unchanged graph must not be reported stale: %s", stale)
+	}
 	if back.Substitute["missing.safetensors"] != "installed.safetensors" {
 		t.Errorf("substitute not reconstructed: %+v", back.Substitute)
 	}
 	if back.WidgetOverrides[comfy.WidgetOverrideKey{NodeID: "3", InputName: "seed"}] != "42" {
 		t.Errorf("widget override not reconstructed: %+v", back.WidgetOverrides)
+	}
+}
+
+// TestRunParamsSnapshotRoundTripsUIWidgetOverrides is the F7 coverage gap: the NEW
+// index-keyed override set must survive buildRunParamsSnapshot → JSON →
+// runOptionsFromParams, be sorted deterministically, and coexist with a legacy
+// name-keyed set (each applied through its own path — UI pre-conversion, legacy
+// post-conversion).
+func TestRunParamsSnapshotRoundTripsUIWidgetOverrides(t *testing.T) {
+	wf := &store.Workflow{ID: 1, GraphHash: "HASH-A", Format: store.WorkflowFormatUI}
+	opts := runOptions{
+		UIWidgetOverrides: map[comfy.UIWidgetKey]string{
+			{NodeID: "40", Widget: 0}: "999",
+			{NodeID: "3", Widget: 1}:  "second",
+			{NodeID: "3", Widget: 0}:  "first",
+		},
+		WidgetOverrides: map[comfy.WidgetOverrideKey]string{
+			{NodeID: "9", InputName: "steps"}: "12",
+			{NodeID: "9", InputName: "cfg"}:   "7",
+		},
+	}
+
+	// Deterministic ordering: the same options must marshal byte-identically every
+	// time (map iteration order must not leak into the persisted row).
+	first := marshalRunParams(buildRunParamsSnapshot(wf, opts))
+	for i := 0; i < 20; i++ {
+		if got := marshalRunParams(buildRunParamsSnapshot(wf, opts)); got != first {
+			t.Fatalf("params JSON is not stable across marshals:\n%s\n%s", first, got)
+		}
+	}
+	snap := parseRunParams(first)
+	if len(snap.UIWidgetOverrides) != 3 {
+		t.Fatalf("ui overrides = %+v", snap.UIWidgetOverrides)
+	}
+	if snap.UIWidgetOverrides[0].NodeID != "3" || snap.UIWidgetOverrides[0].widgetDisplay() != "0" ||
+		snap.UIWidgetOverrides[1].widgetDisplay() != "1" || snap.UIWidgetOverrides[2].NodeID != "40" {
+		t.Errorf("ui overrides not sorted by (node, widget): %+v", snap.UIWidgetOverrides)
+	}
+	if len(snap.WidgetOverrides) != 2 || snap.WidgetOverrides[0].InputName != "cfg" {
+		t.Errorf("legacy overrides not sorted by (node, input): %+v", snap.WidgetOverrides)
+	}
+
+	// Same graph hash → BOTH schemes reconstruct; each targets its own apply path.
+	back, stale := runOptionsFromParams(first, "HASH-A", "HASH-A")
+	if stale != "" {
+		t.Fatalf("matching hashes must not be stale: %s", stale)
+	}
+	if back.UIWidgetOverrides[comfy.UIWidgetKey{NodeID: "3", Widget: 0}] != "first" ||
+		back.UIWidgetOverrides[comfy.UIWidgetKey{NodeID: "40", Widget: 0}] != "999" {
+		t.Errorf("ui overrides not reconstructed: %+v", back.UIWidgetOverrides)
+	}
+	if back.WidgetOverrides[comfy.WidgetOverrideKey{NodeID: "9", InputName: "steps"}] != "12" {
+		t.Errorf("legacy overrides not reconstructed: %+v", back.WidgetOverrides)
+	}
+}
+
+// TestRunOptionsFromParamsRefusesStalePositionalKeys is the F2 regression: a stored
+// (node, widget index) override must NEVER be replayed against a graph that has
+// changed since capture — the index would land on whatever widget now occupies that
+// slot (a captured seed type-coerced over a prompt).
+func TestRunOptionsFromParamsRefusesStalePositionalKeys(t *testing.T) {
+	wf := &store.Workflow{ID: 1, GraphHash: "HASH-A"}
+	params := marshalRunParams(buildRunParamsSnapshot(wf, runOptions{
+		UIWidgetOverrides: map[comfy.UIWidgetKey]string{{NodeID: "3", Widget: 0}: "999"},
+		Substitute:        map[string]string{"a": "b"},
+	}))
+
+	for _, tc := range []struct{ name, gen, cur string }{
+		{"graph replaced by a rescan", "HASH-A", "HASH-B"},
+		{"generation predates graph hashing", "", "HASH-B"},
+		{"workflow has no hash", "HASH-A", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			back, stale := runOptionsFromParams(params, tc.gen, tc.cur)
+			if stale == "" {
+				t.Fatal("stale positional overrides must be refused")
+			}
+			if len(back.UIWidgetOverrides) != 0 {
+				t.Errorf("positional overrides must not be reconstructed: %+v", back.UIWidgetOverrides)
+			}
+		})
+	}
+}
+
+// TestRunOptionsFromParamsDropsMalformedWidgetIndex proves a corrupt/hand-edited
+// widget field is dropped rather than defaulting the edit onto widget 0.
+func TestRunOptionsFromParamsDropsMalformedWidgetIndex(t *testing.T) {
+	const params = `{"ui_widget_overrides":[{"node_id":"3","widget":"x","value":"999"},
+	  {"node_id":"","widget":2,"value":"v"},{"node_id":"4","widget":1,"value":"ok"}]}`
+	back, stale := runOptionsFromParams(params, "H", "H")
+	if stale != "" {
+		t.Fatalf("unexpected stale: %s", stale)
+	}
+	if _, bad := back.UIWidgetOverrides[comfy.UIWidgetKey{NodeID: "3", Widget: 0}]; bad {
+		t.Errorf("non-integer widget must not default to slot 0: %+v", back.UIWidgetOverrides)
+	}
+	if len(back.UIWidgetOverrides) != 1 ||
+		back.UIWidgetOverrides[comfy.UIWidgetKey{NodeID: "4", Widget: 1}] != "ok" {
+		t.Errorf("well-formed entry should survive: %+v", back.UIWidgetOverrides)
 	}
 }
 

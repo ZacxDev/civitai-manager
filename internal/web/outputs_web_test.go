@@ -255,6 +255,108 @@ func TestRerunReconstructsAndStartsRun(t *testing.T) {
 	}
 }
 
+// seedGenWithParams inserts a generation carrying an explicit params blob and graph
+// hash, so the re-run staleness guard can be exercised.
+func seedGenWithParams(t *testing.T, srv *Server, root string, wfID *int64, name, params, graphHash string) int64 {
+	t.Helper()
+	relPath := "prompt-" + name + "/0-img.png"
+	if _, err := writeOutputImage(root, relPath, []byte("X"), maxOutputImageBytes); err != nil {
+		t.Fatalf("write output file: %v", err)
+	}
+	genID, err := srv.store.InsertGeneration(context.Background(), &store.Generation{
+		WorkflowID: wfID, WorkflowName: name, PromptID: "prompt-" + name,
+		GraphHash: graphHash, Params: params,
+	}, []store.GenerationImage{
+		{Idx: 0, RelPath: relPath, Filename: "img.png", ContentType: "image/png", SizeBytes: 1},
+	})
+	if err != nil {
+		t.Fatalf("insert generation: %v", err)
+	}
+	return genID
+}
+
+// TestRerunRefusesStalePositionalOverrides is the F2 regression at the HTTP layer: a
+// generation whose workflow graph has been replaced (a rescan rewrites graph +
+// graph_hash in place) must NOT be re-run with its stored (node, widget index)
+// overrides — they would land on whatever widget now occupies that slot.
+func TestRerunRefusesStalePositionalOverrides(t *testing.T) {
+	srv, root := newOutputsServer(t, "127.0.0.1:8787")
+	wf := seedWF(t, srv, "wf")
+	const params = `{"ui_widget_overrides":[{"node_id":"3","widget":0,"value":"999"}]}`
+	genID := seedGenWithParams(t, srv, root, &wf, "stale", params, "HASH-FROM-AN-OLDER-GRAPH")
+
+	started := make(chan runOptions, 1)
+	srv.runFn = func(_ context.Context, _ *store.Workflow, _ runUpdater, opts runOptions) (*runResult, error) {
+		started <- opts
+		return &runResult{}, nil
+	}
+
+	rec := post(t, srv, "/outputs/"+strconv.FormatInt(genID, 10)+"/rerun", url.Values{}, true)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("stale rerun status = %d, want 409", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "graph has changed") {
+		t.Errorf("the user must be told why: %q", rec.Body.String())
+	}
+	select {
+	case opts := <-started:
+		t.Fatalf("no run may start with stale positional overrides: %+v", opts)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// TestRerunAppliesPositionalOverridesWhenGraphUnchanged is the other half: when the
+// hash still matches, the index-keyed overrides DO replay.
+func TestRerunAppliesPositionalOverridesWhenGraphUnchanged(t *testing.T) {
+	srv, root := newOutputsServer(t, "127.0.0.1:8787")
+	wf := seedWF(t, srv, "wf")
+	cur, err := srv.store.GetWorkflow(context.Background(), wf)
+	if err != nil {
+		t.Fatalf("get workflow: %v", err)
+	}
+	const params = `{"ui_widget_overrides":[{"node_id":"3","widget":2,"value":"999"}]}`
+	genID := seedGenWithParams(t, srv, root, &wf, "fresh", params, cur.GraphHash)
+
+	ran := make(chan runOptions, 1)
+	srv.runFn = func(_ context.Context, _ *store.Workflow, _ runUpdater, opts runOptions) (*runResult, error) {
+		ran <- opts
+		return &runResult{}, nil
+	}
+	if rec := post(t, srv, "/outputs/"+strconv.FormatInt(genID, 10)+"/rerun", url.Values{}, true); rec.Code != http.StatusSeeOther {
+		t.Fatalf("rerun status = %d, want 303", rec.Code)
+	}
+	select {
+	case opts := <-ran:
+		if opts.UIWidgetOverrides[comfy.UIWidgetKey{NodeID: "3", Widget: 2}] != "999" {
+			t.Errorf("positional override not replayed: %+v", opts.UIWidgetOverrides)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runFn was never invoked")
+	}
+}
+
+// TestGenerationDetailShowsBothOverrideSchemes is the F3 regression: the "Parameter
+// edits" block must render for the CURRENT index-keyed snapshot as well as the legacy
+// name-keyed one — showing only the legacy shape blanked the block for every new run.
+func TestGenerationDetailShowsBothOverrideSchemes(t *testing.T) {
+	srv, root := newOutputsServer(t, "127.0.0.1:8787")
+	wf := seedWF(t, srv, "wf")
+
+	newID := seedGenWithParams(t, srv, root, &wf, "newstyle",
+		`{"ui_widget_overrides":[{"node_id":"3","widget":0,"value":"a new prompt"}]}`, "H")
+	body := get(t, srv, "/outputs/"+strconv.FormatInt(newID, 10)).Body.String()
+	if !strings.Contains(body, "Parameter edits") || !strings.Contains(body, "node 3 · widget 0 = a new prompt") {
+		t.Errorf("index-keyed parameter edits not rendered:\n%s", body)
+	}
+
+	oldID := seedGenWithParams(t, srv, root, &wf, "oldstyle",
+		`{"widget_overrides":[{"node_id":"7","input_name":"seed","value":"42"}]}`, "H")
+	body = get(t, srv, "/outputs/"+strconv.FormatInt(oldID, 10)).Body.String()
+	if !strings.Contains(body, "Parameter edits") || !strings.Contains(body, "node 7 · seed = 42") {
+		t.Errorf("legacy parameter edits not rendered:\n%s", body)
+	}
+}
+
 func TestRerun404WhenWorkflowDeleted(t *testing.T) {
 	srv, root := newOutputsServer(t, "127.0.0.1:8787")
 	genID, _ := seedGen(t, srv, root, nil, "orphan", []byte("X"))
