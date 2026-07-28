@@ -119,7 +119,7 @@ func hfRepoLine(m *hf.Match) g.Node {
 		sub = append(sub, "gated")
 	}
 	if len(sub) > 0 {
-		meta = append(meta, h.Div(h.Class("text-xs text-slate-500 mt-0.5"),
+		meta = append(meta, h.Div(h.Class("text-xs text-slate-500 mt-1"),
 			g.Text(strings.Join(sub, " · "))))
 	}
 	return h.Div(h.Class("rounded border border-slate-800 p-2"), g.Group(meta))
