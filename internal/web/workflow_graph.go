@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,9 +31,28 @@ const (
 	// Render caps: a crafted/huge workflow (nodes/links arrays can be enormous
 	// within the import/scan size limits) must not spike memory/CPU when its
 	// detail page is opened. Cap the elements we emit; note truncation to the user.
-	gMaxNodes = 600
-	gMaxLinks = 2000
+	gMaxNodes  = 600
+	gMaxLinks  = 2000
+	gMaxGroups = 200
+	// gCollapsedW bounds a collapsed node's title pill (litegraph's own collapsed
+	// nodes are title-only, ~80px wide, growing with the title text).
+	gCollapsedMinW = 80.0
+	gCollapsedMaxW = 220.0
 )
+
+// hexColorRe bounds what may be echoed into an SVG fill/stroke attribute from the
+// UNTRUSTED graph: a #rgb / #rrggbb / #rrggbbaa literal and nothing else. A
+// non-matching value falls back to the theme default rather than being emitted.
+var hexColorRe = regexp.MustCompile(`^#[0-9a-fA-F]{3,8}$`)
+
+// safeHexColor returns c when it is a plain hex color literal, else fallback.
+func safeHexColor(c, fallback string) string {
+	c = strings.TrimSpace(c)
+	if hexColorRe.MatchString(c) {
+		return c
+	}
+	return fallback
+}
 
 // linkTypeColor maps a litegraph link data type to a wire color (litegraph
 // conventions). Unknown/blank types render in neutral gray. The palette is chosen
@@ -65,8 +85,9 @@ func linkTypeColor(t string) string {
 
 // litegraph JSON shapes (defensive: fields that vary in the wild are RawMessage).
 type lgGraph struct {
-	Nodes []lgNode        `json:"nodes"`
-	Links json.RawMessage `json:"links"`
+	Nodes  []lgNode        `json:"nodes"`
+	Links  json.RawMessage `json:"links"`
+	Groups []lgGroup       `json:"groups"`
 }
 
 type lgNode struct {
@@ -76,9 +97,29 @@ type lgNode struct {
 	Mode          int             `json:"mode"`
 	Pos           json.RawMessage `json:"pos"`
 	Size          json.RawMessage `json:"size"`
+	Color         string          `json:"color"`
+	BgColor       string          `json:"bgcolor"`
+	Flags         lgFlags         `json:"flags"`
 	Inputs        []lgSlot        `json:"inputs"`
 	Outputs       []lgSlot        `json:"outputs"`
 	WidgetsValues json.RawMessage `json:"widgets_values"`
+}
+
+// lgFlags carries the per-node canvas flags. Only `collapsed` affects geometry: a
+// collapsed node is drawn by ComfyUI as a title-only pill, NOT at its stored size —
+// rendering it expanded moves its wire endpoints by up to its full height and buries
+// whatever sits behind it.
+type lgFlags struct {
+	Collapsed bool `json:"collapsed"`
+}
+
+// lgGroup is a canvas group box: a titled, colored region behind a set of nodes.
+// Groups carry no execution semantics but are the main visual landmark in a large
+// ComfyUI workflow, so a preview without them reads as a different graph.
+type lgGroup struct {
+	Title    string          `json:"title"`
+	Bounding json.RawMessage `json:"bounding"` // [x, y, w, h]
+	Color    string          `json:"color"`
 }
 
 type lgSlot struct {
@@ -90,72 +131,119 @@ type placedNode struct {
 	x, y, w, hgt      float64
 	inCount, outCount int
 	bypassed          bool
+	collapsed         bool
+}
+
+// inPoint / outPoint are where a wire attaches for a given slot index. A COLLAPSED
+// node has no slot rows — litegraph converges every wire on the pill's left/right
+// edge, so the preview must too.
+func (p placedNode) inPoint(slot int) (float64, float64) {
+	if p.collapsed {
+		return p.x, p.y - gTitleH/2
+	}
+	return p.x, p.y + gSlotStart + float64(clampSlot(slot, p.inCount))*gSlotSpacing
+}
+
+func (p placedNode) outPoint(slot int) (float64, float64) {
+	if p.collapsed {
+		return p.x + p.w, p.y - gTitleH/2
+	}
+	return p.x + p.w, p.y + gSlotStart + float64(clampSlot(slot, p.outCount))*gSlotSpacing
+}
+
+// graphRenderStats is what the SVG renderer actually covered, so the card can be
+// HONEST about omissions instead of silently dropping elements — and so a test can
+// assert coverage against the graph's true node/link sets.
+type graphRenderStats struct {
+	TotalNodes, DrawnNodes   int
+	TotalLinks, DrawnLinks   int
+	SkippedNodes             int // unparseable pos/size — could not be placed
+	SkippedLinks             int // malformed tuple, or an endpoint that was not placed
+	NodesCapped, LinksCapped bool
+	TotalGroups, DrawnGroups int
 }
 
 // workflowGraphSVG renders a UI-format (litegraph) graph as an SVG node. ok=false
 // when the graph is not UI-format, has no placeable nodes, or does not parse — the
 // caller then falls back to the structured view.
 func workflowGraphSVG(graph []byte) (g.Node, bool) {
+	node, _, ok := buildWorkflowGraphSVG(graph)
+	return node, ok
+}
+
+// buildWorkflowGraphSVG is workflowGraphSVG plus the coverage stats (what it drew and
+// what it dropped), split out so the card can report omissions and tests can assert
+// that the emitted SVG covers the graph's true node/link sets.
+func buildWorkflowGraphSVG(graph []byte) (g.Node, graphRenderStats, bool) {
 	var lg lgGraph
+	var st graphRenderStats
 	if err := json.Unmarshal(graph, &lg); err != nil {
-		return nil, false
+		return nil, st, false
 	}
 	if len(lg.Nodes) == 0 {
-		return nil, false
+		return nil, st, false
 	}
+	st.TotalNodes = len(lg.Nodes)
+	st.TotalGroups = len(lg.Groups)
 
 	placed := make(map[string]placedNode, len(lg.Nodes))
 	var nodeEls []g.Node
 	var haveBox bool
 	var minX, minY, maxX, maxY float64
+	grow := func(x0, y0, x1, y1 float64) {
+		if !haveBox {
+			minX, minY, maxX, maxY = x0, y0, x1, y1
+			haveBox = true
+			return
+		}
+		minX, minY = minf(minX, x0), minf(minY, y0)
+		maxX, maxY = maxf(maxX, x1), maxf(maxY, y1)
+	}
 
-	truncated := len(lg.Nodes) > gMaxNodes
+	st.NodesCapped = len(lg.Nodes) > gMaxNodes
 	for i, n := range lg.Nodes {
 		if i >= gMaxNodes {
 			break // render cap — a hostile graph must not blow up the response
 		}
 		px, py, ok := parseXY(n.Pos)
 		if !ok {
+			st.SkippedNodes++
 			continue // can't place — skip this node (defensive)
 		}
 		w, hh, sok := parseXY(n.Size)
 		if !sok || w <= 0 || hh <= 0 {
 			w, hh = gDefaultW, gDefaultH
 		}
-		id := rawIDToString(n.ID)
 		p := placedNode{
 			x: px, y: py, w: w, hgt: hh,
-			inCount:  len(n.Inputs),
-			outCount: len(n.Outputs),
-			bypassed: n.Mode == 2 || n.Mode == 4,
+			inCount:   len(n.Inputs),
+			outCount:  len(n.Outputs),
+			bypassed:  n.Mode == 2 || n.Mode == 4,
+			collapsed: n.Flags.Collapsed,
 		}
-		if id != "" {
+		if p.collapsed {
+			// ComfyUI draws a collapsed node as a title-only pill at pos; its stored
+			// size is the size it would have when expanded and must NOT be used.
+			p.w, p.hgt = collapsedWidth(nodeDisplayTitle(n)), 0
+		}
+		if id := rawIDToString(n.ID); id != "" {
 			placed[id] = p
 		}
 		nodeEls = append(nodeEls, svgNode(n, p))
-
-		top := py - gTitleH
-		if !haveBox {
-			minX, minY, maxX, maxY = px, top, px+w, py+hh
-			haveBox = true
-		} else {
-			minX = minf(minX, px)
-			minY = minf(minY, top)
-			maxX = maxf(maxX, px+w)
-			maxY = maxf(maxY, py+hh)
-		}
+		st.DrawnNodes++
+		grow(p.x, p.y-gTitleH, p.x+p.w, p.y+p.hgt)
 	}
 	if !haveBox {
-		return nil, false // no placeable node
+		return nil, st, false // no placeable node
 	}
 
-	// Links UNDER nodes so wires do not obscure node chrome.
-	linkEls := svgLinks(lg.Links, placed)
+	// Groups BEHIND everything, links under nodes: same stacking order as the canvas.
+	groupEls := svgGroups(lg.Groups, &st, grow)
+	linkEls := svgLinks(lg.Links, placed, &st)
 
-	minX -= gPad
-	minY -= gPad
-	vbW := (maxX - minX) + gPad
-	vbH := (maxY - minY) + gPad
+	minX, minY = minX-gPad, minY-gPad
+	maxX, maxY = maxX+gPad, maxY+gPad
+	vbW, vbH := maxX-minX, maxY-minY
 
 	children := []g.Node{
 		g.Attr("xmlns", "http://www.w3.org/2000/svg"),
@@ -167,6 +255,7 @@ func workflowGraphSVG(graph []byte) (g.Node, bool) {
 		g.Attr("role", "img"),
 		g.Attr("preserveAspectRatio", "xMidYMid meet"),
 	}
+	children = append(children, groupEls...)
 	children = append(children, linkEls...)
 	children = append(children, nodeEls...)
 	svg := g.El("svg", children...)
@@ -176,28 +265,123 @@ func workflowGraphSVG(graph []byte) (g.Node, bool) {
 		h.Class("overflow-auto rounded border border-slate-800 bg-slate-900 p-2"),
 		h.Style("max-height:32rem"),
 	}
-	if truncated {
-		kids = append(kids, h.P(
-			h.Class("mb-2 text-xs text-amber-400"),
-			g.Text(fmt.Sprintf("Large workflow — showing the first %d of %d nodes.", gMaxNodes, len(lg.Nodes))),
-		))
+	if note := graphRenderNotice(st); note != nil {
+		kids = append(kids, note)
 	}
 	kids = append(kids, svg)
-	return h.Div(kids...), true
+	return h.Div(kids...), st, true
+}
+
+// graphRenderNotice states what the render dropped — a capped, unplaceable or
+// unresolvable element is called out instead of silently vanishing (a preview that
+// quietly omits nodes/wires reads as a DIFFERENT workflow). nil when nothing was lost.
+func graphRenderNotice(st graphRenderStats) g.Node {
+	var parts []string
+	if st.NodesCapped {
+		parts = append(parts, fmt.Sprintf("showing the first %d of %d nodes", gMaxNodes, st.TotalNodes))
+	}
+	if st.LinksCapped {
+		parts = append(parts, fmt.Sprintf("showing the first %d of %d links", gMaxLinks, st.TotalLinks))
+	}
+	if st.SkippedNodes > 0 {
+		parts = append(parts, fmt.Sprintf("%d node%s could not be placed", st.SkippedNodes, plural(st.SkippedNodes)))
+	}
+	if st.SkippedLinks > 0 {
+		parts = append(parts, fmt.Sprintf("%d link%s could not be drawn", st.SkippedLinks, plural(st.SkippedLinks)))
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return h.P(h.Class("mb-2 text-xs text-amber-400"),
+		g.Text("Incomplete preview — "+strings.Join(parts, "; ")+"."))
+}
+
+// graphPreviewCaption is the standing honesty note under the graph card: the SVG is a
+// static snapshot of the saved layout, not the ComfyUI canvas. It names the things
+// ComfyUI draws that this preview does not, so a difference is expected rather than
+// read as "a different workflow".
+func graphPreviewCaption() g.Node {
+	return h.P(h.Class("mt-2 text-xs text-slate-500"),
+		g.Text("Static preview of the saved layout: node positions, sizes, colors, "+
+			"groups and wires come from the graph file. It does not draw widget "+
+			"controls, slot labels, images/previews, or reroute points, and "+
+			"muted/bypassed nodes are dimmed — so it looks plainer than the ComfyUI "+
+			"canvas. Use \"Open in ComfyUI\" for the real thing."))
+}
+
+// collapsedWidth sizes a collapsed node's title pill from its title length, bounded
+// to litegraph-ish proportions.
+func collapsedWidth(title string) float64 {
+	w := 34 + 6.2*float64(len([]rune(truncate(title, 30))))
+	if w < gCollapsedMinW {
+		return gCollapsedMinW
+	}
+	if w > gCollapsedMaxW {
+		return gCollapsedMaxW
+	}
+	return w
+}
+
+// nodeDisplayTitle is a node's title, falling back to its class type.
+func nodeDisplayTitle(n lgNode) string {
+	if t := strings.TrimSpace(n.Title); t != "" {
+		return t
+	}
+	return n.Type
+}
+
+// svgGroups renders the canvas group boxes behind everything else and extends the
+// bounding box to cover them (a group can reach past its member nodes).
+func svgGroups(groups []lgGroup, st *graphRenderStats, grow func(x0, y0, x1, y1 float64)) []g.Node {
+	var out []g.Node
+	for i, gr := range groups {
+		if i >= gMaxGroups {
+			break
+		}
+		var b []float64
+		if json.Unmarshal(gr.Bounding, &b) != nil || len(b) < 4 || b[2] <= 0 || b[3] <= 0 {
+			continue // malformed bounding — skip (groups are decoration, not topology)
+		}
+		x, y, w, hh := b[0], b[1], b[2], b[3]
+		color := safeHexColor(gr.Color, "#475569")
+		out = append(out, g.El("g",
+			g.El("rect",
+				g.Attr("x", f(x)), g.Attr("y", f(y)),
+				g.Attr("width", f(w)), g.Attr("height", f(hh)),
+				g.Attr("rx", "6"),
+				g.Attr("fill", color), g.Attr("fill-opacity", "0.18"),
+				g.Attr("stroke", color), g.Attr("stroke-width", "1.5"),
+			),
+			g.El("text",
+				g.Attr("x", f(x+8)), g.Attr("y", f(y+20)),
+				g.Attr("fill", "#e2e8f0"), g.Attr("font-size", "16"),
+				g.Attr("font-family", "sans-serif"),
+				g.Text(truncate(strings.TrimSpace(gr.Title), 40)),
+			),
+		))
+		st.DrawnGroups++
+		grow(x, y, x+w, y+hh)
+	}
+	return out
 }
 
 // svgNode renders one placed node group: body + title bar + title + a few widget
-// values + input/output slot circles. Bypassed/muted nodes render dimmed + dashed.
+// values + input/output slot circles. A COLLAPSED node is drawn the way ComfyUI draws
+// it — a title-only pill with no body and no slot rows. Bypassed/muted nodes render
+// dimmed + dashed. Per-node litegraph colors are honored (sanitized to a hex literal).
 func svgNode(n lgNode, p placedNode) g.Node {
-	title := strings.TrimSpace(n.Title)
-	if title == "" {
-		title = n.Type
-	}
+	title := nodeDisplayTitle(n)
 
-	bodyFill := "#334155" // slate-700 — reads on light + dark card surfaces
-	titleFill := "#1e293b"
+	// Defaults read on light + dark card surfaces; the graph's own color (title bar)
+	// and bgcolor (body) win when present, since they are the user's visual grouping.
+	bodyFill := safeHexColor(n.BgColor, "#334155")
+	titleFill := safeHexColor(n.Color, "#1e293b")
 	stroke := "#475569"
 	textColor := "#e2e8f0"
+
+	if p.collapsed {
+		return svgCollapsedNode(title, p, titleFill, stroke, textColor)
+	}
 
 	body := g.El("rect",
 		g.Attr("x", f(p.x)), g.Attr("y", f(p.y)),
@@ -252,6 +436,37 @@ func svgNode(n lgNode, p placedNode) g.Node {
 	return g.El("g", attrs...)
 }
 
+// svgCollapsedNode draws a collapsed node: the title pill (the only thing ComfyUI
+// shows) plus the single dot each side where every wire converges.
+func svgCollapsedNode(title string, p placedNode, titleFill, stroke, textColor string) g.Node {
+	els := []g.Node{
+		g.El("rect",
+			g.Attr("x", f(p.x)), g.Attr("y", f(p.y-gTitleH)),
+			g.Attr("width", f(p.w)), g.Attr("height", f(gTitleH)),
+			g.Attr("rx", f(gTitleH/2)),
+			g.Attr("fill", titleFill), g.Attr("stroke", stroke), g.Attr("stroke-width", "1"),
+		),
+		g.El("text",
+			g.Attr("x", f(p.x+10)), g.Attr("y", f(p.y-7)),
+			g.Attr("fill", textColor), g.Attr("font-size", "11"), g.Attr("font-family", "sans-serif"),
+			g.Text(truncate(title, 30)),
+		),
+	}
+	if p.inCount > 0 {
+		cx, cy := p.inPoint(0)
+		els = append(els, slotCircle(cx, cy, "#64748b"))
+	}
+	if p.outCount > 0 {
+		cx, cy := p.outPoint(0)
+		els = append(els, slotCircle(cx, cy, "#64748b"))
+	}
+	attrs := []g.Node{}
+	if p.bypassed {
+		attrs = append(attrs, g.Attr("opacity", "0.4"))
+	}
+	return g.El("g", append(attrs, els...)...)
+}
+
 func slotCircle(cx, cy float64, fill string) g.Node {
 	return g.El("circle",
 		g.Attr("cx", f(cx)), g.Attr("cy", f(cy)), g.Attr("r", f(gSlotR)),
@@ -261,40 +476,47 @@ func slotCircle(cx, cy float64, fill string) g.Node {
 
 // svgLinks parses the links array and emits a bezier wire per resolvable link,
 // colored by data type. A link referencing a skipped/absent node, or with an
-// out-of-range slot, is clamped or skipped — never panics.
-func svgLinks(raw json.RawMessage, placed map[string]placedNode) []g.Node {
+// out-of-range slot, is clamped or COUNTED AS SKIPPED (and reported to the user by
+// graphRenderNotice) — never panics, never silently vanishes.
+//
+// A litegraph links[] entry is the positional tuple
+// [link_id, origin_node, origin_slot, target_node, target_slot, type] — indices 1 and
+// 3 are the endpoints. A wrong index here draws wires between the wrong nodes, so the
+// mapping is pinned by TestGraphSVGLinkEdgeSetMatchesGraph.
+func svgLinks(raw json.RawMessage, placed map[string]placedNode, st *graphRenderStats) []g.Node {
 	if len(raw) == 0 {
 		return nil
 	}
-	var links [][]json.RawMessage
+	// Decode entry-by-entry: ONE malformed entry must cost only itself. Decoding the
+	// whole array as [][]… would make a single bad element drop EVERY wire while all
+	// nodes still render — a graph that looks disconnected rather than incomplete.
+	var links []json.RawMessage
 	if err := json.Unmarshal(raw, &links); err != nil {
 		return nil
 	}
+	st.TotalLinks = len(links)
+	st.LinksCapped = len(links) > gMaxLinks
 	var out []g.Node
-	for i, l := range links {
+	for i, entry := range links {
 		if i >= gMaxLinks {
 			break // render cap (see gMaxNodes)
 		}
-		// [link_id, origin_node, origin_slot, target_node, target_slot, type]
-		if len(l) < 6 {
+		e, ok := parseLinkEntry(entry)
+		if !ok {
+			st.SkippedLinks++
 			continue
 		}
-		origin := rawIDToString(l[1])
-		target := rawIDToString(l[3])
-		op, ook := placed[origin]
-		tp, tok := placed[target]
+		op, ook := placed[e.origin]
+		tp, tok := placed[e.target]
 		if !ook || !tok {
+			st.SkippedLinks++
 			continue
 		}
-		oSlot, _ := rawInt(l[2])
-		tSlot, _ := rawInt(l[4])
-		var typ string
-		_ = json.Unmarshal(l[5], &typ) // non-string type → "" → default color
+		oSlot, tSlot, typ := e.originSlot, e.targetSlot, e.typ
 
-		x1 := op.x + op.w
-		y1 := op.y + gSlotStart + float64(clampSlot(oSlot, op.outCount))*gSlotSpacing
-		x2 := tp.x
-		y2 := tp.y + gSlotStart + float64(clampSlot(tSlot, tp.inCount))*gSlotSpacing
+		x1, y1 := op.outPoint(oSlot)
+		x2, y2 := tp.inPoint(tSlot)
+		st.DrawnLinks++
 
 		dx := (x2 - x1) * 0.4
 		if dx < 40 {
@@ -309,6 +531,52 @@ func svgLinks(raw json.RawMessage, placed map[string]placedNode) []g.Node {
 		))
 	}
 	return out
+}
+
+// lgLinkEntry is one decoded link: which node/slot it leaves and which it enters.
+type lgLinkEntry struct {
+	origin, target         string
+	originSlot, targetSlot int
+	typ                    string
+}
+
+// parseLinkEntry decodes ONE links[] entry. litegraph serializes a link as the
+// positional tuple [id, origin_node, origin_slot, target_node, target_slot, type];
+// newer frontends may emit the equivalent OBJECT form instead. Both are accepted so a
+// format change cannot silently blank out every wire.
+func parseLinkEntry(raw json.RawMessage) (lgLinkEntry, bool) {
+	var arr []json.RawMessage
+	if json.Unmarshal(raw, &arr) == nil {
+		if len(arr) < 6 {
+			return lgLinkEntry{}, false
+		}
+		e := lgLinkEntry{origin: rawIDToString(arr[1]), target: rawIDToString(arr[3])}
+		e.originSlot, _ = rawInt(arr[2])
+		e.targetSlot, _ = rawInt(arr[4])
+		_ = json.Unmarshal(arr[5], &e.typ) // non-string type → "" → default color
+		if e.origin == "" || e.target == "" {
+			return lgLinkEntry{}, false
+		}
+		return e, true
+	}
+	var obj struct {
+		OriginID   json.RawMessage `json:"origin_id"`
+		OriginSlot int             `json:"origin_slot"`
+		TargetID   json.RawMessage `json:"target_id"`
+		TargetSlot int             `json:"target_slot"`
+		Type       string          `json:"type"`
+	}
+	if json.Unmarshal(raw, &obj) != nil {
+		return lgLinkEntry{}, false
+	}
+	e := lgLinkEntry{
+		origin: rawIDToString(obj.OriginID), target: rawIDToString(obj.TargetID),
+		originSlot: obj.OriginSlot, targetSlot: obj.TargetSlot, typ: obj.Type,
+	}
+	if e.origin == "" || e.target == "" {
+		return lgLinkEntry{}, false
+	}
+	return e, true
 }
 
 // clampSlot bounds a slot index into [0, count-1] (0 when the node reports no
