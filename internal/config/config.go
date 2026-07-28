@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ZacxDev/civitai-manager/internal/comfyext"
 	"gopkg.in/yaml.v3"
 )
 
@@ -168,6 +169,19 @@ type Config struct {
 	// to the CivitAI-link-only view). When SET it must be an existing writable
 	// directory (validated on load), or config resolution fails with a clear error.
 	ComfyModelPath string `yaml:"comfy_model_path"`
+	// ComfyRoot is the local filesystem root of the ComfyUI INSTALL itself (the
+	// folder holding main.py, custom_nodes/, models/, …) — the parent of
+	// ComfyModelPath in a stock layout. It is used ONLY by the explicit, user-
+	// triggered "install the ComfyUI helper extension" action, which writes
+	// <ComfyRoot>/custom_nodes/civitai-manager/.
+	//
+	// Optional. When EMPTY it is derived from ComfyModelPath's parent, but only
+	// when that parent actually looks like a ComfyUI install (has custom_nodes/);
+	// otherwise it stays empty and the install action is unavailable. When SET it
+	// must be an existing directory (validated on load, like ComfyModelPath); the
+	// stronger "is this really a ComfyUI install, and is it writable" check runs at
+	// install time so its error is actionable in the UI instead of at startup.
+	ComfyRoot string `yaml:"comfy_root"`
 	// HFToken is an OPTIONAL HuggingFace token for the HuggingFace fallback resolver.
 	// Secret — mirror Token's handling: NEVER log it; RedactToken it in any diagnostic
 	// output. Empty means anonymous (the default), which resolves the public aux-model
@@ -247,6 +261,10 @@ type Flags struct {
 	// ComfyModelPath overrides the ComfyUI models-dir root used by the
 	// "Download & run" flow. Empty means "not set on the command line".
 	ComfyModelPath string
+	// ComfyRoot overrides the ComfyUI install root used by the "install the
+	// ComfyUI helper extension" action. Empty means "not set on the command line"
+	// (falls through to file, then to the derived comfy_model_path parent).
+	ComfyRoot string
 	// OutputsDir overrides the output-gallery storage directory. Empty means "not
 	// set on the command line" (falls through to file/default).
 	OutputsDir string
@@ -553,6 +571,9 @@ func Resolve(flags Flags) (*Config, error) {
 	if flags.ComfyModelPath != "" {
 		cfg.ComfyModelPath = flags.ComfyModelPath
 	}
+	if flags.ComfyRoot != "" {
+		cfg.ComfyRoot = flags.ComfyRoot
+	}
 	if flags.OutputsDir != "" {
 		cfg.OutputsDir = flags.OutputsDir
 	}
@@ -615,6 +636,36 @@ func (c *Config) normalize() error {
 		}
 		if err := ValidateWritableDir(c.ComfyModelPath); err != nil {
 			return fmt.Errorf("invalid comfy_model_path %q: %w", c.ComfyModelPath, err)
+		}
+	}
+	// ComfyRoot is optional. An EXPLICIT value must expand to an existing directory
+	// (a typo should surface at startup, mirroring comfy_model_path); an UNSET one
+	// falls back to the comfy_model_path parent, and only when that parent really
+	// looks like a ComfyUI install — a wrong guess must never become the target of
+	// a write.
+	c.ComfyRoot = strings.TrimSpace(c.ComfyRoot)
+	if c.ComfyRoot != "" {
+		if c.ComfyRoot, err = expandHome(c.ComfyRoot); err != nil {
+			return err
+		}
+		info, statErr := os.Stat(c.ComfyRoot)
+		if statErr != nil {
+			return fmt.Errorf("invalid comfy_root %q: %w", c.ComfyRoot, statErr)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("invalid comfy_root %q: not a directory", c.ComfyRoot)
+		}
+	} else {
+		c.ComfyRoot = comfyext.DeriveRoot(c.ComfyModelPath)
+	}
+	// Resolve symlinks so the path the UI SHOWS (and the install writes to) is the
+	// real location. Without this, "installed into /a/comfyui/custom_nodes/…" can
+	// name a symlink while the running ComfyUI reports a different path, which
+	// makes a failed install impossible to diagnose. Best-effort: a resolution
+	// failure keeps the configured value rather than rejecting a usable config.
+	if c.ComfyRoot != "" {
+		if resolved, rerr := filepath.EvalSymlinks(c.ComfyRoot); rerr == nil {
+			c.ComfyRoot = resolved
 		}
 	}
 	if c.DefaultPollInterval.D() <= 0 {

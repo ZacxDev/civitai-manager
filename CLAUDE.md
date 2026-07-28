@@ -85,6 +85,26 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   - `/api/v1/apps` is **default-closed / launch-gated**: returns `{"items":[]}` for
     a normal user until CivitAI flips the marketplace flag; it auto-opens with no
     code change. Build apps features flag-tolerant.
+- **`internal/comfyext`** — the **embedded ComfyUI helper extension** (`extension/`,
+  `go:embed all:extension`) + its safe `Install`/`Uninstall`/`Inspect`.
+  **ComfyUI has NEVER had a `?workflow=` URL param** in any frontend version
+  (verified by sourcemap extraction across 1.45.20 / 1.47.10 / ~1.49 — the only
+  workflow-opening params are `template`/`source`/`mode` and a cloud-only `share`;
+  upstream requests have sat unanswered for 10+ months). The old deep link
+  therefore silently landed the user on whatever graph was open last. The fix is
+  this custom-node package: `GET /civitai-manager/ping` (feature detection),
+  `POST /civitai-manager/open` (websocket broadcast → an already-open tab jumps),
+  and `web/civitai_manager.js` honouring `?cm_open=<path>`. Install rules:
+  `custom_nodes/` must exist, a directory we did not write (JSON marker) is NEVER
+  clobbered, writes are staged+renamed, paths are containment-checked. **Route
+  registration is startup-only → installing/removing needs ONE ComfyUI restart.**
+  The frontend script feature-detects every undocumented API
+  (`app.extensionManager.workflow.getWorkflowByPath`, `wf.load`,
+  `store.openWorkflow`, `app.loadGraphData`) and fails silently — it must never
+  break the user's editor. It defers the `?cm_open=` open to `afterConfigureGraph`
+  because ComfyUI restores its previous workflow AFTER extension `setup()`.
+  Config: `comfy_root` / `--comfy-root` (defaults to the `comfy_model_path` parent
+  when that looks like a ComfyUI install).
 - **`internal/queue`** — download queue (single active-per-item invariant).
 - **`internal/poller`** — polls subscriptions, diffs version lists, enqueues new.
 - **`internal/cli`** — cobra commands (`root.go`, `commands.go`, `serve`, `search`,

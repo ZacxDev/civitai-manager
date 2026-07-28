@@ -82,6 +82,7 @@ func serveRun(ctx context.Context, st *store.Store, client civitai.Client, cfg *
 		ComfyURL:            cfg.ComfyURL,
 		ComfyToken:          cfg.ComfyToken,
 		ComfyModelPath:      cfg.ComfyModelPath,
+		ComfyRoot:           cfg.ComfyRoot,
 		OutputsDir:          cfg.OutputsDir,
 		OutputsMaxBytes:     cfg.OutputsCapBytes(),
 		ComfyCloud:          cfg.ComfyCloud,
@@ -140,6 +141,7 @@ func newServeCmd(gf *globalFlags) *cobra.Command {
 		addr           string
 		webScanTimeout string
 		comfyModelPath string
+		comfyRoot      string
 	)
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -147,6 +149,7 @@ func newServeCmd(gf *globalFlags) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			gf.webScanTimeout = webScanTimeout
 			gf.comfyModelPath = comfyModelPath
+			gf.comfyRoot = comfyRoot
 			a, err := gf.build()
 			if err != nil {
 				return err
@@ -164,6 +167,7 @@ func newServeCmd(gf *globalFlags) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&addr, "addr", "", "listen address (default from config, 127.0.0.1:8787); use a non-loopback host to expose the UI on your LAN")
 	cmd.Flags().StringVar(&webScanTimeout, "web-scan-timeout", "", "deadline for a web \"Scan now\" (e.g. 2m; default from config). Bounds the web-triggered directory walk/hash")
+	cmd.Flags().StringVar(&comfyRoot, "comfy-root", "", "local ComfyUI INSTALL root (the folder holding custom_nodes/); enables the explicit \"install the ComfyUI helper extension\" action. Defaults to the parent of --comfy-model-path when that looks like a ComfyUI install")
 	cmd.Flags().StringVar(&comfyModelPath, "comfy-model-path", "", "local ComfyUI models/ directory root; enables the \"Download & run\" action to write a missing model into the correct subfolder (must be an existing writable dir)")
 	return cmd
 }

@@ -27,6 +27,7 @@ type globalFlags struct {
 	noPreview       bool
 	maxPreviewSize  string
 	comfyModelPath  string
+	comfyRoot       string
 	outputsDir      string
 	outputsMaxBytes string
 	hfToken         string
@@ -148,6 +149,7 @@ func (gf *globalFlags) build() (*app, error) {
 		NoPreview:       gf.noPreview,
 		MaxPreviewSize:  gf.maxPreviewSize,
 		ComfyModelPath:  gf.comfyModelPath,
+		ComfyRoot:       gf.comfyRoot,
 		OutputsDir:      gf.outputsDir,
 		OutputsMaxBytes: gf.outputsMaxBytes,
 		HFToken:         gf.hfToken,
