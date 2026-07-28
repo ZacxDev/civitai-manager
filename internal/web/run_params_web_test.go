@@ -1,0 +1,157 @@
+package web
+
+import (
+	"context"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ZacxDev/civitai-manager/internal/comfy"
+	"github.com/ZacxDev/civitai-manager/internal/store"
+)
+
+// uiTxt2imgGraph is a UI-format graph with a titled positive CLIPTextEncode, a
+// KSampler (seed carries a control_after_generate slot), and an EmptyLatentImage —
+// enough to exercise the Parameters detection + panel.
+const uiTxt2imgGraph = `{
+  "nodes": [
+    {"id": 6, "type": "CLIPTextEncode", "title": "Positive",
+     "widgets_values": ["a scenic mountain"],
+     "inputs": [{"name": "clip", "type": "CLIP", "link": 3}]},
+    {"id": 3, "type": "KSampler",
+     "widgets_values": [156680208700286, "randomize", 20, 8.0, "euler", "normal", 1.0],
+     "inputs": [{"name": "model", "type": "MODEL", "link": 1}]},
+    {"id": 5, "type": "EmptyLatentImage", "widgets_values": [1024, 768, 2], "inputs": []}
+  ],
+  "links": []
+}`
+
+// TestRunParametersPanelRendersPrefilled proves the panel renders the curated,
+// pre-filled fields, the randomize/reset controls, the CSRF token, the parallel
+// wp_node/wp_input/wp_value fields, and the run-with-params endpoint.
+func TestRunParametersPanelRendersPrefilled(t *testing.T) {
+	wf := &store.Workflow{ID: 7, Name: "t2i", Format: store.WorkflowFormatUI, Graph: uiTxt2imgGraph}
+	got := renderString(t, runParametersPanel(wf, "tok"))
+
+	for _, want := range []string{
+		"Parameters",
+		"a scenic mountain",   // prompt pre-filled
+		"Prompt (Positive)",   // titled label disambiguates
+		`value="156680208700286"`, // seed pre-filled
+		`value="20"`,          // steps
+		`value="8.0"`,         // cfg
+		"cmRandomSeed(",       // randomize seed control
+		`type="reset"`,        // reset restores pre-filled values
+		`name="csrf_token"`, `value="tok"`,
+		`name="wp_node"`, `name="wp_input"`, `name="wp_value"`,
+		"/workflows/7/run-with-params",
+		"the saved workflow is unchanged",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("panel missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestRunParametersPanelAbsentForAPIGraph proves an api-format graph (no widgets)
+// yields no panel.
+func TestRunParametersPanelAbsentForAPIGraph(t *testing.T) {
+	wf := &store.Workflow{ID: 8, Format: store.WorkflowFormatAPI,
+		Graph: `{"3":{"class_type":"KSampler","inputs":{"steps":20}}}`}
+	if got := runParametersPanel(wf, "tok"); got != nil {
+		t.Errorf("api-format graph should have no Parameters panel, got %v", got)
+	}
+}
+
+// TestRunWithParamsAppliesOverrides drives the endpoint end-to-end through a
+// recording runFn: the parsed overrides reach startRun, curated keys are kept, and a
+// non-curated (link) input is dropped by the allowlist.
+func TestRunWithParamsAppliesOverrides(t *testing.T) {
+	srv := newLibraryTestServer(t, t.TempDir())
+	rr := &runRecorder{}
+	srv.runFn = rr.fn()
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, uiTxt2imgGraph)
+
+	// Parallel arrays, index-aligned (as the panel emits them). The "model" input is
+	// a link — not in the curated set — so it must be dropped by the allowlist.
+	form := url.Values{
+		"wp_node":  {"3", "6", "3"},
+		"wp_input": {"seed", "text", "model"},
+		"wp_value": {"999", "edited prompt", "hijack"},
+	}
+	if rec := post(t, srv, "/workflows/"+id+"/run-with-params", form, true); rec.Code != http.StatusOK {
+		t.Fatalf("run-with-params = %d", rec.Code)
+	}
+	pollRunUntilDone(t, srv, id)
+
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+	if len(rr.opts) == 0 {
+		t.Fatal("run never started")
+	}
+	ov := rr.opts[0].WidgetOverrides
+	if ov[comfy.WidgetOverrideKey{NodeID: "3", InputName: "seed"}] != "999" {
+		t.Errorf("seed override not passed: %+v", ov)
+	}
+	if ov[comfy.WidgetOverrideKey{NodeID: "6", InputName: "text"}] != "edited prompt" {
+		t.Errorf("prompt override not passed: %+v", ov)
+	}
+	if _, ok := ov[comfy.WidgetOverrideKey{NodeID: "3", InputName: "model"}]; ok {
+		t.Errorf("link input 'model' must be dropped by the allowlist: %+v", ov)
+	}
+}
+
+// TestRunWithParamsStoredWorkflowUntouched proves the run overrides never mutate the
+// stored workflow row.
+func TestRunWithParamsStoredWorkflowUntouched(t *testing.T) {
+	srv := newLibraryTestServer(t, t.TempDir())
+	srv.runFn = (&runRecorder{}).fn()
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, uiTxt2imgGraph)
+
+	if rec := post(t, srv, "/workflows/"+id+"/run-with-params", url.Values{
+		"wp_node": {"3"}, "wp_input": {"seed"}, "wp_value": {"424242"},
+	}, true); rec.Code != http.StatusOK {
+		t.Fatalf("run-with-params = %d", rec.Code)
+	}
+	pollRunUntilDone(t, srv, id)
+
+	wfID, _ := strconv.ParseInt(id, 10, 64)
+	wf, err := srv.store.GetWorkflow(context.Background(), wfID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if wf.Graph != uiTxt2imgGraph {
+		t.Errorf("stored graph was mutated:\n got %s", wf.Graph)
+	}
+	if strings.Contains(wf.Graph, "424242") {
+		t.Error("override value leaked into the stored workflow")
+	}
+}
+
+// TestRunWithParamsGating asserts CSRF-reject + loopback-gating for the endpoint.
+func TestRunWithParamsGating(t *testing.T) {
+	srv := newLibraryTestServer(t, t.TempDir())
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, uiTxt2imgGraph)
+	form := url.Values{"wp_node": {"3"}, "wp_input": {"seed"}, "wp_value": {"1"}}
+
+	if rec := post(t, srv, "/workflows/"+id+"/run-with-params", form, false); rec.Code != http.StatusForbidden {
+		t.Fatalf("without CSRF = %d, want 403", rec.Code)
+	}
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	gated := NewServer(st, stubReader{}, stubSubscriber{}, Config{
+		BaseURL: "https://civitai.com", DefaultPollInterval: time.Hour, Addr: "0.0.0.0:8787",
+	}, nil)
+	gid := seedWorkflow(t, gated, store.WorkflowFormatUI, uiTxt2imgGraph)
+	rec := post(t, gated, "/workflows/"+gid+"/run-with-params", form, true)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "non-loopback") {
+		t.Errorf("gated run-with-params = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
