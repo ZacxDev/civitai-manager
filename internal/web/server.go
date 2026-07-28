@@ -233,13 +233,10 @@ type Server struct {
 	popularVal map[bool]*civitai.ModelSearchResult
 	popularExp map[bool]time.Time
 
-	// popularWfVal/popularWfExp are the parallel TTL cache for the "Popular this
-	// month" WORKFLOWS feed shown as the empty-query default on /workflows/discover.
-	// Same shape/posture as popularVal/popularExp (keyed by the NSFW flag, guarded
-	// by popularMu, refreshed on expiry via popularTTL) but a SEPARATE map so the
-	// Workflows-pinned feed never collides with the general popular-models feed.
-	popularWfVal map[bool]*civitai.ModelSearchResult
-	popularWfExp map[bool]time.Time
+	// facetFeeds is the TTL cache for the browse-by-facet no-query workflow feeds
+	// (ecosystem / use case). Its zero value is ready to use — see facetFeedCache
+	// in discover_facets.go — so it needs no constructor line.
+	facetFeeds facetFeedCache
 
 	// resolveMu guards the in-process TTL cache of missing-model RESOLUTION searches
 	// (the "Find on CivitAI" fragment on a failed-preflight panel). Keyed by
@@ -370,8 +367,6 @@ func NewServer(st *store.Store, reader civitai.Reader, sub Subscriber, cfg Confi
 		cloudPollInterval: defaultCloudPollInterval,
 		popularVal:        map[bool]*civitai.ModelSearchResult{},
 		popularExp:        map[bool]time.Time{},
-		popularWfVal:      map[bool]*civitai.ModelSearchResult{},
-		popularWfExp:      map[bool]time.Time{},
 		resolveVal:        map[string]*civitai.ModelSearchResult{},
 		resolveExp:        map[string]time.Time{},
 	}

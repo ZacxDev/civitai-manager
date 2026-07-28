@@ -82,6 +82,9 @@ func (r workflowResolver) have(basename string) bool {
 // of the stable #workflow-scan-results container (the live scanning fragment on a
 // reload during a scan, or nil to fall back to the idle terminal view).
 type libraryWorkflowsView struct {
+	// Workflows is the list to RENDER — already narrowed by Facets. Filtering
+	// happens in the handler (which owns the classification) so every render path
+	// shows the same thing.
 	Workflows   []store.Workflow
 	Flash       string
 	FlashLevel  string
@@ -89,6 +92,11 @@ type libraryWorkflowsView struct {
 	// Resolver resolves list-item model/version names + local-file presence from
 	// local state (built by the handler, which has store access).
 	Resolver workflowResolver
+	// Facets is the normalized browse-by selection (?eco=/?use=), and Counts is
+	// the per-bucket population of the WHOLE library (not of the filtered list) —
+	// so a chip's count stays meaningful while a filter is applied.
+	Facets libraryWorkflowFacets
+	Counts workflowFacetCounts
 }
 
 // workflowsPanel is the "Workflows" Library tab: an import panel (paste JSON /
@@ -98,22 +106,35 @@ type libraryWorkflowsView struct {
 // scanning and restores it (with the refreshed list) when settled. extraAllowed
 // reflects the loopback gate — import + scanning are disabled off-loopback,
 // matching the egress posture for endpoints that ingest/scan arbitrary content.
-func workflowsPanel(wfs []store.Workflow, csrf string, extraAllowed bool, flashLevel, flashMsg string, scanInitial g.Node, resolver workflowResolver) g.Node {
+func workflowsPanel(lw libraryWorkflowsView, csrf string, extraAllowed bool) g.Node {
+	scanInitial := lw.ScanInitial
 	if scanInitial == nil {
 		// Idle: the scan form card above the current list (rebuilt on each status swap).
-		scanInitial = workflowScanTerminal(wfs, workflowScanSnapshot{}, csrf, extraAllowed, resolver)
+		scanInitial = workflowScanTerminal(lw.Workflows, workflowScanSnapshot{}, csrf, extraAllowed, lw.Resolver)
 	}
 	var body []g.Node
 	body = append(body, h.P(h.Class("text-sm text-slate-400"),
 		g.Text("Locally-curated ComfyUI workflows. Import an API/UI graph, extract one from a ComfyUI PNG, "+
 			"or scan your ComfyUI installs to index and auto-link saved workflows. Local run is coming in a later release.")))
-	if flashMsg != "" {
-		if flashLevel == "" {
-			flashLevel = "info"
+	if lw.Flash != "" {
+		level := lw.FlashLevel
+		if level == "" {
+			level = "info"
 		}
-		body = append(body, alert(flashLevel, "", g.Text(flashMsg)))
+		body = append(body, alert(level, "", g.Text(lw.Flash)))
 	}
 	body = append(body, workflowImportPanel(csrf, extraAllowed))
+	// The browse-by chips sit ABOVE the stable scan container so a scan-status
+	// innerHTML swap never re-renders (or orphans) them.
+	if lw.Counts.Total > 0 {
+		body = append(body, workflowFacetBar(lw.Counts, lw.Facets))
+	}
+	// A filter that matched nothing gets its own guided state; without this the
+	// panel would render the generic "No workflows yet" and look like data loss.
+	if lw.Facets.any() && len(lw.Workflows) == 0 && lw.Counts.Total > 0 {
+		body = append(body, workflowFacetEmptyLocal(lw.Facets))
+		return h.Div(h.Class("space-y-6"), g.Group(body))
+	}
 	// The STABLE poll/results container: only its innerHTML is ever swapped, so the
 	// re-arming workflow-scan poller can never orphan its #workflow-scan-poll.
 	body = append(body, h.Div(h.ID(workflowScanResultsID), scanInitial))

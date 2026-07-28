@@ -156,7 +156,7 @@ func libraryPage(v libraryView, csrf string, allowExtra bool, selectedDirs []str
 	case "files":
 		panel = filesPanel(v, csrf, allowExtra, selectedDirs, matchRemote, scanInitial)
 	case "workflows":
-		panel = workflowsPanel(lw.Workflows, csrf, allowExtra, lw.FlashLevel, lw.Flash, lw.ScanInitial, lw.Resolver)
+		panel = workflowsPanel(lw, csrf, allowExtra)
 	default:
 		activeTab = "sources"
 		panel = sourcesPanel(csrf, allowExtra, selectedDirs, discoverInitial)

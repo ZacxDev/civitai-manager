@@ -79,6 +79,34 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   - The models list API filters by **`types` (PLURAL)** — singular `type=` is
     silently ignored and returns mixed/unfiltered results. Always `q.Set("types",
     …)` (cost a Discover D1 bug).
+  - **`baseModels` is multi-value ONLY as a REPEATED param** (`q.Add`):
+    `baseModels=Illustrious&baseModels=Pony` returns their UNION (verified with 10
+    repeated values in one request). **A comma-joined `baseModels=A,B` returns
+    ZERO items** — it is parsed as one literal base-model name — so it fails as a
+    silently-empty page, not an error. An **unknown** `baseModels` value likewise
+    returns `200` with `items: []`.
+  - **`tag` is SINGLE-VALUE and fails silently in two ways.** Repeated `tag=a&tag=b`
+    → **HTTP 400 ZodError** ("expected string, received array"). Comma-joined
+    `tag=a,b` → **200 with results byte-identical to sending no tag at all**. An
+    **unknown tag behaves the same way**: the filter is silently DROPPED and the
+    **UNFILTERED** feed comes back. That is the dangerous one — a bad tag does not
+    return "no results", it returns everything, so the UI renders a filter that is
+    lying. **Only ever forward whitelisted tags**, and cover a multi-tag concept
+    with **one request per tag, merged + deduped by model id**.
+  - `tag` matching is **case-insensitive** (`inpaint` == `Inpaint` == `INPAINT`),
+    but **synonyms are NOT unified**: `detailer`, `adetailer`, `facedetailer` and
+    `face detailer` each return a DIFFERENT result set.
+  - Workflow tags are dominated by noise — over a live 600-model `types=Workflows`
+    harvest, `tool` appeared on 379, `comfyui` 179, `workflow` 163, `base model`
+    76. Treat those as stopwords; real use-case signal lives underneath
+    (`inpaint`, `upscaler`, `detailer`, `controlnet`, `i2v`, …). The curated
+    ecosystem/use-case vocabulary derived from that harvest is the single source
+    of truth in **`internal/civitai/taxonomy.go`** — used by BOTH
+    `/workflows/discover` and the local library workflow list, so adding a family
+    is a one-line table edit and the two surfaces can never drift.
+  - Cloudflare **403s (`error code: 1010`) a bare Python `urllib` User-Agent** when
+    probing the API by hand. `curl` works; from Python set
+    `User-Agent: curl/8.5.0`. Do not read a 1010 as "the endpoint is gated".
   - The app-listing API (`/api/v1/apps`) item **`id` is a ULID string** (e.g.
     `apl_01K…`), NOT an int — though `creator.id` IS an int (cost an Apps A1 decode
     bug).

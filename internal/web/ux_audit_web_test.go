@@ -67,17 +67,20 @@ func fullPages(t *testing.T) map[string]string {
 	wf := &store.Workflow{ID: 3, Name: "My workflow", Format: store.WorkflowFormatAPI, Graph: "{}"}
 
 	return map[string]string{
-		"dashboard":         renderString(t, dashboardPage(subs, nil, "csrf", "dark", NSFWBlur)),
-		"search":            renderString(t, searchPage("q", searchRes, nil, "csrf", "dark", NSFWBlur, "", "", "")),
-		"creator":           renderString(t, creatorPage("dave", searchRes, nil, "csrf", "dark", NSFWBlur)),
-		"model":             renderString(t, modelDetailPage(detail, nil, "csrf", "dark", "https://civitai.com")),
-		"library":           renderString(t, libraryPage(libraryView{}, "csrf", true, []string{"/m"}, "dark", "files", nil, true, nil, NSFWBlur, libraryWorkflowsView{})),
-		"trash":             renderString(t, trashPage(nil, "csrf", "dark", NSFWBlur)),
-		"outputs":           renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", "dark", NSFWBlur)),
-		"generation":        renderString(t, generationDetailPage(gen, nil, "csrf", "dark", NSFWBlur)),
-		"workflow":          renderString(t, workflowDetailPage(wf, "{}", "csrf", "dark", NSFWBlur, nil, false, comfyHelperView{}, workflowResolver{})),
-		"discover-workflow": renderString(t, workflowDiscoverPage("", searchRes, "", "dark", NSFWBlur, "", "", "csrf")),
-		"discover-apps":     renderString(t, appsDiscoverPage(nil, "dark", NSFWBlur, "", "", "", "csrf")),
+		"dashboard":  renderString(t, dashboardPage(subs, nil, "csrf", "dark", NSFWBlur)),
+		"search":     renderString(t, searchPage("q", searchRes, nil, "csrf", "dark", NSFWBlur, "", "", "")),
+		"creator":    renderString(t, creatorPage("dave", searchRes, nil, "csrf", "dark", NSFWBlur)),
+		"model":      renderString(t, modelDetailPage(detail, nil, "csrf", "dark", "https://civitai.com")),
+		"library":    renderString(t, libraryPage(libraryView{}, "csrf", true, []string{"/m"}, "dark", "files", nil, true, nil, NSFWBlur, libraryWorkflowsView{})),
+		"trash":      renderString(t, trashPage(nil, "csrf", "dark", NSFWBlur)),
+		"outputs":    renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", "dark", NSFWBlur)),
+		"generation": renderString(t, generationDetailPage(gen, nil, "csrf", "dark", NSFWBlur)),
+		"workflow":   renderString(t, workflowDetailPage(wf, "{}", "csrf", "dark", NSFWBlur, nil, false, comfyHelperView{}, workflowResolver{})),
+		"discover-workflow": renderString(t, workflowDiscoverPage(workflowDiscoverView{
+			Res: searchRes, Mode: NSFWBlur, CSRF: "csrf",
+			Sort: "Most Downloaded", Period: "Month", Landing: true,
+		}, "dark")),
+		"discover-apps": renderString(t, appsDiscoverPage(nil, "dark", NSFWBlur, "", "", "", "csrf")),
 	}
 }
 

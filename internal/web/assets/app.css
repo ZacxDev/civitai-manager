@@ -1401,3 +1401,51 @@ html {
 .cm-model-desc {
   max-width: 72ch;
 }
+
+/*
+ * Browse-by-facet surface on /workflows/discover (discover_facet_pages.go):
+ * the ecosystem / use-case toggle CHIPS and the landing GRID of tiles.
+ *
+ * Hand-written .cm-* rather than Tailwind utilities for the same reason the
+ * other .cm-* rules exist: tailwind.config.js collapses slate 600/700/800 onto
+ * one --civitai-color-border token, so a `bg-slate-800 hover:bg-slate-700`
+ * selected/unselected pair would paint IDENTICALLY and the chip would have no
+ * visible state at all. Everything below resolves from --civitai-* tokens, so
+ * both data-theme paths (light and dark) read correctly with no CDN.
+ *
+ * .cm-facet-chip inherits .cm-chip's rest/hover pair; -on is the SELECTED state.
+ * Selection is not colour-only — the chip also carries aria-current.
+ */
+.cm-facet-chip {
+  text-decoration: none;
+}
+.cm-facet-chip-on,
+.cm-facet-chip-on:hover,
+.cm-facet-chip-on:focus-visible {
+  background: var(--civitai-color-primary);
+  border-color: var(--civitai-color-primary);
+  color: var(--civitai-color-primary-fg);
+  font-weight: 600;
+}
+
+/*
+ * The landing grid: auto-fitting columns so the ~20 ecosystem and ~12 use-case
+ * tiles reflow from one column on a phone to many on a wide desktop without a
+ * ladder of viewport breakpoints (and without new Tailwind utilities).
+ */
+.cm-facet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.5rem;
+}
+.cm-facet-tile {
+  background: var(--civitai-color-surface-2);
+  border-color: var(--civitai-color-border);
+  text-decoration: none;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.cm-facet-tile:hover,
+.cm-facet-tile:focus-visible {
+  background: color-mix(in srgb, var(--civitai-color-primary) 16%, transparent);
+  border-color: var(--civitai-color-primary);
+}
