@@ -300,6 +300,7 @@ func (s *Server) workflowResolver() workflowResolver {
 			ok, _ := s.store.HasLocalFileNamed(basename)
 			return ok
 		},
+		nsfwMode: s.nsfwMode(),
 	}
 }
 

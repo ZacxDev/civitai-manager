@@ -22,6 +22,24 @@ type workflowResolver struct {
 	cachedModel func(id int) (name string, raw []byte, ok bool)
 	// haveFile reports whether a file with the given basename exists locally.
 	haveFile func(basename string) bool
+	// nsfwMode is the persisted NSFW display mode (hide|blur|show) threaded to the
+	// list-item showcase carousels so they honor it (carried on the resolver to
+	// avoid threading it through workflowList/Item/Card + the scan-terminal path).
+	nsfwMode string
+}
+
+// showcase returns the linked model's showcase gallery (from the LOCAL model_cache
+// raw — never a civitai fetch), capped like a search card. Nil when the model is
+// uncached or carries no inline images (the card then renders a placeholder).
+func (r workflowResolver) showcase(modelID int) []galleryImage {
+	if r.cachedModel == nil {
+		return nil
+	}
+	_, raw, ok := r.cachedModel(modelID)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	return cardCarouselImages(raw)
 }
 
 // modelName returns the cached, non-blank model name, ok=false when uncached (so
@@ -242,6 +260,13 @@ func workflowList(wfs []store.Workflow, csrf string, resolver workflowResolver) 
 		h.Div(h.ID(workflowListID), h.Class("space-y-4"), g.Group(items)),
 		workflowControlsScript(),
 		workflowDeeplinkScript(),
+		// The shared lightbox + carousel scripts the card showcase strips reuse
+		// (the same ones the model-search / discover cards rely on). Included once
+		// here in the swapped fragment (idempotent re-definition), so a card tile can
+		// open the lightbox and the prev/next buttons scroll — offline/vendored only.
+		lightboxOverlay(),
+		modelPageScript(),
+		libraryCarouselScript(),
 	)
 }
 
@@ -429,7 +454,36 @@ cmWfApply();
 	return h.Script(g.Raw(js))
 }
 
-// workflowCard renders one stored workflow.
+// workflowFormatBadge renders the format badge with a friendly label: an API
+// graph is "Runnable API" (green — it can be submitted to ComfyUI), a UI graph is
+// "UI" (neutral). Shared by the list card and elsewhere.
+func workflowFormatBadge(format string) g.Node {
+	if format == store.WorkflowFormatAPI {
+		return badge("Runnable API", "green")
+	}
+	return badge("UI", "slate")
+}
+
+// workflowCardShowcase renders the list card's CivitAI showcase strip, REUSING the
+// same NSFW-aware carousel the model-search / Discover-workflows cards use
+// (modelCardCarousel). The images come from the workflow's linked model's LOCAL
+// model_cache raw (never a fetch). When there is no linked model or no cached
+// showcase it degrades to a tasteful placeholder — never a broken image.
+func workflowCardShowcase(wf store.Workflow, resolver workflowResolver) g.Node {
+	if wf.ModelID != nil {
+		if imgs := resolver.showcase(*wf.ModelID); len(imgs) > 0 {
+			return modelCardCarousel(*wf.ModelID, imgs, resolver.nsfwMode)
+		}
+	}
+	return h.Div(h.Class("cm-wf-noimg"), g.Text("No preview"))
+}
+
+// workflowCard renders one stored workflow as a richer, scannable card: a CivitAI
+// showcase strip (NSFW-aware, reused from the discover cards), the name, base-model
+// + format badges, model/version linkage, and the action row. A subtle hover-lift
+// (.cm-lift, reduced-motion-safe) is applied. The sort/filter data-* attributes
+// and the #wf-<id> anchor live on the wrapping .cm-wf-item (workflowListItem), so
+// this redesign leaves the client-side controls + deep-link untouched.
 func workflowCard(wf store.Workflow, csrf string, resolver workflowResolver) g.Node {
 	id := strconv.FormatInt(wf.ID, 10)
 
@@ -438,15 +492,12 @@ func workflowCard(wf store.Workflow, csrf string, resolver workflowResolver) g.N
 		name = "workflow #" + id
 	}
 
-	// Format badge: api (runnable) is highlighted, ui is neutral.
-	fmtVariant := "slate"
-	if wf.Format == store.WorkflowFormatAPI {
-		fmtVariant = "green"
-	}
-
 	var meta []g.Node
-	meta = append(meta, badge(wf.Format, fmtVariant))
-	meta = append(meta, badge(wf.Source, "slate"))
+	meta = append(meta, workflowFormatBadge(wf.Format))
+	if b := strings.TrimSpace(wf.BaseModel); b != "" {
+		meta = append(meta, badge(b, "blue"))
+	}
+	meta = append(meta, badge(optionLabel(workflowSourceFilterOptions, wf.Source), "slate"))
 	if wf.IsGolden {
 		meta = append(meta, badge("golden ✓", "amber"))
 	}
@@ -497,9 +548,15 @@ func workflowCard(wf store.Workflow, csrf string, resolver workflowResolver) g.N
 	actions = append(actions, postButton("/workflows/"+id+"/delete", csrf, nil, "subtle", "Delete"))
 
 	return card(
+		h.Class("cm-lift"),
+		// CivitAI showcase strip (NSFW-aware) — reused from the discover cards; a
+		// placeholder renders when the workflow has no linked model/showcase.
+		h.Div(h.Class("mb-3"), workflowCardShowcase(wf, resolver)),
 		h.Div(h.Class("flex items-start justify-between gap-4"),
 			h.Div(
-				h.H3(h.Class("text-lg font-semibold text-slate-100"), g.Text(name)),
+				h.A(h.Href("/workflows/"+id),
+					h.Class("text-lg font-semibold text-slate-100 hover:text-white"),
+					g.Text(name)),
 				h.Div(h.Class("flex flex-wrap items-center gap-2 mt-2"), g.Group(meta)),
 			),
 		),
