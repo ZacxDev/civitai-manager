@@ -37,6 +37,14 @@ type fakeComfy struct {
 	savedRelPath string
 	savedGraph   json.RawMessage
 	saveCalled   bool
+	// civitai-manager ComfyUI helper (feature detection + jump-an-open-tab).
+	// pingInfo nil + pingErr nil models a stock ComfyUI (helper absent).
+	pingInfo    *comfy.ExtensionInfo
+	pingErr     error
+	pingCalls   int
+	openErr     error
+	openRelPath string
+	openCalls   int
 }
 
 func (f *fakeComfy) SystemStats(context.Context) (*comfy.SystemStats, error) {
@@ -75,6 +83,21 @@ func (f *fakeComfy) SaveUserWorkflow(_ context.Context, relPath string, graph js
 	f.savedRelPath = relPath
 	f.savedGraph = graph
 	return f.saveErr
+}
+func (f *fakeComfy) ExtensionPing(context.Context) (*comfy.ExtensionInfo, error) {
+	f.pingCalls++
+	if f.pingErr != nil {
+		return nil, f.pingErr
+	}
+	if f.pingInfo == nil {
+		return nil, comfy.ErrExtensionAbsent
+	}
+	return f.pingInfo, nil
+}
+func (f *fakeComfy) ExtensionOpen(_ context.Context, relPath string) error {
+	f.openCalls++
+	f.openRelPath = relPath
+	return f.openErr
 }
 
 func seedWorkflow(t *testing.T, srv *Server, format, graph string) string {

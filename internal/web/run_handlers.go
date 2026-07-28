@@ -38,6 +38,12 @@ type comfyClient interface {
 	// SaveUserWorkflow writes a UI-format graph into ComfyUI's user workflow store
 	// (the "Open in ComfyUI" path). relPath is sanitized by the caller.
 	SaveUserWorkflow(ctx context.Context, relPath string, graph json.RawMessage) error
+	// ExtensionPing feature-detects the civitai-manager ComfyUI helper. A missing
+	// helper is comfy.ErrExtensionAbsent — an expected outcome, not a failure.
+	ExtensionPing(ctx context.Context) (*comfy.ExtensionInfo, error)
+	// ExtensionOpen asks the helper to broadcast an "open this workflow" event to
+	// already-open editor tabs.
+	ExtensionOpen(ctx context.Context, relPath string) error
 }
 
 // Run phases (job.phase).

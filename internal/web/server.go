@@ -248,6 +248,22 @@ type Server struct {
 	resolveMu  sync.Mutex
 	resolveVal map[string]*civitai.ModelSearchResult
 	resolveExp map[string]time.Time
+
+	// extProbeMu guards the short-lived cache of the civitai-manager ComfyUI helper
+	// feature probe. The probe is a network round-trip to ComfyUI, so it is NEVER
+	// run on a page render — only on the user action that needs it — and its result
+	// (present AND absent alike) is cached for extProbeTTL so a repeated click, or
+	// a ComfyUI that is down, does not re-probe every time.
+	extProbeMu  sync.Mutex
+	extProbeVal *extProbe
+	extProbeExp time.Time
+}
+
+// extProbe is the cached outcome of a helper feature-detection probe. An absent
+// helper is a normal outcome and is cached exactly like a present one.
+type extProbe struct {
+	present bool
+	version string
 }
 
 // popularTTL bounds how long the cached popular-models feed is served before a
@@ -512,6 +528,12 @@ func (s *Server) Handler() http.Handler {
 	// Save a UI-format workflow into ComfyUI's editor + open it (CSRF + loopback
 	// gated; reaches/writes the local ComfyUI, like run).
 	mux.HandleFunc("POST /workflows/{id}/open-in-comfyui", s.handleWorkflowOpenInComfyUI)
+	// Install/remove the civitai-manager ComfyUI helper extension. These WRITE into
+	// the user's ComfyUI install directory (a configured filesystem path), so they
+	// carry the same CSRF + loopback gating as every other path-taking endpoint —
+	// and they are only ever reached by an explicit click, never on startup.
+	mux.HandleFunc("POST /comfy/extension/install", s.handleComfyExtensionInstall)
+	mux.HandleFunc("POST /comfy/extension/uninstall", s.handleComfyExtensionUninstall)
 	mux.HandleFunc("POST /workflows/{id}/run", s.handleWorkflowRun)
 	mux.HandleFunc("POST /workflows/{id}/run-with-params", s.handleWorkflowRunWithParams)
 	mux.HandleFunc("POST /workflows/{id}/run-substitute", s.handleWorkflowRunSubstitute)
