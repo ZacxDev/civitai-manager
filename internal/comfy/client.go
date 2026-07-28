@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -90,10 +91,33 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader) (*
 	return c.http.Do(req)
 }
 
+// ErrResponseTooLarge reports that a ComfyUI response body exceeded its size cap.
+// It is returned by readBounded ALONGSIDE the truncated bytes, so a caller that
+// only wants an error snippet can keep ignoring the error while a caller that
+// consumes the payload (JSON parse, image capture) hard-fails instead of silently
+// using a truncated body.
+var ErrResponseTooLarge = errors.New("response too large")
+
 // readBounded reads at most max bytes from r (a defensive bound on an untrusted
-// server response).
+// server response) and DETECTS overflow rather than truncating silently: it reads
+// up to max+1 bytes, and when the body is larger than max it returns the first max
+// bytes together with an ErrResponseTooLarge-wrapped error.
+//
+// Returning the data on overflow is deliberate — the `data, _ := readBounded(...)`
+// error-snippet call sites still get a usable snippet — but every call site that
+// PARSES or STORES the bytes checks err and must fail loudly.
 func readBounded(r io.Reader, max int64) ([]byte, error) {
-	return io.ReadAll(io.LimitReader(r, max))
+	if max < 0 {
+		max = 0
+	}
+	data, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return data, err
+	}
+	if int64(len(data)) > max {
+		return data[:max], fmt.Errorf("%w (body exceeds the %d-byte cap)", ErrResponseTooLarge, max)
+	}
+	return data, nil
 }
 
 // statusError builds an error for a non-success HTTP status, including a bounded
@@ -187,10 +211,16 @@ func (c *Client) Submit(ctx context.Context, apiGraph json.RawMessage, clientID,
 		return nil, fmt.Errorf("submit prompt: %w", err)
 	}
 	defer resp.Body.Close()
-	data, _ := readBounded(resp.Body, maxJSONBytes)
+	// data is used two ways: PARSED on 200/400, and as an error snippet otherwise.
+	// readErr (an oversized body) is fatal only where the bytes are parsed as the
+	// authoritative response; the snippet paths deliberately use the truncated text.
+	data, readErr := readBounded(resp.Body, maxJSONBytes)
 
 	switch resp.StatusCode {
 	case http.StatusOK:
+		if readErr != nil {
+			return nil, fmt.Errorf("read submit response: %w", readErr)
+		}
 		var sr SubmitResult
 		if err := json.Unmarshal(data, &sr); err != nil {
 			return nil, fmt.Errorf("parse submit response: %w", err)
@@ -458,9 +488,12 @@ func (c *Client) View(ctx context.Context, ref ImageRef) ([]byte, string, error)
 		return nil, "", statusError("view", resp.StatusCode, data)
 	}
 	ct := resp.Header.Get("Content-Type")
+	// An oversized image is a HARD failure, never a silent truncation: the capture
+	// path would otherwise persist a partial (corrupt) file as if it were fine. The
+	// filename is included so the capture warn log names the offending output.
 	data, err := readBounded(resp.Body, maxImageBytes)
 	if err != nil {
-		return nil, "", fmt.Errorf("read image: %w", err)
+		return nil, "", fmt.Errorf("read image %q: %w", ref.Filename, err)
 	}
 	if ct == "" {
 		ct = "application/octet-stream"
