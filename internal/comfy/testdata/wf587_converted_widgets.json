@@ -1,0 +1,841 @@
+{
+ "id": "d08fba11-00ca-42ac-a2fc-e79433a50554",
+ "revision": 0,
+ "last_node_id": 74,
+ "last_link_id": 140,
+ "nodes": [
+  {
+   "id": 41,
+   "type": "KSampler",
+   "pos": [
+    750,
+    750
+   ],
+   "size": [
+    240,
+    265
+   ],
+   "flags": {
+    "collapsed": false
+   },
+   "order": 49,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "model",
+     "type": "MODEL",
+     "link": 49
+    },
+    {
+     "name": "positive",
+     "type": "CONDITIONING",
+     "link": 76
+    },
+    {
+     "name": "negative",
+     "type": "CONDITIONING",
+     "link": 78
+    },
+    {
+     "name": "latent_image",
+     "type": "LATENT",
+     "link": 93
+    },
+    {
+     "name": "seed",
+     "type": "INT",
+     "widget": {
+      "name": "seed"
+     },
+     "link": 29
+    },
+    {
+     "name": "steps",
+     "type": "INT",
+     "widget": {
+      "name": "steps"
+     },
+     "link": 109
+    },
+    {
+     "name": "cfg",
+     "type": "FLOAT",
+     "widget": {
+      "name": "cfg"
+     },
+     "link": 110
+    },
+    {
+     "name": "denoise",
+     "type": "FLOAT",
+     "widget": {
+      "name": "denoise"
+     },
+     "link": 137
+    }
+   ],
+   "outputs": [
+    {
+     "name": "LATENT",
+     "type": "LATENT",
+     "links": [
+      30
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "KSampler",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.46"
+   },
+   "widgets_values": [
+    1022776966395948,
+    "randomize",
+    20,
+    8,
+    "euler_ancestral",
+    "normal",
+    1
+   ],
+   "color": "#223",
+   "bgcolor": "#335",
+   "shape": "default"
+  },
+  {
+   "id": 40,
+   "type": "Seed (rgthree)",
+   "pos": [
+    410,
+    730
+   ],
+   "size": [
+    210,
+    130
+   ],
+   "flags": {},
+   "order": 11,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "dir": 4,
+     "name": "SEED",
+     "shape": 3,
+     "type": "INT",
+     "links": [
+      10,
+      25,
+      26,
+      27,
+      28,
+      29,
+      70,
+      71,
+      125
+     ]
+    }
+   ],
+   "properties": {
+    "randomMax": 1125899906842624,
+    "randomMin": 0,
+    "aux_id": "rgthree/rgthree-comfy",
+    "cnr_id": "rgthree-comfy",
+    "ver": "5dc53323e07a021038af9f2a4a06ebc071f7218c"
+   },
+   "widgets_values": [
+    -1,
+    "",
+    "",
+    ""
+   ],
+   "color": "#323",
+   "bgcolor": "#535",
+   "shape": "default"
+  },
+  {
+   "id": 39,
+   "type": "RegexReplace",
+   "pos": [
+    670,
+    710
+   ],
+   "size": [
+    210,
+    295
+   ],
+   "flags": {
+    "collapsed": true
+   },
+   "order": 38,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "string",
+     "type": "STRING",
+     "widget": {
+      "name": "string"
+     },
+     "link": 102
+    }
+   ],
+   "outputs": [
+    {
+     "name": "STRING",
+     "type": "STRING",
+     "links": [
+      73
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "RegexReplace",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.61"
+   },
+   "widgets_values": [
+    "",
+    "^,|,$",
+    "",
+    true,
+    false,
+    false,
+    0
+   ],
+   "color": "#232",
+   "bgcolor": "#353",
+   "shape": "default"
+  },
+  {
+   "id": 38,
+   "type": "CLIPTextEncode",
+   "pos": [
+    670,
+    670
+   ],
+   "size": [
+    265,
+    90
+   ],
+   "flags": {
+    "collapsed": true
+   },
+   "order": 42,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "clip",
+     "type": "CLIP",
+     "link": 107
+    },
+    {
+     "name": "text",
+     "type": "STRING",
+     "widget": {
+      "name": "text"
+     },
+     "link": 72
+    }
+   ],
+   "outputs": [
+    {
+     "name": "CONDITIONING",
+     "type": "CONDITIONING",
+     "slot_index": 0,
+     "links": [
+      77,
+      78,
+      79,
+      123
+     ]
+    }
+   ],
+   "title": "CLIP Text Encode (Negative)",
+   "properties": {
+    "Node name for S&R": "CLIPTextEncode",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.75"
+   },
+   "widgets_values": [
+    ""
+   ],
+   "color": "#322",
+   "bgcolor": "#533",
+   "shape": "default"
+  },
+  {
+   "id": 36,
+   "type": "CLIPTextEncode",
+   "pos": [
+    670,
+    630
+   ],
+   "size": [
+    265,
+    90
+   ],
+   "flags": {
+    "collapsed": true
+   },
+   "order": 43,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "clip",
+     "type": "CLIP",
+     "link": 106
+    },
+    {
+     "name": "text",
+     "type": "STRING",
+     "widget": {
+      "name": "text"
+     },
+     "link": 73
+    }
+   ],
+   "outputs": [
+    {
+     "name": "CONDITIONING",
+     "type": "CONDITIONING",
+     "slot_index": 0,
+     "links": [
+      74,
+      75,
+      76,
+      122
+     ]
+    }
+   ],
+   "title": "CLIP Text Encode (Positive)",
+   "properties": {
+    "Node name for S&R": "CLIPTextEncode",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.75"
+   },
+   "widgets_values": [
+    ""
+   ],
+   "color": "#232",
+   "bgcolor": "#353",
+   "shape": "default"
+  },
+  {
+   "id": 35,
+   "type": "easy float",
+   "pos": [
+    410,
+    620
+   ],
+   "size": [
+    210,
+    60
+   ],
+   "flags": {},
+   "order": 13,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "float",
+     "type": "FLOAT",
+     "links": [
+      137
+     ]
+    }
+   ],
+   "title": "Denoise",
+   "properties": {
+    "Node name for S&R": "easy float"
+   },
+   "widgets_values": [
+    1
+   ],
+   "color": "#323",
+   "bgcolor": "#535"
+  },
+  {
+   "id": 25,
+   "type": "EmptyLatentImage",
+   "pos": [
+    670,
+    550
+   ],
+   "size": [
+    210,
+    110
+   ],
+   "flags": {
+    "collapsed": true
+   },
+   "order": 34,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "width",
+     "type": "INT",
+     "widget": {
+      "name": "width"
+     },
+     "link": 1
+    },
+    {
+     "name": "height",
+     "type": "INT",
+     "widget": {
+      "name": "height"
+     },
+     "link": 2
+    },
+    {
+     "name": "batch_size",
+     "type": "INT",
+     "widget": {
+      "name": "batch_size"
+     },
+     "link": 37
+    }
+   ],
+   "outputs": [
+    {
+     "name": "LATENT",
+     "type": "LATENT",
+     "links": [
+      90
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "EmptyLatentImage",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.26"
+   },
+   "widgets_values": [
+    512,
+    512,
+    1
+   ],
+   "color": "#322",
+   "bgcolor": "#533",
+   "shape": "default"
+  },
+  {
+   "id": 23,
+   "type": "easy int",
+   "pos": [
+    410,
+    510
+   ],
+   "size": [
+    210,
+    60
+   ],
+   "flags": {},
+   "order": 15,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "int",
+     "type": "INT",
+     "links": [
+      37
+     ]
+    }
+   ],
+   "title": "Batch Size",
+   "properties": {
+    "Node name for S&R": "easy int",
+    "aux_id": "yolain/ComfyUI-Easy-Use",
+    "cnr_id": "comfyui-easy-use",
+    "ver": "717092a3ceb51c474b5b3f77fc188979f0db9d67"
+   },
+   "widgets_values": [
+    1
+   ],
+   "color": "#323",
+   "bgcolor": "#535",
+   "shape": "default"
+  },
+  {
+   "id": 18,
+   "type": "PrimitiveFloat",
+   "pos": [
+    410,
+    400
+   ],
+   "size": [
+    210,
+    60
+   ],
+   "flags": {},
+   "order": 18,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "FLOAT",
+     "type": "FLOAT",
+     "links": [
+      110,
+      111,
+      112,
+      113,
+      114,
+      115,
+      126
+     ]
+    }
+   ],
+   "title": "CFG",
+   "properties": {
+    "Node name for S&R": "PrimitiveFloat",
+    "cnr_id": "comfy-core",
+    "ver": "0.14.1"
+   },
+   "widgets_values": [
+    6
+   ],
+   "color": "#323",
+   "bgcolor": "#535",
+   "shape": "default"
+  },
+  {
+   "id": 17,
+   "type": "easy int",
+   "pos": [
+    410,
+    290
+   ],
+   "size": [
+    210,
+    60
+   ],
+   "flags": {},
+   "order": 19,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "int",
+     "type": "INT",
+     "links": [
+      109
+     ]
+    }
+   ],
+   "title": "Steps",
+   "properties": {
+    "Node name for S&R": "easy int",
+    "aux_id": "yolain/ComfyUI-Easy-Use",
+    "cnr_id": "comfyui-easy-use",
+    "ver": "44f067632352c449263e11f0d9b708c9fd30e989"
+   },
+   "widgets_values": [
+    28
+   ],
+   "color": "#323",
+   "bgcolor": "#535",
+   "shape": "default"
+  },
+  {
+   "id": 11,
+   "type": "easy int",
+   "pos": [
+    410,
+    180
+   ],
+   "size": [
+    210,
+    60
+   ],
+   "flags": {},
+   "order": 21,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "int",
+     "type": "INT",
+     "links": [
+      2,
+      96,
+      136
+     ]
+    }
+   ],
+   "title": "Height",
+   "properties": {
+    "Node name for S&R": "easy int",
+    "aux_id": "yolain/ComfyUI-Easy-Use",
+    "cnr_id": "comfyui-easy-use",
+    "ver": "44f067632352c449263e11f0d9b708c9fd30e989"
+   },
+   "widgets_values": [
+    1536
+   ],
+   "color": "#323",
+   "bgcolor": "#535",
+   "shape": "default"
+  },
+  {
+   "id": 4,
+   "type": "ImpactWildcardProcessor",
+   "pos": [
+    1460,
+    70
+   ],
+   "size": [
+    350,
+    430
+   ],
+   "flags": {},
+   "order": 33,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "seed",
+     "type": "INT",
+     "widget": {
+      "name": "seed"
+     },
+     "link": 71
+    }
+   ],
+   "outputs": [
+    {
+     "name": "processed text",
+     "type": "STRING",
+     "links": [
+      72
+     ]
+    }
+   ],
+   "title": "NEGATIVE",
+   "properties": {
+    "Node name for S&R": "ImpactWildcardProcessor",
+    "cnr_id": "comfyui-impact-pack",
+    "ver": "61bd8397a18e7e7668e6a24e95168967768c2bed"
+   },
+   "widgets_values": [
+    "bad quality, worst quality, worst detail, sketch, bad hands, bad anatomy, extra fingers, deformed, artist name, watermark, signature, patreon, twitter username",
+    "bad quality, worst quality, worst detail, sketch, bad hands, bad anatomy, extra fingers, deformed, artist name, watermark, signature, patreon, twitter username",
+    "populate",
+    453840828647929,
+    "randomize",
+    "Select Wildcard 🟢 Full Cache"
+   ],
+   "color": "#322",
+   "bgcolor": "#533",
+   "shape": "default"
+  },
+  {
+   "id": 3,
+   "type": "ImpactWildcardProcessor",
+   "pos": [
+    1010,
+    70
+   ],
+   "size": [
+    430,
+    940
+   ],
+   "flags": {},
+   "order": 32,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "seed",
+     "type": "INT",
+     "widget": {
+      "name": "seed"
+     },
+     "link": 70
+    }
+   ],
+   "outputs": [
+    {
+     "name": "processed text",
+     "type": "STRING",
+     "links": [
+      102
+     ]
+    }
+   ],
+   "title": "POSITIVE",
+   "properties": {
+    "Node name for S&R": "ImpactWildcardProcessor",
+    "cnr_id": "comfyui-impact-pack",
+    "ver": "61bd8397a18e7e7668e6a24e95168967768c2bed"
+   },
+   "widgets_values": [
+    "masterpiece, best quality, amazing quality, absurdres,\n1girl, solo, portrait,",
+    "masterpiece, best quality, amazing quality, absurdres,\n1girl, solo, portrait,",
+    "populate",
+    347030618903029,
+    "randomize",
+    "Select Wildcard 🟢 Full Cache"
+   ],
+   "color": "#232",
+   "bgcolor": "#353",
+   "shape": "default"
+  },
+  {
+   "id": 1,
+   "type": "easy int",
+   "pos": [
+    410,
+    70
+   ],
+   "size": [
+    210,
+    60
+   ],
+   "flags": {},
+   "order": 28,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "int",
+     "type": "INT",
+     "links": [
+      1,
+      95,
+      135
+     ]
+    }
+   ],
+   "title": "Width",
+   "properties": {
+    "Node name for S&R": "easy int",
+    "aux_id": "yolain/ComfyUI-Easy-Use",
+    "cnr_id": "comfyui-easy-use",
+    "ver": "44f067632352c449263e11f0d9b708c9fd30e989"
+   },
+   "widgets_values": [
+    1024
+   ],
+   "color": "#323",
+   "bgcolor": "#535",
+   "shape": "default"
+  }
+ ],
+ "links": [
+  [
+   1,
+   1,
+   0,
+   25,
+   0,
+   "INT"
+  ],
+  [
+   2,
+   11,
+   0,
+   25,
+   1,
+   "INT"
+  ],
+  [
+   29,
+   40,
+   0,
+   41,
+   4,
+   "INT"
+  ],
+  [
+   37,
+   23,
+   0,
+   25,
+   2,
+   "INT"
+  ],
+  [
+   70,
+   40,
+   0,
+   3,
+   0,
+   "INT"
+  ],
+  [
+   71,
+   40,
+   0,
+   4,
+   0,
+   "INT"
+  ],
+  [
+   72,
+   4,
+   0,
+   38,
+   1,
+   "STRING"
+  ],
+  [
+   73,
+   39,
+   0,
+   36,
+   1,
+   "STRING"
+  ],
+  [
+   76,
+   36,
+   0,
+   41,
+   1,
+   "CONDITIONING"
+  ],
+  [
+   78,
+   38,
+   0,
+   41,
+   2,
+   "CONDITIONING"
+  ],
+  [
+   102,
+   3,
+   0,
+   39,
+   0,
+   "STRING"
+  ],
+  [
+   109,
+   17,
+   0,
+   41,
+   5,
+   "INT"
+  ],
+  [
+   110,
+   18,
+   0,
+   41,
+   6,
+   "FLOAT"
+  ],
+  [
+   137,
+   35,
+   0,
+   41,
+   7,
+   "FLOAT"
+  ]
+ ],
+ "groups": [],
+ "config": {},
+ "extra": {},
+ "version": 0.4
+}
