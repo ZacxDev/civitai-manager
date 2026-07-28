@@ -46,8 +46,8 @@ const (
 var hexColorRe = regexp.MustCompile(`^#[0-9a-fA-F]{3,8}$`)
 
 // safeHexColor returns c when it is a plain hex color literal, else fallback.
-func safeHexColor(c, fallback string) string {
-	c = strings.TrimSpace(c)
+func safeHexColor(raw json.RawMessage, fallback string) string {
+	c := strings.TrimSpace(rawString(raw))
 	if hexColorRe.MatchString(c) {
 		return c
 	}
@@ -90,6 +90,12 @@ type lgGraph struct {
 	Groups []lgGroup       `json:"groups"`
 }
 
+// EVERY field that varies in the wild is json.RawMessage and parsed defensively.
+// This decodes the WHOLE document in one Unmarshal, so a single strictly-typed field
+// meeting an unexpected JSON type (a numeric `color`, an array `flags`) would abort
+// the entire parse and silently drop the graph to the structured fallback — the same
+// "one bad value blanks everything" failure this file already fixes for links. The
+// converter's uiConvInput.Type carries the same warning (see CLAUDE.md).
 type lgNode struct {
 	ID            json.RawMessage `json:"id"`
 	Type          string          `json:"type"`
@@ -97,29 +103,45 @@ type lgNode struct {
 	Mode          int             `json:"mode"`
 	Pos           json.RawMessage `json:"pos"`
 	Size          json.RawMessage `json:"size"`
-	Color         string          `json:"color"`
-	BgColor       string          `json:"bgcolor"`
-	Flags         lgFlags         `json:"flags"`
+	Color         json.RawMessage `json:"color"`
+	BgColor       json.RawMessage `json:"bgcolor"`
+	Flags         json.RawMessage `json:"flags"`
 	Inputs        []lgSlot        `json:"inputs"`
 	Outputs       []lgSlot        `json:"outputs"`
 	WidgetsValues json.RawMessage `json:"widgets_values"`
 }
 
-// lgFlags carries the per-node canvas flags. Only `collapsed` affects geometry: a
-// collapsed node is drawn by ComfyUI as a title-only pill, NOT at its stored size —
-// rendering it expanded moves its wire endpoints by up to its full height and buries
-// whatever sits behind it.
-type lgFlags struct {
-	Collapsed bool `json:"collapsed"`
+// collapsed reports the node's `flags.collapsed`. A collapsed node is drawn by ComfyUI
+// as a title-only pill, NOT at its stored size — rendering it expanded moves its wire
+// endpoints by up to its full height and buries whatever sits behind it. A non-object
+// `flags` (or a non-bool `collapsed`) reads as false.
+func (n lgNode) collapsed() bool {
+	var f struct {
+		Collapsed bool `json:"collapsed"`
+	}
+	if len(n.Flags) == 0 || json.Unmarshal(n.Flags, &f) != nil {
+		return false
+	}
+	return f.Collapsed
 }
 
 // lgGroup is a canvas group box: a titled, colored region behind a set of nodes.
 // Groups carry no execution semantics but are the main visual landmark in a large
 // ComfyUI workflow, so a preview without them reads as a different graph.
 type lgGroup struct {
-	Title    string          `json:"title"`
+	Title    json.RawMessage `json:"title"`
 	Bounding json.RawMessage `json:"bounding"` // [x, y, w, h]
-	Color    string          `json:"color"`
+	Color    json.RawMessage `json:"color"`
+}
+
+// rawString decodes a JSON string field, yielding "" for any other shape (number,
+// array, object, null) rather than failing the enclosing parse.
+func rawString(raw json.RawMessage) string {
+	var s string
+	if len(raw) == 0 || json.Unmarshal(raw, &s) != nil {
+		return ""
+	}
+	return s
 }
 
 type lgSlot struct {
@@ -161,6 +183,9 @@ type graphRenderStats struct {
 	SkippedLinks             int // malformed tuple, or an endpoint that was not placed
 	NodesCapped, LinksCapped bool
 	TotalGroups, DrawnGroups int
+	GroupsCapped             bool
+	SkippedGroups            int  // malformed/degenerate bounding
+	LinksUnreadable          bool // the whole links value was not an array
 }
 
 // workflowGraphSVG renders a UI-format (litegraph) graph as an SVG node. ok=false
@@ -219,7 +244,7 @@ func buildWorkflowGraphSVG(graph []byte) (g.Node, graphRenderStats, bool) {
 			inCount:   len(n.Inputs),
 			outCount:  len(n.Outputs),
 			bypassed:  n.Mode == 2 || n.Mode == 4,
-			collapsed: n.Flags.Collapsed,
+			collapsed: n.collapsed(),
 		}
 		if p.collapsed {
 			// ComfyUI draws a collapsed node as a title-only pill at pos; its stored
@@ -289,6 +314,16 @@ func graphRenderNotice(st graphRenderStats) g.Node {
 	if st.SkippedLinks > 0 {
 		parts = append(parts, fmt.Sprintf("%d link%s could not be drawn", st.SkippedLinks, plural(st.SkippedLinks)))
 	}
+	if st.LinksUnreadable {
+		parts = append(parts, "the link list could not be read, so NO wires are shown")
+	}
+	if st.GroupsCapped {
+		parts = append(parts, fmt.Sprintf("showing the first %d of %d groups", gMaxGroups, st.TotalGroups))
+	}
+	if st.SkippedGroups > 0 {
+		parts = append(parts, fmt.Sprintf("%d group box%s could not be drawn",
+			st.SkippedGroups, map[bool]string{true: "es", false: ""}[st.SkippedGroups != 1]))
+	}
 	if len(parts) == 0 {
 		return nil
 	}
@@ -334,12 +369,14 @@ func nodeDisplayTitle(n lgNode) string {
 // bounding box to cover them (a group can reach past its member nodes).
 func svgGroups(groups []lgGroup, st *graphRenderStats, grow func(x0, y0, x1, y1 float64)) []g.Node {
 	var out []g.Node
+	st.GroupsCapped = len(groups) > gMaxGroups
 	for i, gr := range groups {
 		if i >= gMaxGroups {
 			break
 		}
 		var b []float64
 		if json.Unmarshal(gr.Bounding, &b) != nil || len(b) < 4 || b[2] <= 0 || b[3] <= 0 {
+			st.SkippedGroups++
 			continue // malformed bounding — skip (groups are decoration, not topology)
 		}
 		x, y, w, hh := b[0], b[1], b[2], b[3]
@@ -356,7 +393,7 @@ func svgGroups(groups []lgGroup, st *graphRenderStats, grow func(x0, y0, x1, y1 
 				g.Attr("x", f(x+8)), g.Attr("y", f(y+20)),
 				g.Attr("fill", "#e2e8f0"), g.Attr("font-size", "16"),
 				g.Attr("font-family", "sans-serif"),
-				g.Text(truncate(strings.TrimSpace(gr.Title), 40)),
+				g.Text(truncate(strings.TrimSpace(rawString(gr.Title)), 40)),
 			),
 		))
 		st.DrawnGroups++
@@ -492,6 +529,10 @@ func svgLinks(raw json.RawMessage, placed map[string]placedNode, st *graphRender
 	// nodes still render — a graph that looks disconnected rather than incomplete.
 	var links []json.RawMessage
 	if err := json.Unmarshal(raw, &links); err != nil {
+		// A links value that is not an array at all (e.g. an id-keyed object) would
+		// otherwise draw ZERO wires while every node still renders — a graph that
+		// silently looks disconnected. Flag it so the card says so.
+		st.LinksUnreadable = true
 		return nil
 	}
 	st.TotalLinks = len(links)
@@ -547,13 +588,19 @@ type lgLinkEntry struct {
 func parseLinkEntry(raw json.RawMessage) (lgLinkEntry, bool) {
 	var arr []json.RawMessage
 	if json.Unmarshal(raw, &arr) == nil {
-		if len(arr) < 6 {
+		// >= 5 elements, matching comfy.parseLink (convert.go): the endpoints live at
+		// indices 1..4 and the trailing data type is optional. Requiring 6 here while
+		// the converter accepts 5 would mean a link the RUN path honors is a wire the
+		// PREVIEW drops — two notions of a valid link in one repo.
+		if len(arr) < 5 {
 			return lgLinkEntry{}, false
 		}
 		e := lgLinkEntry{origin: rawIDToString(arr[1]), target: rawIDToString(arr[3])}
 		e.originSlot, _ = rawInt(arr[2])
 		e.targetSlot, _ = rawInt(arr[4])
-		_ = json.Unmarshal(arr[5], &e.typ) // non-string type → "" → default color
+		if len(arr) >= 6 {
+			_ = json.Unmarshal(arr[5], &e.typ) // non-string type → "" → default color
+		}
 		if e.origin == "" || e.target == "" {
 			return lgLinkEntry{}, false
 		}

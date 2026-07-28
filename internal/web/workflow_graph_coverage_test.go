@@ -348,6 +348,99 @@ func TestGraphSVGGroupsRenderedAndBounded(t *testing.T) {
 	}
 }
 
+// TestGraphSVGToleratesOddlyTypedNodeFields is the F4 regression: the whole document
+// is decoded in ONE Unmarshal, so a strictly-typed field meeting an unexpected JSON
+// type would abort the parse and drop the ENTIRE graph to the structured fallback.
+// Every wild-varying field must decode defensively instead.
+func TestGraphSVGToleratesOddlyTypedNodeFields(t *testing.T) {
+	for _, tc := range []struct{ name, graph string }{
+		{"numeric node color", `{"nodes":[{"id":1,"type":"A","pos":[0,0],"size":[100,40],"color":0}]}`},
+		{"numeric node bgcolor", `{"nodes":[{"id":1,"type":"A","pos":[0,0],"size":[100,40],"bgcolor":12}]}`},
+		{"array flags", `{"nodes":[{"id":1,"type":"A","pos":[0,0],"size":[100,40],"flags":[]}]}`},
+		{"string flags", `{"nodes":[{"id":1,"type":"A","pos":[0,0],"size":[100,40],"flags":"x"}]}`},
+		{"non-bool collapsed", `{"nodes":[{"id":1,"type":"A","pos":[0,0],"size":[100,40],"flags":{"collapsed":1}}]}`},
+		{"numeric group color", `{"nodes":[{"id":1,"type":"A","pos":[0,0],"size":[100,40]}],
+		  "groups":[{"title":"G","bounding":[0,0,50,50],"color":7}]}`},
+		{"numeric group title", `{"nodes":[{"id":1,"type":"A","pos":[0,0],"size":[100,40]}],
+		  "groups":[{"title":5,"bounding":[0,0,50,50]}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			node, st, ok := buildWorkflowGraphSVG([]byte(tc.graph))
+			if !ok {
+				t.Fatalf("one oddly-typed field must not blank the whole SVG (stats %+v)", st)
+			}
+			if st.DrawnNodes != 1 {
+				t.Errorf("drew %d nodes, want 1", st.DrawnNodes)
+			}
+			out := renderGraphNode(t, node)
+			// The bad value must never reach the SVG; the theme default is used.
+			if !strings.Contains(out, `fill="#334155"`) && !strings.Contains(out, `fill="#1e293b"`) {
+				t.Errorf("expected the fallback node colors:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestGraphSVGReportsUnreadableLinkList is the F5 regression: a links value that is
+// not an array at all drew zero wires with NO notice — nodes rendered, so the graph
+// silently looked disconnected.
+func TestGraphSVGReportsUnreadableLinkList(t *testing.T) {
+	const graph = `{"nodes":[
+	  {"id":1,"type":"A","pos":[0,0],"size":[100,40],"outputs":[{"name":"o"}]},
+	  {"id":2,"type":"B","pos":[400,0],"size":[100,40],"inputs":[{"name":"i"}]}
+	],"links":{"1":[1,1,0,2,0,"MODEL"]}}`
+	node, st, ok := buildWorkflowGraphSVG([]byte(graph))
+	if !ok {
+		t.Fatal("render failed")
+	}
+	if !st.LinksUnreadable || st.DrawnLinks != 0 {
+		t.Errorf("stats = %+v, want LinksUnreadable with 0 drawn", st)
+	}
+	out := renderGraphNode(t, node)
+	if !strings.Contains(out, "Incomplete preview") || !strings.Contains(out, "NO wires are shown") {
+		t.Errorf("an unreadable link list must be reported:\n%s", out)
+	}
+}
+
+// TestGraphSVGReportsDroppedGroups proves malformed and capped group boxes are
+// counted and surfaced rather than vanishing.
+func TestGraphSVGReportsDroppedGroups(t *testing.T) {
+	const graph = `{"nodes":[{"id":1,"type":"A","pos":[0,0],"size":[100,40]}],
+	  "groups":[{"title":"ok","bounding":[0,0,50,50]},{"title":"bad","bounding":"x"},
+	            {"title":"zero","bounding":[0,0,0,0]}]}`
+	node, st, ok := buildWorkflowGraphSVG([]byte(graph))
+	if !ok {
+		t.Fatal("render failed")
+	}
+	if st.SkippedGroups != 2 {
+		t.Errorf("skipped groups = %d, want 2", st.SkippedGroups)
+	}
+	if !strings.Contains(renderGraphNode(t, node), "2 group boxes could not be drawn") {
+		t.Error("dropped group boxes must be reported")
+	}
+}
+
+// TestGraphSVGAcceptsFiveElementLinkTuple pins the arity agreement with
+// comfy.parseLink: the trailing data type is optional, so a 5-element tuple the RUN
+// path honors must not be a wire the PREVIEW drops.
+func TestGraphSVGAcceptsFiveElementLinkTuple(t *testing.T) {
+	const graph = `{"nodes":[
+	  {"id":1,"type":"A","pos":[0,0],"size":[100,40],"outputs":[{"name":"o"}]},
+	  {"id":2,"type":"B","pos":[400,0],"size":[100,40],"inputs":[{"name":"i"}]}
+	],"links":[[1,1,0,2,0],[2,1,0,2]]}`
+	node, st, ok := buildWorkflowGraphSVG([]byte(graph))
+	if !ok {
+		t.Fatal("render failed")
+	}
+	if st.DrawnLinks != 1 || st.SkippedLinks != 1 {
+		t.Errorf("stats = %+v, want 1 drawn (5-element) / 1 skipped (4-element)", st)
+	}
+	// No type element → the neutral default wire color.
+	if !strings.Contains(renderGraphNode(t, node), `stroke="#94a3b8"`) {
+		t.Error("a typeless link should use the default wire color")
+	}
+}
+
 // TestGraphSectionCarriesHonestCaption proves the card states what the static preview
 // does and does not show.
 func TestGraphSectionCarriesHonestCaption(t *testing.T) {
