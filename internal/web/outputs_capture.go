@@ -199,7 +199,17 @@ func (s *Server) captureGeneration(wf *store.Workflow, opts runOptions, res *run
 	}
 	genID, err := s.store.InsertGeneration(ctx, gen, images)
 	if err != nil {
-		s.log.Warn("output capture: insert generation failed", "prompt", res.PromptID, "err", err)
+		// The files are already on disk but no row references them: they would be
+		// invisible to the gallery AND to the cap's byte accounting (which measures
+		// recorded rows), i.e. a permanent untracked leak. Unlink them, best-effort,
+		// through the same path-contained helper the delete/eviction paths use.
+		relPaths := make([]string, 0, len(images))
+		for _, img := range images {
+			relPaths = append(relPaths, img.RelPath)
+		}
+		s.log.Warn("output capture: insert generation failed; removing the files just written",
+			"prompt", res.PromptID, "files", len(relPaths), "err", err)
+		s.removeOutputFiles(relPaths)
 		return
 	}
 	// Bound the outputs tree: evict the oldest generations if this capture pushed

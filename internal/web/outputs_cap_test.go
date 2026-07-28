@@ -297,6 +297,39 @@ func TestOutputsCapConcurrentCapturesKeepEachOther(t *testing.T) {
 	}
 }
 
+// TestCaptureInsertFailureRemovesOrphanFiles is the F4 regression: images are
+// written BEFORE the row is inserted, so a failed insert used to leave files on
+// disk with nothing referencing them — invisible to the gallery and to the cap's
+// byte accounting forever.
+func TestCaptureInsertFailureRemovesOrphanFiles(t *testing.T) {
+	fake := &fakeComfy{viewData: []byte("PNGBYTES"), viewCT: "image/png"}
+	srv, root, wf := newCaptureServer(t, fake)
+
+	// Force the insert to fail: close the store after the fake comfy is wired, so
+	// View/write still succeed and only InsertGeneration errors.
+	if err := srv.store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	srv.captureGeneration(wf, runOptions{}, &runResult{
+		PromptID: "orphan",
+		Images: []comfy.ImageRef{
+			{Filename: "a.png"}, {Filename: "b.png"},
+		},
+	})
+
+	for _, name := range []string{"0-a.png", "1-b.png"} {
+		p := filepath.Join(root, "orphan", name)
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("orphaned file %s should have been removed, stat err = %v", p, err)
+		}
+	}
+	// The now-empty prompt dir is pruned too (removeOutputFiles' existing behaviour).
+	if _, err := os.Stat(filepath.Join(root, "orphan")); !os.IsNotExist(err) {
+		t.Errorf("empty prompt dir should be pruned, stat err = %v", err)
+	}
+}
+
 // TestCaptureEnforcesOutputsCap is the end-to-end proof that a successful capture
 // runs eviction: the new generation lands, the over-cap old one is evicted.
 func TestCaptureEnforcesOutputsCap(t *testing.T) {
