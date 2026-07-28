@@ -456,6 +456,63 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 }
 
 /*
+ * .cm-fix-cta — the "Update available: <version> →" banner on a matched library
+ * card (versionBreakdownSection, model_card_pages.go).
+ *
+ * WHY IT IS HAND-WRITTEN: it used to be `bg-amber-950/30 hover:bg-amber-950/50`.
+ * tailwind.config.js defines amber.950 as tint("warning", 14) — a color-mix()
+ * string — and Tailwind cannot substitute <alpha-value> into a color-mix(), so
+ * NEITHER utility was ever emitted into the purged build. The CTA rendered
+ * completely transparent, with no hover feedback. Both fills resolve from
+ * --civitai-color-warning here, so light and dark are both styled.
+ */
+.cm-fix-cta {
+  border: 1px solid color-mix(in srgb, var(--civitai-color-warning) 60%, transparent);
+  background: color-mix(in srgb, var(--civitai-color-warning) 14%, transparent);
+  text-decoration: none;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.cm-fix-cta:hover,
+.cm-fix-cta:focus-visible {
+  background: color-mix(in srgb, var(--civitai-color-warning) 28%, transparent);
+  border-color: var(--civitai-color-warning);
+}
+
+/*
+ * .cm-chip — the click-to-copy trigger-word chip (triggerWordChips,
+ * model_pages.go) — and .cm-lightbox-close, the lightbox's Close ✕.
+ *
+ * WHY THEY ARE HAND-WRITTEN: both used `bg-slate-800 hover:bg-slate-700`, and
+ * tailwind.config.js maps slate 600, 700 AND 800 all onto --civitai-color-border
+ * — so rest and hover painted the IDENTICAL color and neither control had any
+ * hover affordance at all. The pairs below are genuinely distinct in both themes.
+ */
+.cm-chip {
+  background: var(--civitai-color-surface-2);
+  border-color: var(--civitai-color-border);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.cm-chip:hover,
+.cm-chip:focus-visible {
+  background: color-mix(in srgb, var(--civitai-color-primary) 16%, transparent);
+  border-color: var(--civitai-color-primary);
+}
+.cm-lightbox-close {
+  border: 1px solid var(--civitai-color-border);
+  background: var(--civitai-color-surface);
+  color: var(--civitai-color-text);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.cm-lightbox-close:hover,
+.cm-lightbox-close:focus-visible {
+  background: var(--civitai-color-primary);
+  border-color: var(--civitai-color-primary);
+  color: var(--civitai-color-primary-fg);
+}
+
+/*
  * Model tag chips (.cm-tag-chip) — see modelTagChips in model_pages.go. A
  * compact, de-emphasized inline chip row under the description (replaces the old
  * "Tags" card). Muted color + border resolve from --civitai-* tokens so both

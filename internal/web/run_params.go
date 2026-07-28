@@ -140,7 +140,9 @@ func runParametersPanel(wf *store.Workflow, csrf string) g.Node {
 		),
 	)
 	return h.Details(
-		h.Class("mt-4 cm-run-params"),
+		// No cm-run-params marker: nothing in the run scripts (or anywhere else)
+		// selects it and it carries no rule — it was a pure no-op.
+		h.Class("mt-4"),
 		h.Summary(h.Class("cursor-pointer text-sm font-semibold text-slate-200 select-none"),
 			g.Text("Parameters")),
 		form,

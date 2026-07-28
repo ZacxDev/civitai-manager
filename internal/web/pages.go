@@ -713,7 +713,9 @@ func subscribeCreatorInline(username, label, csrf string) g.Node {
 		h.Input(h.Type("hidden"), h.Name("creator"), h.Value(username)),
 		h.Input(h.Type("hidden"), h.Name("auto_download"), h.Value("true")),
 		btnPrimary(g.Text(label)),
-		h.Span(g.Attr("data-sub-note", ""), h.Class("hidden text-sm font-medium text-green-500"),
+		// text-emerald-400, NOT text-green-500 — see subscribedState in
+		// model_card_pages.go: the config replaces theme.colors, so `green` has no scale.
+		h.Span(g.Attr("data-sub-note", ""), h.Class("hidden text-sm font-medium text-emerald-400"),
 			g.Text("Subscribed ✓")),
 	)
 }

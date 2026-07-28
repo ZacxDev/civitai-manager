@@ -18,28 +18,39 @@ var classCoverageExempt = map[string]bool{
 	// Tailwind's `group` is a MARKER: it only ever appears inside a generated
 	// `.group:hover .group-hover\:…` selector, never as a rule of its own.
 	"group": true,
-	// The typography plugin is not installed; this class is inert markup left on
-	// the description container (its real constraints come from .cm-model-desc).
-	"prose-invert": true,
+}
 
-	// BEHAVIOUR HOOKS: cm-* classes that exist only for JS/selector targeting and
-	// deliberately carry no CSS rule (all their look comes from the Tailwind
-	// utilities sitting next to them in the same class list).
-	"cm-reveal":     true, // cmReveal() click-to-reveal button
-	"cm-chip":       true, // trigger-tag chip, styled by its utilities
-	"cm-run-params": true, // run-params container, targeted by the run scripts
-
-	// KNOWN PRE-EXISTING AND GENUINELY UNSTYLED — found by this test on its first
-	// run, NOT introduced by the shell work, and left alone to keep that change
-	// scoped. Each is a real silent failure worth a follow-up:
-	//   text-green-500       — the palette maps green→emerald, so `green` does not
-	//                          exist and the "Subscribed ✓" note is unstyled.
-	//   bg-amber-950/30 and hover:bg-amber-950/50 — amber-950 resolves to a
-	//                          color-mix() tint, which Tailwind cannot combine with
-	//                          an /opacity modifier, so neither utility is emitted.
-	"text-green-500":        true,
-	"bg-amber-950/30":       true,
-	"hover:bg-amber-950/50": true,
+// TestNoRevivedDeadClasses pins the specific unstyled tokens this guard's
+// exemption list used to hold open. Each was a REAL silent failure — the class
+// reached the DOM and painted nothing — and each is now fixed at the source:
+//
+//	text-green-500        → text-emerald-400 (the config REPLACES theme.colors,
+//	                        so no `green` scale is ever generated)
+//	bg-amber-950/30 and
+//	hover:bg-amber-950/50 → .cm-fix-cta (amber-950 is a color-mix() tint and
+//	                        Tailwind cannot fold <alpha-value> into a color-mix(),
+//	                        so neither utility was ever emitted)
+//	prose-invert          → deleted (@tailwindcss/typography is not installed)
+//	cm-reveal, cm-run-params → deleted (no rule, no selector, no JS hook)
+//	cm-chip               → given a real rule in app.css
+//
+// The exemptions are gone, so TestEveryTemplateClassExistsInAStylesheet would now
+// fail if any of them came back. This test states the intent directly, so a future
+// re-introduction fails with the REASON rather than a bare "no rule" line.
+func TestNoRevivedDeadClasses(t *testing.T) {
+	scan := scanClassCalls(t)
+	for tok, why := range map[string]string{
+		"text-green-500":        "the palette has no `green` scale — use text-emerald-400",
+		"bg-amber-950/30":       "amber-950 is a color-mix() tint; /opacity is never emitted — use .cm-fix-cta",
+		"hover:bg-amber-950/50": "amber-950 is a color-mix() tint; /opacity is never emitted — use .cm-fix-cta",
+		"prose-invert":          "@tailwindcss/typography is not installed — this class does nothing",
+		"cm-reveal":             "no rule and no selector anywhere — a pure no-op marker",
+		"cm-run-params":         "no rule and no selector anywhere — a pure no-op marker",
+	} {
+		if where, ok := scan.where[tok]; ok {
+			t.Errorf("dead class %q is back at %s: %s", tok, where, why)
+		}
+	}
 }
 
 // TestEveryTemplateClassExistsInAStylesheet is this repo's guard against its
