@@ -555,9 +555,12 @@ func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opt
 			res, err = run(ctx, wf, up, opts)
 		}()
 		// Settle + capture through the SHARED tail so a successful download-and-run
-		// lands in the output gallery exactly like a plain run. Note this deliberately
-		// does NOT `defer s.runMu.Unlock()`: settleAndCapture unlocks before the
-		// capture, which must run off the run mutex.
+		// lands in the output gallery exactly like a plain run. This goroutine used to
+		// take runMu itself (with a deferred unlock) around applyRunOutcomeLocked;
+		// settleAndCapture now owns that lock/unlock, because it must RELEASE runMu
+		// before the capture, which does network + disk work off the run mutex. (The
+		// enclosing startDownloadAndRun still holds runMu across its own body — that
+		// is the one-run-at-a-time guard and is unrelated to this goroutine.)
 		s.settleAndCapture(job, wf, opts, res, err)
 	}()
 }
