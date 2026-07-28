@@ -68,11 +68,11 @@ func TestApplyWidgetOverridesRewritesTargetedInputsOnly(t *testing.T) {
 func TestApplyWidgetOverridesIgnoresUnknownAndLinks(t *testing.T) {
 	orig := json.RawMessage(apiGraphForOverride)
 	overrides := map[WidgetOverrideKey]string{
-		{NodeID: "999", InputName: "seed"}:    "1",             // unknown node
-		{NodeID: "3", InputName: "nonesuch"}:  "1",             // unknown input — never ADD
-		{NodeID: "3", InputName: "model"}:     "hijack",        // link input — never touch
-		{NodeID: "6", InputName: "clip"}:      "hijack",        // link input — never touch
-		{NodeID: "3", InputName: "steps"}:     "not-a-number",  // number field, bad value → skip
+		{NodeID: "999", InputName: "seed"}:   "1",            // unknown node
+		{NodeID: "3", InputName: "nonesuch"}: "1",            // unknown input — never ADD
+		{NodeID: "3", InputName: "model"}:    "hijack",       // link input — never touch
+		{NodeID: "6", InputName: "clip"}:     "hijack",       // link input — never touch
+		{NodeID: "3", InputName: "steps"}:    "not-a-number", // number field, bad value → skip
 	}
 	out := ApplyWidgetOverrides(orig, overrides)
 

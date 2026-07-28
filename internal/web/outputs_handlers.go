@@ -225,8 +225,17 @@ func (s *Server) handleGenerationRerun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reconstruct the applied overrides and re-run the CURRENT workflow. startRun is
-	// idempotent (no-op while a run is already in flight).
-	s.startRun(wf, runOptionsFromParams(gen.Params))
+	// idempotent (no-op while a run is already in flight). The positional (widget
+	// index) overrides are only reconstructed when the workflow's graph still hashes
+	// the same as when this generation was recorded — otherwise they would land on
+	// whatever widget now occupies that position, so refuse rather than re-run with
+	// silently different parameters.
+	opts, stale := runOptionsFromParams(gen.Params, gen.GraphHash, wf.GraphHash)
+	if stale != "" {
+		http.Error(w, stale, http.StatusConflict)
+		return
+	}
+	s.startRun(wf, opts)
 
 	// Send the user to the workflow's run panel (which polls the live run status).
 	http.Redirect(w, r, "/workflows/"+strconv.FormatInt(*gen.WorkflowID, 10), http.StatusSeeOther)

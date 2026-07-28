@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,12 +24,16 @@ const captureBudget = 60 * time.Second
 // snapshots. The map-keyed override sets are flattened to explicit lists so they
 // round-trip cleanly through JSON and back into runOptions (runOptionsFromParams).
 type runParamsSnapshot struct {
-	Substitute      map[string]string     `json:"substitute,omitempty"`
-	OptionFixes     []optionFixEntry      `json:"option_fixes,omitempty"`
-	WidgetOverrides []widgetOverrideEntry `json:"widget_overrides,omitempty"`
-	Resources       []string              `json:"resources,omitempty"`
-	BaseModel       string                `json:"base_model,omitempty"`
-	Format          string                `json:"format,omitempty"`
+	Substitute  map[string]string `json:"substitute,omitempty"`
+	OptionFixes []optionFixEntry  `json:"option_fixes,omitempty"`
+	// WidgetOverrides is the LEGACY api-graph-keyed override list (node + input name),
+	// kept so generations recorded before the Parameters panel moved to UI-graph
+	// widget indices still replay.
+	WidgetOverrides   []widgetOverrideEntry   `json:"widget_overrides,omitempty"`
+	UIWidgetOverrides []uiWidgetOverrideEntry `json:"ui_widget_overrides,omitempty"`
+	Resources         []string                `json:"resources,omitempty"`
+	BaseModel         string                  `json:"base_model,omitempty"`
+	Format            string                  `json:"format,omitempty"`
 }
 
 type optionFixEntry struct {
@@ -40,6 +46,42 @@ type widgetOverrideEntry struct {
 	NodeID    string `json:"node_id"`
 	InputName string `json:"input_name"`
 	Value     string `json:"value"`
+}
+
+// uiWidgetOverrideEntry is one Parameters-panel edit, keyed the way the panel emits
+// it: the UI-graph node that HOLDS the value plus that value's widgets_values index.
+//
+// Widget is held as RawMessage, NOT a bare int: parseRunParams ignores the unmarshal
+// error, so a wrong-typed `"widget":"x"` in a hand-edited/corrupt blob would otherwise
+// leave the field at its zero value and silently retarget the edit at widget 0 of that
+// node — and a strictly-typed field would make ONE bad entry discard the entire
+// snapshot. widgetIndex() parses each entry on its own and reports whether it was a
+// real integer.
+type uiWidgetOverrideEntry struct {
+	NodeID string          `json:"node_id"`
+	Widget json.RawMessage `json:"widget"`
+	Value  string          `json:"value"`
+}
+
+// widgetIndex parses the entry's widget slot index (a JSON number, or a quoted
+// integer); ok=false for a missing or non-integer value, so the entry is dropped
+// rather than aimed at slot 0.
+func (e uiWidgetOverrideEntry) widgetIndex() (int, bool) {
+	s := strings.Trim(strings.TrimSpace(string(e.Widget)), `"`)
+	i, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, false
+	}
+	return i, true
+}
+
+// widgetDisplay renders the entry's slot for the generation detail page; a malformed
+// value is shown as "?" rather than as a plausible-looking 0.
+func (e uiWidgetOverrideEntry) widgetDisplay() string {
+	if i, ok := e.widgetIndex(); ok {
+		return strconv.Itoa(i)
+	}
+	return "?"
 }
 
 // buildRunParamsSnapshot captures the applied runOptions + workflow resource/base
@@ -62,6 +104,37 @@ func buildRunParamsSnapshot(wf *store.Workflow, opts runOptions) runParamsSnapsh
 			NodeID: key.NodeID, InputName: key.InputName, Value: val,
 		})
 	}
+	for key, val := range opts.UIWidgetOverrides {
+		snap.UIWidgetOverrides = append(snap.UIWidgetOverrides, uiWidgetOverrideEntry{
+			NodeID: key.NodeID, Widget: json.RawMessage(strconv.Itoa(key.Widget)), Value: val,
+		})
+	}
+	// Map iteration is unordered — sort BOTH override lists so the persisted params
+	// JSON is stable for a given run (comparable across re-runs, diffable in the
+	// gallery). Option fixes are sorted for the same reason.
+	sort.Slice(snap.UIWidgetOverrides, func(i, j int) bool {
+		a, b := snap.UIWidgetOverrides[i], snap.UIWidgetOverrides[j]
+		if a.NodeID != b.NodeID {
+			return a.NodeID < b.NodeID
+		}
+		ai, _ := a.widgetIndex()
+		bi, _ := b.widgetIndex()
+		return ai < bi
+	})
+	sort.Slice(snap.WidgetOverrides, func(i, j int) bool {
+		a, b := snap.WidgetOverrides[i], snap.WidgetOverrides[j]
+		if a.NodeID != b.NodeID {
+			return a.NodeID < b.NodeID
+		}
+		return a.InputName < b.InputName
+	})
+	sort.Slice(snap.OptionFixes, func(i, j int) bool {
+		a, b := snap.OptionFixes[i], snap.OptionFixes[j]
+		if a.InputName != b.InputName {
+			return a.InputName < b.InputName
+		}
+		return a.OldValue < b.OldValue
+	})
 	if wf != nil {
 		snap.Resources = wf.Resources
 		snap.BaseModel = wf.BaseModel
@@ -96,9 +169,22 @@ func parseRunParams(params string) runParamsSnapshot {
 // object_info inside realRun (ValidateOptionFixes), so injecting them here is
 // safe; WidgetOverrides/Substitutions are applied the same ephemeral way as the
 // original run.
-func runOptionsFromParams(params string) runOptions {
+//
+// UIWidgetOverrides are POSITIONAL — (node id, widgets_values index). A workflow row's
+// graph is replaced in place by a rescan (store.UpsertWorkflowByPath), so a stored key
+// can point at a completely different widget on a later graph and
+// ApplyUIWidgetOverrides would type-coerce a value straight into it (a captured seed
+// overwriting a prompt). The legacy name-keyed WidgetOverrides degrade safely — a
+// missing input name is a no-op — so only the positional set needs guarding.
+//
+// The guard is the workflow's content hash: the keys are applied ONLY when the
+// generation's recorded graph hash still matches the workflow's current one, so the
+// index means exactly what it meant when captured. A blank hash on either side is
+// treated as a mismatch (it cannot be proven equal). staleReason is non-empty when
+// positional overrides were withheld; the caller must surface it rather than re-run
+// with different parameters than the generation records.
+func runOptionsFromParams(params, genGraphHash, curGraphHash string) (opts runOptions, staleReason string) {
 	snap := parseRunParams(params)
-	opts := runOptions{}
 	if len(snap.Substitute) > 0 {
 		opts.Substitute = make(map[string]string, len(snap.Substitute))
 		for k, v := range snap.Substitute {
@@ -117,7 +203,26 @@ func runOptionsFromParams(params string) runOptions {
 			opts.WidgetOverrides[comfy.WidgetOverrideKey{NodeID: e.NodeID, InputName: e.InputName}] = e.Value
 		}
 	}
-	return opts
+	if len(snap.UIWidgetOverrides) > 0 {
+		if genGraphHash == "" || curGraphHash == "" || genGraphHash != curGraphHash {
+			return opts, "this workflow's graph has changed since this generation was " +
+				"recorded, so its parameter edits can no longer be re-applied safely " +
+				"(they are stored by widget position). Open the workflow and run it " +
+				"from the Parameters panel instead."
+		}
+		opts.UIWidgetOverrides = make(map[comfy.UIWidgetKey]string, len(snap.UIWidgetOverrides))
+		for _, e := range snap.UIWidgetOverrides {
+			widx, ok := e.widgetIndex()
+			if !ok || e.NodeID == "" {
+				continue // malformed entry — never default it onto slot 0
+			}
+			opts.UIWidgetOverrides[comfy.UIWidgetKey{NodeID: e.NodeID, Widget: widx}] = e.Value
+		}
+		if len(opts.UIWidgetOverrides) == 0 {
+			opts.UIWidgetOverrides = nil
+		}
+	}
+	return opts, ""
 }
 
 // captureGeneration is the best-effort, off-run-mutex, success-path-only capture:

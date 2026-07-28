@@ -820,7 +820,10 @@ func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode s
 func workflowGraphSection(graph []byte, format string) g.Node {
 	if format == store.WorkflowFormatUI {
 		if svg, ok := workflowGraphSVG(graph); ok {
-			return svg
+			// The caption states plainly what this static render does and does not
+			// show, so the (expected) difference from the ComfyUI canvas does not read
+			// as "the preview is showing a different workflow".
+			return h.Div(svg, graphPreviewCaption())
 		}
 	}
 	return workflowGraphStructured(graph, format)

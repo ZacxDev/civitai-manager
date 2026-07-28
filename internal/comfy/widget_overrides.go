@@ -17,7 +17,104 @@ type WidgetOverrideKey struct {
 	InputName string
 }
 
+// UIWidgetKey identifies ONE editable widget slot in a UI-format ("Save") graph, by
+// node id and the slot's INDEX in that node's widgets_values array. This is the key
+// DetectRunInputs emits (RunInput.NodeID + RunInput.WidgetIndex).
+//
+// Why an index and not an input name: the value a curated node shows may live on a
+// DIFFERENT, upstream node (a widget converted to an input, driven by a primitive or a
+// custom node), and mapping that node's widgets_values slots to schema input NAMES
+// needs /object_info — which the page-render path deliberately does not fetch. The
+// index needs nothing but the graph. ConvertUIToAPI then performs the index → name
+// mapping exactly once, with the live schema, so an override written here lands on the
+// correct api input.
+type UIWidgetKey struct {
+	NodeID string
+	Widget int
+}
+
 var integerLiteralRe = regexp.MustCompile(`^-?\d+$`)
+
+// ApplyUIWidgetOverrides returns a COPY of a UI-format graph with each targeted
+// node's targeted widgets_values slot rewritten to the override value. It must run
+// BEFORE ConvertUIToAPI (the converter maps the edited slot onto the right api input
+// name). Like ApplyWidgetOverrides it is deliberately narrow:
+//
+//   - it rewrites ONLY an EXISTING slot of an EXISTING node — never appends a slot,
+//     never creates a node;
+//   - the replacement PRESERVES the slot's JSON type (a string stays a string, an
+//     integer keeps full precision, a numeric slot given a non-numeric override is left
+//     unchanged), and an array/object/bool/null slot is never touched;
+//   - the input graph is never mutated. A parse failure, a non-array widgets_values, or
+//     an empty override set returns uiGraph unchanged.
+func ApplyUIWidgetOverrides(uiGraph json.RawMessage, overrides map[UIWidgetKey]string) json.RawMessage {
+	if len(overrides) == 0 {
+		return uiGraph
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(uiGraph, &doc); err != nil {
+		return uiGraph
+	}
+	var nodes []json.RawMessage
+	if err := json.Unmarshal(doc["nodes"], &nodes); err != nil {
+		return uiGraph
+	}
+	changed := false
+	for i, raw := range nodes {
+		var node map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &node); err != nil {
+			continue
+		}
+		id := idToString(node["id"])
+		if id == "" {
+			continue
+		}
+		wv, ok := asJSONArray(node["widgets_values"])
+		if !ok {
+			continue // object-form or absent widgets_values — no indexed slot to rewrite
+		}
+		nodeChanged := false
+		for idx := range wv {
+			val, ok := overrides[UIWidgetKey{NodeID: id, Widget: idx}]
+			if !ok {
+				continue
+			}
+			repl, ok := typedOverrideValue(wv[idx], val)
+			if !ok {
+				continue // array/object/bool slot, or a numeric slot with an unparseable value
+			}
+			wv[idx] = repl
+			nodeChanged = true
+		}
+		if !nodeChanged {
+			continue
+		}
+		wb, err := json.Marshal(wv)
+		if err != nil {
+			continue
+		}
+		node["widgets_values"] = wb
+		nb, err := json.Marshal(node)
+		if err != nil {
+			continue
+		}
+		nodes[i] = nb
+		changed = true
+	}
+	if !changed {
+		return uiGraph
+	}
+	nb, err := json.Marshal(nodes)
+	if err != nil {
+		return uiGraph
+	}
+	doc["nodes"] = nb
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return uiGraph
+	}
+	return out
+}
 
 // ApplyWidgetOverrides returns a COPY of the api-format graph with each targeted
 // node's targeted input rewritten to the override value. It is deliberately narrow:

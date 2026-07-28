@@ -120,6 +120,13 @@ type runOptions struct {
 	// api graph (via comfy.ApplyWidgetOverrides), keyed by node+input since a prompt
 	// is node-specific. Applied like the other overrides — on a copy, never persisted.
 	WidgetOverrides map[comfy.WidgetOverrideKey]string
+	// UIWidgetOverrides carries the "Parameters" panel's per-run edits for a
+	// UI-format workflow, keyed by (node id, widgets_values index) — the coordinates
+	// DetectRunInputs emits. They are applied to a COPY of the UI graph BEFORE
+	// conversion, so ConvertUIToAPI maps each edited slot onto the correct api input
+	// name with the live schema. This is what makes an edit to a parameter that lives
+	// on an UPSTREAM node (a widget converted to an input) actually reach ComfyUI.
+	UIWidgetOverrides map[comfy.UIWidgetKey]string
 }
 
 // runUpdater lets runFn stream phase transitions into the job under the mutex.
@@ -307,7 +314,16 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater,
 	var apiGraph json.RawMessage
 	if wf.Format == store.WorkflowFormatUI {
 		up.setPhase(runPhasePreparing, "Converting workflow to API format…", 0)
-		g, warnings, cerr := comfy.ConvertUIToAPI(json.RawMessage(wf.Graph), info)
+		// Apply the "Parameters" panel edits to a COPY of the UI graph FIRST: the value
+		// a parameter shows may live on an upstream node whose widget was converted to
+		// an input, and only the pre-conversion widgets_values slot is authoritative —
+		// the converter then maps it onto the right api input. The stored workflow is
+		// never touched (ApplyUIWidgetOverrides returns a new document).
+		uiGraph := json.RawMessage(wf.Graph)
+		if len(opts.UIWidgetOverrides) > 0 {
+			uiGraph = comfy.ApplyUIWidgetOverrides(uiGraph, opts.UIWidgetOverrides)
+		}
+		g, warnings, cerr := comfy.ConvertUIToAPI(uiGraph, info)
 		if cerr != nil {
 			return nil, fmt.Errorf("convert workflow: %w", cerr)
 		}

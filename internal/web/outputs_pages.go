@@ -240,8 +240,16 @@ func generationParamsCard(gen *store.Generation) g.Node {
 			h.H3(h.Class("text-sm font-semibold text-slate-200 mt-3 mb-2"), g.Text("Model substitutions")),
 			h.Ul(h.Class("list-disc pl-5 space-y-1"), g.Group(items))))
 	}
-	if len(snap.WidgetOverrides) > 0 {
+	// Parameter edits come in TWO shapes: the current UI-graph form (node + widget
+	// slot index) and the legacy api-graph form (node + input name) kept for
+	// generations recorded before the Parameters panel moved to widget indices. Render
+	// both — showing only one silently blanks the block for every run of the other era.
+	if len(snap.UIWidgetOverrides) > 0 || len(snap.WidgetOverrides) > 0 {
 		var items []g.Node
+		for _, wo := range snap.UIWidgetOverrides {
+			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono"),
+				g.Text(fmt.Sprintf("node %s · widget %s = %s", wo.NodeID, wo.widgetDisplay(), wo.Value))))
+		}
 		for _, wo := range snap.WidgetOverrides {
 			items = append(items, h.Li(h.Class("text-sm text-slate-300 font-mono"),
 				g.Text(fmt.Sprintf("node %s · %s = %s", wo.NodeID, wo.InputName, wo.Value))))
