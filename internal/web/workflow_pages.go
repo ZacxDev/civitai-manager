@@ -241,7 +241,40 @@ func workflowList(wfs []store.Workflow, csrf string, resolver workflowResolver) 
 		workflowControlsBar(),
 		h.Div(h.ID(workflowListID), h.Class("space-y-4"), g.Group(items)),
 		workflowControlsScript(),
+		workflowDeeplinkScript(),
 	)
+}
+
+// workflowDeeplinkScript is the self-contained (no-CDN, offline-safe) "View in
+// library" deep-link handler. On load — and after every htmx swap settles — it
+// checks location.hash for a #wf-<id> anchor; when it matches a rendered item it
+// scrolls it into view and briefly applies the .cm-wf-highlight pulse (a subtle
+// accent ring that fades ~1.5s; reduced-motion → a static ring, honored entirely
+// in CSS). It binds its htmx:afterSettle listener exactly ONCE (a window guard),
+// so re-emitting this script after a scan-poller innerHTML swap never stacks
+// duplicate listeners and never orphans the scan poller. NON-DOM caveat: the
+// scroll/highlight behavior is markup-verified only (no browser here).
+func workflowDeeplinkScript() g.Node {
+	const js = `
+function cmWfDeeplink(){
+  var m = (window.location.hash || '').match(/^#wf-(\d+)$/);
+  if(!m){ return; }
+  var el = document.getElementById('wf-' + m[1]);
+  if(!el){ return; }
+  try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+  catch(e) { el.scrollIntoView(); }
+  el.classList.remove('cm-wf-highlight');
+  void el.offsetWidth; // reflow so re-adding the class restarts the animation
+  el.classList.add('cm-wf-highlight');
+  window.setTimeout(function(){ el.classList.remove('cm-wf-highlight'); }, 2000);
+}
+if(!window.__cmWfDeeplinkBound){
+  window.__cmWfDeeplinkBound = true;
+  document.body.addEventListener('htmx:afterSettle', cmWfDeeplink);
+}
+cmWfDeeplink();
+`
+	return h.Script(g.Raw(js))
 }
 
 // workflowListItem wraps one workflowCard in a data-attributed container the
@@ -255,6 +288,9 @@ func workflowListItem(wf store.Workflow, csrf string, resolver workflowResolver)
 		name = "workflow #" + strconv.FormatInt(wf.ID, 10)
 	}
 	return h.Div(
+		// Stable anchor for the "View in library" deep-link (#wf-<id>): the
+		// workflows-tab deeplink script scrolls to + briefly highlights this node.
+		h.ID("wf-"+strconv.FormatInt(wf.ID, 10)),
 		h.Class("cm-wf-item"),
 		dataAttr("name", name),
 		dataAttr("source", wf.Source),
@@ -538,7 +574,7 @@ func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode s
 	var body []g.Node
 	body = append(body, h.Div(h.Class("flex items-center justify-between"),
 		h.H1(h.Class("text-2xl font-semibold text-slate-100"), g.Text(name)),
-		h.A(h.Href("/library?tab=workflows"), h.Class("text-sm text-indigo-400 hover:text-indigo-300"),
+		h.A(h.Href("/library?tab=workflows#wf-"+id), h.Class("text-sm text-indigo-400 hover:text-indigo-300"),
 			g.Text("← Back to Workflows")),
 	))
 
