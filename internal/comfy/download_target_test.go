@@ -87,6 +87,17 @@ func TestSafeModelDestRejects(t *testing.T) {
 	if _, err := SafeModelDest(root, "", "x.safetensors"); err == nil {
 		t.Error("empty subdir should error")
 	}
+	// A malicious/escaping subdir must be refused even though real callers pass
+	// hardcoded constants (defense in depth).
+	for _, sub := range []string{"..", "../evil", "../../etc", "/abs/evil", `..\evil`} {
+		if _, err := SafeModelDest(root, sub, "x.safetensors"); err == nil {
+			t.Errorf("SafeModelDest subdir %q should have been refused", sub)
+		}
+	}
+	// A legitimate nested subdir (the detector routing) is still accepted.
+	if _, err := SafeModelDest(root, "ultralytics/bbox", "face_yolov8m.pt"); err != nil {
+		t.Errorf("nested subdir ultralytics/bbox should be accepted: %v", err)
+	}
 }
 
 // TestWriteModelStreamHappyPath: writes to the right path atomically (no temp

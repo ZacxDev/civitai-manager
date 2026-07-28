@@ -78,13 +78,27 @@ func SafeModelDest(root, subdir, refName string) (string, error) {
 	if subdir == "" {
 		return "", errors.New("empty model subdirectory")
 	}
+	// Defense in depth: the subdir is a per-type routing constant today, but this
+	// containment function must never trust it to stay inside root — reject an
+	// absolute or ".."-escaping subdir so a future caller cannot lift a write out.
+	cleanSub := filepath.Clean(strings.ReplaceAll(subdir, "\\", "/"))
+	if filepath.IsAbs(cleanSub) || cleanSub == ".." || cleanSub == "." ||
+		strings.HasPrefix(cleanSub, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid model subdirectory %q", subdir)
+	}
 	// Normalize backslashes to forward slashes so a Windows-style traversal is
 	// collapsed on every platform, then take the slash-based basename.
 	base := path.Base(strings.ReplaceAll(strings.TrimSpace(refName), "\\", "/"))
 	if base == "" || base == "." || base == ".." || base == "/" {
 		return "", fmt.Errorf("invalid model reference %q", refName)
 	}
-	dir := filepath.Join(root, subdir)
+	dir := filepath.Join(root, cleanSub)
+	// The joined subdir must still resolve inside root (belt-and-suspenders with the
+	// lexical check above).
+	if srel, err := filepath.Rel(root, dir); err != nil || srel == ".." ||
+		strings.HasPrefix(srel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("model subdirectory %q escapes root", subdir)
+	}
 	dest := filepath.Join(dir, base)
 	// Defense in depth: the joined result must be dir + exactly one path element.
 	rel, err := filepath.Rel(dir, dest)

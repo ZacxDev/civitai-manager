@@ -333,13 +333,19 @@ func betterMatch(a, b *Match) bool {
 	return a.Downloads > b.Downloads
 }
 
-// resolveURL builds the pinned /resolve download URL.
+// resolveURL builds the pinned /resolve download URL. Every path segment —
+// including the repo's owner/name — is url.PathEscape'd; the host stays locked to
+// the allowlist by the client dialer regardless, this just keeps a repo value from
+// the HF API from producing a malformed path.
 func resolveURL(base, repo, revision, filePath string) string {
-	segs := strings.Split(filePath, "/")
-	for i, s := range segs {
-		segs[i] = url.PathEscape(s)
+	escSegs := func(p string) string {
+		segs := strings.Split(p, "/")
+		for i, s := range segs {
+			segs[i] = url.PathEscape(s)
+		}
+		return strings.Join(segs, "/")
 	}
-	return strings.TrimRight(base, "/") + "/" + repo + "/resolve/" + url.PathEscape(revision) + "/" + strings.Join(segs, "/")
+	return strings.TrimRight(base, "/") + "/" + escSegs(repo) + "/resolve/" + url.PathEscape(revision) + "/" + escSegs(filePath)
 }
 
 // searchCandidateLimit bounds how many repos the search returns; searchTreeProbes
