@@ -337,9 +337,15 @@ func (c *CloudClient) SubmitCloud(ctx context.Context, template CloudTemplate, w
 		return nil, fmt.Errorf("submit cloud workflow: %w", err)
 	}
 	defer resp.Body.Close()
-	data, _ := readBounded(resp.Body, maxCloudJSONBytes)
+	// readErr (an oversized body) is fatal only on the SUCCESS path, where the bytes
+	// are parsed as the authoritative response; the problem path deliberately uses
+	// the truncated text as a snippet.
+	data, readErr := readBounded(resp.Body, maxCloudJSONBytes)
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		return nil, parseCloudProblem(resp.StatusCode, data)
+	}
+	if readErr != nil {
+		return nil, fmt.Errorf("read cloud workflow: %w", readErr)
 	}
 	var wf CloudWorkflow
 	if err := json.Unmarshal(data, &wf); err != nil {
@@ -356,9 +362,14 @@ func (c *CloudClient) GetCloudWorkflow(ctx context.Context, id string) (*CloudWo
 		return nil, fmt.Errorf("get cloud workflow: %w", err)
 	}
 	defer resp.Body.Close()
-	data, _ := readBounded(resp.Body, maxCloudJSONBytes)
+	// As above: an oversized body is fatal only where it is parsed, not where it is
+	// only a problem-response snippet.
+	data, readErr := readBounded(resp.Body, maxCloudJSONBytes)
 	if resp.StatusCode/100 != 2 {
 		return nil, parseCloudProblem(resp.StatusCode, data)
+	}
+	if readErr != nil {
+		return nil, fmt.Errorf("read cloud workflow: %w", readErr)
 	}
 	var wf CloudWorkflow
 	if err := json.Unmarshal(data, &wf); err != nil {

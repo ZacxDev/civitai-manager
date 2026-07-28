@@ -341,6 +341,65 @@ func (s *Store) DeleteGenerationsByWorkflow(ctx context.Context, workflowID int6
 	return paths, nil
 }
 
+// SumGenerationImageBytes returns the TOTAL stored bytes of every captured output
+// image (the sum of generation_images.size_bytes). It is the measured size of the
+// outputs tree used to enforce the disk cap — DB-side rather than a filesystem
+// walk, so it stays O(1) work for the capture path. An empty gallery yields 0.
+func (s *Store) SumGenerationImageBytes(ctx context.Context) (int64, error) {
+	var total int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(size_bytes), 0) FROM generation_images`).Scan(&total)
+	return total, err
+}
+
+// GenerationSize pairs a generation id with the total bytes of its images, for
+// eviction accounting (delete the oldest until the tree is back under the cap).
+type GenerationSize struct {
+	ID    int64
+	Bytes int64
+}
+
+// ListOldestEvictableGenerations returns up to limit generations OLDEST-FIRST
+// (created_at ASC, id ASC — the reverse of the gallery order) with each one's
+// total image bytes, so the cap enforcer can evict in age order and account for
+// what it reclaimed. limit<=0 returns nil (the caller must bound the eviction
+// batch).
+//
+// It returns only generations whose recorded size is > 0 — that is what
+// "evictable" means here. Deleting a zero-byte generation frees nothing, so it is
+// never a useful eviction candidate; more importantly, letting such rows occupy
+// slots in the caller's bounded batch would starve the batch of the real
+// candidates and make the cap silently unenforceable once enough of them exist.
+// The filter therefore belongs in SQL, not only in the caller's loop.
+func (s *Store) ListOldestEvictableGenerations(ctx context.Context, limit int) ([]GenerationSize, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	// An INNER JOIN drops image-less generations (0 bytes by definition) and the
+	// HAVING drops those whose images are all zero-length.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT g.id, SUM(gi.size_bytes) AS bytes
+		FROM generations g
+		JOIN generation_images gi ON gi.generation_id = g.id
+		GROUP BY g.id, g.created_at
+		HAVING SUM(gi.size_bytes) > 0
+		ORDER BY g.created_at ASC, g.id ASC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GenerationSize
+	for rows.Next() {
+		var gs GenerationSize
+		if err := rows.Scan(&gs.ID, &gs.Bytes); err != nil {
+			return nil, err
+		}
+		out = append(out, gs)
+	}
+	return out, rows.Err()
+}
+
 // GenerationWorkflowRef is a distinct source workflow that has at least one
 // generation, for the gallery's workflow filter select.
 type GenerationWorkflowRef struct {

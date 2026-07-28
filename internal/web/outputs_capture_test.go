@@ -167,6 +167,112 @@ func TestCaptureDisabledWhenNoOutputsDir(t *testing.T) {
 	}
 }
 
+// waitForGenerations polls until the store holds want generations, or fails.
+// Capture runs off the run mutex AFTER the job settles, so "the job is no longer
+// running" is not a sufficient wait condition for the capture side effects.
+func waitForGenerations(t *testing.T, srv *Server, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		n, _ := srv.store.CountGenerations(context.Background(), nil)
+		if n == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("generations = %d, want %d", n, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// waitForRunSettled polls until the current run job is no longer running.
+func waitForRunSettled(t *testing.T, srv *Server) runSnapshot {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		snap := srv.runJobState()
+		if !snap.Running {
+			return snap
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("run did not settle")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestDownloadAndRunCapturesGeneration is the regression test for the
+// download-and-run path having NO capture: a successful "Download & run" must land
+// in the gallery exactly like a plain run (both paths share settleAndCapture).
+func TestDownloadAndRunCapturesGeneration(t *testing.T) {
+	fake := &fakeComfy{viewData: []byte("PNGBYTES"), viewCT: "image/png"}
+	srv, root, wf := newCaptureServer(t, fake)
+
+	downloaded := 0
+	srv.downloadFn = func(context.Context, pendingDownload, func(string)) error {
+		downloaded++
+		return nil
+	}
+	srv.runFn = func(context.Context, *store.Workflow, runUpdater, runOptions) (*runResult, error) {
+		return &runResult{PromptID: "dlrun", Images: []comfy.ImageRef{{Filename: "a.png"}}}, nil
+	}
+
+	srv.startDownloadAndRun(wf, pendingDownload{FileName: "missing.safetensors"}, runOptions{})
+
+	snap := waitForRunSettled(t, srv)
+	if snap.Phase != runPhaseDone {
+		t.Fatalf("phase = %q, want done", snap.Phase)
+	}
+	if downloaded != 1 {
+		t.Fatalf("downloadFn calls = %d, want 1", downloaded)
+	}
+
+	waitForGenerations(t, srv, 1)
+	gens, err := srv.store.ListGenerations(context.Background(), store.ListGenerationsOpts{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if gens[0].PromptID != "dlrun" {
+		t.Errorf("prompt_id = %q, want dlrun", gens[0].PromptID)
+	}
+	if gens[0].WorkflowID == nil || *gens[0].WorkflowID != wf.ID {
+		t.Errorf("workflow_id = %v, want %d", gens[0].WorkflowID, wf.ID)
+	}
+	if _, err := os.Stat(filepath.Join(root, "dlrun", "0-a.png")); err != nil {
+		t.Errorf("captured file missing: %v", err)
+	}
+}
+
+// TestDownloadAndRunFailureCapturesNothing asserts the capture stays strictly on
+// the success path: a failed download settles the job as an error and inserts no
+// generation.
+func TestDownloadAndRunFailureCapturesNothing(t *testing.T) {
+	fake := &fakeComfy{viewData: []byte("PNGBYTES"), viewCT: "image/png"}
+	srv, _, wf := newCaptureServer(t, fake)
+
+	srv.downloadFn = func(context.Context, pendingDownload, func(string)) error {
+		return errors.New("download failed")
+	}
+	ran := false
+	srv.runFn = func(context.Context, *store.Workflow, runUpdater, runOptions) (*runResult, error) {
+		ran = true
+		return &runResult{PromptID: "nope", Images: []comfy.ImageRef{{Filename: "a.png"}}}, nil
+	}
+
+	srv.startDownloadAndRun(wf, pendingDownload{FileName: "missing.safetensors"}, runOptions{})
+
+	snap := waitForRunSettled(t, srv)
+	if snap.Phase == runPhaseDone {
+		t.Fatalf("phase = %q, want a failure phase", snap.Phase)
+	}
+	if ran {
+		t.Error("run must not start after a failed download")
+	}
+	if n, _ := srv.store.CountGenerations(context.Background(), nil); n != 0 {
+		t.Errorf("generations = %d, want 0", n)
+	}
+}
+
 // TestStartRunCaptureBestEffortDoesNotAffectOutcome drives the FULL startRun
 // goroutine with an injected runFn returning images, and asserts (a) the run
 // settles to done and (b) a capture PANIC is swallowed — the run outcome is

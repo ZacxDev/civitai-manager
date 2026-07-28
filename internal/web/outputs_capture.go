@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -196,7 +197,140 @@ func (s *Server) captureGeneration(wf *store.Workflow, opts runOptions, res *run
 		Params:       marshalRunParams(buildRunParamsSnapshot(wf, opts)),
 		Status:       status,
 	}
-	if _, err := s.store.InsertGeneration(ctx, gen, images); err != nil {
-		s.log.Warn("output capture: insert generation failed", "prompt", res.PromptID, "err", err)
+	genID, err := s.store.InsertGeneration(ctx, gen, images)
+	if err != nil {
+		// The files are already on disk but no row references them: they would be
+		// invisible to the gallery AND to the cap's byte accounting (which measures
+		// recorded rows), i.e. a permanent untracked leak. Unlink them, best-effort,
+		// through the same path-contained helper the delete/eviction paths use.
+		relPaths := make([]string, 0, len(images))
+		for _, img := range images {
+			relPaths = append(relPaths, img.RelPath)
+		}
+		s.log.Warn("output capture: insert generation failed; removing the files just written",
+			"prompt", res.PromptID, "files", len(relPaths), "err", err)
+		s.removeOutputFiles(relPaths)
+		return
+	}
+	// Bound the outputs tree: evict the oldest generations if this capture pushed
+	// the total over the configured disk cap. Best-effort — every error is logged
+	// and swallowed, exactly like the rest of capture.
+	s.enforceOutputsCap(genID)
+}
+
+// evictionBudget bounds one cap-enforcement pass. It is a SEPARATE budget from
+// captureBudget (and a separate context) so a slow /view fetch that ate most of
+// the capture budget cannot leave the tree permanently over-cap.
+const evictionBudget = 30 * time.Second
+
+// maxEvictionBatch bounds how many generations ONE pass may consider/delete. It
+// keeps the loop provably finite AND bounds its cost: the store runs on a SINGLE
+// SQLite connection (store.go SetMaxOpenConns(1)), so every DeleteGeneration here
+// blocks every HTTP handler for its duration. 100 is far more than one capture can
+// push over the cap; anything left over is reported and handled by the next pass.
+const maxEvictionBatch = 100
+
+// enforceOutputsCap deletes the OLDEST generations (rows + their files) until the
+// total captured bytes are back under cfg.OutputsMaxBytes. A cap of 0 (or
+// negative) means UNLIMITED — the function returns immediately.
+//
+// keepID is the generation the calling capture just inserted. Nothing with an id
+// >= keepID is ever evicted: captures are NOT serialized with each other (the run
+// job clears `running` under runMu BEFORE the capture runs off the mutex, so two
+// captures can overlap), and generation ids are monotonic, so `>= keepID` protects
+// this capture AND any fresher generation another capture inserted meanwhile.
+//
+// Generations with no recorded bytes are skipped entirely: deleting them frees
+// nothing, so counting them as progress toward the target would walk the loop past
+// the cap and over-evict.
+//
+// The whole pass is serialized on evictMu so two overlapping captures cannot act
+// on each other's stale totals. Every failure is logged and swallowed: eviction
+// must never alter a run outcome. Each eviction is logged at INFO level with the
+// id and bytes reclaimed, because silently deleting the user's own generated
+// images must be observable.
+func (s *Server) enforceOutputsCap(keepID int64) {
+	capBytes := s.cfg.OutputsMaxBytes
+	if capBytes <= 0 {
+		return // unlimited
+	}
+	base := s.baseCtx
+	if base == nil {
+		base = context.Background()
+	}
+
+	// One pass at a time: the measure→delete sequence below is only sound if no
+	// other pass deletes rows underneath it. Take the lock BEFORE starting the
+	// budget clock — a pass queued behind another must get its full budget for its
+	// own work, not spend it waiting.
+	s.evictMu.Lock()
+	defer s.evictMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(base, evictionBudget)
+	defer cancel()
+
+	total, err := s.store.SumGenerationImageBytes(ctx)
+	if err != nil {
+		s.log.Warn("outputs cap: sum captured bytes failed", "err", err)
+		return
+	}
+	if total <= capBytes {
+		return
+	}
+
+	candidates, err := s.store.ListOldestEvictableGenerations(ctx, maxEvictionBatch)
+	if err != nil {
+		s.log.Warn("outputs cap: list oldest generations failed", "err", err)
+		return
+	}
+	evicted := 0
+	for _, cand := range candidates {
+		if total <= capBytes {
+			break // back under the cap — stop immediately
+		}
+		if err := ctx.Err(); err != nil {
+			// Budget spent / server shutting down. Stop now rather than hammering the
+			// single shared DB connection with calls that will all fail.
+			s.log.Warn("outputs cap: eviction stopped early", "err", err,
+				"evicted", evicted, "total_bytes", total, "cap_bytes", capBytes)
+			return
+		}
+		if keepID > 0 && cand.ID >= keepID {
+			// The just-captured generation, or one a concurrent capture inserted after
+			// it. Never evict something fresher than the capture that triggered us.
+			continue
+		}
+		if cand.Bytes <= 0 {
+			// Belt-and-suspenders: the query already excludes these. Evicting one frees
+			// nothing, so counting it as progress would walk the loop past the cap.
+			continue
+		}
+		relPaths, err := s.store.DeleteGeneration(ctx, cand.ID)
+		if errors.Is(err, store.ErrNotFound) {
+			// Already gone (a concurrent /outputs/{id}/delete). Its bytes are no longer
+			// in the tree, so they MUST still come off the running total — otherwise
+			// this pass keeps evicting to reach a target that is already met.
+			total -= cand.Bytes
+			continue
+		}
+		if err != nil {
+			s.log.Warn("outputs cap: delete generation failed", "generation_id", cand.ID, "err", err)
+			continue
+		}
+		// Shared with the delete handler: path-contained, error-swallowing unlink
+		// (a file already gone on disk still leaves the row deleted).
+		s.removeOutputFiles(relPaths)
+		total -= cand.Bytes
+		evicted++
+		s.log.Info("outputs cap: evicted oldest generation",
+			"generation_id", cand.ID, "bytes_reclaimed", cand.Bytes,
+			"total_bytes", total, "cap_bytes", capBytes)
+	}
+	if total > capBytes {
+		// Not an error: the batch bound, a gallery of one huge generation, or a tree
+		// made entirely of fresher-than-keepID rows can all leave it over-cap. Say so
+		// rather than looping forever.
+		s.log.Warn("outputs cap: still over the disk cap after eviction",
+			"total_bytes", total, "cap_bytes", capBytes, "evicted", evicted)
 	}
 }

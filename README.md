@@ -269,6 +269,10 @@ max_preview_size: ""               # e.g. "2MB"; skip a preview larger than this
 addr: "127.0.0.1:8787"             # loopback by default; set a LAN host to expose
 web_scan_timeout: "2m"             # deadline for a web "Scan now" walk/hash
 web_scan_max_files: 50000          # model-file cap for a web scan; over → aborts
+outputs_dir: ""                    # where the output gallery stores images
+                                   # (empty = <db-dir>/outputs)
+outputs_max_bytes: "20GB"          # total size cap for that gallery; over it, the
+                                   # OLDEST generations are DELETED. "0" = unlimited
 # db_path: "~/.config/civitai-manager/civitai-manager.db"
 ```
 
@@ -276,6 +280,31 @@ The web-scan bounds only apply to the browser "Scan now" button (the
 network-reachable surface). The CLI `scan` is unbounded — you typed the path
 knowingly — though it is equally context-cancellable (Ctrl-C aborts the walk
 promptly, not just after it finishes).
+
+### Output gallery storage and its automatic deletion
+
+Every successful ComfyUI workflow run has its output images **copied** into an
+app-owned directory — `outputs_dir` / `--outputs-dir`, defaulting to
+`<db-dir>/outputs` (i.e. `~/.config/civitai-manager/outputs`) — and recorded in
+the database so they stay browsable under **Outputs** after ComfyUI clears its own
+output folder.
+
+> ⚠️ **That directory is size-capped, and the cap deletes your images.** Once the
+> total recorded size of the gallery exceeds `outputs_max_bytes`
+> (`--outputs-max-bytes`), the app **automatically deletes the OLDEST generations
+> — database rows and image files — until it is back under the cap.** There is
+> **no undo and no trash**; deleted generations are gone. Each eviction is logged
+> at INFO level with the generation id and the bytes reclaimed.
+>
+> - **Default: `"20GB"`.** Set it to any size string (`"500MB"`, `"2GB"`) or a
+>   plain byte count.
+> - **`"0"` means unlimited** — nothing is ever auto-deleted, and the directory
+>   grows without bound.
+> - A positive cap below 1 MiB is rejected at startup (almost always a unit
+>   mistake, e.g. `outputs_max_bytes: 20` meaning 20 GB).
+> - Eviction runs **only after a successful capture**, so lowering the cap does
+>   nothing until the next successful run.
+> - Keep anything you care about somewhere else — copy it out of the gallery.
 
 Downloaded files are laid out as
 `<model_root>/<type>/<creator>/<model>/<versionName>.<ext>` with sanitized path

@@ -15,21 +15,22 @@ import (
 
 // globalFlags collects the flags shared by every command.
 type globalFlags struct {
-	configPath     string
-	token          string
-	baseURL        string
-	modelRoot      string
-	dbPath         string
-	maxFileSize    string
-	downloadJitter string
-	trashDir       string
-	webScanTimeout string
-	noPreview      bool
-	maxPreviewSize string
-	comfyModelPath string
-	outputsDir     string
-	hfToken        string
-	verbose        bool
+	configPath      string
+	token           string
+	baseURL         string
+	modelRoot       string
+	dbPath          string
+	maxFileSize     string
+	downloadJitter  string
+	trashDir        string
+	webScanTimeout  string
+	noPreview       bool
+	maxPreviewSize  string
+	comfyModelPath  string
+	outputsDir      string
+	outputsMaxBytes string
+	hfToken         string
+	verbose         bool
 }
 
 // BuildInfo carries release metadata injected via -ldflags into package main
@@ -73,6 +74,7 @@ func newRootCmd(bi BuildInfo) *cobra.Command {
 	pf.BoolVar(&gf.noPreview, "no-preview", false, "do not write the .preview.png image sidecar (opt-in; default writes it)")
 	pf.StringVar(&gf.maxPreviewSize, "max-preview-size", "", "skip the .preview.png sidecar when the fetched image exceeds this size (e.g. 2MB; 0/empty = no cap)")
 	pf.StringVar(&gf.outputsDir, "outputs-dir", "", "directory the output gallery copies successful workflow-run images into (default <db-dir>/outputs)")
+	pf.StringVar(&gf.outputsMaxBytes, "outputs-max-bytes", "", "total disk cap for the output gallery; the oldest generations are evicted above it (e.g. 20GB; 0 = unlimited; default 20GB)")
 	pf.BoolVarP(&gf.verbose, "verbose", "v", false, "verbose logging")
 
 	root.AddCommand(
@@ -134,20 +136,21 @@ func (a *app) cmdLogger() *slog.Logger {
 // build resolves configuration, opens the store, and constructs the API client.
 func (gf *globalFlags) build() (*app, error) {
 	cfg, err := config.Resolve(config.Flags{
-		ConfigPath:     gf.configPath,
-		Token:          gf.token,
-		BaseURL:        gf.baseURL,
-		ModelRoot:      gf.modelRoot,
-		DBPath:         gf.dbPath,
-		MaxFileSize:    gf.maxFileSize,
-		DownloadJitter: gf.downloadJitter,
-		TrashDir:       gf.trashDir,
-		WebScanTimeout: gf.webScanTimeout,
-		NoPreview:      gf.noPreview,
-		MaxPreviewSize: gf.maxPreviewSize,
-		ComfyModelPath: gf.comfyModelPath,
-		OutputsDir:     gf.outputsDir,
-		HFToken:        gf.hfToken,
+		ConfigPath:      gf.configPath,
+		Token:           gf.token,
+		BaseURL:         gf.baseURL,
+		ModelRoot:       gf.modelRoot,
+		DBPath:          gf.dbPath,
+		MaxFileSize:     gf.maxFileSize,
+		DownloadJitter:  gf.downloadJitter,
+		TrashDir:        gf.trashDir,
+		WebScanTimeout:  gf.webScanTimeout,
+		NoPreview:       gf.noPreview,
+		MaxPreviewSize:  gf.maxPreviewSize,
+		ComfyModelPath:  gf.comfyModelPath,
+		OutputsDir:      gf.outputsDir,
+		OutputsMaxBytes: gf.outputsMaxBytes,
+		HFToken:         gf.hfToken,
 	})
 	if err != nil {
 		return nil, err

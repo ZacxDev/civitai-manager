@@ -64,6 +64,12 @@ type Config struct {
 	// set by config resolution (defaults to <db-dir>/outputs). Capture is skipped
 	// when empty (e.g. an unconfigured test server).
 	OutputsDir string
+	// OutputsMaxBytes is the TOTAL disk cap of the outputs tree, in bytes. After a
+	// successful capture the oldest generations (rows + files) are evicted until the
+	// total is back under it. 0 (or negative) means UNLIMITED — no eviction ever.
+	// Resolved by config (default 20 GiB); an unset zero value in a test server is
+	// therefore "unlimited", matching the pre-cap behaviour.
+	OutputsMaxBytes int64
 	// MaxFileSizeBytes caps a "Download & run" model download (0 = the built-in
 	// safety guard). It reuses the poller's max_file_size setting so a single knob
 	// bounds every download the app makes.
@@ -158,6 +164,18 @@ type Server struct {
 	// (View → atomic write → InsertGeneration, best-effort); tests inject a seam to
 	// assert capture is (or is not) invoked without touching a real ComfyUI/FS.
 	captureFn func(wf *store.Workflow, opts runOptions, res *runResult)
+	// downloadFn fetches the missing model file for the "Download & run" path. Nil
+	// (production) uses downloadModelFile (HTTPS-checked fetch → size-capped atomic
+	// write under comfy_model_path); tests inject a seam to drive the
+	// download-and-run goroutine without network or disk.
+	downloadFn func(ctx context.Context, pd pendingDownload, cb func(string)) error
+	// evictMu serializes output-gallery cap enforcement. Captures are NOT mutually
+	// exclusive — the run job clears `running` under runMu BEFORE the capture runs
+	// off the mutex — so two captures can enforce the cap concurrently. Without this
+	// each pass would delete rows under the other's already-measured total and
+	// over-evict. It is deliberately SEPARATE from runMu (eviction must never hold
+	// the run mutex).
+	evictMu sync.Mutex
 	// runMu guards runJob. One workflow run is active at a time (global MVP guard).
 	runMu sync.Mutex
 	// runJob is the current (or most recent) background run, or nil before the first.

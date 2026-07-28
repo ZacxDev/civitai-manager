@@ -184,31 +184,43 @@ func (s *Server) startRun(wf *store.Workflow, opts runOptions) {
 			}()
 			res, err = run(ctx, wf, up, opts)
 		}()
-		s.runMu.Lock()
-		s.applyRunOutcomeLocked(job, res, err)
-		phase := job.phase
-		s.runMu.Unlock()
+		s.settleAndCapture(job, wf, opts, res, err)
+	}()
+}
 
-		// Best-effort output capture: OUTSIDE runMu (it does network /view fetches +
-		// disk writes — must never block a status poll or hold the run mutex), on the
-		// SUCCESS path only, and fully panic-guarded so a capture failure can NEVER
-		// change or crash the settled run. captureGeneration itself swallows its own
-		// errors; this recover is the last-resort guard around a seam/panic.
-		if phase == runPhaseDone && res != nil && len(res.Images) > 0 {
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						s.log.Error("output capture panicked", "err", r)
-					}
-				}()
-				capture := s.captureFn
-				if capture == nil {
-					capture = s.captureGeneration
-				}
-				capture(wf, opts, res)
-			}()
+// settleAndCapture is the shared tail of EVERY run path (startRun and
+// startDownloadAndRun): it settles the finished job under runMu, then runs the
+// best-effort output capture.
+//
+// Two properties are load-bearing and must not be reordered:
+//   - applyRunOutcomeLocked runs under runMu, and the phase is snapshotted under
+//     that SAME lock (a later read would race a new job).
+//   - the capture runs OUTSIDE runMu — it does network /view fetches + disk writes
+//     and must never block a status poll or hold the run mutex.
+//
+// Capture happens on the SUCCESS path only and is fully panic-guarded, so a
+// capture failure can NEVER change or crash the settled run. captureGeneration
+// swallows its own errors; this recover is the last-resort guard around a
+// seam/panic.
+func (s *Server) settleAndCapture(job *runJob, wf *store.Workflow, opts runOptions, res *runResult, err error) {
+	s.runMu.Lock()
+	s.applyRunOutcomeLocked(job, res, err)
+	phase := job.phase
+	s.runMu.Unlock()
+
+	if phase != runPhaseDone || res == nil || len(res.Images) == 0 {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("output capture panicked", "err", r)
 		}
 	}()
+	capture := s.captureFn
+	if capture == nil {
+		capture = s.captureGeneration
+	}
+	capture(wf, opts, res)
 }
 
 // newRunUpdater builds the runUpdater that streams a run's phase transitions into

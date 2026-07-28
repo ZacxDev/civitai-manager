@@ -570,3 +570,117 @@ dogfood binary before merge. Reversibility: the migration is additive
 (reversible by dropping two tables); the on-disk outputs tree is new (nothing
 existing is moved/overwritten); capture is best-effort (can be feature-flagged
 off). Classify as **costly-but-reversible**.
+
+---
+
+## 9. Shipped follow-ups (post-v0.1.68)
+
+Three items the v0.1.68 audit deliberately deferred, now implemented.
+
+### 9.1 Capture on the download-and-run path
+
+v0.1.68 wired capture into `startRun` only. `startDownloadAndRun` (plain
+"Download & run" **and** "install option and run") settled its outcome under
+`s.runMu` with a `defer Unlock()` and had **no capture**, so those successes never
+reached the gallery.
+
+Both paths now end in **one shared tail**, `(*Server).settleAndCapture` in
+`run_handlers.go`. Its ordering is load-bearing and must not be reshuffled:
+
+1. `s.runMu.Lock()` → `applyRunOutcomeLocked` → snapshot `job.phase` → `Unlock()`
+   (the phase MUST be read under the same lock that settled it).
+2. Capture strictly **outside** `runMu` — it does network `/view` fetches + disk
+   writes and must never block a status poll or hold the run mutex. This is why
+   `startDownloadAndRun`'s `defer s.runMu.Unlock()` is gone.
+3. Capture on the **success path only** (`phase == runPhaseDone && res != nil &&
+   len(res.Images) > 0`), fully `recover()`-guarded, honouring the `captureFn`
+   seam (nil → `captureGeneration`).
+
+A `downloadFn` seam (mirroring `runFn`) was added so the download-and-run
+goroutine can be driven in tests without network or disk.
+
+### 9.2 Size-cap error semantics in the comfy client
+
+`comfy.readBounded` was `io.ReadAll(io.LimitReader(r, max))` — an oversized body
+was **silently truncated**. For `View` (`maxImageBytes` = 64 MiB) that meant a
+corrupt/partial image could be captured and stored as if fine.
+
+It now reads `max+1` and, on overflow, returns the **truncated bytes together with
+an `ErrResponseTooLarge`-wrapped error**. Returning the data is deliberate: the
+`data, _ := readBounded(...)` **error-snippet** call sites keep working unchanged,
+while every call site that **parses or stores** the payload hard-fails with an
+explicit "response too large". The full, audited list of hard-failing sites:
+
+- `client.go`: `ObjectInfo`, `History`, `QueueState`, `SystemStats`, `View`, and
+  the `Submit` HTTP-200 parse.
+- `cloud.go`: the success paths of `SubmitCloudWorkflow` and `GetCloudWorkflow`.
+
+Snippet-only (error is still deliberately ignored — the truncated text is only
+interpolated into an error message, never parsed as the authoritative response):
+the non-2xx branches of all of the above, `Interrupt`, `SaveUserWorkflow`, and
+`CancelCloudWorkflow`.
+
+The `View` error names the offending filename so `captureGeneration`'s
+warn-and-skip log is actionable.
+
+Boundary: a body of **exactly** `max` bytes still succeeds; `max+1` errors.
+
+### 9.3 Total outputs disk cap + eviction
+
+Answers open question §8.5 ("retention cap default") and implements §6's optional
+cap — under the final name **`outputs_max_bytes`**.
+
+- **Config knob `outputs_max_bytes`** (`internal/config`), plumbed exactly like
+  `outputs_dir`: YAML key, `Flags.OutputsMaxBytes`, CLI flag
+  **`--outputs-max-bytes`**, and `web.Config.OutputsMaxBytes`. Like its siblings
+  `max_file_size` / `max_preview_size` it is a **size string** parsed by
+  `ParseSize` (`"20GB"`, `"500MB"`, or a plain byte count); a bare YAML integer
+  also decodes (`SizeString.UnmarshalYAML`).
+- **Default 20 GiB** (`DefaultOutputsMaxBytes`) when the key is **unset**;
+  an explicit **`"0"` means UNLIMITED** — no eviction ever. Always read it through
+  `Config.OutputsCapBytes()`. A **positive** cap below `MinOutputsMaxBytes`
+  (1 MiB) is **rejected at load**: `outputs_max_bytes: 20` (meaning 20 GB) would
+  otherwise silently evict the entire gallery on the next capture.
+- **Enforcement** runs in `(*Server).enforceOutputsCap`, called **after a
+  successful capture insert** in `captureGeneration` — and *only* there, so
+  lowering the cap does nothing until the next successful run. While
+  `SumGenerationImageBytes` exceeds the cap it deletes the **oldest** generations
+  (`ListOldestGenerations`, `created_at ASC, id ASC`) — rows via
+  `store.DeleteGeneration`, files via the shared `removeOutputFiles` helper, whose
+  every unlink routes through `safeOutputPath` (path containment is a hard
+  invariant; do not open-code `os.Remove` on a `rel_path`).
+- **Guarantees:**
+  - Nothing with an **id >= `keepID`** is ever evicted. Captures are **not**
+    serialized with each other — `applyRunOutcomeLocked` clears `job.running`
+    under `runMu` *before* the capture runs off the mutex — so two captures can
+    overlap; ids are monotonic, so this protects the triggering capture **and** any
+    generation a concurrent capture inserted meanwhile.
+  - The whole pass is serialized on a dedicated **`evictMu`** so overlapping passes
+    cannot act on each other's stale totals. A `DeleteGeneration` returning
+    `ErrNotFound` (a row a sibling pass or the delete handler already removed)
+    still **subtracts** that candidate's bytes — otherwise the loser keeps evicting
+    toward an already-met target.
+  - Candidates with **zero (or negative) recorded bytes are skipped**: deleting
+    them frees nothing, so counting them as progress would walk the loop past the
+    cap and over-evict. (A 0-byte `/view` body writes fine and records `n = 0`.)
+  - The loop is bounded by `maxEvictionBatch` (**100**) and breaks on `ctx.Err()`.
+    The bound is as much about cost as termination: the store runs on a **single**
+    SQLite connection (`SetMaxOpenConns(1)`), so every delete here blocks all HTTP
+    handlers.
+  - It runs on its **own** 30 s context (`evictionBudget`) so a slow `/view` that
+    ate the capture budget cannot leave the tree permanently over-cap; every error
+    is logged and swallowed — eviction never alters a run outcome.
+- **Observability:** each eviction logs at **INFO** with the generation id and
+  bytes reclaimed (silent deletion of the user's own images must be observable);
+  a pass that ends still over the cap logs a WARN rather than looping.
+- **The cap measures RECORDED bytes, not the actual tree.** It sums
+  `generation_images.size_bytes` from the DB, so an untracked file under
+  `outputs_dir` — one a user dropped there, or a leftover from an older build — is
+  never counted and never evicted. Capture keeps the two in sync in the one place
+  they could diverge: a failed `InsertGeneration` now **unlinks the images it just
+  wrote** rather than leaving them orphaned and invisible to the accounting
+  forever. There is no reconciling filesystem sweep.
+
+No migration was needed — `0012` already carries `generation_images.size_bytes`
+and `generations.created_at`. Two store queries were added:
+`SumGenerationImageBytes` and `ListOldestGenerations`.
