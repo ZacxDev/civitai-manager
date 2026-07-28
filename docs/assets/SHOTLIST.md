@@ -4,8 +4,13 @@ Exact filenames expected by [`../index.html`](../index.html) and the root
 [`README.md`](../../README.md). Drop the PNGs in this directory using these
 names and both surfaces pick them up with no edits.
 
-Slots are ordered by importance. **1–4 are the ones that carry the pitch**; 5–8
-are supporting. If you only capture four, capture the first four.
+**Slots 1–5 are required** — both the README and the landing page reference
+exactly those five filenames, and each one will render as a broken image until
+the file exists. Slots 6–8 are **optional extras**: nothing references them yet,
+so capturing them is a decision to also add the markup.
+
+Slots are ordered by importance. **1–3 carry the pitch.** If you only capture
+three, capture those.
 
 ## Before you capture — read this
 
@@ -29,7 +34,7 @@ are supporting. If you only capture four, capture the first four.
 
 ---
 
-## 1. `hero-run-missing-models.png` — **the hero**
+## 1. `hero-run-missing-models.png` — **the hero** (required)
 
 **Used in:** landing page hero, README top.
 
@@ -50,9 +55,9 @@ proves nothing and wastes the most valuable slot on the page.
 
 ---
 
-## 2. `run-downloading.png`
+## 2. `run-downloading.png` (required)
 
-**Used in:** landing page "how it works" step 2, README workflow section.
+**Used in:** landing page "how it works", README workflow section.
 
 **Must be visible:** the run status mid-flight showing the download phase —
 the "Downloading …" / "Download complete — starting run…" progress text, in the
@@ -65,7 +70,7 @@ every other downloader. With it, the sequencing is self-evident.
 
 ---
 
-## 3. `run-params.png`
+## 3. `run-params.png` (required)
 
 **Used in:** landing page features, README workflow section.
 
@@ -87,7 +92,7 @@ workflows.
 
 ---
 
-## 4. `outputs-gallery.png`
+## 4. `outputs-gallery.png` (required)
 
 **Used in:** landing page features, README workflow section.
 
@@ -101,24 +106,9 @@ making the project look finished. Use your own SFW generations.
 
 ---
 
-## 5. `preflight-options.png`
+## 5. `library-candidates.png` (required)
 
-**Used in:** README workflow section.
-
-**Must be visible:** the incompatible-options section — a bad option with its
-current (invalid) value and the dropdown of valid choices from your installed
-node, plus the "Run with selected options" action.
-
-**Why it earns its place:** it covers the *second* most common ComfyUI failure
-after missing models — a saved sampler/scheduler/enum value that your install
-doesn't have. It shows the preflight is a real diff against `/object_info`, not a
-guess.
-
----
-
-## 6. `library-candidates.png`
-
-**Used in:** landing page second value prop, README library section.
+**Used in:** landing page library section, README library section.
 
 **Must be visible:** the Library page after a scan, showing candidates flagged as
 **duplicate / superseded / broken** — ideally at least two different reasons in
@@ -131,9 +121,30 @@ reversible" affordance is legible if one is on screen.
 
 ---
 
-## 7. `workflows-discover.png`
+# Optional extras
 
-**Used in:** README workflow section.
+Nothing references these yet. Capturing one is a decision to also add the
+`<img>` / `![]()` markup for it — otherwise it just sits in the directory.
+
+## 6. `preflight-options.png` (optional)
+
+**Would go in:** the README workflow section, next to the "Incompatible options"
+bullet.
+
+**Must be visible:** the incompatible-options section — a bad option with its
+current (invalid) value and the dropdown of valid choices from your installed
+node, plus the "Run with selected options" action.
+
+**Why it earns its place:** it covers the *second* most common ComfyUI failure
+after missing models — a saved sampler/scheduler/enum value that your install
+doesn't have. It shows the preflight is a real diff against `/object_info`, not a
+guess. This is the strongest of the three optional slots; promote it first.
+
+---
+
+## 7. `workflows-discover.png` (optional)
+
+**Would go in:** the README workflow section, next to the import paragraph.
 
 **Must be visible:** the Discover-workflows browse grid (CivitAI Workflow models)
 with an import action visible on a card.
@@ -144,9 +155,9 @@ like a generic search grid; it's supporting evidence, not a hook.
 
 ---
 
-## 8. `dashboard.png`
+## 8. `dashboard.png` (optional)
 
-**Used in:** README library section.
+**Would go in:** the README library section, above the subscriptions paragraph.
 
 **Must be visible:** the dashboard with a few real subscriptions, the activity
 feed, and ideally a live download in the queue.
@@ -158,8 +169,11 @@ empty and the feed is bare, skip it rather than shipping a hollow screenshot.
 
 ---
 
-## Optional
+## 9. `social-card.png` (optional)
 
-`social-card.png` — 1280×640, for the GitHub repo's social preview (Settings →
-General → Social preview). Not referenced by the landing page or README; purely
-for link unfurls. A crop of slot 1 with the project name overlaid works well.
+1280×640, for the GitHub repo's **social preview** (Settings → General → Social
+preview). Uploaded through that settings page rather than referenced by any
+markup, so it never renders as a broken image. Purely for link unfurls on Reddit,
+Discord and X — which is exactly where this project gets shared, so it is worth
+more than slots 7 and 8. A crop of slot 1 with the project name overlaid works
+well.
