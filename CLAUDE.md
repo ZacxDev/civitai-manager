@@ -4,27 +4,31 @@ Conventions for working ON this repo. End-user docs live in `README.md`; this
 file is for contributors and agents. Module: `github.com/ZacxDev/civitai-manager`
 (Go 1.25). Current release line: v0.1.x (latest **v0.1.51**).
 
-## Private dependency — you MUST set GOPRIVATE to build locally
+## The `civitai/cli` dependency — GOPRIVATE is NO LONGER required
 
-This module depends on the **private** module `github.com/civitai/cli` (its
-`pkg/civitai` SDK — auth, download, and read APIs, including the batch by-hash
-lookup `GetModelVersionsByHashes`). It is pinned to a real version in `go.mod`
-(no `replace` directive is active).
+This module depends on `github.com/civitai/cli` (its `pkg/civitai` SDK — auth,
+download, and read APIs, including the batch by-hash lookup
+`GetModelVersionsByHashes`), pinned to a real version in `go.mod` (no `replace`
+directive is active).
 
-Because that module is private, a bare `go build` / `go test` tries to verify it
-through the public checksum database and **fails** — typically a `sum.golang.org`
-`500`. Export GOPRIVATE first:
+**That module is now PUBLIC** (verified 2026-07-28: `github.com/civitai/cli`
+returns 200 and `proxy.golang.org/github.com/civitai/cli/@v/list` serves its
+versions). A bare `go build` / `go test` resolves it through the module proxy
+with normal `sum.golang.org` verification — and `go install
+github.com/ZacxDev/civitai-manager@latest` therefore works for an outside
+contributor, which is what the public README now assumes.
 
 ```sh
-export GOPRIVATE=github.com/civitai/*
 go build ./...
 go test ./...
 ```
 
-A private-dep fetch/sum failure is an **env/config problem, not a real build
-break**. If you see "verifying …: sum.golang.org … 500" or an `undefined:`
-cascade from `pkg/civitai` symbols, set GOPRIVATE and re-run before concluding
-anything is broken.
+`export GOPRIVATE=github.com/civitai/*` is harmless and still appears in older
+handoff docs, but it is no longer needed. **Historical note:** the SDK used to be
+private, and a `sum.golang.org … 500` plus an `undefined:` cascade from
+`pkg/civitai` symbols was an env/config problem rather than a real break. If you
+now see that signature, treat it as a genuine failure to investigate, not
+something GOPRIVATE will paper over.
 
 ## Release flow — tag → GoReleaser → GitHub Release
 
@@ -176,8 +180,20 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   `.cm-*` class to `internal/web/assets/app.css` (theme-aware via `--civitai-*`); it's
   served as-is and survives the purge (hence `.cm-blur`, `.cm-masonry`,
   `.cm-updated-pop`, `.cm-vstatus-pop`, `.cm-video-badge`, …).
-- **NSFW mode `hide | blur | show`.** `hide` must **OMIT** the content
-  server-side (not just CSS-hide it), `blur` renders blurred, `show` renders plain.
+- **NSFW mode is TWO-STATE in production: `blur ⇄ show`.** The toggle cycles only
+  those two (`layout.go` `nsfwToggle`), and `normalizeNSFWMode` **migrates any
+  stored `hide` → `blur`**. Every caller passes the normalized mode, so the
+  server-side `NSFWHide` omit branches are **UNREACHABLE in production** — they
+  are an inert, preserved capability that is still worth keeping unit-testable.
+  Do NOT write or trust a test asserting "hide omits" as live behaviour, and do
+  not claim three modes in user-facing docs (two independent agents and a live
+  grep caught that claim in 2026-07).
+  `blur` is a **browser-side CSS filter** — the unblurred bytes still go over the
+  wire — so it is a shoulder-surfing guard, not an access control. Anything that
+  must not be served has to be omitted server-side.
+  **Open decision:** either restore a real `hide` (re-add it to the cycle and stop
+  normalizing it away) or drop the "hide must OMIT" invariant. Today the code and
+  this file disagree.
 - **CSRF on every POST.** All state-changing endpoints carry/validate a CSRF token.
 - **Loopback-gating.** Endpoints that take an arbitrary filesystem path
   (scan/browse/discover) are gated to loopback — do not expose them to non-local
@@ -200,7 +216,7 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   leaves the tree buildable.
 - **Run the deterministic verify-agent gate** (fresh `go build`/`vet`/`test`) before
   trusting any "done" claim — read the gate's verdict, not the agent's prose.
-  Remember to set `GOPRIVATE` for that gate (see above).
+  (GOPRIVATE is no longer needed — see the dependency note above.)
 - **Feature subagents leave necessary bumps UNCOMMITTED** — more than once a test or
   schema-version bump passed in the dirty working tree but was never `git add`ed,
   leaving a **committed tree that FAILS**. After ANY subagent: `git status` must be
@@ -211,7 +227,7 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   + an `undefined: X` cascade across many files + cross-branch/worktree symbol
   mismatches. That's the LSP indexing a transient/mixed tree after a checkout or
   worktree switch — **not** a real break. Re-run the real `go build`/`go test`
-  (with GOPRIVATE) as the arbiter.
+  as the arbiter.
 - **Run `/audit-pr` before merging** — but scale it to blast radius. Full adversarial
   `/audit-pr` for: web endpoints, outbound egress, untrusted input (zips, URLs-in-
   href), DB migrations, concurrency, security. For a **pure-UI / bug-fix / mirror of
