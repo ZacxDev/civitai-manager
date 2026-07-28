@@ -34,8 +34,10 @@ func TestNormalizeSingleChoiceComboDrift(t *testing.T) {
 		 "widgets_values":["some text","Select Wildcard 🟢 Full Cache"]}
 	],"links":[]}`
 	nodes, warns := convertNodes(t, ui, info)
-	if !hasNormalizeWarning(warns) {
-		t.Errorf("expected a normalization warning, got: %v", warns)
+	// Normalization is SILENT — it must NOT emit a warning (the run path aborts on
+	// any warning). The emitted value + zero BadOptions are the real signals.
+	if hasNormalizeWarning(warns) {
+		t.Errorf("normalization must be silent, got warning: %v", warns)
 	}
 	got := scalarString(t, nodes["3"].Inputs["Select to add Wildcard"])
 	if got != "Select the Wildcard to add to the text" {
@@ -66,8 +68,8 @@ func TestNormalizeMultiChoiceInertPicker(t *testing.T) {
 		 "widgets_values":["","Select LoRA 🟢 renamed placeholder"]}
 	],"links":[]}`
 	nodes, warns := convertNodes(t, ui, info)
-	if !hasNormalizeWarning(warns) {
-		t.Errorf("expected a normalization warning, got: %v", warns)
+	if hasNormalizeWarning(warns) {
+		t.Errorf("normalization must be silent, got warning: %v", warns)
 	}
 	got := scalarString(t, nodes["5"].Inputs["Select to add LoRA"])
 	if got != "Select the LoRA to add to the text" {
@@ -220,8 +222,9 @@ func TestNormalize587Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
-	if !hasNormalizeWarning(warns) {
-		t.Errorf("expected normalization warnings, got: %v", warns)
+	// Silent: no normalization warning (would abort the run), and 0 BadOptions.
+	if hasNormalizeWarning(warns) {
+		t.Errorf("normalization must be silent, got warnings: %v", warns)
 	}
 	report := Preflight(api, info, nil)
 	if len(report.BadOptions) != 0 {
