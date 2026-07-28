@@ -341,6 +341,40 @@ func (s *Store) DeleteGenerationsByWorkflow(ctx context.Context, workflowID int6
 	return paths, nil
 }
 
+// GenerationWorkflowRef is a distinct source workflow that has at least one
+// generation, for the gallery's workflow filter select.
+type GenerationWorkflowRef struct {
+	WorkflowID int64
+	Name       string
+}
+
+// ListGenerationWorkflowRefs returns the distinct non-null source workflows that
+// have generations, with the most recent snapshot name for each, ordered by name.
+// It powers the "filter by workflow" select on the outputs gallery.
+func (s *Store) ListGenerationWorkflowRefs(ctx context.Context) ([]GenerationWorkflowRef, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT workflow_id, MAX(workflow_name) AS name
+		FROM generations
+		WHERE workflow_id IS NOT NULL
+		GROUP BY workflow_id
+		ORDER BY name COLLATE NOCASE, workflow_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GenerationWorkflowRef
+	for rows.Next() {
+		var ref GenerationWorkflowRef
+		var name sql.NullString
+		if err := rows.Scan(&ref.WorkflowID, &name); err != nil {
+			return nil, err
+		}
+		ref.Name = name.String
+		out = append(out, ref)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) relPathsForGenerations(ctx context.Context, query string, args ...any) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

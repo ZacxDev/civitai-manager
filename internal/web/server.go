@@ -461,6 +461,15 @@ func (s *Server) Handler() http.Handler {
 	// handler serves the full page and the HX results fragment.
 	mux.HandleFunc("GET /apps/discover", s.handleDiscoverApps)
 
+	// Output gallery — durable capture + browse of ComfyUI run outputs. The image
+	// byte route is registered before /outputs/{id} but ServeMux prefers the more
+	// specific literal-prefixed pattern regardless of order.
+	mux.HandleFunc("GET /outputs", s.handleOutputs)
+	mux.HandleFunc("GET /outputs/img/{imageID}", s.handleOutputsImage)
+	mux.HandleFunc("GET /outputs/{id}", s.handleGenerationDetail)
+	mux.HandleFunc("POST /outputs/{id}/rerun", s.handleGenerationRerun)
+	mux.HandleFunc("POST /outputs/{id}/delete", s.handleGenerationDelete)
+
 	mux.HandleFunc("GET /workflows", s.handleWorkflows)
 	// Browse-only workflow discovery (Slice D1). Registered before the {id} route;
 	// ServeMux prefers this more-specific literal path over /workflows/{id}.

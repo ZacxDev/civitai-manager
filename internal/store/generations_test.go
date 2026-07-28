@@ -260,6 +260,42 @@ func TestWorkflowDeleteSetsGenerationNull(t *testing.T) {
 	}
 }
 
+func TestListGenerationWorkflowRefs(t *testing.T) {
+	st := newGenTestStore(t)
+	ctx := context.Background()
+	wfA := insertTestWorkflow(t, st, "alpha")
+	wfB := insertTestWorkflow(t, st, "beta")
+	mk := func(wfID int64, name, prompt string) {
+		if _, err := st.InsertGeneration(ctx, &Generation{WorkflowID: &wfID, WorkflowName: name, PromptID: prompt},
+			[]GenerationImage{{Idx: 0, RelPath: prompt + "/0.png", Filename: "0.png"}}); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	mk(wfA, "alpha", "a1")
+	mk(wfA, "alpha", "a2") // same workflow twice → one ref
+	mk(wfB, "beta", "b1")
+	// A generation with NULL workflow_id must NOT appear in the refs.
+	if _, err := st.InsertGeneration(ctx, &Generation{WorkflowName: "orphan", PromptID: "o1"},
+		[]GenerationImage{{Idx: 0, RelPath: "o1/0.png", Filename: "0.png"}}); err != nil {
+		t.Fatalf("insert orphan: %v", err)
+	}
+
+	refs, err := st.ListGenerationWorkflowRefs(ctx)
+	if err != nil {
+		t.Fatalf("refs: %v", err)
+	}
+	if len(refs) != 2 {
+		t.Fatalf("refs = %d, want 2 (distinct, non-null)", len(refs))
+	}
+	// Ordered by name: alpha, beta.
+	if refs[0].Name != "alpha" || refs[0].WorkflowID != wfA {
+		t.Errorf("refs[0] = %+v, want alpha/%d", refs[0], wfA)
+	}
+	if refs[1].Name != "beta" || refs[1].WorkflowID != wfB {
+		t.Errorf("refs[1] = %+v, want beta/%d", refs[1], wfB)
+	}
+}
+
 func TestDeleteGenerationsByWorkflow(t *testing.T) {
 	st := newGenTestStore(t)
 	ctx := context.Background()
