@@ -97,6 +97,43 @@ func TestResolveOutputsMaxBytesRejectsTinyCap(t *testing.T) {
 	}
 }
 
+// TestOutputsMaxBytesTooSmallHintWording pins the USER-FACING copy of the
+// too-small-cap rejection for both shapes. A unitless value gets a concrete
+// "did you mean 20GB / 20MB"; a value that ALREADY has a unit must not be
+// suffixed again ("512KBGB" / the older "\"512KB\"GB" gibberish).
+func TestOutputsMaxBytesTooSmallHintWording(t *testing.T) {
+	t.Setenv(EnvToken, "")
+
+	// Unitless → suggest the two plausible spellings.
+	path := writeConfig(t, t.TempDir(), "outputs_max_bytes: 20\n")
+	_, err := Resolve(Flags{ConfigPath: path})
+	if err == nil {
+		t.Fatal("expected a rejection for a 20-byte cap")
+	}
+	msg := err.Error()
+	for _, want := range []string{`"20GB"`, `"20MB"`, `"0" for unlimited`} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("unitless hint missing %s\ngot: %s", want, msg)
+		}
+	}
+
+	// Already-united → point at the minimum, never concatenate another unit.
+	path = writeConfig(t, t.TempDir(), "outputs_max_bytes: \"512KB\"\n")
+	_, err = Resolve(Flags{ConfigPath: path})
+	if err == nil {
+		t.Fatal("expected a rejection for a 512KB cap")
+	}
+	msg = err.Error()
+	if !strings.Contains(msg, `use at least "1MB"`) {
+		t.Errorf("united hint should point at the minimum\ngot: %s", msg)
+	}
+	for _, bad := range []string{`"512KB"GB`, `"512KB"MB`, "512KBGB", "512KBMB"} {
+		if strings.Contains(msg, bad) {
+			t.Errorf("hint contains the garbled %q\ngot: %s", bad, msg)
+		}
+	}
+}
+
 func TestResolveOutputsMaxBytesFlagOverride(t *testing.T) {
 	t.Setenv(EnvToken, "")
 	valPath := writeConfig(t, t.TempDir(), "outputs_max_bytes: \"1GB\"\n")

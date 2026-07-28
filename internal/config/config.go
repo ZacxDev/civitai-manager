@@ -278,6 +278,22 @@ func (c *Config) OutputsCapBytes() int64 {
 	return c.OutputsMaxBytesResolved
 }
 
+// isUnitlessSize reports whether a size string carries NO unit suffix (only
+// digits, an optional decimal point, and surrounding space) — i.e. the user very
+// likely forgot the unit. It drives the wording of the too-small-cap hint.
+func isUnitlessSize(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && r != '.' {
+			return false
+		}
+	}
+	return true
+}
+
 // resolveOutputsMaxBytes parses OutputsMaxBytes into OutputsMaxBytesResolved,
 // applying the unset→default rule and rejecting an implausibly small positive cap.
 func (c *Config) resolveOutputsMaxBytes() error {
@@ -291,9 +307,17 @@ func (c *Config) resolveOutputsMaxBytes() error {
 		return fmt.Errorf("invalid outputs_max_bytes %q: %w", raw, err)
 	}
 	if n > 0 && n < MinOutputsMaxBytes {
+		// The hint must read correctly for BOTH shapes. A UNITLESS value is almost
+		// always a forgotten unit, so suggest the two plausible spellings; a value
+		// that already carries a unit is simply too small, so suggesting "512KBGB"
+		// would be gibberish — point at the minimum instead.
+		hint := `use at least "1MB", or "0" for unlimited`
+		if isUnitlessSize(raw) {
+			hint = fmt.Sprintf("did you mean %q or %q? (use \"0\" for unlimited)", raw+"GB", raw+"MB")
+		}
 		return fmt.Errorf("outputs_max_bytes %q resolves to %d bytes, below the %d-byte (1 MiB) minimum — "+
-			"a cap this small would delete almost the whole output gallery on the next run; "+
-			"did you mean %qGB or %qMB? (use \"0\" for unlimited)", raw, n, MinOutputsMaxBytes, raw, raw)
+			"a cap this small would delete almost the whole output gallery on the next run; %s",
+			raw, n, MinOutputsMaxBytes, hint)
 	}
 	c.OutputsMaxBytesResolved = n
 	return nil
