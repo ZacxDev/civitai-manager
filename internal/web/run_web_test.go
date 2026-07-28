@@ -39,9 +39,15 @@ type fakeComfy struct {
 	saveCalled   bool
 	// civitai-manager ComfyUI helper (feature detection + jump-an-open-tab).
 	// pingInfo nil + pingErr nil models a stock ComfyUI (helper absent).
-	pingInfo    *comfy.ExtensionInfo
-	pingErr     error
-	pingCalls   int
+	pingInfo  *comfy.ExtensionInfo
+	pingErr   error
+	pingCalls int
+	// The FRONTEND half of detection. assetErr nil means the script is served;
+	// assetErr set models it missing/garbage (the "zombie helper" state when the
+	// ping still answers). Nothing programs it per-call: the whole point is that
+	// ping and asset can disagree.
+	assetErr   error
+	assetCalls int
 	openErr     error
 	openRelPath string
 	openCalls   int
@@ -96,6 +102,10 @@ func (f *fakeComfy) ExtensionPing(context.Context) (*comfy.ExtensionInfo, error)
 		return nil, comfy.ErrExtensionAbsent
 	}
 	return f.pingInfo, nil
+}
+func (f *fakeComfy) ExtensionAsset(context.Context) error {
+	f.assetCalls++
+	return f.assetErr
 }
 func (f *fakeComfy) ExtensionOpen(ctx context.Context, relPath string) error {
 	f.openCalls++

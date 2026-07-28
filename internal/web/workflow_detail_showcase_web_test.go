@@ -29,7 +29,7 @@ func TestWorkflowDetailShowsShowcaseWhenModelHasImages(t *testing.T) {
 		Source: store.WorkflowSourceCivitai, ModelID: intp(42), VersionID: intp(99),
 	}
 	got := renderString(t, workflowDetailPage(wf, "{}", "csrf", "dark", NSFWShow, nil, false,
-		showcaseResolver(rawWithImages, NSFWShow)))
+		comfyHelperView{}, showcaseResolver(rawWithImages, NSFWShow)))
 
 	if !strings.Contains(got, "cm-showcase-lg") {
 		t.Errorf("detail should render the reused showcase card:\n%s", got)
@@ -49,7 +49,7 @@ func TestWorkflowDetailShowsShowcaseWhenModelHasImages(t *testing.T) {
 func TestWorkflowDetailNoShowcaseWithoutModelOrImages(t *testing.T) {
 	// No linked model.
 	noModel := &store.Workflow{ID: 2, Name: "x", Format: store.WorkflowFormatUI, Graph: "{}", Source: store.WorkflowSourceImported}
-	got := renderString(t, workflowDetailPage(noModel, "{}", "csrf", "dark", NSFWShow, nil, false, workflowResolver{}))
+	got := renderString(t, workflowDetailPage(noModel, "{}", "csrf", "dark", NSFWShow, nil, false, comfyHelperView{}, workflowResolver{}))
 	if strings.Contains(got, "cm-showcase-lg") {
 		t.Error("no linked model → no showcase card")
 	}
@@ -61,7 +61,7 @@ func TestWorkflowDetailNoShowcaseWithoutModelOrImages(t *testing.T) {
 	linkedUncached := &store.Workflow{ID: 3, Name: "y", Format: store.WorkflowFormatUI, Graph: "{}",
 		Source: store.WorkflowSourceCivitai, ModelID: intp(42)}
 	got2 := renderString(t, workflowDetailPage(linkedUncached, "{}", "csrf", "dark", NSFWShow, nil, false,
-		workflowResolver{cachedModel: func(int) (string, []byte, bool) { return "", nil, false }}))
+		comfyHelperView{}, workflowResolver{cachedModel: func(int) (string, []byte, bool) { return "", nil, false }}))
 	if strings.Contains(got2, "cm-showcase-lg") {
 		t.Error("uncached model → no showcase card")
 	}
@@ -77,7 +77,7 @@ func TestWorkflowDetailShowcaseRespectsNSFW(t *testing.T) {
 		Source: store.WorkflowSourceCivitai, ModelID: intp(42)}
 
 	show := renderString(t, workflowDetailPage(wf, "{}", "csrf", "dark", NSFWShow, nil, false,
-		showcaseResolver(rawWithNSFWImage, NSFWShow)))
+		comfyHelperView{}, showcaseResolver(rawWithNSFWImage, NSFWShow)))
 	if !strings.Contains(show, "img/x.jpg") {
 		t.Errorf("show mode should render the NSFW tile:\n%s", show)
 	}
@@ -89,7 +89,7 @@ func TestWorkflowDetailShowcaseRespectsNSFW(t *testing.T) {
 
 	for _, mode := range []string{NSFWBlur, NSFWHide} {
 		body := renderString(t, workflowDetailPage(wf, "{}", "csrf", "dark", mode, nil, false,
-			showcaseResolver(rawWithNSFWImage, mode)))
+			comfyHelperView{}, showcaseResolver(rawWithNSFWImage, mode)))
 		if !strings.Contains(body, "img/x.jpg") || !strings.Contains(body, `data-blurred="1"`) {
 			t.Errorf("%s mode should render the NSFW tile blurred:\n%s", mode, body)
 		}
