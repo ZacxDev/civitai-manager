@@ -169,6 +169,13 @@ type Server struct {
 	// write under comfy_model_path); tests inject a seam to drive the
 	// download-and-run goroutine without network or disk.
 	downloadFn func(ctx context.Context, pd pendingDownload, cb func(string)) error
+	// evictMu serializes output-gallery cap enforcement. Captures are NOT mutually
+	// exclusive — the run job clears `running` under runMu BEFORE the capture runs
+	// off the mutex — so two captures can enforce the cap concurrently. Without this
+	// each pass would delete rows under the other's already-measured total and
+	// over-evict. It is deliberately SEPARATE from runMu (eviction must never hold
+	// the run mutex).
+	evictMu sync.Mutex
 	// runMu guards runJob. One workflow run is active at a time (global MVP guard).
 	runMu sync.Mutex
 	// runJob is the current (or most recent) background run, or nil before the first.

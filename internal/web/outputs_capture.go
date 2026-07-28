@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -213,21 +214,31 @@ func (s *Server) captureGeneration(wf *store.Workflow, opts runOptions, res *run
 const evictionBudget = 30 * time.Second
 
 // maxEvictionBatch bounds how many generations ONE pass may consider/delete. It
-// makes the loop provably finite (no unbounded delete loop if the recorded sizes
-// do not add up to the on-disk reality) while still being far more than a single
-// capture can ever push over the cap. Anything left over is reported and handled
-// by the next capture's pass.
-const maxEvictionBatch = 500
+// keeps the loop provably finite AND bounds its cost: the store runs on a SINGLE
+// SQLite connection (store.go SetMaxOpenConns(1)), so every DeleteGeneration here
+// blocks every HTTP handler for its duration. 100 is far more than one capture can
+// push over the cap; anything left over is reported and handled by the next pass.
+const maxEvictionBatch = 100
 
 // enforceOutputsCap deletes the OLDEST generations (rows + their files) until the
-// total captured bytes are back under cfg.OutputsMaxBytes. keepID is the
-// just-inserted generation, which is NEVER evicted (capturing a run only to
-// immediately delete it would be a silent, confusing no-op).
+// total captured bytes are back under cfg.OutputsMaxBytes. A cap of 0 (or
+// negative) means UNLIMITED — the function returns immediately.
 //
-// A cap of 0 (or negative) means UNLIMITED — the function returns immediately.
-// Every failure is logged and swallowed: eviction must never alter a run outcome.
-// Each eviction is logged at INFO level with the id and bytes reclaimed, because
-// silently deleting the user's own generated images must be observable.
+// keepID is the generation the calling capture just inserted. Nothing with an id
+// >= keepID is ever evicted: captures are NOT serialized with each other (the run
+// job clears `running` under runMu BEFORE the capture runs off the mutex, so two
+// captures can overlap), and generation ids are monotonic, so `>= keepID` protects
+// this capture AND any fresher generation another capture inserted meanwhile.
+//
+// Generations with no recorded bytes are skipped entirely: deleting them frees
+// nothing, so counting them as progress toward the target would walk the loop past
+// the cap and over-evict.
+//
+// The whole pass is serialized on evictMu so two overlapping captures cannot act
+// on each other's stale totals. Every failure is logged and swallowed: eviction
+// must never alter a run outcome. Each eviction is logged at INFO level with the
+// id and bytes reclaimed, because silently deleting the user's own generated
+// images must be observable.
 func (s *Server) enforceOutputsCap(keepID int64) {
 	capBytes := s.cfg.OutputsMaxBytes
 	if capBytes <= 0 {
@@ -239,6 +250,11 @@ func (s *Server) enforceOutputsCap(keepID int64) {
 	}
 	ctx, cancel := context.WithTimeout(base, evictionBudget)
 	defer cancel()
+
+	// One pass at a time: the measure→delete sequence below is only sound if no
+	// other pass deletes rows underneath it.
+	s.evictMu.Lock()
+	defer s.evictMu.Unlock()
 
 	total, err := s.store.SumGenerationImageBytes(ctx)
 	if err != nil {
@@ -259,10 +275,31 @@ func (s *Server) enforceOutputsCap(keepID int64) {
 		if total <= capBytes {
 			break // back under the cap — stop immediately
 		}
-		if cand.ID == keepID {
-			continue // never evict the generation we just captured
+		if err := ctx.Err(); err != nil {
+			// Budget spent / server shutting down. Stop now rather than hammering the
+			// single shared DB connection with calls that will all fail.
+			s.log.Warn("outputs cap: eviction stopped early", "err", err,
+				"evicted", evicted, "total_bytes", total, "cap_bytes", capBytes)
+			return
+		}
+		if keepID > 0 && cand.ID >= keepID {
+			// The just-captured generation, or one a concurrent capture inserted after
+			// it. Never evict something fresher than the capture that triggered us.
+			continue
+		}
+		if cand.Bytes <= 0 {
+			// Frees nothing — evicting it would be pure data loss that does not move
+			// the total, so the loop would keep going and overshoot the cap.
+			continue
 		}
 		relPaths, err := s.store.DeleteGeneration(ctx, cand.ID)
+		if errors.Is(err, store.ErrNotFound) {
+			// Already gone (a concurrent /outputs/{id}/delete). Its bytes are no longer
+			// in the tree, so they MUST still come off the running total — otherwise
+			// this pass keeps evicting to reach a target that is already met.
+			total -= cand.Bytes
+			continue
+		}
 		if err != nil {
 			s.log.Warn("outputs cap: delete generation failed", "generation_id", cand.ID, "err", err)
 			continue
@@ -277,8 +314,9 @@ func (s *Server) enforceOutputsCap(keepID int64) {
 			"total_bytes", total, "cap_bytes", capBytes)
 	}
 	if total > capBytes {
-		// Not an error: the batch bound (or a gallery of one huge generation) can
-		// leave the tree over-cap. Say so rather than looping forever.
+		// Not an error: the batch bound, a gallery of one huge generation, or a tree
+		// made entirely of fresher-than-keepID rows can all leave it over-cap. Say so
+		// rather than looping forever.
 		s.log.Warn("outputs cap: still over the disk cap after eviction",
 			"total_bytes", total, "cap_bytes", capBytes, "evicted", evicted)
 	}

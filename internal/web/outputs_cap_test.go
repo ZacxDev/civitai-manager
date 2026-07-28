@@ -3,8 +3,10 @@ package web
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -159,6 +161,139 @@ func TestOutputsCapMissingFileStillRemovesRow(t *testing.T) {
 	}
 	if !genExists(t, srv, survivor) {
 		t.Error("eviction should have stopped once under the cap")
+	}
+}
+
+// TestOutputsCapNeverEvictsFresherThanKeep is the F2 regression: captures are NOT
+// serialized against each other (the run job clears `running` before the capture
+// runs off runMu), so a second capture can insert a FRESHER generation while this
+// pass is running. Protecting only keepID by equality let that fresher row be
+// evicted; nothing with an id >= keepID may go.
+func TestOutputsCapNeverEvictsFresherThanKeep(t *testing.T) {
+	srv, root, _ := newCaptureServer(t, &fakeComfy{})
+	srv.cfg.OutputsMaxBytes = 50
+
+	base := time.Now().UTC().Add(-time.Hour)
+	old := seedCapGeneration(t, srv, root, "old", 100, base)
+	keep := seedCapGeneration(t, srv, root, "keep", 100, base.Add(time.Minute))
+	// Inserted AFTER keep (higher id) and newer — i.e. the other capture's row.
+	fresher := seedCapGeneration(t, srv, root, "fresher", 100, base.Add(2*time.Minute))
+
+	// 300 > 50 and evicting `old` alone leaves 200 > 50, so the loop WILL walk past
+	// it — the id guard is the only thing protecting `fresher`.
+	srv.enforceOutputsCap(keep)
+
+	if genExists(t, srv, old) {
+		t.Error("the genuinely oldest generation should have been evicted")
+	}
+	if !genExists(t, srv, keep) {
+		t.Error("the just-captured generation must never be evicted")
+	}
+	if !genExists(t, srv, fresher) {
+		t.Fatal("a generation newer than keepID (another capture's) must never be evicted")
+	}
+	if _, err := os.Stat(filepath.Join(root, "fresher", "0-x.png")); err != nil {
+		t.Errorf("fresher capture's file must survive: %v", err)
+	}
+}
+
+// TestOutputsCapZeroByteRowsAreNotEvicted is the F3 regression: a generation with
+// size_bytes = 0 (a 0-byte /view body writes fine and records n=0) frees nothing,
+// so counting its deletion as progress walked the loop straight past the cap and
+// deleted everything.
+func TestOutputsCapZeroByteRowsAreNotEvicted(t *testing.T) {
+	srv, root, _ := newCaptureServer(t, &fakeComfy{})
+	srv.cfg.OutputsMaxBytes = 100
+
+	base := time.Now().UTC().Add(-time.Hour)
+	var zeros []int64
+	for i := 0; i < 5; i++ {
+		zeros = append(zeros, seedCapGeneration(t, srv, root,
+			fmt.Sprintf("zero%d", i), 0, base.Add(time.Duration(i)*time.Minute)))
+	}
+	big := seedCapGeneration(t, srv, root, "big", 150, base.Add(10*time.Minute))
+
+	srv.enforceOutputsCap(0)
+
+	if genExists(t, srv, big) {
+		t.Error("the 150-byte generation should have been evicted (150 > 100)")
+	}
+	for i, id := range zeros {
+		if !genExists(t, srv, id) {
+			t.Errorf("zero-byte generation %d was evicted; deleting it frees nothing", i)
+		}
+	}
+	total, _ := srv.store.SumGenerationImageBytes(context.Background())
+	if total != 0 {
+		t.Errorf("total = %d, want 0", total)
+	}
+	if n, _ := srv.store.CountGenerations(context.Background(), nil); n != 5 {
+		t.Errorf("remaining generations = %d, want the 5 zero-byte rows", n)
+	}
+}
+
+// TestOutputsCapConcurrentCapturesKeepEachOther exercises the REAL overlap: four
+// captures run at once, each inserting its own generation and then enforcing the
+// cap. Without serialization + the id guard, passes racing on the same candidate
+// list hit ErrNotFound on rows a sibling already deleted, fail to decrement their
+// stale total, walk past the old rows and delete each other's fresh generations.
+// Every fresh capture must survive.
+func TestOutputsCapConcurrentCapturesKeepEachOther(t *testing.T) {
+	fake := &fakeComfy{viewData: []byte("PNGBYTES"), viewCT: "image/png"} // 8 bytes
+	srv, root, wf := newCaptureServer(t, fake)
+	srv.cfg.OutputsMaxBytes = 200
+
+	// 6 × 100 B of older generations: over the cap, and enough candidates for the
+	// racing passes to collide on.
+	base := time.Now().UTC().Add(-time.Hour)
+	for i := 0; i < 6; i++ {
+		seedCapGeneration(t, srv, root, fmt.Sprintf("old%d", i), 100,
+			base.Add(time.Duration(i)*time.Minute))
+	}
+
+	const captures = 4
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < captures; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start // fire together
+			srv.captureGeneration(wf, runOptions{}, &runResult{
+				PromptID: fmt.Sprintf("fresh%d", i),
+				Images:   []comfy.ImageRef{{Filename: "a.png"}},
+			})
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	// Every concurrently-captured generation must still be there.
+	gens, err := srv.store.ListGenerations(context.Background(), store.ListGenerationsOpts{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, g := range gens {
+		seen[g.PromptID] = true
+	}
+	for i := 0; i < captures; i++ {
+		name := fmt.Sprintf("fresh%d", i)
+		if !seen[name] {
+			t.Errorf("concurrent capture %q was evicted by a sibling pass", name)
+		}
+		if _, err := os.Stat(filepath.Join(root, name, "0-a.png")); err != nil {
+			t.Errorf("file for %q missing: %v", name, err)
+		}
+	}
+
+	// And the cap was actually enforced: the old rows were trimmed to under it.
+	total, err := srv.store.SumGenerationImageBytes(context.Background())
+	if err != nil {
+		t.Fatalf("sum: %v", err)
+	}
+	if total > srv.cfg.OutputsMaxBytes {
+		t.Errorf("total = %d, want <= cap %d", total, srv.cfg.OutputsMaxBytes)
 	}
 }
 
