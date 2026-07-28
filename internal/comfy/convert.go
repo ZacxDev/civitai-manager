@@ -433,7 +433,11 @@ func (c *converter) buildInputs(n *uiConvNode, sch NodeSchema) (map[string]json.
 		// emit nothing — the link ref was already set in step 1. Otherwise this is a
 		// plain widget: emit its value.
 		if !linked[name] {
-			inputs[name] = wv[cursor]
+			// Mirror ComfyUI's frontend serializeValue normalization for drifted combo
+			// widgets (single-choice + curated inert pickers), so a value that ComfyUI's
+			// own UI would have normalized away never surfaces as a BadOption. Model-file
+			// combos are deliberately left untouched (see normalizeComboWidget).
+			inputs[name] = c.normalizeComboWidget(n.Type, name, spec, wv[cursor])
 		}
 		cursor++
 		// control_after_generate quirk: a seed/noise_seed widget consumes an EXTRA
