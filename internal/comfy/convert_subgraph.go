@@ -12,6 +12,22 @@ import (
 // maxResolveDepth.
 const maxSubgraphDepth = maxResolveDepth
 
+// maxSubgraphNodes caps the TOTAL expansion work (every expand() call plus every
+// emitted interior node — see sgExpander.count). The depth bound alone does NOT
+// prevent exponential blow-up: a self-referential (or short-cycle) subgraph where
+// each instance holds ≥2 child instances fans out to ~2^depth recursive expand()
+// calls before the per-leaf depth guard trips (CPU/OOM DoS on running a hostile
+// imported workflow — no context threads through this pure-CPU recursion to
+// interrupt it). Counting WORK (not just emitted nodes) is required because a
+// purely-nested self-referential subgraph emits zero clones yet still recurses
+// exponentially. Once the work count crosses this bound, expansion aborts
+// IMMEDIATELY (via sgExpander.aborted) and ConvertUIToAPI returns an error.
+//
+// Chosen empirically: the max flattened node count across the 68 dogfood workflows
+// is 235; this cap (10000, ~42×) sits comfortably above any real workflow yet far
+// below the exponential fan-out an adversarial graph would attempt.
+const maxSubgraphNodes = 10000
+
 // subgraphDef is one entry of the workflow's definitions.subgraphs[]: a reusable
 // group-node "blueprint" identified by a UUID (used as a node instance's type).
 // Its interior is an ordinary UI graph (nodes+links) bracketed by two virtual
@@ -77,13 +93,47 @@ type sgExpander struct {
 	redirect map[string]map[int]origin
 	nextLink int64
 	warnings []string
+	// count is the total expansion WORK: every expand() entry plus every emitted
+	// interior node. Bounding work (not just emitted nodes) is essential — a
+	// self-referential subgraph whose interior is only ≥2 nested instances (and no
+	// ordinary nodes) emits ZERO clones yet triggers ~2^depth recursive expand()
+	// calls, so an emitted-node cap alone would not stop it.
+	count int
+	// aborted trips when count crosses maxSubgraphNodes; once set, expand() unwinds
+	// immediately at every recursion boundary so an exponential fan-out bails after
+	// ~cap units of work instead of finishing the blow-up.
+	aborted bool
+}
+
+// charge accounts one unit of expansion work and returns false (setting aborted)
+// the moment the total crosses the cap, so the caller stops immediately.
+func (e *sgExpander) charge() bool {
+	if e.aborted {
+		return false
+	}
+	e.count++
+	if e.count > maxSubgraphNodes {
+		e.aborted = true
+		return false
+	}
+	return true
+}
+
+// emit appends a flattened interior node, charging one unit of work. It returns
+// false (and sets aborted) the moment the cap is crossed so the caller stops.
+func (e *sgExpander) emit(n uiConvNode) bool {
+	if !e.charge() {
+		return false
+	}
+	e.outNodes = append(e.outNodes, n)
+	return true
 }
 
 // flattenSubgraphs expands every subgraph group-node instance in g into a flat
 // node list. It returns the flattened nodes, the link table extended with the
 // synthesized interior links, the instance-output redirect map, and any warnings.
 // Nodes whose type is not a subgraph id are carried through unchanged.
-func flattenSubgraphs(g *uiConvGraph, linkByID map[int64]uiLink) ([]uiConvNode, map[int64]uiLink, map[string]map[int]origin, []string) {
+func flattenSubgraphs(g *uiConvGraph, linkByID map[int64]uiLink) ([]uiConvNode, map[int64]uiLink, map[string]map[int]origin, []string, error) {
 	defs := make(map[string]*subgraphDef, len(g.Definitions.Subgraphs))
 	for i := range g.Definitions.Subgraphs {
 		d := &g.Definitions.Subgraphs[i]
@@ -100,10 +150,15 @@ func flattenSubgraphs(g *uiConvGraph, linkByID map[int64]uiLink) ([]uiConvNode, 
 	}
 
 	for i := range g.Nodes {
+		if e.aborted {
+			break
+		}
 		n := &g.Nodes[i]
 		def, isInstance := defs[n.Type]
 		if !isInstance {
-			e.outNodes = append(e.outNodes, *n) // ordinary top-level node, unchanged
+			if !e.emit(*n) { // ordinary top-level node, unchanged
+				break
+			}
 			continue
 		}
 		instID := idToString(n.ID)
@@ -112,7 +167,10 @@ func flattenSubgraphs(g *uiConvGraph, linkByID map[int64]uiLink) ([]uiConvNode, 
 		e.registerRedirect(instID, outSrc)
 	}
 
-	return e.outNodes, e.linkByID, e.redirect, e.warnings
+	if e.aborted {
+		return nil, nil, nil, nil, fmt.Errorf("workflow too large: subgraph expansion exceeded %d nodes", maxSubgraphNodes)
+	}
+	return e.outNodes, e.linkByID, e.redirect, e.warnings, nil
 }
 
 // instanceInputSources reads the external source feeding each of the instance's
@@ -136,6 +194,9 @@ func (e *sgExpander) instanceInputSources(inst *uiConvNode, def *subgraphDef, li
 // sources for the boundary input slots. It returns the resolved sources for the
 // boundary output slots (in the caller's namespace), for the caller's redirect.
 func (e *sgExpander) expand(def *subgraphDef, prefix string, inputSrc []origin, depth int) []origin {
+	if !e.charge() {
+		return nil
+	}
 	if depth > maxSubgraphDepth {
 		e.warnf("subgraph %q nested deeper than %d; not expanded", def.Name, maxSubgraphDepth)
 		return nil
@@ -159,6 +220,9 @@ func (e *sgExpander) expand(def *subgraphDef, prefix string, inputSrc []origin, 
 	}
 
 	for i := range def.Nodes {
+		if e.aborted {
+			return nil
+		}
 		m := &def.Nodes[i]
 		mID := idToString(m.ID)
 		if mID == inputNodeID || mID == outputNodeID {
@@ -179,6 +243,9 @@ func (e *sgExpander) expand(def *subgraphDef, prefix string, inputSrc []origin, 
 				}
 			}
 			outSrc := e.expand(nestedDef, finalID, nestedInputSrc, depth+1)
+			if e.aborted {
+				return nil
+			}
 			e.registerRedirect(finalID, outSrc)
 			continue
 		}
@@ -207,7 +274,9 @@ func (e *sgExpander) expand(def *subgraphDef, prefix string, inputSrc []origin, 
 			}
 			clone.Inputs[j] = ni
 		}
-		e.outNodes = append(e.outNodes, clone)
+		if !e.emit(clone) {
+			return nil
+		}
 	}
 
 	// Resolve each output boundary slot to its interior source.
