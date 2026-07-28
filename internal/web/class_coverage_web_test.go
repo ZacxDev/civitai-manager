@@ -29,10 +29,6 @@ var classCoverageExempt = map[string]bool{
 	"cm-chip":       true, // trigger-tag chip, styled by its utilities
 	"cm-run-params": true, // run-params container, targeted by the run scripts
 
-	// SCANNER ARTIFACT: statPill builds `"cm-pill-"+variant`, so the AST sees the
-	// bare prefix. The real classes (.cm-pill-dup, …) do exist in app.css.
-	"cm-pill-": true,
-
 	// KNOWN PRE-EXISTING AND GENUINELY UNSTYLED — found by this test on its first
 	// run, NOT introduced by the shell work, and left alone to keep that change
 	// scoped. Each is a real silent failure worth a follow-up:
@@ -52,53 +48,28 @@ var classCoverageExempt = map[string]bool{
 // until the build is regenerated and committed. Nothing else catches that — the
 // page still renders, it just looks wrong.
 //
-// It parses every non-test .go file in this package, collects the string literals
-// handed to h.Class (including the literal parts of concatenations), and asserts
-// each token has a rule in the built output.css or in the hand-written app.css.
+// It parses every non-test .go file in this package, collects the class tokens
+// handed to h.Class, and asserts each has a rule in the built output.css or in the
+// hand-written app.css.
+//
+// The argument is resolved through package-level string consts/vars AND through
+// local string variables built by literal assignment/append (`bodyClass := "…"` /
+// `bodyClass += " " + c` in layout.go is exactly that shape) — an earlier version
+// only understood a bare literal, so anything reaching h.Class through a variable
+// was silently invisible to the whole guard. What still cannot be resolved (a
+// value from a function call, a parameter, a slice index) is COUNTED and pinned by
+// classCoverageOpaqueBudget below, so the remaining hole is visible in the test
+// output and cannot grow without someone noticing.
 func TestEveryTemplateClassExistsInAStylesheet(t *testing.T) {
 	css := readStylesheets(t)
+	scan := scanClassCalls(t)
 
-	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
-	if err != nil {
-		t.Fatalf("parse package: %v", err)
-	}
-
-	// class token -> one source position, for a useful failure message.
-	where := map[string]string{}
-	for _, pkg := range pkgs {
-		for _, file := range pkg.Files {
-			ast.Inspect(file, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				sel, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || sel.Sel == nil || sel.Sel.Name != "Class" {
-					return true
-				}
-				if len(call.Args) != 1 {
-					return true
-				}
-				for _, lit := range stringLiteralParts(call.Args[0]) {
-					for _, tok := range strings.Fields(lit) {
-						if _, seen := where[tok]; !seen {
-							where[tok] = fset.Position(call.Pos()).String()
-						}
-					}
-				}
-				return true
-			})
-		}
-	}
-	if len(where) < 100 {
-		t.Fatalf("only collected %d class tokens — the AST scan is broken, not the CSS", len(where))
+	if len(scan.where) < 100 {
+		t.Fatalf("only collected %d class tokens — the AST scan is broken, not the CSS", len(scan.where))
 	}
 
 	var missing []string
-	for tok := range where {
+	for tok := range scan.where {
 		if classCoverageExempt[tok] {
 			continue
 		}
@@ -111,7 +82,32 @@ func TestEveryTemplateClassExistsInAStylesheet(t *testing.T) {
 		t.Errorf("class %q (%s) has no rule in output.css or app.css — regenerate the "+
 			"Tailwind build:\n  cd internal/web && nix-shell -p tailwindcss --run "+
 			`"tailwindcss -c tailwind.config.js -i input.css -o assets/output.css --minify"`,
-			tok, where[tok])
+			tok, scan.where[tok])
+	}
+}
+
+// classCoverageOpaqueBudget pins how many h.Class call sites still hand the guard
+// above a value it cannot resolve to literals (a function result, a parameter, a
+// computed slice). Those sites are BLIND SPOTS: a class reaching the DOM only
+// through one of them would render unstyled with no test failing.
+//
+// The number exists so the hole stays visible and cannot grow silently. Lower it
+// when a site is made resolvable; raising it means knowingly adding a blind spot,
+// so say why in the commit.
+const classCoverageOpaqueBudget = 4
+
+// TestClassCoverageBlindSpotsAreBounded fails when a new unresolvable h.Class site
+// appears, and also when the count DROPS — a stale budget quietly re-opens room
+// for a blind spot, so it is pinned exactly.
+func TestClassCoverageBlindSpotsAreBounded(t *testing.T) {
+	scan := scanClassCalls(t)
+	if len(scan.opaque) != classCoverageOpaqueBudget {
+		sort.Strings(scan.opaque)
+		t.Errorf("h.Class sites the coverage scan cannot resolve = %d, pinned budget = %d.\n"+
+			"These sites are invisible to TestEveryTemplateClassExistsInAStylesheet:\n  %s\n"+
+			"If you removed one, lower classCoverageOpaqueBudget; if you added one, prefer a "+
+			"literal/const so the class stays covered.",
+			len(scan.opaque), classCoverageOpaqueBudget, strings.Join(scan.opaque, "\n  "))
 	}
 }
 
@@ -154,30 +150,174 @@ func isClassNameByte(b byte) bool {
 		(b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
-// stringLiteralParts returns the string-literal operands of an expression,
-// descending through `+` concatenations (e.g. "mx-auto "+shellMeasure+" px-4").
-// Non-literal operands (identifiers, calls) are skipped — they are covered by
-// their own h.Class sites or by a const the tests assert directly.
-func stringLiteralParts(e ast.Expr) []string {
+// opaqueMark stands in for a part of a class expression the scan could not
+// resolve. It is a byte that cannot occur in a class name, so any token containing
+// it is a partial/dynamic token and is discarded — that is what keeps
+// `"cm-pill cm-pill-"+variant` contributing the real "cm-pill" while dropping the
+// truncated "cm-pill-".
+const opaqueMark = "\x01"
+
+// classScanResult is what scanClassCalls found: every resolvable class token with
+// one source position, plus the positions of h.Class sites whose argument could
+// not be resolved to literals at all.
+type classScanResult struct {
+	where  map[string]string
+	opaque []string
+}
+
+// scanClassCalls parses the package and resolves every h.Class argument.
+func scanClassCalls(t *testing.T) classScanResult {
+	t.Helper()
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatalf("parse package: %v", err)
+	}
+
+	res := classScanResult{where: map[string]string{}}
+	for _, pkg := range pkgs {
+		globals := packageStringDecls(pkg)
+		for _, file := range pkg.Files {
+			// Per-function local string variables, so h.Class(bodyClass) resolves.
+			ast.Inspect(file, func(n ast.Node) bool {
+				fn, ok := n.(*ast.FuncDecl)
+				if !ok || fn.Body == nil {
+					return true
+				}
+				scope := localStringDecls(fn, globals)
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					call, ok := n.(*ast.CallExpr)
+					if !ok || len(call.Args) != 1 {
+						return true
+					}
+					sel, ok := call.Fun.(*ast.SelectorExpr)
+					if !ok || sel.Sel == nil || sel.Sel.Name != "Class" {
+						return true
+					}
+					joined, resolved := resolveClassExpr(call.Args[0], scope)
+					pos := fset.Position(call.Pos()).String()
+					if !resolved {
+						res.opaque = append(res.opaque, pos)
+					}
+					for _, tok := range strings.Fields(joined) {
+						if strings.Contains(tok, opaqueMark) {
+							continue // a dynamic fragment, not a whole class name
+						}
+						if _, seen := res.where[tok]; !seen {
+							res.where[tok] = pos
+						}
+					}
+					return true
+				})
+				return true
+			})
+		}
+	}
+	return res
+}
+
+// packageStringDecls maps package-level const/var names to their resolved value
+// (e.g. shellMeasure -> "max-w-[1800px]"), so a class held in a const stays
+// covered instead of vanishing from the scan.
+func packageStringDecls(pkg *ast.Package) map[string]string {
+	out := map[string]string{}
+	for _, file := range pkg.Files {
+		for _, d := range file.Decls {
+			gen, ok := d.(*ast.GenDecl)
+			if !ok || (gen.Tok != token.CONST && gen.Tok != token.VAR) {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, name := range vs.Names {
+					if i >= len(vs.Values) {
+						continue
+					}
+					if s, ok := resolveClassExpr(vs.Values[i], out); ok {
+						out[name.Name] = s
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// localStringDecls collects a function's local string variables, unioning every
+// value assigned to each (`x := "a"`, `x = "b"`, `x += " " + y`). A union is right
+// for coverage: every branch's classes must be styled.
+func localStringDecls(fn *ast.FuncDecl, globals map[string]string) map[string]string {
+	scope := map[string]string{}
+	for k, v := range globals {
+		scope[k] = v
+	}
+	// Two passes: an assignment may appear after the h.Class call that reads it.
+	for pass := 0; pass < 2; pass++ {
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			as, ok := n.(*ast.AssignStmt)
+			if !ok || len(as.Lhs) != 1 || len(as.Rhs) != 1 {
+				return true
+			}
+			name, ok := as.Lhs[0].(*ast.Ident)
+			if !ok {
+				return true
+			}
+			val, resolved := resolveClassExpr(as.Rhs[0], scope)
+			if !resolved {
+				val += opaqueMark
+			}
+			switch as.Tok {
+			case token.DEFINE, token.ASSIGN, token.ADD_ASSIGN:
+				// Separate with a space so tokens never fuse across assignments.
+				if prev, seen := scope[name.Name]; seen && as.Tok == token.ADD_ASSIGN {
+					scope[name.Name] = prev + " " + val
+				} else if prev, seen := scope[name.Name]; seen && !strings.Contains(prev, val) {
+					scope[name.Name] = prev + " " + val
+				} else {
+					scope[name.Name] = val
+				}
+			}
+			return true
+		})
+	}
+	return scope
+}
+
+// resolveClassExpr flattens a class expression to a single string, substituting
+// opaqueMark for anything it cannot resolve. The bool reports whether the WHOLE
+// expression resolved to literals.
+func resolveClassExpr(e ast.Expr, scope map[string]string) (string, bool) {
 	switch v := e.(type) {
 	case *ast.BasicLit:
 		if v.Kind != token.STRING {
-			return nil
+			return opaqueMark, false
 		}
 		s, err := strconv.Unquote(v.Value)
 		if err != nil {
-			return nil
+			return opaqueMark, false
 		}
-		return []string{s}
+		return s, true
+	case *ast.Ident:
+		if s, ok := scope[v.Name]; ok {
+			return s, !strings.Contains(s, opaqueMark)
+		}
+		return opaqueMark, false
+	case *ast.ParenExpr:
+		return resolveClassExpr(v.X, scope)
 	case *ast.BinaryExpr:
 		if v.Op != token.ADD {
-			return nil
+			return opaqueMark, false
 		}
-		return append(stringLiteralParts(v.X), stringLiteralParts(v.Y)...)
-	case *ast.ParenExpr:
-		return stringLiteralParts(v.X)
+		l, lok := resolveClassExpr(v.X, scope)
+		r, rok := resolveClassExpr(v.Y, scope)
+		return l + r, lok && rok
 	}
-	return nil
+	return opaqueMark, false
 }
 
 // TestShellMeasureIsInTheBuiltCSS pins the two arbitrary-value classes the wide
@@ -191,6 +331,14 @@ func TestShellMeasureIsInTheBuiltCSS(t *testing.T) {
 	}
 	if !cssHasClass(css, shellMeasure) {
 		t.Errorf("%s is missing from the built output.css — the wide shell would fall back to full width", shellMeasure)
+	}
+	// Both the nav and <main> now reach the measure through the CONST, so the token
+	// no longer appears as a bare literal at either h.Class site. Assert the
+	// coverage scan still resolves it — otherwise the DRY cleanup would have
+	// silently dropped the measure out of the guard above.
+	if scan := scanClassCalls(t); scan.where[shellMeasure] == "" {
+		t.Errorf("the class-coverage scan no longer resolves %s through the shellMeasure "+
+			"const — the measure is only pinned by this test", shellMeasure)
 	}
 	// The rail/nav custom CSS is hand-written (purge-proof) — assert it is there.
 	app, err := os.ReadFile("assets/app.css")

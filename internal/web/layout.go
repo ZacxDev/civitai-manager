@@ -63,7 +63,7 @@ func page(title, theme, csrf, nsfwMode string, rail railData, body ...g.Node) g.
 			h.Class(bodyClass),
 			navbar(theme, csrf, nsfwMode, rail),
 			h.Main(
-				h.Class("mx-auto max-w-[1800px] px-4 py-6 space-y-6"),
+				h.Class("mx-auto "+shellMeasure+" px-4 py-6 space-y-6"),
 				g.Group(body),
 			),
 			// The rail is a SIBLING of <main>, never inside it, so it can never
