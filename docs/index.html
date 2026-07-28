@@ -1,0 +1,718 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>civitai-manager — run ComfyUI workflows without the dependency hunt</title>
+<meta name="description" content="Import a ComfyUI workflow, click Run, and the model files it needs are resolved and downloaded automatically — the run starts when they land. A single Go binary, local-first, offline UI.">
+
+<style>
+  :root {
+    color-scheme: light dark;
+
+    --bg:        #ffffff;
+    --bg-alt:    #f5f7fa;
+    --bg-sunken: #eceff4;
+    --fg:        #16191d;
+    --fg-muted:  #565d68;
+    --fg-faint:  #7c848f;
+    --border:    #dfe3e9;
+    --border-str:#c6ccd5;
+    --accent:    #1f6feb;
+    --accent-fg: #ffffff;
+    --accent-sub:#0a4bbd;
+    --warn-bg:   #fff8e6;
+    --warn-bd:   #e8c877;
+    --warn-fg:   #6b4e07;
+    --code-bg:   #f0f2f6;
+    --shadow:    0 1px 2px rgba(16,24,40,.06), 0 8px 24px rgba(16,24,40,.08);
+    --radius:    12px;
+    --maxw:      1180px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:        #0e1117;
+      --bg-alt:    #141920;
+      --bg-sunken: #1a212b;
+      --fg:        #e8edf4;
+      --fg-muted:  #9aa5b4;
+      --fg-faint:  #6f7986;
+      --border:    #242c38;
+      --border-str:#333d4d;
+      --accent:    #4d90f0;
+      --accent-fg: #08101c;
+      --accent-sub:#8fbaf7;
+      --warn-bg:   #241d0c;
+      --warn-bd:   #5c4715;
+      --warn-fg:   #e5c877;
+      --code-bg:   #171d26;
+      --shadow:    0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  code, pre, kbd {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+                 "Liberation Mono", monospace;
+  }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+
+  .wrap {
+    max-width: var(--maxw);
+    margin-inline: auto;
+    padding-inline: clamp(1rem, 4vw, 2.5rem);
+  }
+
+  section { padding-block: clamp(3rem, 7vw, 5.5rem); }
+  section + section { border-top: 1px solid var(--border); }
+  .tinted { background: var(--bg-alt); }
+
+  h1, h2, h3 { line-height: 1.2; letter-spacing: -.02em; margin: 0; }
+
+  h2 {
+    font-size: clamp(1.6rem, 3.4vw, 2.2rem);
+    margin-bottom: .6rem;
+  }
+
+  h3 { font-size: 1.1rem; letter-spacing: -.01em; }
+
+  .lede {
+    color: var(--fg-muted);
+    font-size: clamp(1rem, 1.6vw, 1.12rem);
+    max-width: 62ch;
+    margin: 0 0 2.5rem;
+  }
+
+  p { margin: 0 0 1rem; }
+
+  /* ---------- hero ---------- */
+
+  .hero { padding-block: clamp(3rem, 8vw, 6rem) clamp(2rem, 5vw, 3.5rem); }
+
+  .eyebrow {
+    display: inline-block;
+    font-size: .78rem;
+    font-weight: 600;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    border: 1px solid var(--border-str);
+    border-radius: 999px;
+    padding: .3rem .8rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .hero h1 {
+    font-size: clamp(2.1rem, 5.6vw, 3.6rem);
+    max-width: 20ch;
+    margin-bottom: 1.25rem;
+  }
+
+  .hero h1 .em {
+    background: linear-gradient(transparent 62%, color-mix(in srgb, var(--accent) 28%, transparent) 62%);
+  }
+
+  .hero-sub {
+    font-size: clamp(1.02rem, 2vw, 1.22rem);
+    color: var(--fg-muted);
+    max-width: 64ch;
+    margin-bottom: 2rem;
+  }
+
+  .cta { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 1.25rem; }
+
+  .btn {
+    display: inline-block;
+    padding: .7rem 1.35rem;
+    border-radius: 9px;
+    font-weight: 600;
+    font-size: .96rem;
+    border: 1px solid var(--border-str);
+    color: var(--fg);
+    transition: transform .12s ease, border-color .12s ease;
+  }
+  .btn:hover { text-decoration: none; transform: translateY(-1px); border-color: var(--fg-faint); }
+
+  .btn-primary {
+    background: var(--accent);
+    color: var(--accent-fg);
+    border-color: var(--accent);
+  }
+  .btn-primary:hover { background: var(--accent-sub); border-color: var(--accent-sub); }
+
+  .meta {
+    font-size: .87rem;
+    color: var(--fg-faint);
+    display: flex;
+    flex-wrap: wrap;
+    gap: .4rem 1.1rem;
+    margin: 0;
+    list-style: none;
+    padding: 0;
+  }
+
+  /* ---------- story / problem ---------- */
+
+  .story {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 2rem;
+    align-items: start;
+  }
+  @media (min-width: 900px) {
+    .story { grid-template-columns: 1fr 1fr; gap: 3.5rem; }
+  }
+
+  .fail {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--warn-bd);
+    border-radius: 8px;
+    padding: 1rem 1.15rem;
+    font-size: .9rem;
+    color: var(--fg-muted);
+    margin-bottom: 1.25rem;
+    overflow-x: auto;
+  }
+  .fail code { color: var(--warn-fg); white-space: pre; }
+
+  /* ---------- figures ---------- */
+
+  figure { margin: 0; }
+
+  .shot {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-sunken);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    min-height: 120px;
+  }
+  .shot img {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-width: 100%;
+  }
+  figcaption {
+    font-size: .85rem;
+    color: var(--fg-faint);
+    margin-top: .7rem;
+    max-width: 60ch;
+  }
+
+  .hero-shot { margin-top: clamp(2rem, 5vw, 3rem); }
+
+  /* ---------- generic grid ---------- */
+
+  .grid {
+    display: grid;
+    gap: 1.5rem;
+    grid-template-columns: 1fr;
+  }
+  @media (min-width: 700px) { .grid.two   { grid-template-columns: repeat(2, 1fr); } }
+  @media (min-width: 760px) { .grid.three { grid-template-columns: repeat(3, 1fr); } }
+  @media (min-width: 700px) { .grid.feat  { grid-template-columns: repeat(2, 1fr); } }
+  @media (min-width: 1080px){ .grid.feat  { grid-template-columns: repeat(3, 1fr); } }
+
+  .card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.4rem 1.5rem;
+  }
+  .tinted .card { background: var(--bg); }
+
+  .card h3 { margin-bottom: .5rem; }
+  .card p  { color: var(--fg-muted); font-size: .95rem; margin: 0; }
+
+  /* ---------- steps ---------- */
+
+  .step { position: relative; padding-top: .35rem; }
+  .step .n {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem; height: 2rem;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--accent-fg);
+    font-weight: 700;
+    font-size: .95rem;
+    margin-bottom: .85rem;
+  }
+  .step h3 { margin-bottom: .4rem; }
+  .step p  { color: var(--fg-muted); font-size: .95rem; margin: 0; }
+
+  /* ---------- callout ---------- */
+
+  .callout {
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-bd);
+    border-radius: var(--radius);
+    padding: 1.1rem 1.35rem;
+    color: var(--warn-fg);
+    font-size: .96rem;
+    margin: 2rem 0 0;
+  }
+  .callout strong { color: inherit; }
+  .callout a { color: inherit; text-decoration: underline; }
+
+  /* ---------- limitations ---------- */
+
+  .limits { list-style: none; padding: 0; margin: 0; display: grid; gap: .85rem; }
+  @media (min-width: 860px) { .limits { grid-template-columns: 1fr 1fr; gap: .85rem 2.5rem; } }
+  .limits li {
+    position: relative;
+    padding-left: 1.5rem;
+    color: var(--fg-muted);
+    font-size: .95rem;
+  }
+  .limits li::before {
+    content: "—";
+    position: absolute;
+    left: 0;
+    color: var(--fg-faint);
+  }
+  .limits strong { color: var(--fg); font-weight: 600; }
+
+  /* ---------- install ---------- */
+
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.1rem 1.25rem;
+    overflow-x: auto;
+    font-size: .875rem;
+    line-height: 1.7;
+    margin: 0 0 1rem;
+    -webkit-overflow-scrolling: touch;
+  }
+  pre code { color: var(--fg); white-space: pre; }
+  .cmt { color: var(--fg-faint); }
+
+  p code, li code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: .08em .38em;
+    font-size: .88em;
+  }
+
+  .platforms {
+    font-size: .88rem;
+    color: var(--fg-faint);
+    margin-top: 1.25rem;
+  }
+
+  /* ---------- footer ---------- */
+
+  footer {
+    border-top: 1px solid var(--border);
+    padding-block: 2.5rem 3.5rem;
+    color: var(--fg-faint);
+    font-size: .88rem;
+  }
+  .foot-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .6rem 1.5rem;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+  footer nav { display: flex; flex-wrap: wrap; gap: 1.25rem; }
+</style>
+</head>
+<body>
+
+<!-- ============================= HERO ============================= -->
+<section class="hero">
+  <div class="wrap">
+    <span class="eyebrow">Open source · Apache-2.0 · v0.1.x</span>
+
+    <h1>Stop hunting for the models a workflow <span class="em">forgot to ship</span>.</h1>
+
+    <p class="hero-sub">
+      <strong>civitai-manager</strong> imports a ComfyUI workflow, checks it against your
+      actual install, finds the model files you're missing, downloads them into the right
+      folder — and starts the run when they land. You don't re-click.
+    </p>
+
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/ZacxDev/civitai-manager#60-second-quickstart">Get started</a>
+      <a class="btn" href="https://github.com/ZacxDev/civitai-manager">View on GitHub</a>
+      <a class="btn" href="https://github.com/ZacxDev/civitai-manager/releases/latest">Download</a>
+    </div>
+
+    <ul class="meta">
+      <li>Single Go binary, no cgo</li>
+      <li>linux · macOS · Windows, amd64 · arm64</li>
+      <li>Local-first, loopback by default</li>
+      <li>Web UI works fully offline</li>
+    </ul>
+
+    <figure class="hero-shot">
+      <div class="shot">
+        <img src="assets/hero-run-missing-models.png"
+             alt="The run panel listing the model files a workflow is missing, with matching CivitAI models offered alongside a download-and-run action.">
+      </div>
+      <figcaption>
+        A run that would have failed. Instead of an error, the missing files are matched
+        against CivitAI — with alternates when more than one model fits.
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============================= PROBLEM ============================= -->
+<section class="tinted">
+  <div class="wrap">
+    <div class="story">
+      <div>
+        <h2>The loop this replaces</h2>
+        <p class="lede" style="margin-bottom:1.25rem">
+          Every downloaded workflow is a scavenger hunt for someone else's file layout.
+        </p>
+
+        <div class="fail"><code>Prompt outputs failed validation:
+ckpt_name: 'value not in list'</code></div>
+
+        <p style="color:var(--fg-muted);font-size:.97rem">
+          So you open the node, guess which checkpoint that string meant, search CivitAI,
+          download it, work out whether it belongs in <code>checkpoints/</code> or
+          <code>unet/</code>, drop it in, restart, hit Run — and it fails on the next
+          missing file. Repeat until you give up or the workflow finally goes.
+        </p>
+      </div>
+
+      <div>
+        <h2>What happens instead</h2>
+        <p class="lede" style="margin-bottom:1.25rem">
+          The preflight knows what your ComfyUI actually has, so the gap is a to-do list, not a mystery.
+        </p>
+        <p style="color:var(--fg-muted);font-size:.97rem">
+          Before submitting anything, civitai-manager diffs the graph against your live
+          ComfyUI. Missing model files are resolved on CivitAI — with a HuggingFace
+          fallback for the VAEs and upscalers that never had a CivitAI page — and
+          downloaded into the correct <code>models/</code> subfolder. The run is queued
+          behind the download and starts on its own.
+        </p>
+        <p style="color:var(--fg-muted);font-size:.97rem">
+          Saved sampler or scheduler values your build doesn't have get a dropdown of the
+          ones it does. Prompt, seed, steps and cfg are editable in place — without
+          touching the workflow you imported.
+        </p>
+      </div>
+    </div>
+
+    <div class="callout">
+      <strong>The honest caveat, up front:</strong> this resolves <em>model files</em>. It does
+      <strong>not</strong> install custom nodes. If a workflow needs a node pack you don't have,
+      it names the missing nodes and stops — installing them is still your job.
+    </div>
+  </div>
+</section>
+
+<!-- ============================= HOW IT WORKS ============================= -->
+<section>
+  <div class="wrap">
+    <h2>How it works</h2>
+    <p class="lede">Three steps, one of which is waiting.</p>
+
+    <div class="grid three">
+      <div class="step">
+        <span class="n">1</span>
+        <h3>Import the workflow</h3>
+        <p>
+          Paste the JSON, drop in a PNG that ComfyUI generated and let it read the graph
+          out of the metadata, scan your install for workflows already on disk, or import
+          straight from CivitAI's workflow listings.
+        </p>
+      </div>
+
+      <div class="step">
+        <span class="n">2</span>
+        <h3>Click Run</h3>
+        <p>
+          The graph is converted to API format — expanding subgraphs, resolving Get/Set
+          teleports, splicing bypassed nodes — then checked against your live ComfyUI for
+          missing nodes, missing models, and options your build doesn't have.
+        </p>
+      </div>
+
+      <div class="step">
+        <span class="n">3</span>
+        <h3>Let it fetch</h3>
+        <p>
+          Pick a match, an already-installed substitute, or download-and-run. The file
+          lands in the correct subfolder, the run starts when it completes, and the images
+          are captured to a gallery with the parameters that made them.
+        </p>
+      </div>
+    </div>
+
+    <figure style="margin-top:clamp(2rem,5vw,3rem)">
+      <div class="shot">
+        <img src="assets/run-downloading.png"
+             alt="The run status panel showing a model download in progress, with the run queued to start as soon as it finishes.">
+      </div>
+      <figcaption>
+        Step 3, mid-flight. The run is queued behind the download rather than failing —
+        this is the part that isn't just a downloader.
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============================= FEATURES ============================= -->
+<section class="tinted">
+  <div class="wrap">
+    <h2>Running workflows</h2>
+    <p class="lede">
+      Requires a running ComfyUI — by default the one on <code>127.0.0.1:8188</code>.
+    </p>
+
+    <div class="grid feat">
+      <div class="card">
+        <h3>Conversion that survives real graphs</h3>
+        <p>
+          Subgraph expansion, Get/Set teleport resolution, bypassed and muted node
+          splicing, rgthree UI-only nodes dropped, converted widgets handled without
+          shifting every value after them.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Preflight, not trial and error</h3>
+        <p>
+          Missing nodes, missing models, and incompatible enum values are reported
+          separately — each diffed against your live ComfyUI rather than guessed.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Multi-match resolution</h3>
+        <p>
+          When several CivitAI models fit a filename you get the best match plus the
+          alternates, so you disambiguate deliberately instead of hoping.
+        </p>
+      </div>
+      <div class="card">
+        <h3>HuggingFace fallback</h3>
+        <p>
+          For files CivitAI never hosted. Auto-download is deliberately narrow — curated
+          map or recognised org, ungated, SHA256 known. Everything else becomes a link
+          with the reason stated.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Editable run parameters</h3>
+        <p>
+          Prompt, seed, steps, cfg, sampler, scheduler, denoise, dimensions and batch
+          size — traced back to the node that actually holds each value. The stored
+          workflow is never modified.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Durable output gallery</h3>
+        <p>
+          Every successful local run is captured with the parameters that produced it, and
+          re-run reconstructs them. Disk-capped at 20&nbsp;GiB by default, oldest evicted
+          first.
+        </p>
+      </div>
+    </div>
+
+    <div class="grid two" style="margin-top:clamp(2rem,5vw,3rem)">
+      <figure>
+        <div class="shot">
+          <img src="assets/run-params.png"
+               alt="The editable run parameters panel showing prompt, seed, steps, cfg, sampler and scheduler fields.">
+        </div>
+        <figcaption>Change the prompt or seed without opening ComfyUI. This run only — the saved workflow is untouched.</figcaption>
+      </figure>
+      <figure>
+        <div class="shot">
+          <img src="assets/outputs-gallery.png"
+               alt="The output gallery showing a grid of past generations captured from successful workflow runs.">
+        </div>
+        <figcaption>Results persist after ComfyUI clears its own output folder, each with the parameters that made it.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ============================= LIBRARY ============================= -->
+<section>
+  <div class="wrap">
+    <h2>And it manages the library underneath</h2>
+    <p class="lede">
+      The other half of the tool, for when <code>models/</code> has become a landfill.
+      All of this works with ComfyUI closed.
+    </p>
+
+    <div class="grid two">
+      <div>
+        <div class="grid" style="gap:1.25rem">
+          <div class="card">
+            <h3>Subscribe to models and creators</h3>
+            <p>
+              A poller diffs each subscription's version list and queues genuinely new
+              versions. Downloads are verified against the API's SHA256 where one is
+              published. Subscribing seeds the back-catalog <em>without</em> downloading
+              it, so you never retro-pull 300&nbsp;GB.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Scan what you already have</h3>
+            <p>
+              Hashes your model directories — with an mtime/size cache so re-scans skip
+              unchanged multi-GB files — matches the whole set against CivitAI in one
+              batch lookup, and flags duplicates, superseded versions and broken files.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Nothing is ever hard-deleted</h3>
+            <p>
+              Acting on a flag <em>moves</em> the file to a trash directory with an undo
+              manifest. The mover refuses to leave zero copies of a duplicate set, refuses
+              unmatched files, and refuses the newest version.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <figure>
+        <div class="shot">
+          <img src="assets/library-candidates.png"
+               alt="The library page listing scanned model files flagged as duplicate, superseded or broken, with a quarantine action.">
+        </div>
+        <figcaption>
+          A scan's verdict. Quarantine is a reversible move, not a delete —
+          <code>library restore</code> puts a batch back.
+        </figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ============================= LIMITATIONS ============================= -->
+<section class="tinted">
+  <div class="wrap">
+    <h2>Limitations</h2>
+    <p class="lede">
+      Worth reading before you decide it's broken. This is v0.1.x software.
+    </p>
+
+    <ul class="limits">
+      <li><strong>Custom nodes are not installed for you.</strong> Only model files are resolved and downloaded. A workflow needing an uninstalled node pack won't run until you install it yourself.</li>
+      <li><strong>A graph the converter can't fully understand blocks the run</strong> rather than submitting something partially broken.</li>
+      <li><strong>Parameters inside subgraphs aren't editable</strong>, and the parameters panel only appears for UI-format workflows.</li>
+      <li><strong>CivitAI cloud runs don't resolve custom node packs</strong> — model resources map to AIR URNs automatically, node packs you supply yourself.</li>
+      <li><strong>Cloud run results aren't captured</strong> into the output gallery. Only local runs are.</li>
+      <li><strong>The ComfyUI helper extension needs one restart</strong> to activate, and another to fully remove.</li>
+      <li><strong>Preflight checks against its own file index</strong>, not ComfyUI's models directory — a file in your library but not where ComfyUI looks will pass, then fail inside ComfyUI.</li>
+      <li><strong>The web UI has no login.</strong> Loopback by default; binding a LAN address exposes an unauthenticated UI and your output gallery.</li>
+      <li><strong>NSFW previews are blurred, not withheld.</strong> Blur is a browser-side filter — the bytes are still sent.</li>
+      <li><strong>Two things phone home by default</strong>, both disclosed and switchable: scan matching sends file hashes to CivitAI; the fallback sends a missing filename to HuggingFace.</li>
+      <li><strong>The schema still moves</strong> between releases. Migrations run automatically, but treat it as unstable.</li>
+      <li><strong>Interrupted downloads are re-fetched whole</strong>, not resumed, and search returns the first page only.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============================= INSTALL ============================= -->
+<section>
+  <div class="wrap">
+    <h2>Install</h2>
+    <p class="lede">
+      One binary. No runtime, no database server, no container.
+    </p>
+
+    <div class="grid two">
+      <div>
+        <h3 style="margin-bottom:.75rem">Download a release</h3>
+<pre><code><span class="cmt"># linux/amd64 — swap for darwin_arm64, linux_arm64, …</span>
+VERSION=0.1.73
+curl -sSLO "https://github.com/ZacxDev/civitai-manager/releases/download/v${VERSION}/civitai-manager_${VERSION}_linux_amd64.tar.gz"
+curl -sSLO "https://github.com/ZacxDev/civitai-manager/releases/download/v${VERSION}/checksums.txt"
+sha256sum --check --ignore-missing checksums.txt
+tar -xzf "civitai-manager_${VERSION}_linux_amd64.tar.gz"
+sudo install civitai-manager /usr/local/bin/</code></pre>
+
+        <h3 style="margin:1.5rem 0 .75rem">Or with Go 1.25+</h3>
+<pre><code>go install github.com/ZacxDev/civitai-manager@latest</code></pre>
+      </div>
+
+      <div>
+        <h3 style="margin-bottom:.75rem">Then run it</h3>
+<pre><code><span class="cmt"># point it at your ComfyUI models folder so it</span>
+<span class="cmt"># can install missing files where ComfyUI looks</span>
+civitai-manager serve --comfy-model-path ~/ComfyUI/models
+
+<span class="cmt"># → open http://localhost:8787</span></code></pre>
+
+        <p style="color:var(--fg-muted);font-size:.95rem;margin-top:1rem">
+          Add a CivitAI API token before downloading much — browsing works anonymously,
+          but most file downloads need auth. If you already use the official
+          <code>civitai</code> CLI, your existing token is picked up automatically.
+        </p>
+
+        <p class="platforms">
+          Released for linux, macOS and Windows on amd64 and arm64, with a
+          <code>checksums.txt</code>. SQLite is the pure-Go driver, so every build is
+          <code>CGO_ENABLED=0</code> — no C toolchain anywhere.
+        </p>
+      </div>
+    </div>
+
+    <div class="callout">
+      <strong>Running workflows needs ComfyUI running.</strong> Subscriptions, downloads,
+      the library scanner, workflow import and browsing all work with it closed — see the
+      <a href="https://github.com/ZacxDev/civitai-manager#what-needs-comfyui-running">full breakdown</a>.
+    </div>
+  </div>
+</section>
+
+<!-- ============================= FOOTER ============================= -->
+<footer>
+  <div class="wrap foot-row">
+    <div>
+      <strong style="color:var(--fg)">civitai-manager</strong> — Apache-2.0.
+      Not affiliated with CivitAI or Comfy Org.
+    </div>
+    <nav>
+      <a href="https://github.com/ZacxDev/civitai-manager">GitHub</a>
+      <a href="https://github.com/ZacxDev/civitai-manager/releases/latest">Releases</a>
+      <a href="https://github.com/ZacxDev/civitai-manager/blob/main/docs/configuration.md">Configuration</a>
+      <a href="https://github.com/ZacxDev/civitai-manager/blob/main/docs/cli.md">CLI</a>
+      <a href="https://github.com/ZacxDev/civitai-manager/issues">Issues</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>
