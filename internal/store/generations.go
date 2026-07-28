@@ -236,6 +236,26 @@ func (s *Store) ListGenerations(ctx context.Context, opts ListGenerationsOpts) (
 	return out, rows.Err()
 }
 
+// recentGenerationsCap is the HARD upper bound on ListRecentGenerations' limit.
+// The global "Recent outputs" rail issues that query on EVERY page render, so the
+// clamp guarantees a caller can never turn per-request chrome into an unbounded
+// scan of the generations table.
+const recentGenerationsCap = 50
+
+// ListRecentGenerations returns AT MOST limit generations, newest-first, across
+// every workflow — the bounded query behind the global outputs rail. limit <= 0
+// returns nil (nothing asked for, nothing queried); a limit above
+// recentGenerationsCap is clamped to it.
+func (s *Store) ListRecentGenerations(ctx context.Context, limit int) ([]Generation, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	if limit > recentGenerationsCap {
+		limit = recentGenerationsCap
+	}
+	return s.ListGenerations(ctx, ListGenerationsOpts{Limit: limit})
+}
+
 // CountGenerations counts generations, optionally filtered to one workflow (nil =
 // all). Used for pagination and the per-workflow section header.
 func (s *Store) CountGenerations(ctx context.Context, workflowID *int64) (int, error) {

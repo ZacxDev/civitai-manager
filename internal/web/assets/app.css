@@ -755,3 +755,366 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   font-size: 0.75rem;
   background: var(--civitai-color-surface);
 }
+
+/*
+ * ===========================================================================
+ * APP SHELL — sticky nav (.cm-nav) + global recent-outputs rail (.cm-rail)
+ * ===========================================================================
+ *
+ * See navbar/page in layout.go and outputsRail in outputs_rail.go. Every color
+ * resolves from a --civitai-* token, so both data-theme paths are styled; none
+ * of this is a Tailwind utility, so none of it can be purged out of output.css.
+ *
+ * STACKING ORDER (the app's whole z-index budget, lowest -> highest):
+ *    4  .cm-video-badge, 5 .cm-carousel-btn  - decoration inside a card
+ *   10  in-tile reveal overlay (z-10/z-20)   - scoped to one tile
+ *   20  .cm-rail (desktop column)            - page chrome, BELOW the nav
+ *   30  .cm-nav (sticky header)              - above page content
+ *   44  .cm-rail-scrim / 45 .cm-rail (mobile drawer) - above the nav, so the
+ *       sticky header can never cover an open drawer
+ *   50  .cm-vstatus-pop / .cm-updated-pop / the run Fix popover, and the
+ *       #cm-lightbox overlay                 - above everything else
+ * The sticky nav therefore sits above page content but BELOW every popover, the
+ * lightbox, and the rail drawer.
+ *
+ * --cm-nav-h is the single source of truth for the header height: the rail's
+ * desktop top offset and the anchor scroll-margin both derive from it.
+ */
+:root {
+  --cm-nav-h: 3.75rem;
+}
+
+.cm-nav {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+.cm-nav-inner {
+  /* minus the 1px bottom border, so the rendered header height == --cm-nav-h */
+  min-height: calc(var(--cm-nav-h) - 1px);
+}
+
+/*
+ * Mobile nav: the seven destinations stay in ONE horizontally scrollable strip
+ * (no hamburger drawer - see navbar's comment for why). The scrollbar is hidden
+ * so the strip reads as part of the bar; momentum scrolling is kept.
+ */
+.cm-navlinks {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  -webkit-overflow-scrolling: touch;
+}
+.cm-navlinks::-webkit-scrollbar {
+  display: none;
+}
+
+/*
+ * Anchored deep-links must land BELOW the sticky header instead of underneath
+ * it. scroll-padding-top on the scrollport is the general fix — it covers NATIVE
+ * hash navigation on first paint (before any JS runs) AND scriptedscrollIntoView
+ * calls (the #wf-<id> library deep-link, the #deletion-candidates jump). The
+ * explicit scroll-margin-top is belt-and-braces for the same targets.
+ */
+html {
+  scroll-padding-top: calc(var(--cm-nav-h) + 0.75rem);
+}
+:target,
+.cm-wf-item,
+#deletion-candidates {
+  scroll-margin-top: calc(var(--cm-nav-h) + 0.75rem);
+}
+
+/*
+ * The rail, mobile-first: an off-canvas drawer over a scrim, opened from the nav
+ * (cmRailDrawer). At >=1024px the desktop block below turns it into a fixed
+ * right-hand column whose width <body> reserves.
+ */
+.cm-rail {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 45;
+  width: min(20rem, 85vw);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  overflow-y: auto;
+  border-left: 1px solid var(--civitai-color-border);
+  background: var(--civitai-color-surface);
+  color: var(--civitai-color-text);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
+  transform: translateX(100%);
+  transition: transform 180ms ease;
+}
+.cm-rail[data-open="true"] {
+  transform: none;
+}
+.cm-rail-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 44;
+  display: none;
+  background: rgba(0, 0, 0, 0.5);
+}
+.cm-rail-scrim[data-open="true"] {
+  display: block;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-rail {
+    transition: none;
+  }
+}
+
+.cm-rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex: none;
+}
+.cm-rail-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--civitai-color-text);
+}
+/* Vertical label of the COLLAPSED desktop rail; never shown on mobile. */
+.cm-rail-vlabel {
+  display: none;
+  writing-mode: vertical-rl;
+  margin: 0.5rem auto 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  color: var(--civitai-color-text-dimmed);
+  white-space: nowrap;
+}
+/* The collapse control is desktop-only; the close control is mobile-only. */
+.cm-rail-collapse {
+  display: none;
+}
+
+.cm-rail-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  min-height: 0;
+}
+.cm-rail-item {
+  position: relative;
+  display: block;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border-radius: 0.375rem;
+  border: 1px solid var(--civitai-color-border);
+  background: var(--civitai-color-body);
+  text-decoration: none;
+}
+.cm-rail-item:hover,
+.cm-rail-item:focus-visible {
+  border-color: var(--civitai-color-primary);
+}
+.cm-rail-thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.cm-rail-nothumb {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.625rem;
+  color: var(--civitai-color-text-dimmed);
+}
+.cm-rail-cap {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  padding: 0.125rem 0.25rem;
+  font-size: 0.625rem;
+  line-height: 1.1;
+  color: #f8fafc;
+  background: rgba(15, 23, 42, 0.72);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cm-rail-foot {
+  flex: none;
+  padding-top: 0.25rem;
+}
+.cm-rail-all {
+  font-size: 0.75rem;
+  color: var(--civitai-color-primary);
+  text-decoration: none;
+}
+.cm-rail-all:hover {
+  text-decoration: underline;
+}
+
+/*
+ * NSFW "blur" mode: the rail is chrome visible on EVERY page, so under blur its
+ * thumbnails render genuinely blurred and reveal on hover/focus. ("hide" never
+ * reaches CSS - the server omits the rail markup entirely; "show" renders
+ * plain.) A real filter on the pixels, matching .cm-blur.
+ */
+.cm-rail[data-nsfw="blur"] .cm-rail-thumb {
+  filter: blur(14px);
+  transition: filter 120ms ease;
+}
+.cm-rail[data-nsfw="blur"] .cm-rail-item:hover .cm-rail-thumb,
+.cm-rail[data-nsfw="blur"] .cm-rail-item:focus-visible .cm-rail-thumb {
+  filter: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-rail[data-nsfw="blur"] .cm-rail-thumb {
+    transition: none;
+  }
+}
+
+/* Desktop: a real right-hand column that reserves its own width. */
+@media (min-width: 1024px) {
+  .cm-rail {
+    top: var(--cm-nav-h);
+    z-index: 20;
+    width: 18rem;
+    transform: none;
+    box-shadow: none;
+  }
+  .cm-rail-scrim {
+    display: none !important;
+  }
+  .cm-rail-close,
+  .cm-rail-open-btn {
+    display: none;
+  }
+  .cm-rail-collapse {
+    display: inline-flex;
+  }
+  .cm-rail[data-collapsed="true"] {
+    width: 2.25rem;
+    padding: 0.5rem 0.25rem;
+    overflow: hidden;
+  }
+  .cm-rail[data-collapsed="true"] .cm-rail-title,
+  .cm-rail[data-collapsed="true"] .cm-rail-body,
+  .cm-rail[data-collapsed="true"] .cm-rail-foot {
+    display: none;
+  }
+  .cm-rail[data-collapsed="true"] .cm-rail-head {
+    justify-content: center;
+  }
+  .cm-rail[data-collapsed="true"] .cm-rail-vlabel {
+    display: block;
+  }
+  /* EXACTLY ONE of these lands on <body> (see railShellClass). */
+  .cm-shell-rail {
+    padding-right: 18rem;
+  }
+  .cm-shell-rail-collapsed {
+    padding-right: 2.25rem;
+  }
+}
+
+/*
+ * ===========================================================================
+ * Wider shell (~1800px measure) — DENSITY, not bigger cards
+ * ===========================================================================
+ *
+ * Tailwind's generated screens stop at 1536px (2xl) and the purged output.css
+ * carries no xl:/2xl: selectors at all, so the extra width is spent here in
+ * plain CSS instead — purge-proof, and able to react to the rail, which a
+ * viewport-keyed utility cannot.
+ *
+ * .cm-cardgrid is the shared browse-card grid (search results, subscribe
+ * suggestions, Discover workflows, Discover apps). It steps 1 → 2 → 3 → 4 → 5
+ * columns, and steps DOWN by one while the expanded rail is eating 18rem of the
+ * viewport, so a card never collapses to a ~200px sliver.
+ */
+.cm-cardgrid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+.cm-cardgrid-tight {
+  gap: 0.75rem;
+}
+@media (min-width: 640px) {
+  .cm-cardgrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (min-width: 1024px) {
+  .cm-cardgrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .cm-shell-rail .cm-cardgrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (min-width: 1280px) {
+  .cm-shell-rail .cm-cardgrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (min-width: 1536px) {
+  .cm-cardgrid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .cm-shell-rail .cm-cardgrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (min-width: 1800px) {
+  .cm-cardgrid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+  .cm-shell-rail .cm-cardgrid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/*
+ * The outputs/community masonry gains columns the same way. Its existing steps
+ * (2 / 640:3 / 1024:4) are VIEWPORT-keyed, so with the 18rem rail subtracted a
+ * 1024px viewport would still ask for 4 columns in a ~700px column — the
+ * .cm-shell-rail rules step it back down.
+ */
+@media (min-width: 1536px) {
+  .cm-masonry {
+    column-count: 5;
+  }
+}
+@media (min-width: 1800px) {
+  .cm-masonry {
+    column-count: 6;
+  }
+}
+@media (min-width: 1024px) {
+  .cm-shell-rail .cm-masonry {
+    column-count: 3;
+  }
+}
+@media (min-width: 1536px) {
+  .cm-shell-rail .cm-masonry {
+    column-count: 4;
+  }
+}
+@media (min-width: 1800px) {
+  .cm-shell-rail .cm-masonry {
+    column-count: 5;
+  }
+}
+
+/*
+ * Text-heavy surfaces keep a READABLE measure inside the now-wider shell rather
+ * than running the full 1800px. The description element also carries Tailwind's
+ * max-w-none; this rule is unlayered, so it wins over the app layer.
+ */
+.cm-model-desc {
+  max-width: 72ch;
+}

@@ -584,7 +584,7 @@ func workflowCard(wf store.Workflow, csrf string, resolver workflowResolver) g.N
 		h.Div(h.Class("flex items-start justify-between gap-4"),
 			h.Div(
 				h.A(h.Href("/workflows/"+id),
-					h.Class("text-lg font-semibold text-slate-100 hover:text-white"),
+					h.Class("text-lg font-semibold text-slate-100 hover:text-indigo-300"),
 					g.Text(name)),
 				h.Div(h.Class("flex flex-wrap items-center gap-2 mt-2"), g.Group(meta)),
 			),
@@ -699,7 +699,7 @@ func workflowResourcesDisclosure(resources []string, resolver workflowResolver) 
 // workflowDetailPage renders a single workflow: its pretty-printed graph (escaped
 // — untrusted), resources, attachment controls, and metadata. runSection is the
 // live Run panel (nil renders no run controls).
-func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode string, runSection g.Node, comfyConfigured bool, resolver workflowResolver) g.Node {
+func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode string, runSection g.Node, comfyConfigured bool, resolver workflowResolver, rail ...railData) g.Node {
 	id := strconv.FormatInt(wf.ID, 10)
 	name := wf.Name
 	if strings.TrimSpace(name) == "" {
@@ -811,7 +811,7 @@ func workflowDetailPage(wf *store.Workflow, prettyGraph, csrf, theme, nsfwMode s
 		body = append(body, lightboxOverlay(), modelPageScript(), libraryCarouselScript())
 	}
 
-	return page(name+" · Workflow", theme, csrf, nsfwMode, body...)
+	return page(name+" · Workflow", theme, csrf, nsfwMode, railOf(rail), body...)
 }
 
 // workflowGraphSection picks the best graph rendering: an SVG for a UI-format

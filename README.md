@@ -116,6 +116,17 @@ go build -o civitai-manager .
 > `library_paths` — it will not enumerate unrelated locations such as `/root` or
 > another user's home, and the constraint is enforced on the symlink-resolved
 > real path.
+>
+> **Your generated images are part of what a non-loopback bind exposes.** The
+> output gallery (`/outputs`) and the image bytes it serves (`/outputs/img/{id}`)
+> are readable by any client that can reach the port — there is no per-route
+> gate on them, by design, so that a deliberately LAN-exposed instance still has
+> a working gallery. The **"Recent outputs" sidebar** puts the 12 most recent
+> thumbnails and their workflow names on *every* page, so they are the first
+> thing such a client sees. Setting the NSFW display mode to **Blur** does not
+> change what is served: the blur is a CSS filter applied in the browser, and the
+> unblurred bytes still go over the wire. If that matters for your setup, keep
+> the default loopback bind (or put the port behind your own auth proxy).
 
 ### CLI
 
@@ -266,7 +277,10 @@ no_preview: false                  # true = never write the .preview.png sidecar
 max_preview_size: ""               # e.g. "2MB"; skip a preview larger than this
                                    # (empty/"0" = no cap). Model + .civitai.info
                                    # are always written regardless.
-addr: "127.0.0.1:8787"             # loopback by default; set a LAN host to expose
+addr: "127.0.0.1:8787"             # loopback by default; set a LAN host to expose.
+                                   # A non-loopback bind also exposes the output
+                                   # gallery + the every-page "Recent outputs"
+                                   # thumbnails — see the security note above.
 web_scan_timeout: "2m"             # deadline for a web "Scan now" walk/hash
 web_scan_max_files: 50000          # model-file cap for a web scan; over → aborts
 outputs_dir: ""                    # where the output gallery stores images

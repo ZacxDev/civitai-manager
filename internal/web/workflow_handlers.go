@@ -54,16 +54,14 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 		runPanel(wf, s.runJobState(), s.csrf, s.extraPathsAllowed(), s.comfyDownloadEligible(), s.nsfwMode()),
 		cloudEntryCard(wf.ID),
 	}
-	// Per-workflow "Recent outputs" — the shared gallery grid limited to this
-	// workflow's most recent generations, inserted right after the run panel.
-	// Omitted entirely when this workflow has no captured generations.
-	if outputs := s.renderWorkflowOutputs(r.Context(), wf.ID); outputs != nil {
-		sectionNodes = append(sectionNodes, outputs)
-	}
+	// NOTE: there is no per-workflow "Recent outputs" card here any more — the
+	// GLOBAL recent-outputs rail (rendered by the app shell on every page)
+	// supersedes it. Per-workflow browsing lives at /outputs?workflow=<id>.
 	runSection := g.Group(sectionNodes)
 	comfyConfigured := strings.TrimSpace(s.cfg.ComfyURL) != ""
 	s.render(w, http.StatusOK, workflowDetailPage(wf, prettyJSON(wf.Graph),
-		s.csrf, s.currentTheme(), s.nsfwMode(), runSection, comfyConfigured, s.workflowResolver()))
+		s.csrf, s.currentTheme(), s.nsfwMode(), runSection, comfyConfigured, s.workflowResolver(),
+		s.rail(r.Context())))
 }
 
 // handleWorkflowImport ingests a pasted API/UI graph. CSRF-protected and

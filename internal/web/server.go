@@ -444,6 +444,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("POST /settings/nsfw", s.handleSetNSFWDisplay)
 	mux.HandleFunc("POST /settings/theme", s.handleSetTheme)
+	mux.HandleFunc("POST /settings/outputs-rail", s.handleSetOutputsRail)
 
 	mux.HandleFunc("POST /subscribe", s.handleSubscribe)
 	mux.HandleFunc("GET /subscribe/search", s.handleSubscribeSearch)

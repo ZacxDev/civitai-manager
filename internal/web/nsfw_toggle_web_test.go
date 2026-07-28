@@ -44,7 +44,7 @@ func TestNSFWToggleCyclesModes(t *testing.T) {
 // TestNavbarRendersNSFWToggle proves every page's navbar carries the NSFW toggle
 // alongside the theme toggle.
 func TestNavbarRendersNSFWToggle(t *testing.T) {
-	out := renderString(t, navbar("dark", "csrf-tok", NSFWBlur))
+	out := renderString(t, navbar("dark", "csrf-tok", NSFWBlur, railData{}))
 	if !strings.Contains(out, "NSFW: Blur") {
 		t.Errorf("navbar should render the NSFW toggle:\n%s", out)
 	}

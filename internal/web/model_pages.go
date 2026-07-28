@@ -534,7 +534,7 @@ func updatedCardLine(modelID, versionID int, rel, absDate, versionName, versionD
 // modelDetailPage renders the rich model detail page: header + stats, sanitized
 // description, tags, a version selector with per-version detail, and a showcase
 // image gallery with NSFW handling + a lightbox.
-func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, baseURL string) g.Node {
+func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, baseURL string, rail ...railData) g.Node {
 	m := v.Model
 	creator := ""
 	if m.Creator != nil {
@@ -551,7 +551,7 @@ func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, ba
 		verDate = isoDatePrefix(v.PublishedAt)
 	}
 
-	return page(m.Name, theme, csrf, mode,
+	return page(m.Name, theme, csrf, mode, railOf(rail),
 		modelHeaderCard(m, creator, csrf, modelURL, sub, v.LastUpdated, v.SelectedVersionID, verName, verDate),
 		// The version-DEPENDENT region sits directly under the header, ABOVE the
 		// description: version tabs → larger showcase → files/metadata → community.
