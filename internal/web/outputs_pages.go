@@ -83,10 +83,10 @@ func generationTile(gen store.Generation) g.Node {
 	return h.A(append([]g.Node{h.Href(detailHref)}, children...)...)
 }
 
-// generationGrid renders a masonry grid of tiles, or an empty-state note.
-func generationGrid(gens []store.Generation, emptyMsg string) g.Node {
+// generationGrid renders a masonry grid of tiles, or the guided empty state.
+func generationGrid(gens []store.Generation, empty g.Node) g.Node {
 	if len(gens) == 0 {
-		return h.P(h.Class("text-sm text-slate-400"), g.Text(emptyMsg))
+		return empty
 	}
 	tiles := make([]g.Node, 0, len(gens))
 	for _, gen := range gens {
@@ -129,7 +129,12 @@ func outputsGalleryPage(gens []store.Generation, wfRefs []store.GenerationWorkfl
 		header,
 		h.P(h.Class("text-sm text-slate-400"),
 			g.Text("Images captured from your successful workflow runs. These are your own local generations and render plain.")),
-		card(generationGrid(gens, "No generations yet — run a workflow and its outputs will appear here.")),
+		card(generationGrid(gens, emptyState(
+			"No generations yet",
+			"Every image a workflow run produces is captured here automatically, with the "+
+				"parameters it was made with, so you can re-run or delete it later. Run a "+
+				"workflow from your library and its outputs will appear on this page.",
+			"/library?tab=workflows", "Go to your workflows"))),
 	}
 
 	// Pagination controls (server-side page).

@@ -702,6 +702,28 @@ func summaryBanner(v libraryView) g.Node {
 	)
 }
 
+// pathCell renders a truncated filesystem-path table cell.
+//
+// Two things a bare `truncate` cell got wrong. It clipped the RIGHT, which throws
+// away the only part of a model path that identifies the file — the filename at
+// the end — leaving rows of interchangeable "/mnt/models/checkpoints/sta…". And it
+// offered no way to see the rest at all: no title, no wrap, no expansion. So the
+// cell now flips the ellipsis to the START (.cm-path-ellipsis) and always carries
+// the FULL path as a title tooltip, which is also what a screen reader announces.
+//
+// cls is the cell's class NODE (not a string) so the literal stays at the call
+// site and the class-coverage guard can still see every token; the path is escaped
+// by g.Text and by the title attribute encoder.
+func pathCell(cls g.Node, path string) g.Node {
+	return h.Td(
+		cls,
+		h.Title(path),
+		// <bdi> isolates the path's own text direction inside the RTL cell, so the
+		// leading "/" cannot be reordered to the tail (see .cm-path-ellipsis).
+		g.El("bdi", g.Text(path)),
+	)
+}
+
 // statPill renders one color-coded count chip for the summary row: a glyph, the
 // bold count, and a label. variant selects the theme-aware .cm-pill-* color
 // (neutral/dup/update/broken), all of which resolve from --civitai-* tokens so the
@@ -787,7 +809,7 @@ func libraryModelTable(files []store.LocalFile) g.Node {
 				h.Td(h.Class("px-3 py-2 text-slate-400"), g.Text(versionLabel(f.VersionID))),
 				h.Td(h.Class("px-3 py-2"), statusBadge(f)),
 				sizeCell(f.SizeBytes),
-				h.Td(h.Class("px-3 py-2 text-slate-300 truncate max-w-lg"), g.Text(f.Path)),
+				pathCell(h.Class("cm-path-ellipsis px-3 py-2 text-slate-300 truncate max-w-lg"), f.Path),
 			))
 		}
 		if len(rows) >= maxRenderedUnmatchedRows {
@@ -908,7 +930,7 @@ func candidatesTable(cands []store.LocalFile, csrf string) g.Node {
 			),
 			h.Td(h.Class("px-3 py-2"), candidateBadge(c.CandidateReason)),
 			sizeCell(c.SizeBytes),
-			h.Td(h.Class("px-3 py-2 text-slate-300 truncate max-w-md"), g.Text(c.Path)),
+			pathCell(h.Class("cm-path-ellipsis px-3 py-2 text-slate-300 truncate max-w-md"), c.Path),
 			h.Td(h.Class("px-3 py-2 text-right"),
 				civButton("subtle", "sm", []g.Node{
 					h.Type("button"),
@@ -1082,7 +1104,12 @@ type batchView struct {
 
 func trashTable(batches []batchView, csrf string) g.Node {
 	if len(batches) == 0 {
-		return h.P(h.Class("text-sm text-slate-500"), g.Text("Trash is empty."))
+		return emptyState(
+			"Nothing in the trash",
+			"Quarantining a model file moves it here instead of deleting it, so every "+
+				"batch stays restorable to its original location. Flag duplicate, "+
+				"superseded or broken files from the Model files tab and they will show up here.",
+			"/library?tab=files", "Review model files")
 	}
 	var rows []g.Node
 	for _, bv := range batches {

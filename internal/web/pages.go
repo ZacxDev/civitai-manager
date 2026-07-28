@@ -563,7 +563,12 @@ func searchResults(res *civitai.ModelSearchResult, subs map[int]*store.Subscript
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("Enter a query to search CivitAI."))
 	}
 	if len(res.Items) == 0 {
-		return h.P(h.Class("text-sm text-slate-500"), g.Text("No results."))
+		return card(emptyState(
+			"No models matched that search",
+			"CivitAI matched nothing for this query with these filters. Try a shorter or "+
+				"more general term, or widen the Sort/Period filters — an empty query "+
+				"shows what is popular this month.",
+			"/search", "Browse popular models"))
 	}
 	images := parseSearchImages(res.Raw)
 	// Per-model newest version info (from the SAME raw already parsed for images) →

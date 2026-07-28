@@ -75,6 +75,52 @@ input[type="radio"] {
 
 /*
  * ===========================================================================
+ * TOUCH TARGETS
+ * ===========================================================================
+ *
+ * @civitai/components sizes buttons sm 30 / md 36 / lg 44px, and essentially
+ * every control in this app is pinned to the 30px `sm` floor (`lg` is never used
+ * anywhere) — well under any touch-target guidance, on a UI whose densest screens
+ * are exactly the ones you poke on a phone.
+ *
+ * Rather than bulk-resizing every button (which would cost the deliberate desktop
+ * density the tables and card footers are built around), the floor is raised only
+ * where a coarse pointer is actually driving: on touch, `sm` becomes 36px and
+ * `md` becomes 44px — the design system's own next size up in each case, so
+ * nothing invents a new scale. Desktop rendering is byte-identical.
+ */
+@media (pointer: coarse) {
+  [data-civitai-ui="button"][data-size="sm"] {
+    height: 36px;
+  }
+  [data-civitai-ui="button"][data-size="md"] {
+    height: 44px;
+  }
+  .cm-carousel-btn {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+}
+
+/*
+ * .cm-path-ellipsis — right-truncating a filesystem path clips off the ONE part
+ * that identifies it: the filename at the end. These cells flip the truncation to
+ * the START, so `…/checkpoints/sd_xl_base_1.0.safetensors` keeps its tail.
+ *
+ * direction:rtl moves the overflow (and the ellipsis) to the left edge. The path
+ * text itself is wrapped in a <bdi>, whose UA `unicode-bidi: isolate` resolves the
+ * run's own direction — WITHOUT it, an RTL paragraph direction reorders neutral
+ * characters at the ends and a leading "/" would jump to the tail, garbling the
+ * displayed path. Every one of these cells also carries a title= with the full
+ * untruncated path, so nothing depends on the visual trick alone.
+ */
+.cm-path-ellipsis {
+  direction: rtl;
+  text-align: left;
+}
+
+/*
+ * ===========================================================================
  * FOCUS VISIBILITY (WCAG 2.4.7)
  * ===========================================================================
  *
@@ -112,11 +158,30 @@ input[type="radio"] {
  * Kept unlayered so it wins over the app (Tailwind) layer without touching any
  * @civitai/components rule.
  */
+/*
+ * The strip carries three tabs whose labels ("Install directories", "Model
+ * files", "Workflows") plus a gap-6 do not fit a 390px viewport. It had no
+ * overflow handling at all, so it either wrapped into a broken two-row strip or
+ * pushed the page wide. Same treatment as .cm-version-tabs: never wrap, scroll
+ * horizontally instead — with the scrollbar hidden so the strip still reads as a
+ * tab bar (mirrors .cm-navlinks).
+ */
 .lib-tabs {
   border-bottom: 1px solid var(--civitai-color-border);
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  -webkit-overflow-scrolling: touch;
+}
+.lib-tabs::-webkit-scrollbar {
+  display: none;
 }
 .lib-tab {
   display: inline-block;
+  flex: 0 0 auto; /* never shrink/wrap inside the scrolling strip */
+  white-space: nowrap;
   padding: 0.5rem 0.125rem;
   margin-bottom: -1px; /* overlap the strip's 1px border so the active underline sits on it */
   font-size: 0.875rem;
@@ -219,6 +284,11 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   height: 100%;
   width: auto;
 }
+/*
+ * TAP TARGET: 1.75rem was 28x28 CSS px — below every touch-target guideline and
+ * the smallest control in the app, on a strip whose whole purpose is being
+ * poked. 2.25rem (36px) matches the design system's `md` control height.
+ */
 .cm-carousel-btn {
   position: absolute;
   top: 50%;
@@ -227,8 +297,8 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 1.75rem;
-  height: 1.75rem;
+  width: 2.25rem;
+  height: 2.25rem;
   border-radius: 9999px;
   border: 1px solid var(--civitai-color-border);
   background: var(--civitai-color-surface, rgba(15, 23, 42, 0.85));

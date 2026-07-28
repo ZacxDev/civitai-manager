@@ -157,7 +157,13 @@ func scanScanning(snap scanSnapshot, csrf string) g.Node {
 		for _, fr := range snap.Results {
 			cards = append(cards, scanResultCard(fr))
 		}
-		cardChildren = append(cardChildren, h.Div(h.Class("space-y-2"), g.Group(cards)))
+		// BOUNDED, like the discover browse list: the poller appends a card per
+		// matched file for as long as the scan runs, so an unbounded space-y-2 grew
+		// without limit and walked the Stop button (and everything else) off the
+		// bottom of the screen mid-scan. max-h-56 + its own scroll keeps the live
+		// list a fixed-height, scrollable region with the controls always in reach.
+		cardChildren = append(cardChildren, h.Div(
+			h.Class("max-h-56 space-y-2 overflow-y-auto"), g.Group(cards)))
 	}
 	return h.Div(
 		h.Class("mt-2 space-y-2"),
@@ -252,7 +258,7 @@ func scanResultCard(fr library.FileResult) g.Node {
 		h.Div(
 			h.Class("min-w-0 space-y-1"),
 			title,
-			h.Div(h.Class("truncate text-xs text-slate-400"), g.Text(fr.Name)),
+			h.Div(h.Class("truncate text-xs text-slate-400"), h.Title(fr.Name), g.Text(fr.Name)),
 			h.Div(h.Class("flex flex-wrap items-center gap-1"), g.Group(meta)),
 		),
 		sizeText(fr.SizeBytes),
