@@ -710,6 +710,78 @@ func TestMatchPackInDiff(t *testing.T) {
 	}
 }
 
+// TestAttributeMissingNodesFromManager exercises the REAL attribution seam
+// against a fake ComfyUI-Manager serving both index documents.
+//
+// Every class resolves at the Manager rung, so no later rung runs and the test
+// makes NO outbound request — which is also the production property worth
+// pinning: a Manager that answers fully costs zero egress. The fixture keeps the
+// two shapes that cost real bugs: a URL mapping KEY (43% of the live document,
+// resolvable only through the repository leg of the two-way join) and a
+// nightly-only pack (not installable, with a reason).
+func TestAttributeMissingNodesFromManager(t *testing.T) {
+	srv := newLibraryTestServer(t, t.TempDir())
+	srv.managerClientFn = func() managerClient {
+		return &fakeManager{
+			info: managerPresent(),
+			mappings: json.RawMessage(`{
+				"comfy-mtb": [["Pick From Batch (mtb)"], {"title_aux": "comfy-mtb"}],
+				"https://github.com/GACLove/ComfyUI-VFI": [["RIFEInterpolation"], {"title_aux": "ComfyUI-VFI"}]
+			}`),
+			getlist: json.RawMessage(`{"node_packs": {
+				"comfy-mtb": {"cnr_latest": "0.5.4", "repository": "https://github.com/melMass/comfy_mtb", "title": "comfy-mtb"},
+				"ComfyUI-VFI": {"cnr_latest": "nightly", "repository": "https://github.com/GACLove/ComfyUI-VFI", "title": "ComfyUI-VFI"}
+			}}`),
+		}
+	}
+
+	attr := srv.attributeMissingNodes(context.Background(),
+		[]string{"Pick From Batch (mtb)", "RIFEInterpolation"})
+
+	if !attr.ManagerPresent || attr.ManagerVersion != "V3.41" {
+		t.Fatalf("manager state = present:%v version:%q", attr.ManagerPresent, attr.ManagerVersion)
+	}
+	if len(attr.Unattributed) != 0 {
+		t.Errorf("everything should have resolved at the Manager rung, unattributed=%v", attr.Unattributed)
+	}
+	if len(attr.Packs) != 2 {
+		t.Fatalf("packs = %d, want 2: %+v", len(attr.Packs), attr.Packs)
+	}
+	byTitle := map[string]comfy.Pack{}
+	for _, p := range attr.Packs {
+		byTitle[p.Title] = p
+	}
+	mtb, ok := byTitle["comfy-mtb"]
+	if !ok || !mtb.Installable || mtb.Version != "0.5.4" {
+		t.Errorf("comfy-mtb should be installable at 0.5.4, got %+v", mtb)
+	}
+	// Resolvable ONLY through the URL leg: the mapping key is a repository URL,
+	// and the pack it belongs to is keyed by id in getlist.
+	vfi, ok := byTitle["ComfyUI-VFI"]
+	if !ok {
+		t.Fatalf("the URL mapping key did not resolve: %+v", attr.Packs)
+	}
+	if vfi.Installable || vfi.Reason == "" {
+		t.Errorf("a nightly-only pack must be blocked WITH a reason, got %+v", vfi)
+	}
+	if vfi.Repository != "https://github.com/GACLove/ComfyUI-VFI" {
+		t.Errorf("repository = %q", vfi.Repository)
+	}
+}
+
+// TestAttributeMissingNodesNoClasses proves the empty case short-circuits before
+// any client is built — no probe, no egress.
+func TestAttributeMissingNodesNoClasses(t *testing.T) {
+	srv := newLibraryTestServer(t, t.TempDir())
+	srv.managerClientFn = func() managerClient {
+		t.Fatal("attribution must not build a Manager client for zero classes")
+		return nil
+	}
+	if attr := srv.attributeMissingNodes(context.Background(), nil); len(attr.Packs) != 0 || attr.ManagerPresent {
+		t.Errorf("empty attribution = %+v", attr)
+	}
+}
+
 // installVals is the hx-vals payload the Install button issues for the
 // installable fixture pack.
 func installVals() url.Values {
