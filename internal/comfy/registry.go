@@ -238,12 +238,33 @@ func (c *RegistryClient) LookupClass(ctx context.Context, class string) (Pack, e
 	if class == "" {
 		return Pack{}, ErrRegistryNotFound
 	}
+	raw, err := c.LookupClassRaw(ctx, class)
+	if err != nil {
+		return Pack{}, err
+	}
+	return DecodeRegistryPack(raw, class)
+}
+
+// LookupClassRaw is LookupClass returning the exact response body, so a caller
+// can persist it in the node-pack cache and re-decode it later without a second
+// request. A 404 is ErrRegistryNotFound.
+func (c *RegistryClient) LookupClassRaw(ctx context.Context, class string) ([]byte, error) {
+	class = strings.TrimSpace(class)
+	if class == "" {
+		return nil, ErrRegistryNotFound
+	}
 	seg := strings.ReplaceAll(url.PathEscape(class), "+", "%2B")
 	rawURL := c.registryBase + "/comfy-nodes/" + seg + "/node"
+	return c.getBytes(ctx, rawURL, maxRegistryJSONBytes)
+}
 
+// DecodeRegistryPack turns a cached/fetched Registry body into a Pack for class.
+// A body that identifies no pack (including the JSON null a cached MISS is
+// stored as) is ErrRegistryNotFound.
+func DecodeRegistryPack(raw []byte, class string) (Pack, error) {
 	var node registryNode
-	if err := c.getJSON(ctx, rawURL, maxRegistryJSONBytes, &node); err != nil {
-		return Pack{}, err
+	if err := json.Unmarshal(raw, &node); err != nil {
+		return Pack{}, fmt.Errorf("comfy: decode registry node %q: %w", class, err)
 	}
 	id := firstNonEmpty(node.ID, node.Name)
 	if id == "" {
@@ -400,16 +421,4 @@ func (c *RegistryClient) getBytes(ctx context.Context, rawURL string, max int64)
 		return nil, fmt.Errorf("comfy: read %s: %w", rawURL, err)
 	}
 	return data, nil
-}
-
-// getJSON fetches rawURL and decodes it into v under the size cap.
-func (c *RegistryClient) getJSON(ctx context.Context, rawURL string, max int64, v any) error {
-	data, err := c.getBytes(ctx, rawURL, max)
-	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal(data, v); err != nil {
-		return fmt.Errorf("comfy: decode %s: %w", rawURL, err)
-	}
-	return nil
 }
