@@ -1,0 +1,26 @@
+{
+  "_comment": "GOLDEN wire-shape snapshot of the auditloop plugin-push `metadata` body that this harness emits. It exists to make DRIFT between the harness's hand-mirrored structs (e2e/uxaudit/push.go: PushPayload/PushPage/PushFinding) and auditloop's REAL schema fail a TEST, not a live push. The json KEYS below must match auditloop's server field names exactly (viewport values mobile|desktop; finding.type in a11y|console|network|perf|layout|other). Mirrored from auditloop internal/plugin/schema.go @ commit 0da3004 (2026-07-24). auditloop's PushPage additionally accepts OPTIONAL `perf` and `layout` measurement blocks (omitempty); this harness deliberately does NOT emit them, so they are absent here by design. When you re-mirror, bump this comment's commit/date and update push.go together.",
+  "label": "civitai-manager funnel",
+  "environment": "lab",
+  "pages": [
+    {
+      "url": "dashboard@desktop",
+      "viewport": "desktop",
+      "screenshot": "dashboard.desktop.png",
+      "axe": "dashboard.desktop.axe.json",
+      "network": "dashboard.desktop.network.json",
+      "axe_violations": 2,
+      "console_first_party": 1,
+      "console_third_party": 0,
+      "network_first_party": 0,
+      "network_third_party": 3,
+      "findings": [
+        {
+          "type": "a11y",
+          "severity": "serious",
+          "detail": "image-alt — Images must have alternate text"
+        }
+      ]
+    }
+  ]
+}
