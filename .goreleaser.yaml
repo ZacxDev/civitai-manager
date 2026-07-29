@@ -55,6 +55,94 @@ checksum:
   name_template: checksums.txt
   algorithm: sha256
 
+# Native Linux packages, built from the same binaries as the tarballs. The
+# `nfpm` pipe is OSS (no GoReleaser Pro needed) and requires no extra secret —
+# the .deb/.rpm are just more files attached to the GitHub Release.
+nfpms:
+  - id: civitai-manager
+    ids:
+      - civitai-manager
+    package_name: civitai-manager
+    vendor: ZacxDev
+    homepage: https://github.com/ZacxDev/civitai-manager
+    maintainer: Zach Lowden <zachlowden1@gmail.com>
+    description: |-
+      Subscribe to CivitAI models/creators and auto-download new versions.
+      Runs a ComfyUI workflow and fetches the model files it is missing,
+      subscribes to CivitAI models and creators, and scans a local model
+      library for duplicates and broken files. Single static binary with a
+      loopback-only offline web UI and a local SQLite state file.
+    license: Apache-2.0
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    section: utils
+    priority: optional
+    contents:
+      - src: LICENSE
+        dst: /usr/share/doc/civitai-manager/LICENSE
+      - src: README.md
+        dst: /usr/share/doc/civitai-manager/README.md
+
+# Homebrew via a personal tap. homebrew-core is not an option: its policy needs
+# 75 GitHub stars (225 to self-submit) and this repo has nowhere near that.
+#
+# `homebrew_casks` — NOT the old `brews` — because `brews` was hard-deprecated
+# in GoReleaser v2.16 and is removed in v3. Casks cover Linux as well as macOS
+# (Homebrew 4.5.0 added Linux casks, 5.0.0 ARM Linux), so one cask serves both.
+# Casks have no `test do` block and no bottles; `livecheck { skip ... }` is
+# emitted by GoReleaser itself.
+homebrew_casks:
+  - name: civitai-manager
+    ids:
+      - civitai-manager
+    homepage: https://github.com/ZacxDev/civitai-manager
+    description: Subscribe to CivitAI models/creators and auto-download new versions
+    license: Apache-2.0
+
+    # PUBLISHING IS OFF UNTIL THE OWNER OPTS IN.
+    #
+    # Neither ZacxDev/homebrew-tap nor the HOMEBREW_TAP_GITHUB_TOKEN secret
+    # exists yet. Without this guard, a tagged release would reach the cask
+    # publish step, fail to expand `.Env.HOMEBREW_TAP_GITHUB_TOKEN`, and take
+    # the whole release down with it. With it, GoReleaser still WRITES
+    # dist/homebrew/Casks/civitai-manager.rb (so the artifact is reviewable)
+    # and simply skips the upload.
+    #
+    # GoReleaser resolves `skip_upload` before it touches `repository.token`,
+    # so the token template below is never evaluated while the secret is
+    # absent. Once the secret exists, this flips to false on its own — no
+    # config change needed.
+    skip_upload: '{{ if eq (envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "") "" }}true{{ else }}false{{ end }}'
+
+    repository:
+      owner: ZacxDev
+      name: homebrew-tap
+      # A per-release branch, because the cask is delivered as a PULL REQUEST
+      # rather than a direct push. A release workflow that is compromised can
+      # then only propose a tap change, not silently rewrite the tap.
+      branch: "{{ .ProjectName }}-{{ .Version }}"
+      # Must be exactly `{{ .Env.NAME }}` — GoReleaser validates this field
+      # against a single-env-var regexp to discourage inline credentials.
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+      pull_request:
+        enabled: true
+        base:
+          branch: main
+
+    # The release binaries are not code-signed or notarized, so macOS
+    # quarantines them on download and the first run dies with "cannot be
+    # opened because the developer cannot be verified". Stripping the
+    # quarantine xattr at install time is the standard cask workaround for
+    # unsigned software.
+    hooks:
+      post:
+        install: |
+          if OS.mac? && system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/civitai-manager"]
+          end
+
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
@@ -82,19 +170,3 @@ release:
   # extra secret is required — release.yml passes the built-in GITHUB_TOKEN.
   draft: false
   prerelease: auto
-
-# --- Homebrew tap (intentionally NOT configured in this pass) ---
-# Publishing a Homebrew formula needs a separate tap repo (e.g.
-# github.com/ZacxDev/homebrew-tap) and a HOMEBREW_TAP_GITHUB_TOKEN secret with
-# write access to it. When you want `brew install`, create that repo, add the
-# token secret, and uncomment/fill the block below.
-#
-# brews:
-#   - name: civitai-manager
-#     repository:
-#       owner: ZacxDev
-#       name: homebrew-tap
-#       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-#     homepage: https://github.com/ZacxDev/civitai-manager
-#     description: Subscribe to CivitAI models/creators and auto-download new versions
-#     license: Apache-2.0
