@@ -1,7 +1,8 @@
 name: Release
 
-# Cuts a GitHub Release with cross-compiled binaries via GoReleaser when a
-# semver tag is pushed:  git tag v0.1.0 && git push origin v0.1.0
+# Cuts a GitHub Release with cross-compiled binaries, .deb/.rpm packages and a
+# Homebrew cask via GoReleaser when a semver tag is pushed:
+#   git tag v0.1.0 && git push origin v0.1.0
 on:
   push:
     tags:
@@ -10,13 +11,17 @@ on:
 permissions:
   # Required for GoReleaser to create the GitHub Release and upload artifacts.
   contents: write
+  # Keyless signing of the build provenance: the OIDC token identifies this
+  # workflow to Sigstore, so no cosign key or secret is involved.
+  id-token: write
+  attestations: write
 
 jobs:
   goreleaser:
     name: goreleaser
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # Full history so GoReleaser can build the changelog from git.
           fetch-depth: 0
@@ -28,9 +33,25 @@ jobs:
           cache: true
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Publishing the Homebrew cask is OFF until this secret exists.
+          # .goreleaser.yaml keys `homebrew_casks[0].skip_upload` off it, so an
+          # absent secret skips the cask cleanly instead of failing the release.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+      # Signs build provenance for every artifact listed in checksums.txt —
+      # tarballs, zips, .deb and .rpm — not just the checksums file itself.
+      # `subject-checksums` is what makes the per-artifact verification below
+      # work; `subject-path: dist/checksums.txt` would only attest that one file.
+      #
+      # Users verify a download with:
+      #   gh attestation verify --owner ZacxDev civitai-manager_X_linux_amd64.tar.gz
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-checksums: dist/checksums.txt
