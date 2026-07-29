@@ -73,6 +73,12 @@ type nodeAttribution struct {
 	// human explanation of an absent/degraded state. Both are rendered escaped.
 	ManagerVersion string
 	ManagerNote    string
+	// ComfyRoot is the configured ComfyUI install root, captured at settle so the
+	// panel can render a real manual-install command instead of a placeholder
+	// path. It travels here rather than as yet another render parameter threaded
+	// through the whole run-status fragment chain; it is set OUTSIDE the
+	// attribution seam (from config), never derived from a third-party index.
+	ComfyRoot string
 }
 
 // managerClient returns the ComfyUI-Manager client: the test seam when set,

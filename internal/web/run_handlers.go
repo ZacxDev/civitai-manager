@@ -437,6 +437,7 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater,
 		var nodeAttr nodeAttribution
 		if len(report.MissingNodes) > 0 {
 			nodeAttr = s.attributeMissingNodes(ctx, report.MissingNodes)
+			nodeAttr.ComfyRoot = s.cfg.ComfyRoot
 		}
 		if len(report.MissingModels) > 0 {
 			missing = comfy.AnalyzeMissingModels(apiGraph, info, report.MissingModels, wf.BaseModel)

@@ -318,7 +318,11 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mode
 
 	if snap.Preflight != nil {
 		if len(snap.Preflight.MissingNodes) > 0 {
-			detail = append(detail, missingList("Missing custom nodes", snap.Preflight.MissingNodes))
+			// Attributed, actionable panel: which pack provides each missing class, a
+			// gated Install where ComfyUI-Manager can do it, and always a manual
+			// command. The attribution was computed once at settle (never per poll).
+			detail = append(detail, missingNodesPanel(snap.NodeAttr, snap.Preflight.MissingNodes,
+				wfID, csrf, snap.NodeAttr.ComfyRoot))
 		}
 		if len(snap.Preflight.MissingModels) > 0 {
 			// The actionable panel (resolve-to-CivitAI + run-with-substitute) needs the
