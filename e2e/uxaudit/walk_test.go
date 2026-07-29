@@ -91,7 +91,13 @@ func TestUXAuditWalk(t *testing.T) {
 
 	// The HERO: the missing-models resolution panel must actually have rendered —
 	// assert on its CONTENT (the panel heading AND a specific missing filename the
-	// fixture guarantees), not merely a 200 / non-empty shot.
+	// fixture guarantees), not merely a 200 / non-empty shot. The RE-PIN guarantee (the
+	// captured panel belongs to the run this walk triggered, not a stale prior run left
+	// in the server-global #run-status) is enforced upstream by the hero Prep's
+	// waitForNewRunPanel: it only lets the capture proceed once #run-status shows a
+	// data-run-seq strictly greater than the pre-click value AND the marker text, so a
+	// stale panel can never satisfy it and the walk fails loudly if this run's panel
+	// never appears.
 	if heroCap == nil {
 		t.Fatal("no hero (run-missing-models) capture found")
 	}

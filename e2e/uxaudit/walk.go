@@ -55,20 +55,30 @@ func Views(app *App) []View {
 		// HERO: trigger a run; the fake ComfyUI + seeded un-installed models make
 		// preflight report both models missing, rendering the resolution panel.
 		{Name: "run-missing-models", Path: wfPath, Hero: true, Prep: func(*App) []chromedp.Action {
+			// preSeq holds the run-status container's data-run-seq BEFORE we trigger a new
+			// run — captured at action time (readRunSeq), then read by waitForNewRunPanel.
+			var preSeq int64
 			return []chromedp.Action{
 				// The Run button appears once the comfy-status htmx fragment reports the
 				// (fake) ComfyUI reachable.
 				chromedp.WaitVisible(runSel, chromedp.ByQuery),
+				// The run job is a server-global SINGLETON, so a fresh navigation can
+				// bootstrap #run-status with a PREVIOUS run's terminal panel. Each run is
+				// stamped server-side with a strictly-increasing data-run-seq; capture the
+				// currently-displayed seq (0 when idle / no prior run) so we can re-pin to
+				// the run THIS click starts — which will carry a strictly-greater seq.
+				readRunSeq("#run-status", &preSeq),
 				chromedp.Click(runSel, chromedp.ByQuery),
-				// The run is async (POST → running fragment → poller → terminal). Because
-				// the run-job is a server-global singleton, a fresh navigation can bootstrap
-				// #run-status with the PREVIOUS run's terminal panel — so we can't just wait
-				// for the missing-models text (it may be stale). Instead: (1) confirm THIS
-				// run went in-flight (the running fragment's Stop button appears), (2) wait
-				// for it to settle (Stop gone), then (3) assert the terminal panel rendered.
-				waitForText("#run-status", "Stop", 15*time.Second),
-				waitForTextGone("#run-status", "Stop", 45*time.Second),
-				waitForText("#run-status", HeroMarker, 10*time.Second),
+				// Condition-based (not window-based) re-pin: wait until #run-status shows a
+				// run whose data-run-seq > preSeq (proves it is the run this click started,
+				// NEVER a stale prior panel) AND the terminal missing-models panel has
+				// rendered. This tolerates the run settling to its preflight-failure terminal
+				// BEFORE the transient in-flight "Stop" fragment is ever observed — which is
+				// exactly where the old Stop-appears → Stop-gone chain flaked (a fast
+				// preflight failure + the +1s self-poll could miss the ephemeral window and
+				// time out step 1). The seq gate keeps the re-pin guarantee the old chain
+				// gave: the asserted panel provably belongs to this run, not a leftover.
+				waitForNewRunPanel("#run-status", HeroMarker, &preSeq, 60*time.Second),
 				chromedp.Sleep(300 * time.Millisecond),
 			}
 		}},
@@ -230,42 +240,54 @@ func setOf(files map[string][]byte) map[string]bool {
 	return out
 }
 
-// waitForText blocks until the element at sel has innerText containing text, or the
-// timeout elapses (a loud error — the walk fails rather than capturing a wrong
-// state). Implemented as a polling Evaluate so it needs no chromedp version-specific
-// Poll helper.
-func waitForText(sel, text string, timeout time.Duration) chromedp.Action {
-	return waitForCond(sel, text, true, timeout)
+// readRunSeq reads the data-run-seq attribute of the run-status fragment inside
+// containerSel into *out (0 when the container is idle / has no run-scoped child). It
+// is a snapshot of the CURRENTLY-displayed run's server-assigned monotonic identity,
+// taken before triggering a new run so a later wait can re-pin to a strictly-newer run.
+func readRunSeq(containerSel string, out *int64) chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		expr := fmt.Sprintf(
+			"(()=>{const el=document.querySelector(%q);if(!el)return 0;const v=parseInt(el.getAttribute('data-run-seq'),10);return isNaN(v)?0:v;})()",
+			containerSel+" [data-run-seq]")
+		var seq int64
+		if err := chromedp.Evaluate(expr, &seq).Do(ctx); err != nil {
+			return err
+		}
+		*out = seq
+		return nil
+	})
 }
 
-// waitForTextGone blocks until the element at sel no longer has innerText containing
-// text (or the timeout elapses). Used to observe a transient state clearing (e.g. the
-// run's Stop button disappearing as it settles to its terminal panel).
-func waitForTextGone(sel, text string, timeout time.Duration) chromedp.Action {
-	return waitForCond(sel, text, false, timeout)
-}
-
-// waitForCond polls until (sel's innerText contains text) == want, or timeout.
-func waitForCond(sel, text string, want bool, timeout time.Duration) chromedp.Action {
+// waitForNewRunPanel blocks until the run-status fragment inside containerSel both (a)
+// carries a data-run-seq strictly greater than *preSeq — proving it is the run just
+// triggered, not a stale panel left by a prior run of the same workflow — AND (b) its
+// text contains marker (the terminal panel has rendered). *preSeq is read at poll time
+// (it is filled by an earlier readRunSeq action). This is the condition-based re-pin
+// that replaces the fragile "observe the transient Stop button" chain: it does not
+// depend on catching any ephemeral in-flight window, so a run that settles immediately
+// still satisfies it, while a stale prior panel (seq <= preSeq) never does.
+func waitForNewRunPanel(containerSel, marker string, preSeq *int64, timeout time.Duration) chromedp.Action {
 	return chromedp.ActionFunc(func(ctx context.Context) error {
 		deadline := time.Now().Add(timeout)
-		expr := fmt.Sprintf(
-			"(()=>{const el=document.querySelector(%q);return !!(el&&el.innerText&&el.innerText.indexOf(%q)>=0);})()",
-			sel, text)
 		for {
-			var present bool
-			if err := chromedp.Evaluate(expr, &present).Do(ctx); err != nil {
+			prev := *preSeq
+			expr := fmt.Sprintf(
+				"(()=>{const c=document.querySelector(%q);if(!c)return false;"+
+					"const el=c.querySelector('[data-run-seq]');if(!el)return false;"+
+					"const v=parseInt(el.getAttribute('data-run-seq'),10);"+
+					"if(isNaN(v)||v<=%d)return false;"+
+					"return !!(c.innerText&&c.innerText.indexOf(%q)>=0);})()",
+				containerSel, prev, marker)
+			var ok bool
+			if err := chromedp.Evaluate(expr, &ok).Do(ctx); err != nil {
 				return err
 			}
-			if present == want {
+			if ok {
 				return nil
 			}
 			if time.Now().After(deadline) {
-				verb := "present"
-				if !want {
-					verb = "gone"
-				}
-				return fmt.Errorf("timeout after %s waiting for %q to be %s in %s", timeout, text, verb, sel)
+				return fmt.Errorf("timeout after %s waiting for a new run (data-run-seq > %d) showing %q in %s",
+					timeout, prev, marker, containerSel)
 			}
 			select {
 			case <-ctx.Done():

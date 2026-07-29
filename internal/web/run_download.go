@@ -810,8 +810,9 @@ func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opt
 		base = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(base, runJobBudget)
+	s.runSeq++
 	job := &runJob{
-		running: true, workflowID: wf.ID, phase: runPhaseDownloading,
+		running: true, workflowID: wf.ID, seq: s.runSeq, phase: runPhaseDownloading,
 		message: "Preparing download of " + pd.progressName() + "…", startedAt: time.Now(), cancel: cancel,
 		uiFormat: wf.Format == store.WorkflowFormatUI,
 	}
