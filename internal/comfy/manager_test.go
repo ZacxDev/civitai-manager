@@ -735,6 +735,174 @@ func TestManagerProbeSurfacesTransportFailure(t *testing.T) {
 	}
 }
 
+// TestManagerV4RoutesAreVersioned: every V4 call must go to /api/v2/…. A V3 path
+// on a V4 server 404s silently, which would read as "Manager did nothing".
+func TestManagerV4RoutesAreVersioned(t *testing.T) {
+	var seenStatus, seenReboot, seenVersion bool
+	handlers := map[string]http.HandlerFunc{
+		"/api/v2/manager/queue/status": func(w http.ResponseWriter, _ *http.Request) {
+			seenStatus = true
+			_, _ = w.Write([]byte(`{"total_count":2,"done_count":1,"in_progress_count":1,"is_processing":true}`))
+		},
+		"/api/v2/manager/version": func(w http.ResponseWriter, _ *http.Request) {
+			seenVersion = true
+			_, _ = w.Write([]byte("V4.2.1"))
+		},
+		"/api/v2/manager/reboot": func(w http.ResponseWriter, _ *http.Request) {
+			seenReboot = true
+			w.WriteHeader(http.StatusOK)
+		},
+		"/queue": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"queue_running": [], "queue_pending": []}`))
+		},
+	}
+	c, h := newManagerHarness(t, handlers)
+	ctx := context.Background()
+
+	info, err := c.ManagerProbe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Line != ManagerLineV4 || info.Version != "V4.2.1" {
+		t.Fatalf("info = %+v", info)
+	}
+	st, err := c.ManagerQueueStatus(ctx, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.IsProcessing || st.TotalCount != 2 {
+		t.Errorf("status = %+v", st)
+	}
+	if err := c.ManagerReboot(ctx, info); err != nil {
+		t.Fatal(err)
+	}
+	if !seenStatus || !seenVersion || !seenReboot {
+		t.Errorf("a V4 call fell back to a V3 path: %v", h.seen())
+	}
+	for _, req := range h.seen() {
+		if strings.Contains(req, "/api/manager/") {
+			t.Errorf("V4 client issued an unversioned V3 request: %s", req)
+		}
+	}
+}
+
+// TestManagerRebootSurfacesARefusal: Manager's own security policy can 403 the
+// reboot; that is a real failure, distinct from the os.execv transport EOF.
+func TestManagerRebootSurfacesARefusal(t *testing.T) {
+	handlers := v3Handlers(t)
+	handlers["/api/manager/reboot"] = func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "A security error has occurred. Please check the terminal logs", http.StatusForbidden)
+	}
+	c, _ := newManagerHarness(t, handlers)
+	info, _ := c.ManagerProbe(context.Background())
+	err := c.ManagerReboot(context.Background(), info)
+	if err == nil {
+		t.Fatal("expected the 403 to surface")
+	}
+	if errors.Is(err, ErrQueueBusy) {
+		t.Errorf("a policy refusal must not masquerade as a busy queue: %v", err)
+	}
+	if !strings.Contains(err.Error(), "security error") {
+		t.Errorf("Manager's own reason was lost: %v", err)
+	}
+}
+
+// TestManagerAlive is the post-reboot readiness probe: false while ComfyUI is
+// restarting, true once it answers again.
+func TestManagerAlive(t *testing.T) {
+	answering := false
+	c, _ := newManagerHarness(t, map[string]http.HandlerFunc{
+		"/api/manager/queue/status": func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{}`)) },
+		"/api/manager/version": func(w http.ResponseWriter, _ *http.Request) {
+			if !answering {
+				http.Error(w, "restarting", http.StatusServiceUnavailable)
+				return
+			}
+			_, _ = w.Write([]byte("V3.41"))
+		},
+	})
+	info, _ := c.ManagerProbe(context.Background())
+	if c.ManagerAlive(context.Background(), info) {
+		t.Error("ManagerAlive must be false while ComfyUI is down")
+	}
+	answering = true
+	if !c.ManagerAlive(context.Background(), info) {
+		t.Error("ManagerAlive must be true once Manager answers again")
+	}
+	// A nil info (nothing probed yet) must not panic; it falls back to the V3 path.
+	if !c.ManagerAlive(context.Background(), nil) {
+		t.Error("ManagerAlive with a nil info should still probe the V3 path")
+	}
+}
+
+// TestManagerVersionShapeTolerance: V3 answers plain text, but a future line may
+// answer JSON. Neither shape may break detection, and a hostile giant body is
+// truncated rather than surfaced whole.
+func TestManagerVersionShapeTolerance(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"plain text (V3, live)", "V3.41", "V3.41"},
+		{"plain text with whitespace", "  V3.41\n", "V3.41"},
+		{"JSON string", `"V4.2.1"`, "V4.2.1"},
+		{"JSON object", `{"version":"V4.2.1"}`, "V4.2.1"},
+		{"absurdly long", strings.Repeat("x", 500), strings.Repeat("x", 64)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newManagerHarness(t, map[string]http.HandlerFunc{
+				"/api/manager/version": func(w http.ResponseWriter, _ *http.Request) {
+					_, _ = w.Write([]byte(tc.body))
+				},
+			})
+			got, err := c.managerVersion(context.Background(), ManagerLineV3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("version = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestManagerQueueStatusAbsent: no Manager, no status.
+func TestManagerQueueStatusAbsent(t *testing.T) {
+	c, _ := newManagerHarness(t, nil)
+	if _, err := c.ManagerQueueStatus(context.Background(), nil); !errors.Is(err, ErrManagerAbsent) {
+		t.Fatalf("err = %v, want ErrManagerAbsent", err)
+	}
+}
+
+// TestManagerInstalledDiffRejectsGarbage: a malformed installed set must error
+// rather than silently reporting an empty (or bogus) pending list — a wrong
+// answer here tells the user their install succeeded or failed incorrectly.
+func TestManagerInstalledDiffRejectsGarbage(t *testing.T) {
+	c, _ := newManagerHarness(t, map[string]http.HandlerFunc{
+		"/api/customnode/installed": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`<html>not json</html>`))
+		},
+	})
+	if _, err := c.ManagerInstalledDiff(context.Background()); err == nil {
+		t.Fatal("expected a parse error")
+	}
+	// A non-2xx on either half is an error too.
+	c2, _ := newManagerHarness(t, map[string]http.HandlerFunc{
+		"/api/customnode/installed": func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Get("mode") == "imported" {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write([]byte(`{"a":{}}`))
+		},
+	})
+	if _, err := c2.ManagerInstalledDiff(context.Background()); err == nil {
+		t.Fatal("expected the imported-side failure to surface")
+	}
+}
+
 // TestManagerInstalledDiffIsSorted keeps the pending list deterministic.
 func TestManagerInstalledDiffIsSorted(t *testing.T) {
 	c, _ := newManagerHarness(t, map[string]http.HandlerFunc{
