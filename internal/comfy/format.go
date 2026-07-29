@@ -248,6 +248,74 @@ func hasModelExtension(s string) bool {
 	return false
 }
 
+// referenceWalkMaxDepth bounds the ReferencesModelFile walk so a pathologically
+// nested (or hostile) graph cannot drive unbounded recursion. Real ComfyUI graphs
+// nest a handful of levels; 64 is far past anything legitimate.
+const referenceWalkMaxDepth = 64
+
+// ReferencesModelFile reports whether a graph references filename as a string value
+// ANYWHERE in it. It is a BINDING predicate, not an inventory: the web layer uses it
+// to confirm that a (workflow, filename) pair supplied by a request actually belongs
+// together before that filename is allowed to drive a network fetch and a filesystem
+// write.
+//
+// It deliberately does NOT reuse ExtractResources/ExtractResourcesAny. Those are
+// advisory and narrow — the api path only looks at LOADER classes, so a legitimate
+// install target on a non-loader node (e.g. UltralyticsDetectorProvider's model_name)
+// would be reported as unreferenced and the user's click refused. This walks every
+// string leaf of either format instead, which cannot produce that false negative.
+//
+// Matching is case-insensitive on the whole reference OR its basename (a reference may
+// carry a subfolder prefix like "bbox/face_yolov9c.pt"). An unparseable graph, an empty
+// filename, or exceeding the depth bound yields false.
+func ReferencesModelFile(format string, graph json.RawMessage, filename string) bool {
+	want := strings.ToLower(strings.TrimSpace(filename))
+	if want == "" {
+		return false
+	}
+	wantBase := strings.ToLower(pathBase(want))
+	var any interface{}
+	if err := json.Unmarshal(graph, &any); err != nil {
+		return false
+	}
+	return jsonHasString(any, want, wantBase, 0)
+}
+
+// jsonHasString walks decoded JSON for a string leaf matching want (or its basename).
+func jsonHasString(v interface{}, want, wantBase string, depth int) bool {
+	if depth > referenceWalkMaxDepth {
+		return false
+	}
+	switch t := v.(type) {
+	case string:
+		low := strings.ToLower(strings.TrimSpace(t))
+		return low == want || (wantBase != "" && strings.ToLower(pathBase(low)) == wantBase)
+	case []interface{}:
+		for _, e := range t {
+			if jsonHasString(e, want, wantBase, depth+1) {
+				return true
+			}
+		}
+	case map[string]interface{}:
+		for _, e := range t {
+			if jsonHasString(e, want, wantBase, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// pathBase is filepath.Base over a forward/back-slash path, without importing
+// path/filepath semantics that differ per OS for a graph written on another machine.
+func pathBase(s string) string {
+	s = strings.ReplaceAll(s, "\\", "/")
+	if i := strings.LastIndex(s, "/"); i >= 0 {
+		return s[i+1:]
+	}
+	return s
+}
+
 // isJSONArray reports whether raw is a non-null JSON array.
 func isJSONArray(raw json.RawMessage) bool {
 	for i := 0; i < len(raw); i++ {
