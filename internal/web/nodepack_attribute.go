@@ -194,16 +194,33 @@ func (s *Server) realAttributeMissingNodes(parent context.Context, classes []str
 		}
 	}
 
-	// Both remaining rungs are OUTBOUND. res is nil when `resolve_node_packs` is
-	// off, and that nil is the whole opt-out: no resolver, hence no HTTP client,
-	// hence no DNS lookup and no connection to either public host. Whatever Manager
-	// could not place simply stays unattributed.
-	res := s.nodePackResolver()
+	// Both remaining rungs are OUTBOUND, so they live behind ONE gate: the resolver
+	// is built only when something is still unplaced (a fully-resolving Manager
+	// costs zero requests) AND `resolve_node_packs` is on. A nil res IS the opt-out
+	// — no resolver, hence no HTTP client, hence no DNS lookup and no connection to
+	// either public host; whatever Manager could not place stays unattributed.
+	if len(remaining) > 0 {
+		if res := s.nodePackResolver(); res != nil {
+			packs, un := s.attributeRemote(ctx, res, remaining)
+			sets, remaining = append(sets, packs...), un
+		}
+	}
+
+	out.Packs = comfy.MergePacks(sets...)
+	out.Unattributed = remaining
+	return out
+}
+
+// attributeRemote runs the two OUTBOUND rungs (static extension-node-map, then
+// the Comfy Registry) over the classes no local rung could place. It is only ever
+// reached with a non-nil resolver, i.e. with `resolve_node_packs` on.
+func (s *Server) attributeRemote(ctx context.Context, res *comfy.NodePackResolver, remaining []string) ([][]comfy.Pack, []string) {
+	var sets [][]comfy.Pack
 
 	// Rung 1' : the static extension-node-map, the no-Manager source. Same
 	// document shape as getmappings but WITHOUT the nodename_pattern rules and
 	// without cnr_latest, so nothing it produces is auto-installable.
-	if res != nil && len(remaining) > 0 {
+	if len(remaining) > 0 {
 		if raw, err := res.StaticIndex(ctx); err != nil {
 			s.log.Warn("fetch static node-pack index failed", "err", err)
 		} else {
@@ -218,7 +235,7 @@ func (s *Server) realAttributeMissingNodes(parent context.Context, classes []str
 
 	// Rung 2: the Comfy Registry, one request per still-unplaced class (no batch
 	// endpoint exists), capped and cached.
-	if res != nil && len(remaining) > 0 {
+	if len(remaining) > 0 {
 		ask, overflow := remaining, []string(nil)
 		if len(ask) > maxRegistryClasses {
 			ask, overflow = ask[:maxRegistryClasses], ask[maxRegistryClasses:]
@@ -231,7 +248,5 @@ func (s *Server) realAttributeMissingNodes(parent context.Context, classes []str
 		remaining = append(un, overflow...)
 	}
 
-	out.Packs = comfy.MergePacks(sets...)
-	out.Unattributed = remaining
-	return out
+	return sets, remaining
 }
