@@ -30,13 +30,72 @@ private, and a `sum.golang.org … 500` plus an `undefined:` cascade from
 now see that signature, treat it as a genuine failure to investigate, not
 something GOPRIVATE will paper over.
 
-## Release flow — tag → GoReleaser → GitHub Release
+## Release flow — bump flake → tag → GoReleaser → GitHub Release
 
-1. Tag a semver on `main`: `git tag vX.Y.Z && git push origin vX.Y.Z`.
-2. `.github/workflows/release.yml` runs **GoReleaser** (`goreleaser-action@v6`,
+1. **Bump `version` in `flake.nix`** and commit it. It is a hard-coded string
+   feeding the same `-X main.version` ldflag GoReleaser uses; forget it and Nix
+   users get a binary reporting the PREVIOUS release.
+2. Tag a semver on `main`: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+3. `.github/workflows/release.yml` runs **GoReleaser** (`goreleaser-action@v7`,
    `release --clean`). Builds are **`CGO_ENABLED=0`** (pure-Go SQLite driver
    cross-compiles cleanly) across **6 targets** — `{linux, darwin, windows}` ×
-   `{amd64, arm64}` — producing a GitHub Release with tarballs + `checksums.txt`.
+   `{amd64, arm64}` — producing a GitHub Release with tarballs, **`.deb`/`.rpm`**
+   (`nfpms:`, linux amd64+arm64), `checksums.txt`, and **build attestations**
+   (`actions/attest@v4`, `subject-checksums: dist/checksums.txt`, keyless OIDC).
+
+**Distribution gotchas that cost real bugs:**
+
+- **`flake.nix`'s `vendorHash` is not derived from anything the Go build reads.**
+  A `go get` silently invalidates it and `nix build
+  github:ZacxDev/civitai-manager` starts failing for everyone with a hash
+  mismatch — this shipped broken on the public path once already. After any
+  `go.mod`/`go.sum` change: `nix build .`, copy the `got:` hash from the error,
+  paste it in. **Never guess it.** The `nix flake check` CI job is the only thing
+  that catches this.
+- **The flake's `src` is a `lib.fileset`, not `./.`** — deliberately. `src = ./.`
+  swept untracked `.claude/` agent worktrees into the build and broke it. If you
+  add a new top-level directory the build needs, add it to the fileset.
+- **`brews:` is dead** — hard-deprecated in GoReleaser v2.16, removed in v3.
+  `homebrew_casks:` is the supported spelling and covers Linux too.
+- **The Homebrew cask publish is LIVE.** `ZacxDev/homebrew-tap` is public with
+  `main` + `Casks/`, and `HOMEBREW_TAP_GITHUB_TOKEN` is set on this repo
+  (verified 2026-07-28), so a tagged release opens a cask PR against the tap.
+  The `skip_upload` guard **stays** — it is a permanent fail-soft, not
+  scaffolding for the pre-tap era. GoReleaser resolves `skip_upload` **before**
+  `repository.token`, so an expired/revoked/absent secret skips the cask instead
+  of failing the release. That matters because GoReleaser publishes the GitHub
+  Release (`release.Pipe{}`) **before** the cask (`cask.Pipe{}`) — a late cask
+  failure aborts the job with the artifacts already public. For the same reason
+  `release.yml`'s attestation step carries
+  `if: !cancelled() && hashFiles('dist/checksums.txt') != ''`: unguarded, a cask
+  failure silently costs every artifact its provenance attestation.
+- **The cask's Gatekeeper bypass is deliberate — do not "clean it up".** The
+  postflight `xattr -dr com.apple.quarantine` is load-bearing, and it was
+  verified from Homebrew's source rather than assumed:
+  `Cask::Download#extract_primary_container` calls
+  `Quarantine.propagate(from:, to: staged_path)`, which globs `to/**/*` and
+  stamps every non-symlink — **no artifact-type branching**, so a `binary`-stanza
+  cask's Mach-O is quarantined and `$(brew --prefix)/bin/<name>` symlinks to it.
+  `--no-quarantine` was deprecated in Homebrew 5.0 and **deleted in 5.2**, so the
+  user cannot opt out. A quarantined non-notarized Mach-O run from Terminal is
+  **terminated** by syspolicyd, not warned about (reported against a cask
+  `binary` artifact on macOS 26.4, microsoft/vscode#309147). **Ad-hoc signing is
+  not a substitute**: `rcodesign print-signature-info` on our own dist/ output
+  shows darwin/arm64 ALREADY carries `ADHOC | LINKER_SIGNED` (Go's linker signs
+  darwin/arm64 — `NeedCodeSign` in `cmd/link/internal/ld/lib.go`), darwin/amd64
+  carries nothing, and neither satisfies Gatekeeper. The only real fix is
+  Developer ID + notarization + a **stapled** `.pkg`/`.dmg` (a ticket cannot be
+  stapled to a bare Mach-O). Two hazards if you edit the hook: the cask DSL's
+  `system_command` is `run!` (**raising**) — pass `must_succeed: false`; and
+  `Cask::DSL::Base#method_missing` **raises**, so `opoo`/`ohai` inside a
+  postflight abort the install.
+- **`docs/install.sh` is piped into strangers' shells.** POSIX sh, shellcheck-
+  gated in CI, checksum verification is mandatory, no surprise `sudo`, https
+  only. See `docs/README.md` for the rules before touching it.
+  **busybox is a first-class target:** Alpine/musl ships busybox `wget` and NO
+  curl, and busybox `wget` does not implement GNU's `--https-only` — it prints
+  usage and fails, which surfaced as a bogus `download failed: <url>`. Probe for
+  a wget flag before using it; do not assume GNU wget.
 
 **Deployed ≠ verified.** A green Release job is not proof the binary runs. To
 verify a release: download the released tarball for your platform, check it

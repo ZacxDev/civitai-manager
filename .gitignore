@@ -2,6 +2,10 @@
 /civitai-manager
 /dist/
 
+# Nix build symlinks
+/result
+/result-*
+
 # Local runtime data
 *.db
 *.db-wal
@@ -13,3 +17,8 @@
 
 # Scratch
 /scratch/
+
+# Claude Code agent worktrees / local agent state. These land INSIDE the repo,
+# so leaving them untracked-but-unignored sweeps them into `src = ./.` style Nix
+# builds and dirties `git status`.
+/.claude/

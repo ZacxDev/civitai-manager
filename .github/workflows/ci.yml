@@ -13,7 +13,7 @@ jobs:
     name: build, vet & test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -29,6 +29,11 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
+
+      # docs/install.sh is fed to `sh` off the internet, so it is linted as
+      # POSIX sh (not bash) on every change. shellcheck ships on the runner.
+      - name: shellcheck (docs/install.sh)
+        run: shellcheck --shell=sh docs/install.sh
 
       - name: go build
         run: go build ./...
@@ -52,3 +57,28 @@ jobs:
       # run here (no CIVITAI_TOKEN); the live run lives in integration.yml.
       - name: compile integration suite
         run: go build -tags integration ./...
+
+  # The flake's vendorHash is a fixed-output hash over the module set. Nothing
+  # in the Go build path touches it, so a `go get` silently invalidates it and
+  # `nix build github:ZacxDev/civitai-manager` starts failing for everyone with
+  # a hash mismatch — which is exactly how it broke before. There is no linter
+  # for this; building the flake in CI is the entire detection mechanism.
+  nix:
+    name: nix flake check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31.11.0
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # Builds packages + checks. Fails loudly on a stale vendorHash and prints
+      # the correct replacement value in the error.
+      - name: nix flake check
+        run: nix flake check -L
+
+      - name: nix run --version
+        run: nix run .# -- --version

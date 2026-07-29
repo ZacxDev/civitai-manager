@@ -34,20 +34,27 @@ loopback, keeps its state in a local SQLite file, and the web UI is fully offlin
 
 ## 60-second quickstart
 
-**1. Get the binary.** Grab the archive for your platform from the
-[latest release](https://github.com/ZacxDev/civitai-manager/releases/latest), or:
+**1. Get the binary.**
 
 ```sh
-VERSION=0.1.73   # or whatever the latest release is
-curl -sSLO "https://github.com/ZacxDev/civitai-manager/releases/download/v${VERSION}/civitai-manager_${VERSION}_linux_amd64.tar.gz"
-curl -sSLO "https://github.com/ZacxDev/civitai-manager/releases/download/v${VERSION}/checksums.txt"
-sha256sum --check --ignore-missing checksums.txt
-tar -xzf "civitai-manager_${VERSION}_linux_amd64.tar.gz"
-sudo install civitai-manager /usr/local/bin/
+curl -fsSL https://zacxdev.github.io/civitai-manager/install.sh | sh
 ```
 
-Swap `linux_amd64` for `darwin_arm64`, `linux_arm64`, `darwin_amd64`, or the
-`windows_*.zip` archive.
+The script detects your OS and CPU, verifies the download against the release's
+`checksums.txt`, and installs to `/usr/local` if that is already writable or
+`~/.local` otherwise — it will not ask for your password uninvited. Read it
+first if you like: [`docs/install.sh`](docs/install.sh).
+
+Or with Nix, without installing anything at all:
+
+```sh
+nix run github:ZacxDev/civitai-manager -- serve --comfy-model-path ~/ComfyUI/models
+```
+
+There are also `.deb`/`.rpm` packages, a Homebrew cask, and plain tarballs on the
+[releases page](https://github.com/ZacxDev/civitai-manager/releases/latest) for
+linux, macOS and Windows on amd64 and arm64 — see
+**[all install options](docs/install.md)**.
 
 **2. Start it, pointed at your ComfyUI models folder.**
 
@@ -270,9 +277,25 @@ Read these before you decide the tool is broken.
 
 ## Other ways to install
 
-**`go install`** (needs Go 1.25+):
+Full detail — flags, prefixes, Windows, verification — is in the
+**[install guide](docs/install.md)**. The short version:
 
 ```sh
+# install script (verifies the download against checksums.txt)
+curl -fsSL https://zacxdev.github.io/civitai-manager/install.sh | sh
+
+# Nix — run once, or install into your profile
+nix run github:ZacxDev/civitai-manager -- --version
+nix profile install github:ZacxDev/civitai-manager
+
+# Homebrew (cask; works on macOS and Linux)
+brew install --cask ZacxDev/tap/civitai-manager
+
+# Debian/Ubuntu and Fedora/RHEL packages are attached to each release
+sudo dpkg -i civitai-manager_0.1.76_linux_amd64.deb
+sudo rpm  -i civitai-manager_0.1.76_linux_amd64.rpm
+
+# Go 1.25+
 go install github.com/ZacxDev/civitai-manager@latest
 ```
 
@@ -288,6 +311,33 @@ SQLite is the pure-Go `modernc.org/sqlite` driver, so everything builds with
 `CGO_ENABLED=0` — no C toolchain, no build tags, trivially cross-compiled.
 Releases ship for **linux, macOS, and Windows** on **amd64 and arm64**, with a
 `checksums.txt`.
+
+> The install script, the packages, the cask and the attestations below all
+> arrive with **v0.1.76**; releases up to v0.1.75 have tarballs and
+> `checksums.txt` only. [`ZacxDev/homebrew-tap`](https://github.com/ZacxDev/homebrew-tap)
+> exists and the release workflow publishes to it, but the cask file itself only
+> lands there with the first release from v0.1.76 on — until that release is
+> cut, `brew install` has nothing to find. Since **Homebrew 6.0.0** a
+> non-official tap must also be explicitly trusted, which the fully qualified
+> name above does for this cask alone.
+
+**macOS.** The binaries are not notarized, so a copy that arrives *quarantined*
+— a browser download, or a Homebrew cask install — is killed on first run with
+"Apple could not verify …". The cask handles this by stripping
+`com.apple.quarantine` (and says so in its caveats); `install.sh`, `curl`,
+`go install` and Nix never set the attribute in the first place. If you hit it
+anyway: `xattr -d com.apple.quarantine <path>`. See
+[docs/install.md](docs/install.md#macos-apple-could-not-verify-civitai-manager-is-free-of-malware).
+
+**Verifying a download.** Beyond `checksums.txt`, every artifact from v0.1.76 on
+carries a Sigstore-signed GitHub build attestation:
+
+```sh
+gh attestation verify --owner ZacxDev civitai-manager_0.1.76_linux_amd64.tar.gz
+```
+
+A pass means that exact file was built by a workflow run in this repository.
+Keyless via OIDC — no public key to fetch, no signing key that can leak.
 
 ## Command line
 
