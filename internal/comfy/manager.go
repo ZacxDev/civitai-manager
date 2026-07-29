@@ -502,8 +502,16 @@ func (c *Client) ComfyQueueBusy(ctx context.Context) (busy bool, running, pendin
 // from an explicit user action.
 //
 // The process is replaced MID-REQUEST, so a transport error / EOF after the
-// request was sent is SUCCESS, not failure — it is treated as such, and the
-// caller should then poll ManagerAlive until ComfyUI answers again.
+// request was sent is SUCCESS, not failure — it is treated as such.
+//
+// ⚠ KNOWN IMPRECISION, accepted deliberately: because ANY transport error reads
+// as success, a reboot that never reached ComfyUI at all (it died in the window
+// between our queue read and this POST) also reports success. The window is tiny
+// — ManagerProbe AND the GET /api/queue both succeeded milliseconds earlier — and
+// the web layer's wording is scoped to match: it says the restart was REQUESTED
+// and to give ComfyUI a few seconds, never that it completed. Callers wanting a
+// confirmed restart must poll ManagerAlive themselves; the current web handler
+// deliberately does NOT, so do not read its success message as verification.
 func (c *Client) ManagerReboot(ctx context.Context, info *ManagerInfo) error {
 	if info == nil || !info.Present {
 		return ErrManagerAbsent
@@ -537,8 +545,13 @@ func (c *Client) ManagerReboot(ctx context.Context, info *ManagerInfo) error {
 	return nil
 }
 
-// ManagerAlive reports whether Manager's version endpoint is answering. It is the
-// readiness probe to poll after a reboot: ComfyUI is back once this returns true.
+// ManagerAlive reports whether Manager's version endpoint is answering — the
+// readiness probe for after a reboot: ComfyUI is back once this returns true.
+//
+// NOT CALLED by the web layer today (an inert but unit-tested capability, in the
+// spirit of the preserved NSFWHide branches). It exists so a caller that wants a
+// CONFIRMED restart can have one, since ManagerReboot's success is a "request
+// sent", not an observed outcome. Wire it before claiming a restart completed.
 func (c *Client) ManagerAlive(ctx context.Context, info *ManagerInfo) bool {
 	line := ManagerLineV3
 	if info != nil && info.Line != ManagerLineNone {
