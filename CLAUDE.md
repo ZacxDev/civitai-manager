@@ -290,6 +290,14 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
 - **Run the deterministic verify-agent gate** (fresh `go build`/`vet`/`test`) before
   trusting any "done" claim — read the gate's verdict, not the agent's prose.
   (GOPRIVATE is no longer needed — see the dependency note above.)
+- **`gofmt -l` IS part of the gate — `go vet` does NOT check formatting.** Three
+  subagent-written files landed unformatted and passed build+vet+test+`-race`
+  cleanly (v0.1.78). Nothing in the standard gate catches it, so run
+  `gofmt -l ./internal/ ./cmd/` explicitly and expect empty output.
+- **Agent self-reports about SIDE EFFECTS are unreliable — verify with
+  `git status --porcelain` yourself.** A research subagent reported "no files were
+  written to your repo" while it had left a fetched upstream `CHANGELOG` in the repo
+  root. Same class as the uncommitted-bump trap below: check, don't take the claim.
 - **Feature subagents leave necessary bumps UNCOMMITTED** — more than once a test or
   schema-version bump passed in the dirty working tree but was never `git add`ed,
   leaving a **committed tree that FAILS**. After ANY subagent: `git status` must be
