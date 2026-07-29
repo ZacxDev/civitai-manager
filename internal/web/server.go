@@ -200,7 +200,7 @@ type Server struct {
 	// once in NewServer from the package defaults and never mutated afterwards, so
 	// the install goroutine reads them race-free; tests shorten them on their own
 	// Server instance before starting an install.
-	nodepackPoll   time.Duration
+	nodepackPoll       time.Duration
 	nodepackSettleWait time.Duration
 	// captureFn is the output-capture seam invoked after a successful run settles
 	// (off runMu, success path only). Nil (production) uses captureGeneration
@@ -408,13 +408,13 @@ func NewServer(st *store.Store, reader civitai.Reader, sub Subscriber, cfg Confi
 	}
 	return &Server{
 		store: st, reader: reader, sub: sub, cfg: cfg, log: log, csrf: newCSRFToken(),
-		cloudPollInterval: defaultCloudPollInterval,
-		nodepackPoll:      nodepackPollInterval,
+		cloudPollInterval:  defaultCloudPollInterval,
+		nodepackPoll:       nodepackPollInterval,
 		nodepackSettleWait: nodepackMinSettle,
-		popularVal:        map[bool]*civitai.ModelSearchResult{},
-		popularExp:        map[bool]time.Time{},
-		resolveVal:        map[string]*civitai.ModelSearchResult{},
-		resolveExp:        map[string]time.Time{},
+		popularVal:         map[bool]*civitai.ModelSearchResult{},
+		popularExp:         map[bool]time.Time{},
+		resolveVal:         map[string]*civitai.ModelSearchResult{},
+		resolveExp:         map[string]time.Time{},
 	}
 }
 

@@ -255,7 +255,7 @@ func (s *Server) startNodepackInstall(pack comfy.Pack) (bool, string) {
 	}
 	manual, _ := manualInstallCommand(pack, s.cfg.ComfyRoot)
 	job := &nodepackJob{
-		running: true,
+		running:   true,
 		title:     packDisplayTitle(pack),
 		manualCmd: manual,
 		message:   "Asking ComfyUI-Manager to install this pack…",

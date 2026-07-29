@@ -165,7 +165,7 @@ func pollNodepackUntilDone(t *testing.T, srv *Server) string {
 func TestMissingNodesPanelStates(t *testing.T) {
 	patternPack := comfy.Pack{
 		ID: "comfy-mtb", Title: "comfy-mtb",
-		Repository: "https://github.com/melmass/comfy_mtb",
+		Repository:  "https://github.com/melmass/comfy_mtb",
 		Installable: true, Classes: []string{"Note Plus (mtb)"}, Source: comfy.SourcePattern,
 	}
 
@@ -788,4 +788,3 @@ func installVals() url.Values {
 	p := installablePack()
 	return url.Values{"pack_id": {p.ID}, "pack_repo": {p.Repository}}
 }
-
