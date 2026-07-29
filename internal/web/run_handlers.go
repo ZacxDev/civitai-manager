@@ -68,10 +68,10 @@ type runJob struct {
 	// seq is this run's monotonic identity (Server.runSeq at start time). It is
 	// surfaced as data-run-seq on the run-status fragment so a run's terminal panel is
 	// distinguishable from a stale prior run's panel in the shared #run-status.
-	seq        int64
-	promptID   string
-	phase      string
-	queuePos   int
+	seq      int64
+	promptID string
+	phase    string
+	queuePos int
 	// message is a human status/error line. It may embed UNTRUSTED ComfyUI error
 	// text, so every render routes it through g.Text (auto-escaped).
 	message string
