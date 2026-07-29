@@ -134,7 +134,7 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 
 	// Not eligible → link-only fallback (never attempt a write/download).
 	if !s.comfyDownloadEligible() {
-		s.renderResolveFallback(w, r, filename, typ)
+		s.renderResolveFallback(w, r, filename, typ, resolveReasonNotEligible)
 		return
 	}
 
@@ -160,10 +160,15 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 
 	// Resolve the install source: CivitAI first, then the HuggingFace fallback (only
 	// an auto-eligible HF match — curated/recognized-org + non-gated + exact + sha).
-	// Ambiguous/zero → show the resolve cards (no download).
+	// Nothing installable → the resolve cards WITH the reason (no download): a silent
+	// re-render of the same panel is a dead button.
 	plan, ok := s.resolveInstallPlan(r.Context(), filename, typ, chosenModel)
 	if !ok {
-		s.renderResolveFallback(w, r, filename, typ)
+		reason := resolveReasonNoMatch
+		if chosenModel > 0 {
+			reason = resolveReasonChosenModel
+		}
+		s.renderResolveFallback(w, r, filename, typ, reason)
 		return
 	}
 
@@ -235,7 +240,7 @@ func (s *Server) handleWorkflowInstallOptionAndRun(w http.ResponseWriter, r *htt
 
 	// Not eligible → link-only fallback (never attempt a write/download).
 	if !s.comfyDownloadEligible() {
-		s.renderResolveFallback(w, r, filename, typ)
+		s.renderResolveFallback(w, r, filename, typ, resolveReasonNotEligible)
 		return
 	}
 
@@ -260,11 +265,13 @@ func (s *Server) handleWorkflowInstallOptionAndRun(w http.ResponseWriter, r *htt
 	}
 
 	// Resolve the install source (CivitAI first, then the auto-eligible HF fallback).
-	// A bad-option install never disambiguates to a chosen model (chosenModel = 0), so
-	// the detector's HF curated path is reachable. Ambiguous/zero → resolve cards.
+	// A bad-option install has NO model card behind it — the target comes from the
+	// graph's own (invalid) value — so chosenModel = 0 is correct here and the
+	// detector's HF curated path stays reachable. Nothing installable → resolve cards
+	// WITH the reason, so this button can never look dead either.
 	plan, ok := s.resolveInstallPlan(r.Context(), filename, typ, 0)
 	if !ok {
-		s.renderResolveFallback(w, r, filename, typ)
+		s.renderResolveFallback(w, r, filename, typ, resolveReasonNoMatch)
 		return
 	}
 
@@ -342,16 +349,36 @@ func (s *Server) resolveInstallPlan(ctx context.Context, filename, typ string, c
 	return installPlan{}, false
 }
 
+// resolveReason* are the explanations rendered above the resolve cards when an
+// install ACTION could not proceed. Every one of them opens with "Nothing was
+// downloaded" because the whole point is to distinguish "your click did something
+// and it declined" from "your click did nothing at all": this fragment replaces the
+// panel the user was already looking at, so WITHOUT a reason the response is
+// byte-identical to the pre-click panel and the button reads as dead. Never call
+// renderResolveFallback from an action path with an empty reason.
+const (
+	// The flow itself is unavailable (comfy_model_path unset / non-writable, or a
+	// non-loopback ComfyUI we cannot install files for).
+	resolveReasonNotEligible = "Nothing was downloaded: installing automatically is not available here. Set comfy_model_path and point comfy_url at a local ComfyUI, or install this file yourself."
+	// Filename-only resolution found no single CivitAI file to install. Reached from
+	// the CTAs that legitimately carry no model id (the HuggingFace-fallback install
+	// and the bad-option install), never from a model card.
+	resolveReasonNoMatch = "Nothing was downloaded: this filename did not identify a single CivitAI file. Pick the exact model below and use its Install and run button."
+	// A specific model WAS chosen (model_id) but it yielded no downloadable file.
+	resolveReasonChosenModel = "Nothing was downloaded: that CivitAI model has no downloadable file for this reference. Try one of the other matches below."
+)
+
 // renderResolveFallback renders the existing resolve fragment (heuristic model
 // cards + "Search CivitAI" link) for a filename — the degrade path when a
-// download cannot/should not proceed automatically.
-func (s *Server) renderResolveFallback(w http.ResponseWriter, r *http.Request, filename, typ string) {
+// download cannot/should not proceed automatically — prefixed with reason, the
+// one-line explanation of why this click installed nothing.
+func (s *Server) renderResolveFallback(w http.ResponseWriter, r *http.Request, filename, typ, reason string) {
 	query := comfy.CleanModelQuery(filename)
 	var res *civitai.ModelSearchResult
 	if query != "" {
 		res = s.resolveModels(r.Context(), query, typ)
 	}
-	s.render(w, http.StatusOK, resolveModelFragment(query, res, s.nsfwMode()))
+	s.render(w, http.StatusOK, resolveModelFragmentWithReason(query, res, s.nsfwMode(), reason))
 }
 
 // fileExists reports whether path exists (any file type). Used to skip a download

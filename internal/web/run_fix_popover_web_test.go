@@ -135,13 +135,14 @@ func TestFixPopoverRenderSectionsAndWiring(t *testing.T) {
 	if strings.Contains(body, "Alt4") {
 		t.Errorf("alternates should be capped at %d; Alt4 leaked:\n%s", fixAltCap, body)
 	}
-	// model_id is passed ONLY for the 3 alternates (primary resolves by filename).
-	if n := strings.Count(body, "model_id"); n != fixAltCap {
-		t.Errorf("model_id appears %d times, want %d (alternates only, primary omits it)", n, fixAltCap)
+	// model_id is passed for EVERY card — the primary (id 1) and the 3 alternates.
+	// The primary used to omit it and dead-end; see TestInstallAndRunCTAAlwaysCarriesModelID.
+	if n := strings.Count(body, "model_id"); n != fixAltCap+1 {
+		t.Errorf("model_id appears %d times, want %d (primary + %d alternates)", n, fixAltCap+1, fixAltCap)
 	}
-	for _, altID := range []string{"2", "3", "4"} {
-		if !strings.Contains(body, "model_id&#34;:&#34;"+altID+"&#34;") {
-			t.Errorf("alternate card missing model_id=%s:\n%s", altID, body)
+	for _, id := range []string{"1", "2", "3", "4"} {
+		if !strings.Contains(body, "model_id&#34;:&#34;"+id+"&#34;") {
+			t.Errorf("card missing model_id=%s:\n%s", id, body)
 		}
 	}
 	// Install CTA wiring: download-and-run + CSRF + filename + type.
