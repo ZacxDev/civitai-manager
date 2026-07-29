@@ -680,22 +680,35 @@ func workflowOpenComfyCard(id int64, csrf string, hv comfyHelperView) g.Node {
 		sectionTitle("Open in ComfyUI"),
 		h.P(h.Class("text-sm text-slate-400 mb-3"),
 			g.Text("Save this workflow into your ComfyUI editor (under the “"+openComfyDir+"” folder) and open it there.")),
-		h.Form(
-			h.Method("post"),
-			h.Action("/workflows/"+ids+"/open-in-comfyui"),
-			// The new tab IS the ComfyUI tab: the handler redirects it to
-			// ?cm_open=<path> when the helper is usable.
-			h.Target("_blank"),
-			g.Attr("rel", "noopener"),
-			csrfInput(csrf),
-			civButton("outline", "md", []g.Node{
-				h.Type("submit"),
-				g.Attr("aria-label", "Open this workflow in the ComfyUI editor"),
-			},
-				g.Text("Open in ComfyUI "),
-				h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("↗")),
-			),
-		),
+		openInComfyForm(ids, csrf, "outline", "md"),
 		comfyHelperDisclosure(hv),
+	)
+}
+
+// openInComfyForm is THE "Open in ComfyUI" control, shared by the detail-page card
+// and by the run-failure report. It is a real <form method="post" target="_blank">
+// for the reason spelled out on workflowOpenComfyCard — the tab must open
+// synchronously from the click so the handler can 303 it into ComfyUI — so callers
+// must NOT re-implement it as an htmx button.
+//
+// It carries a CSRF token like every other POST here, and it deliberately does no
+// probing: whether the helper is usable is decided once per click, inside the
+// handler.
+func openInComfyForm(ids, csrf, variant, size string) g.Node {
+	return h.Form(
+		h.Method("post"),
+		h.Action("/workflows/"+ids+"/open-in-comfyui"),
+		// The new tab IS the ComfyUI tab: the handler redirects it to
+		// ?cm_open=<path> when the helper is usable.
+		h.Target("_blank"),
+		g.Attr("rel", "noopener"),
+		csrfInput(csrf),
+		civButton(variant, size, []g.Node{
+			h.Type("submit"),
+			g.Attr("aria-label", "Open this workflow in the ComfyUI editor"),
+		},
+			g.Text("Open in ComfyUI "),
+			h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("↗")),
+		),
 	)
 }
