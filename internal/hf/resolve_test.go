@@ -16,7 +16,7 @@ import (
 // hardened dial/redirect guards bypassed (base + a permissive http client) so the
 // RESOLVER LOGIC is what's under test, not the transport.
 type fakeRepo struct {
-	gated     any               // false | "auto"
+	gated     any // false | "auto"
 	private   bool
 	sha       string
 	downloads int

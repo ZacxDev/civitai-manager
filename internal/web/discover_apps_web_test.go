@@ -148,18 +148,18 @@ func TestAppsPageRendersCards(t *testing.T) {
 	body := getApps(t, srv, "/apps/discover", false)
 
 	for _, want := range []string{
-		"Apps",                              // page heading + nav
+		"Apps",                                 // page heading + nav
 		"Cool Offsite App", "does cool things", // name + tagline
-		"https://cdn/cover1.png",            // cover thumbnail
-		"@alice", "@bob",                    // creator chips
-		"PG",                                // contentRating badge
-		"80% recommend",                     // recommend line
+		"https://cdn/cover1.png", // cover thumbnail
+		"@alice", "@bob",         // creator chips
+		"PG",            // contentRating badge
+		"80% recommend", // recommend line
 		// Play links per kind:
 		`href="https://example.com/app"`,          // offsite → externalUrl
 		`href="https://neat.civitai.com"`,         // onsite with liveUrl
 		`href="https://civitai.com/apps/no-live"`, // onsite without liveUrl → detail fallback
-		"Open app ↗",                              // primary action label
-		`rel="noopener noreferrer"`,               // hardened new-tab
+		"Open app ↗",                // primary action label
+		`rel="noopener noreferrer"`, // hardened new-tab
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("apps page missing %q", want)

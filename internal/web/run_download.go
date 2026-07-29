@@ -967,4 +967,3 @@ func (d *downloadProgressReader) message() string {
 	}
 	return fmt.Sprintf("Downloading %s… %s", d.name, humanBytes(d.read))
 }
-

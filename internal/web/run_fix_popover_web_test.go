@@ -269,9 +269,9 @@ func TestFixPopoverNSFWHideOmitsPreview(t *testing.T) {
 func TestFixPopoverTerminalHasNoPoller(t *testing.T) {
 	snap := runSnapshot{
 		Started: true, Running: false, WorkflowID: 7, Phase: runPhaseFailed,
-		Message:   "Preflight failed",
-		Preflight: &comfy.PreflightReport{MissingModels: []string{"a.safetensors"}},
-		MissingModels: []comfy.MissingModel{{Filename: "a.safetensors", Query: "a", CivitaiType: "LORA"}},
+		Message:         "Preflight failed",
+		Preflight:       &comfy.PreflightReport{MissingModels: []string{"a.safetensors"}},
+		MissingModels:   []comfy.MissingModel{{Filename: "a.safetensors", Query: "a", CivitaiType: "LORA"}},
 		MissingResolved: map[string]missingResolution{"a.safetensors": {Reached: true}},
 		LibMeta:         map[string]store.LocalModelMeta{},
 	}

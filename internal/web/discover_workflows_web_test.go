@@ -205,11 +205,11 @@ func TestDiscoverPageRendersCards(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"WAN 2.2 Workflow T2V-I2V-T2I",        // model name
-		"https://image.civitai.com/wf.jpeg",   // carousel showcase image
-		`href="/models/1818841"`,              // card links to the in-app detail page
-		"Updated",                             // "Updated X ago" popover line
-		"Discover workflows",                  // page heading
+		"WAN 2.2 Workflow T2V-I2V-T2I",      // model name
+		"https://image.civitai.com/wf.jpeg", // carousel showcase image
+		`href="/models/1818841"`,            // card links to the in-app detail page
+		"Updated",                           // "Updated X ago" popover line
+		"Discover workflows",                // page heading
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("discover page missing %q", want)

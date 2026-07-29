@@ -275,15 +275,15 @@ func TestMissingModelsPanelRenders(t *testing.T) {
 
 	for _, want := range []string{
 		"Missing model files",
-		"absent.safetensors",                      // the missing filename
-		`onclick="document.getElementById(`,       // the Fix trigger opens a dialog
-		`showModal()`,                             // native <dialog> open
-		`<dialog id="fix-model-0"`,                // that model's popover
-		"Use matched model from CivitAI",          // section 1 header
-		"Replace with a model from my library",    // section 2 header
-		"installed.safetensors",                   // the substitute candidate choice
-		"Use this &amp; run",                      // the substitute CTA
-		"/workflows/" + id + "/run-substitute",    // substitute endpoint
+		"absent.safetensors",                   // the missing filename
+		`onclick="document.getElementById(`,    // the Fix trigger opens a dialog
+		`showModal()`,                          // native <dialog> open
+		`<dialog id="fix-model-0"`,             // that model's popover
+		"Use matched model from CivitAI",       // section 1 header
+		"Replace with a model from my library", // section 2 header
+		"installed.safetensors",                // the substitute candidate choice
+		"Use this &amp; run",                   // the substitute CTA
+		"/workflows/" + id + "/run-substitute", // substitute endpoint
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("panel missing %q:\n%s", want, body)
