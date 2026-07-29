@@ -203,6 +203,33 @@ func civButton(variant, size string, attrs []g.Node, children ...g.Node) g.Node 
 	return h.Button(all...)
 }
 
+// tokenVars builds the inline custom-property override that recolors a civitai
+// component to a different semantic intent (the documented per-element hack).
+//
+// It emits BOTH halves of the contrast split described in the WCAG block of
+// assets/app.css: `--civitai-color-primary` drives the component's FILL/tint,
+// and `--civitai-color-primary-text` drives its FOREGROUND. Setting only the
+// first would leave a recolored `light`/`subtle` button painting the (correct)
+// error/success tint under the *primary* text color, and would also drop it back
+// to the low-contrast base token — which is precisely what axe flagged on the
+// dashboard's Unsubscribe and auto/notify buttons.
+//
+// tok is a civitai token stem ("error", "success", "warning", "info",
+// "text-dimmed"); each has a matching `--civitai-color-<tok>-text`.
+func tokenVars(tok string) string {
+	return "--civitai-color-primary:var(--civitai-color-" + tok + ");" +
+		"--civitai-color-primary-text:var(--civitai-color-" + tok + "-text)"
+}
+
+// tokenVarsFilled is tokenVars for a FILLED component, where the token is the
+// BACKGROUND sitting under --civitai-color-primary-fg text rather than the
+// foreground. White-on-warning is 3.55:1 (dark) / 2.55:1 (light) — both fail AA —
+// so the filled case additionally pins the ink to `--civitai-color-on-<tok>`,
+// a dark foreground chosen per theme in app.css (4.81:1 dark / 6.70:1 light).
+func tokenVarsFilled(tok string) string {
+	return tokenVars(tok) + ";--civitai-color-primary-fg:var(--civitai-color-on-" + tok + ")"
+}
+
 // btnPrimary is the filled primary button used as the submit control in forms.
 func btnPrimary(children ...g.Node) g.Node {
 	return civButton("filled", "md", []g.Node{h.Type("submit")}, children...)

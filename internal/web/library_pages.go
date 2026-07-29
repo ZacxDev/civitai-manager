@@ -938,7 +938,7 @@ func candidatesTable(cands []store.LocalFile, csrf string) g.Node {
 					hx("vals", fmt.Sprintf(`{"id":"%s","apply":"false","csrf_token":"%s"}`, id, csrf)),
 					hx("target", "#quarantine-preview"),
 					hx("swap", "innerHTML"),
-					h.StyleAttr("--civitai-color-primary:var(--civitai-color-warning)"),
+					h.StyleAttr(tokenVars("warning")),
 				}, g.Text("Quarantine")),
 			),
 		))
@@ -976,7 +976,7 @@ func candidatesTable(cands []store.LocalFile, csrf string) g.Node {
 			h.Class("mt-3 flex flex-wrap items-center gap-2"),
 			civButton("light", "md", []g.Node{
 				h.Type("submit"),
-				h.StyleAttr("--civitai-color-primary:var(--civitai-color-warning)"),
+				h.StyleAttr(tokenVars("warning")),
 			}, g.Text("Preview quarantine (selected)")),
 			g.Group(allBtns),
 		),
@@ -1010,7 +1010,7 @@ func quarantineAllButtons(cands []store.LocalFile, csrf string) []g.Node {
 			hx("vals", fmt.Sprintf(`{"reason":"%s","apply":"false","csrf_token":"%s"}`, rl.reason, csrf)),
 			hx("target", "#quarantine-preview"),
 			hx("swap", "innerHTML"),
-			h.StyleAttr("--civitai-color-primary:var(--civitai-color-warning)"),
+			h.StyleAttr(tokenVars("warning")),
 		}, g.Text(fmt.Sprintf("Quarantine all %s %s", humanCount(n), rl.label))))
 	}
 	return btns
@@ -1080,7 +1080,7 @@ func quarantinePreview(plan *library.QuarantinePlan, ids []int64, csrf string) g
 					hx("target", "#quarantine-preview"),
 					hx("swap", "innerHTML"),
 					hx("confirm", "Move these files to the trash dir?"),
-					h.StyleAttr("--civitai-color-primary:var(--civitai-color-warning)"),
+					h.StyleAttr(tokenVarsFilled("warning")),
 				}, g.Text("Confirm quarantine")),
 			),
 		),
@@ -1126,7 +1126,7 @@ func trashTable(batches []batchView, csrf string) g.Node {
 				hx("target", "#trash-content"),
 				hx("swap", "innerHTML"),
 				hx("confirm", "Restore batch #"+id+" to its original locations?"),
-				h.StyleAttr("--civitai-color-primary:var(--civitai-color-success)"),
+				h.StyleAttr(tokenVars("success")),
 			}, g.Text("Restore"))
 		}
 		rows = append(rows, h.Tr(

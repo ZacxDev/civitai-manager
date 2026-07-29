@@ -23,6 +23,16 @@ const solid = (name) => `rgb(from var(--civitai-color-${name}) r g b / <alpha-va
 // tint: fixed low-alpha wash of a token (for tinted status backgrounds/borders).
 const tint = (name, pct) => `color-mix(in srgb, var(--civitai-color-${name}) ${pct}%, transparent)`;
 
+// CONTRAST SPLIT (see the WCAG block in assets/app.css): each intent token does
+// two incompatible jobs — FILL under white text, and FOREGROUND on the body. On
+// the dark theme no single value can pass WCAG AA at both, so the shades this app
+// actually uses as TEXT (indigo/emerald/amber/rose 200-400, sky 200) resolve to
+// the AA-contrast `--civitai-color-<intent>-text` token, while the shades used for
+// fills/borders (indigo 500-700, amber 500-600, emerald 700) keep the base token.
+// Changing which shade a template uses can therefore change its contrast — the
+// pairs are pinned by internal/web/contrast_web_test.go.
+const text = (name) => solid(`${name}-text`);
+
 module.exports = {
   content: ["./*.go"],
   theme: {
@@ -45,34 +55,36 @@ module.exports = {
         900: solid("surface"),
         950: solid("body"),
       },
-      // Brand -> primary.
+      // Brand -> primary. 200-400 are the TEXT shades (AA foreground token);
+      // 500-700 stay on the base token — they paint form-control accents,
+      // borders and fills, where the brand color is not read as text.
       indigo: {
         100: solid("primary-fg"),
-        200: solid("primary"),
-        300: solid("primary"),
-        400: solid("primary"),
+        200: text("primary"),
+        300: text("primary"),
+        400: text("primary"),
         500: solid("primary"),
         600: solid("primary"),
         700: solid("primary"),
         900: tint("primary", 22),
         950: tint("primary", 22),
       },
-      // Success -> emerald.
+      // Success -> emerald (400 is the only shade used, always as text).
       emerald: {
-        200: solid("success"),
-        300: solid("success"),
-        400: solid("success"),
+        200: text("success"),
+        300: text("success"),
+        400: text("success"),
         700: solid("success"),
         800: tint("success", 24),
         900: tint("success", 18),
         950: tint("success", 14),
       },
-      // Warning -> amber.
+      // Warning -> amber (400 is used as text; 500/600 stay fills).
       amber: {
-        100: solid("warning"),
-        200: solid("warning"),
-        300: solid("warning"),
-        400: solid("warning"),
+        100: text("warning"),
+        200: text("warning"),
+        300: text("warning"),
+        400: text("warning"),
         500: solid("warning"),
         600: solid("warning"),
         700: tint("warning", 45),
@@ -80,18 +92,18 @@ module.exports = {
         900: tint("warning", 18),
         950: tint("warning", 14),
       },
-      // Error -> error (rose).
+      // Error -> error (rose); 300/400 are used as text.
       rose: {
-        200: solid("error"),
-        300: solid("error"),
-        400: solid("error"),
+        200: text("error"),
+        300: text("error"),
+        400: text("error"),
         800: tint("error", 45),
         900: tint("error", 18),
         950: tint("error", 14),
       },
       // Info -> info (sky).
       sky: {
-        200: solid("info"),
+        200: text("info"),
         900: tint("info", 18),
       },
     },
