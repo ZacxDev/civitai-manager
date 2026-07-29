@@ -193,6 +193,17 @@ type Config struct {
 	// match_remote opt-out spirit); it defaults ON but is clearly disclosed and can be
 	// turned off with `hf_fallback: false`. When off, the resolve flow is CivitAI-only.
 	HFFallback *bool `yaml:"hf_fallback"`
+	// ResolveNodePacks enables the ONLINE half of custom-node attribution: when a
+	// workflow run reports missing ComfyUI node class_types that a locally-present
+	// ComfyUI-Manager could not place, those CLASS NAMES are sent to api.comfy.org
+	// (the Comfy Registry) and raw.githubusercontent.com (ComfyUI-Manager's static
+	// extension-node-map index) to learn which node pack provides them. This is a
+	// NEW external egress (mirrors the match_remote opt-out spirit); it defaults ON
+	// but is clearly disclosed and can be turned off with `resolve_node_packs:
+	// false`. When off, attribution runs ONLY against a local ComfyUI-Manager
+	// (loopback, NOT affected by this key) and anything Manager cannot place is
+	// reported as unattributed.
+	ResolveNodePacks *bool `yaml:"resolve_node_packs"`
 	// ComfyCloud enables the "Run on CivitAI Cloud" feature: submitting a workflow
 	// to the CivitAI orchestration API (which sends the graph + resource list to
 	// civitai.com AND spends Buzz from the account behind Token). Default false —
@@ -283,6 +294,13 @@ type Flags struct {
 // (an unset hf_fallback key); only an explicit `hf_fallback: false` disables it.
 func (c *Config) HFFallbackEnabled() bool {
 	return c.HFFallback == nil || *c.HFFallback
+}
+
+// ResolveNodePacksEnabled reports whether the online custom-node attribution
+// lookups are on. It defaults ON (an unset resolve_node_packs key); only an
+// explicit `resolve_node_packs: false` disables them.
+func (c *Config) ResolveNodePacksEnabled() bool {
+	return c.ResolveNodePacks == nil || *c.ResolveNodePacks
 }
 
 // OutputsCapBytes returns the resolved output-gallery total disk cap in bytes: the
@@ -837,6 +855,6 @@ func (c *Config) Redacted() Config {
 // String renders the config with the token redacted.
 func (c *Config) String() string {
 	r := c.Redacted()
-	return fmt.Sprintf("Config{BaseURL:%s Addr:%s ModelRoot:%s DBPath:%s PollInterval:%s DownloadJitter:%s MaxFileSize:%d ComfyURL:%s ComfyModelPath:%s ComfyCloud:%t HFFallback:%t Token:%s ComfyToken:%s HFToken:%s}",
-		r.BaseURL, r.Addr, r.ModelRoot, r.DBPath, c.DefaultPollInterval.D(), c.DownloadJitter.D(), c.MaxFileSizeBytes, r.ComfyURL, r.ComfyModelPath, c.ComfyCloud, c.HFFallbackEnabled(), r.Token, r.ComfyToken, r.HFToken)
+	return fmt.Sprintf("Config{BaseURL:%s Addr:%s ModelRoot:%s DBPath:%s PollInterval:%s DownloadJitter:%s MaxFileSize:%d ComfyURL:%s ComfyModelPath:%s ComfyCloud:%t HFFallback:%t ResolveNodePacks:%t Token:%s ComfyToken:%s HFToken:%s}",
+		r.BaseURL, r.Addr, r.ModelRoot, r.DBPath, c.DefaultPollInterval.D(), c.DownloadJitter.D(), c.MaxFileSizeBytes, r.ComfyURL, r.ComfyModelPath, c.ComfyCloud, c.HFFallbackEnabled(), c.ResolveNodePacksEnabled(), r.Token, r.ComfyToken, r.HFToken)
 }

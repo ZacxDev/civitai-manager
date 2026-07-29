@@ -1,0 +1,528 @@
+package comfy
+
+import (
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+)
+
+// --- guard unit tests (mirrors internal/hf/client_test.go) ---
+
+func TestIsBlockedRegistryIP(t *testing.T) {
+	blocked := []string{
+		"127.0.0.1", "::1", // loopback
+		"0.0.0.0", "::", // unspecified
+		"169.254.169.254",                       // the cloud metadata IP
+		"fe80::1",                               // link-local
+		"10.0.0.1", "172.16.0.1", "192.168.1.1", // RFC1918
+		"fd00::1",                       // ULA
+		"100.64.0.1", "100.127.255.255", // CGNAT
+		"224.0.0.1", "ff02::1", // multicast
+		"0.1.2.3", // 0.0.0.0/8
+	}
+	for _, s := range blocked {
+		if !isBlockedRegistryIP(net.ParseIP(s)) {
+			t.Errorf("isBlockedRegistryIP(%s) = false, want blocked", s)
+		}
+	}
+	allowed := []string{"8.8.8.8", "1.1.1.1", "2606:4700::1111", "100.63.255.255", "100.128.0.1"}
+	for _, s := range allowed {
+		if isBlockedRegistryIP(net.ParseIP(s)) {
+			t.Errorf("isBlockedRegistryIP(%s) = true, want allowed", s)
+		}
+	}
+	if !isBlockedRegistryIP(nil) {
+		t.Error("a nil IP must fail closed")
+	}
+}
+
+// TestRegistryHostAllowed pins the allowlist to EXACTLY the two hosts, matched
+// exactly — a suffix or substring match would accept api.comfy.org.evil.com.
+func TestRegistryHostAllowed(t *testing.T) {
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"api.comfy.org", true},
+		{"API.Comfy.ORG", true},
+		{"api.comfy.org.", true}, // trailing root dot
+		{"raw.githubusercontent.com", true},
+		{"api.comfy.org.evil.com", false},
+		{"evil-api.comfy.org", false},
+		{"comfy.org", false},
+		{"githubusercontent.com", false},
+		{"raw.githubusercontent.com.evil.com", false},
+		{"huggingface.co", false},
+		{"civitai.com", false},
+		{"", false},
+	}
+	for _, tc := range tests {
+		if got := registryHostAllowed(tc.host); got != tc.want {
+			t.Errorf("registryHostAllowed(%q) = %v, want %v", tc.host, got, tc.want)
+		}
+	}
+}
+
+func TestRegistryDialControlBlocksPrivateIPs(t *testing.T) {
+	c := NewRegistryClient()
+	for _, addr := range []string{"127.0.0.1:443", "169.254.169.254:443", "10.0.0.1:443", "[::1]:443", "100.64.0.1:443"} {
+		if err := c.dialControl("tcp", addr, nil); err == nil {
+			t.Errorf("dialControl(%q) = nil, want blocked", addr)
+		}
+	}
+	if err := c.dialControl("tcp", "8.8.8.8:443", nil); err != nil {
+		t.Errorf("dialControl(public) = %v, want nil", err)
+	}
+}
+
+// TestRegistryCheckRedirectPolicy: the cap, https-only and the allowlist apply on
+// EVERY hop, not just the first request.
+func TestRegistryCheckRedirectPolicy(t *testing.T) {
+	c := NewRegistryClient()
+	mkReq := func(rawurl string) *http.Request {
+		req, err := http.NewRequest(http.MethodGet, rawurl, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return req
+	}
+	if err := c.checkRedirect(mkReq("https://api.comfy.org/x"), make([]*http.Request, maxRegistryRedirects)); err == nil {
+		t.Error("expected a redirect-cap error")
+	}
+	if err := c.checkRedirect(mkReq("http://api.comfy.org/x"), nil); err == nil {
+		t.Error("a non-https hop must be refused")
+	}
+	if err := c.checkRedirect(mkReq("https://evil.example.com/x"), nil); err == nil {
+		t.Error("an off-allowlist hop must be refused")
+	}
+	if err := c.checkRedirect(mkReq("https://huggingface.co/x"), nil); err == nil {
+		t.Error("another project's allowlisted host must still be refused here")
+	}
+	if err := c.checkRedirect(mkReq("https://raw.githubusercontent.com/x"), nil); err != nil {
+		t.Errorf("an allowlisted https hop must be permitted: %v", err)
+	}
+}
+
+// TestRegistryNewRequestGuards: an off-allowlist or non-https URL must be refused
+// BEFORE it touches the network.
+func TestRegistryNewRequestGuards(t *testing.T) {
+	c := NewRegistryClient()
+	ctx := context.Background()
+	if _, err := c.newRequest(ctx, "http://api.comfy.org/x"); !errors.Is(err, errRegistryBlockedScheme) {
+		t.Errorf("err = %v, want a blocked-scheme error", err)
+	}
+	if _, err := c.newRequest(ctx, "https://evil.example.com/x"); !errors.Is(err, errRegistryBlockedHost) {
+		t.Errorf("err = %v, want a blocked-host error", err)
+	}
+	if _, err := c.newRequest(ctx, "https://127.0.0.1/x"); !errors.Is(err, errRegistryBlockedHost) {
+		t.Errorf("a loopback URL must be refused by the allowlist: %v", err)
+	}
+	req, err := c.newRequest(ctx, "https://api.comfy.org/comfy-nodes/X/node")
+	if err != nil {
+		t.Fatalf("an allowlisted https URL must build: %v", err)
+	}
+	if req.Header.Get("User-Agent") == "" {
+		t.Error("requests must carry a descriptive User-Agent")
+	}
+}
+
+// hardenedRegistryTestClient uses the REAL transport + redirect guard, relaxing
+// only TLS trust and the loopback IP block so a local harness is reachable. The
+// guard under test stays real.
+func hardenedRegistryTestClient(base string, allowLoopback bool) *RegistryClient {
+	c := &RegistryClient{
+		registryBase: base,
+		nodeMapURL:   base + "/node_db/new/extension-node-map.json",
+		hostOK:       func(string) bool { return true }, // reachability, not the guard under test
+		denyIP: func(ip net.IP) bool {
+			if allowLoopback && ip.IsLoopback() {
+				return false
+			}
+			return isBlockedRegistryIP(ip)
+		},
+		tlsClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test harness self-signed cert
+	}
+	c.httpc = c.buildHTTPClient()
+	return c
+}
+
+func newTLSRegistryHarness(t *testing.T, h http.Handler) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewTLSServer(h)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestRegistryEndToEndRedirectToPrivateIPBlocked drives a REAL request whose
+// origin 302s at the cloud metadata IP; the dial guard must refuse the hop.
+func TestRegistryEndToEndRedirectToPrivateIPBlocked(t *testing.T) {
+	srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://169.254.169.254/latest/meta-data/", http.StatusFound)
+	}))
+	c := hardenedRegistryTestClient(srv.URL, true)
+
+	_, err := c.LookupClass(context.Background(), "AnyClass")
+	if err == nil {
+		t.Fatal("expected the redirect to the metadata IP to be refused")
+	}
+	if !strings.Contains(err.Error(), "non-routable") && !strings.Contains(err.Error(), "refusing to connect") {
+		t.Errorf("err %v should name the dial guard", err)
+	}
+}
+
+// TestRegistryEndToEndPlainHTTPRedirectBlocked: a downgrade to http must be
+// refused on the redirect hop.
+func TestRegistryEndToEndPlainHTTPRedirectBlocked(t *testing.T) {
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"leaked"}`))
+	}))
+	t.Cleanup(plain.Close)
+
+	srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+"/node", http.StatusFound)
+	}))
+	c := hardenedRegistryTestClient(srv.URL, true)
+
+	if _, err := c.LookupClass(context.Background(), "AnyClass"); err == nil {
+		t.Fatal("expected the https->http downgrade to be refused")
+	}
+}
+
+// --- Registry lookup behaviour, against captured REAL bodies ---
+
+func registryFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", name, err)
+	}
+	return b
+}
+
+// TestRegistryLookupClassDecodesRealBody uses the REAL api.comfy.org response for
+// MMAudioSampler — the class the static map cannot attribute and the Registry can.
+func TestRegistryLookupClassDecodesRealBody(t *testing.T) {
+	var gotPath string
+	srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		_, _ = w.Write(registryFixture(t, "nodepack_registry_node.json"))
+	}))
+	c := hardenedRegistryTestClient(srv.URL, true)
+
+	pack, err := c.LookupClass(context.Background(), "MMAudioSampler")
+	if err != nil {
+		t.Fatalf("LookupClass: %v", err)
+	}
+	if gotPath != "/comfy-nodes/MMAudioSampler/node" {
+		t.Errorf("path = %q", gotPath)
+	}
+	if pack.ID != "comfyui-mmaudio" {
+		t.Errorf("ID = %q, want comfyui-mmaudio", pack.ID)
+	}
+	if pack.Source != SourceRegistry {
+		t.Errorf("Source = %q, want %q", pack.Source, SourceRegistry)
+	}
+	if len(pack.Classes) != 1 || pack.Classes[0] != "MMAudioSampler" {
+		t.Errorf("Classes = %v", pack.Classes)
+	}
+	// The Registry knowing a pack does NOT mean the user's Manager will install
+	// it; only getlist's cnr_latest decides that.
+	if pack.Installable {
+		t.Error("a Registry hit alone must not claim Installable")
+	}
+	if pack.Reason == "" {
+		t.Error("a non-installable pack must carry a Reason")
+	}
+}
+
+// TestRegistryClassPathEscaping is the 🔴 URL-shape test: the class is a PATH
+// SEGMENT, must be escaped, and is case-sensitive. Live, "CR Float To Integer"
+// escapes to CR%20Float%20To%20Integer (and 404s, which is a normal miss).
+func TestRegistryClassPathEscaping(t *testing.T) {
+	tests := []struct {
+		class    string
+		wantPath string
+	}{
+		{"MMAudioSampler", "/comfy-nodes/MMAudioSampler/node"},
+		{"CR Float To Integer", "/comfy-nodes/CR%20Float%20To%20Integer/node"},
+		{"Pick From Batch (mtb)", "/comfy-nodes/Pick%20From%20Batch%20%28mtb%29/node"},
+		{"A+B", "/comfy-nodes/A%2BB/node"},
+		{"a/b", "/comfy-nodes/a%2Fb/node"},
+		{"Node#1?x=2", "/comfy-nodes/Node%231%3Fx=2/node"},
+		{"Läbel", "/comfy-nodes/L%C3%A4bel/node"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.class, func(t *testing.T) {
+			var gotPath string
+			srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.EscapedPath()
+				_, _ = w.Write([]byte(`{"id":"p","name":"P"}`))
+			}))
+			c := hardenedRegistryTestClient(srv.URL, true)
+			if _, err := c.LookupClass(context.Background(), tc.class); err != nil {
+				t.Fatalf("LookupClass: %v", err)
+			}
+			if gotPath != tc.wantPath {
+				t.Errorf("escaped path = %q, want %q", gotPath, tc.wantPath)
+			}
+			// A path separator must never escape the segment.
+			if strings.Count(gotPath, "/") != 3 {
+				t.Errorf("class leaked out of its path segment: %q", gotPath)
+			}
+		})
+	}
+}
+
+// TestRegistryNotFoundIsNormal: the 404 body is the real
+// {"error":"","message":"No node found …"} and must read as "unattributed".
+func TestRegistryNotFoundIsNormal(t *testing.T) {
+	srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write(registryFixture(t, "nodepack_registry_notfound.json"))
+	}))
+	c := hardenedRegistryTestClient(srv.URL, true)
+
+	_, err := c.LookupClass(context.Background(), "ZZZ_unrelated_class_9f3")
+	if !errors.Is(err, ErrRegistryNotFound) {
+		t.Fatalf("err = %v, want ErrRegistryNotFound", err)
+	}
+}
+
+// TestRegistryLookupClasses covers the N-request fan-out: mixed hits/misses, a
+// capped concurrency, deterministic output, and per-class errors that do not
+// abort the rest.
+func TestRegistryLookupClasses(t *testing.T) {
+	var inflight, maxInflight int64
+	var mu sync.Mutex
+
+	srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt64(&inflight, 1)
+		mu.Lock()
+		if n > maxInflight {
+			maxInflight = n
+		}
+		mu.Unlock()
+		defer atomic.AddInt64(&inflight, -1)
+
+		switch {
+		case strings.Contains(r.URL.Path, "Boom"):
+			http.Error(w, "upstream exploded", http.StatusInternalServerError)
+		case strings.Contains(r.URL.Path, "MMAudio"):
+			_, _ = w.Write([]byte(`{"id":"comfyui-mmaudio","name":"comfyui-mmaudio","repository":"https://github.com/x/mmaudio"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"","message":"No node found containing the specified ComfyUI node name"}`))
+		}
+	}))
+	c := hardenedRegistryTestClient(srv.URL, true)
+
+	classes := []string{"MMAudioSampler", "MMAudioModelLoader", "Boom", "Note Plus (mtb)", "Label (rgthree)"}
+	packs, unresolved, errs := c.LookupClasses(context.Background(), classes)
+
+	// Both MMAudio classes map to ONE pack, unioned.
+	if len(packs) != 1 {
+		t.Fatalf("packs = %+v, want 1 (both MMAudio classes fold into one pack)", packs)
+	}
+	if len(packs[0].Classes) != 2 {
+		t.Errorf("Classes = %v, want both MMAudio classes", packs[0].Classes)
+	}
+	// A 500 on one class must not lose the others.
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "Boom") {
+		t.Errorf("errs = %v, want exactly the Boom failure", errs)
+	}
+	wantUnresolved := []string{"Boom", "Label (rgthree)", "Note Plus (mtb)"}
+	if fmt.Sprint(unresolved) != fmt.Sprint(wantUnresolved) {
+		t.Errorf("unresolved = %v, want %v (sorted, including the errored class)", unresolved, wantUnresolved)
+	}
+	if maxInflight > registryConcurrency {
+		t.Errorf("max in-flight = %d, exceeds the cap of %d", maxInflight, registryConcurrency)
+	}
+}
+
+// TestRegistryLookupClassesIsDeterministic: the fan-out is concurrent, so the
+// output must be re-sorted rather than arriving in completion order.
+func TestRegistryLookupClassesIsDeterministic(t *testing.T) {
+	srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seg := strings.Split(strings.Trim(r.URL.EscapedPath(), "/"), "/")
+		_, _ = fmt.Fprintf(w, `{"id":%q,"name":%q}`, seg[1], seg[1])
+	}))
+	c := hardenedRegistryTestClient(srv.URL, true)
+
+	in := []string{"Delta", "Alpha", "Charlie", "Bravo", "Echo"}
+	var want string
+	for i := 0; i < 6; i++ {
+		packs, unresolved, _ := c.LookupClasses(context.Background(), in)
+		b, _ := json.Marshal(struct {
+			P []Pack
+			U []string
+		}{packs, unresolved})
+		if i == 0 {
+			want = string(b)
+			continue
+		}
+		if string(b) != want {
+			t.Fatalf("run %d differs:\n%s\nvs\n%s", i, b, want)
+		}
+	}
+}
+
+// TestRegistryLookupClassesEmpty: no classes, no requests.
+func TestRegistryLookupClassesEmpty(t *testing.T) {
+	var hits int64
+	srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt64(&hits, 1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	c := hardenedRegistryTestClient(srv.URL, true)
+	packs, unresolved, errs := c.LookupClasses(context.Background(), []string{"", "   "})
+	if len(packs) != 0 || len(unresolved) != 0 || len(errs) != 0 {
+		t.Errorf("packs=%v unresolved=%v errs=%v", packs, unresolved, errs)
+	}
+	if hits != 0 {
+		t.Errorf("issued %d request(s) for an empty class list", hits)
+	}
+}
+
+// --- the static extension-node-map fallback ---
+
+// TestFetchExtensionNodeMapRejectsEmpty is the 🔴 empty-but-successful guard.
+// node_db/legacy/ and node_db/forked/ answer `{}` with HTTP 200; treating that as
+// "no packs found" would silently unattribute every class in every workflow.
+func TestFetchExtensionNodeMapRejectsEmpty(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{"the real legacy/forked answer", `{}`, true},
+		{"suspiciously small", `{"a":[["X"],{}],"b":[["Y"],{}]}`, true},
+		{"not JSON", `<html>404</html>`, true},
+		{"a JSON array", `[]`, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			c := hardenedRegistryTestClient(srv.URL, true)
+			_, err := c.FetchExtensionNodeMap(context.Background())
+			if tc.wantErr && err == nil {
+				t.Fatal("expected an error")
+			}
+			if err != nil && strings.Contains(tc.name, "legacy") &&
+				!strings.Contains(err.Error(), "fetch failure") {
+				t.Errorf("the empty-index error must say it is a FETCH failure, not 'no packs found': %v", err)
+			}
+		})
+	}
+}
+
+// TestFetchExtensionNodeMapFeedsBuildIndex: the static index has the same shape as
+// Manager's getmappings and drives BuildIndex with a nil getlist.
+//
+// Correction to the design doc, verified live: the `new` index DOES carry
+// nodename_pattern entries, and 100% of its keys are URLs — so both the pattern
+// rung and the URL leg of the join matter on this path too.
+func TestFetchExtensionNodeMapFeedsBuildIndex(t *testing.T) {
+	real := registryFixture(t, "nodepack_extension_node_map.json")
+
+	// Pad to clear the "suspiciously empty" floor while keeping the real entries.
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(real, &doc); err != nil {
+		t.Fatal(err)
+	}
+	realKeys := len(doc)
+	for i := 0; i < minExtensionNodeMapKeys; i++ {
+		doc[fmt.Sprintf("https://github.com/pad/pack-%03d", i)] =
+			json.RawMessage(fmt.Sprintf(`[["PadClass%03d"],{"title_aux":"pad-%03d"}]`, i, i))
+	}
+	padded, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(padded)
+	}))
+	c := hardenedRegistryTestClient(srv.URL, true)
+
+	got, err := c.FetchExtensionNodeMap(context.Background())
+	if err != nil {
+		t.Fatalf("FetchExtensionNodeMap: %v", err)
+	}
+	ix, err := BuildIndex(got, nil)
+	if err != nil {
+		t.Fatalf("BuildIndex: %v", err)
+	}
+	if realKeys == 0 {
+		t.Fatal("the extension-node-map fixture is empty")
+	}
+
+	// Every real key in this file is a URL, so attribution here EXERCISES the URL
+	// path: no getlist means no pack-id join is even possible.
+	packs, unattributed := ix.Attribute([]string{"RIFEInterpolation"})
+	if len(unattributed) != 0 || len(packs) != 1 {
+		t.Fatalf("packs=%+v unattributed=%v", packs, unattributed)
+	}
+	if !strings.Contains(packs[0].Repository, "GACLove/ComfyUI-VFI") {
+		t.Errorf("Repository = %q — the URL key must become the repository", packs[0].Repository)
+	}
+	if packs[0].Installable {
+		t.Error("without getlist nothing can be Installable")
+	}
+
+	// The pattern rung must be live on this path too.
+	patPacks, patUnattributed := ix.Attribute([]string{"Brand New Node (mtb)"})
+	if len(patUnattributed) != 0 || len(patPacks) != 1 || patPacks[0].Source != SourcePattern {
+		t.Errorf("the static index's nodename_pattern rung did not fire: packs=%+v unattributed=%v", patPacks, patUnattributed)
+	}
+}
+
+// TestExtensionNodeMapURLIsTheNewPath pins the ONE acceptable path — legacy/ and
+// forked/ answer {} with HTTP 200 and must never be used.
+func TestExtensionNodeMapURLIsTheNewPath(t *testing.T) {
+	if !strings.Contains(ExtensionNodeMapURL, "/node_db/new/") {
+		t.Errorf("ExtensionNodeMapURL = %q, want the node_db/new path", ExtensionNodeMapURL)
+	}
+	for _, bad := range []string{"node_db/legacy", "node_db/forked", "manager-v4"} {
+		if strings.Contains(ExtensionNodeMapURL, bad) {
+			t.Errorf("ExtensionNodeMapURL must not use %q: %s", bad, ExtensionNodeMapURL)
+		}
+	}
+	if !strings.HasPrefix(ExtensionNodeMapURL, "https://"+rawGitHubHost+"/") {
+		t.Errorf("ExtensionNodeMapURL must be on the allowlisted raw host: %s", ExtensionNodeMapURL)
+	}
+}
+
+// TestRegistryBodyIsBounded: a hostile endpoint streaming forever must not
+// exhaust memory.
+func TestRegistryBodyIsBounded(t *testing.T) {
+	srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		chunk := strings.Repeat("a", 1<<16)
+		for i := 0; i < 128; i++ { // 8 MiB, over the 4 MiB lookup cap
+			if _, err := w.Write([]byte(chunk)); err != nil {
+				return
+			}
+		}
+	}))
+	c := hardenedRegistryTestClient(srv.URL, true)
+	_, err := c.LookupClass(context.Background(), "Huge")
+	if err == nil {
+		t.Fatal("expected an oversized-body error")
+	}
+	if !errors.Is(err, ErrResponseTooLarge) {
+		t.Errorf("err = %v, want ErrResponseTooLarge", err)
+	}
+}
