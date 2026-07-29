@@ -158,6 +158,9 @@ func Walk(ctx context.Context, execPath, outDir, label string) (*WalkResult, err
 	if err := payload.Validate(setOf(files)); err != nil {
 		return nil, fmt.Errorf("built payload is invalid: %w", err)
 	}
+	if err := payload.ValidateFiles(files); err != nil {
+		return nil, fmt.Errorf("built payload exceeds push size caps: %w", err)
+	}
 
 	// Persist artifacts + metadata so `make ux-audit` leaves a browsable output dir.
 	for name, data := range files {
@@ -312,6 +315,9 @@ func MaybePush(ctx context.Context, res *WalkResult) (runURL string, attempted b
 	baseURL, token, ok := PushConfigFromEnv()
 	if !ok {
 		return "", false, nil
+	}
+	if err := res.Payload.ValidateFiles(res.Files); err != nil {
+		return "", true, fmt.Errorf("refusing to push: %w", err)
 	}
 	out, err := Upload(ctx, nil, baseURL, token, res.Metadata, res.Files)
 	if err != nil {

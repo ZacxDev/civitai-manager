@@ -23,9 +23,10 @@ import (
 //	multipart/form-data: a `metadata` field (PushPayload JSON) + one file part per
 //	referenced artifact, form-name == the filename in metadata.
 //
-// Constraints auditloop enforces (respected by BuildPayload): <=200 pages,
-// viewport in {mobile,desktop}, screenshots sniff as PNG/JPEG, 16 MiB/file,
-// 64 MiB total.
+// Constraints auditloop enforces: <=200 pages, viewport in {mobile,desktop},
+// screenshots sniff as PNG/JPEG, 16 MiB/file, 64 MiB total. The page-count/viewport/
+// finding-type/ref constraints are self-checked by Validate; the 16 MiB/file +
+// 64 MiB total size caps are self-checked by ValidateFiles (both before POSTing).
 
 // PushEndpoint is the ingestion path (mirrors plugin.PushEndpoint).
 const PushEndpoint = "/api/plugins/runs"
@@ -92,6 +93,36 @@ func (p *PushPayload) ReferencedFiles() map[string]bool {
 // MaxPages caps the pages a single push may carry (mirrors plugin.MaxPages, the
 // server's abuse guard). The harness self-checks against it before pushing.
 const MaxPages = 200
+
+// Size caps mirror auditloop's server-side push limits (handlers/plugins.go:
+// http.MaxBytesReader 64 MiB total, per-file 16 MiB). ValidateFiles enforces them
+// client-side so an oversized artifact is rejected here (and in tests) rather than
+// surfacing as a remote 413.
+const (
+	MaxFileBytes  = 16 << 20 // 16 MiB per uploaded file part
+	MaxTotalBytes = 64 << 20 // 64 MiB total multipart body budget
+)
+
+// ValidateFiles enforces the per-file (16 MiB) and total (64 MiB) size caps that
+// auditloop applies server-side, so an oversized artifact fails locally before the
+// POST. It is separate from Validate (which vets the metadata shape and has only
+// filenames, not sizes) because only the caller holds the actual bytes. Non-fatal
+// at the walk level today — the push is skipped, the walk still writes local
+// artifacts.
+func (p *PushPayload) ValidateFiles(files map[string][]byte) error {
+	var total int64
+	for name, data := range files {
+		n := int64(len(data))
+		if n > MaxFileBytes {
+			return fmt.Errorf("file %q is %d bytes, over the %d-byte (16 MiB) per-file cap", name, n, MaxFileBytes)
+		}
+		total += n
+	}
+	if total > MaxTotalBytes {
+		return fmt.Errorf("total upload is %d bytes, over the %d-byte (64 MiB) cap", total, MaxTotalBytes)
+	}
+	return nil
+}
 
 // Validate checks the payload against the set of multipart filenames that will
 // accompany it, mirroring auditloop's server-side plugin.Validate so a malformed

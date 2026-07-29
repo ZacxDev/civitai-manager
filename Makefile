@@ -43,6 +43,10 @@ integration-test-download:
 #   make ux-audit AUDITLOOP_CHROMIUM=$$(command -v chromium) \
 #     AUDITLOOP_PUSH_URL=https://auditloop.example \
 #     AUDITLOOP_PUSH_TOKENS='{"civitai-manager-funnel":"<token>"}'
+# GOPRIVATE is required: the harness pulls the private github.com/civitai/cli dep, so
+# without it `go test` hits a sum-db (proxy.golang.org / sum.golang.org) error. The
+# nested e2e/uxaudit module needs the go1.26 toolchain (see e2e/uxaudit/go.mod).
 ux-audit:
 	cd e2e/uxaudit && UXAUDIT_WALK=1 UXAUDIT_OUT=$(CURDIR)/e2e/uxaudit/artifacts \
+	GOPRIVATE=github.com/civitai/* \
 	go test -run TestUXAuditWalk -count=1 -timeout 15m -v .
