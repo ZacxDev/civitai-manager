@@ -427,18 +427,19 @@ func TestImportResultDeepLinksSingle(t *testing.T) {
 	if len(wfs) != 1 {
 		t.Fatalf("stored %d workflows, want 1", len(wfs))
 	}
-	// The single-import "View in library" outcome now deep-links to the item IN the
-	// library list (#wf-<id> scroll-to + highlight), not the standalone detail page.
-	wantHref := fmt.Sprintf(`href="/library?tab=workflows#wf-%d"`, wfs[0].ID)
+	// The "View in library" outcome lands on the library FILTERED TO THE SOURCE
+	// POST; a single import additionally carries the item anchor so the one new row
+	// is scrolled to and highlighted.
+	wantHref := fmt.Sprintf(`href="/library?tab=workflows&amp;model=1818841#wf-%d"`, wfs[0].ID)
 	body := rec.Body.String()
 	if !strings.Contains(body, wantHref) {
 		t.Fatalf("expected single-import deep link %q, got:\n%s", wantHref, body)
 	}
 }
 
-// TestImportResultLinksToTabForMulti proves that when more than one workflow is
-// imported the result link falls back to the Workflows library tab (no single
-// workflow to deep-link to).
+// TestImportResultLinksToTabForMulti proves that a MULTI-workflow import — the
+// common case for a Workflows post, which routinely unpacks into many graphs —
+// links to the library FILTERED TO THAT POST, with no per-item anchor.
 func TestImportResultLinksToTabForMulti(t *testing.T) {
 	url := "https://civitai.com/api/download/1"
 	dl := &fakeDownloader{zips: map[string][]byte{
@@ -451,8 +452,11 @@ func TestImportResultLinksToTabForMulti(t *testing.T) {
 		t.Fatalf("import = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `href="/library?tab=workflows"`) {
-		t.Fatalf("multi import should link to the library tab, got:\n%s", body)
+	if !strings.Contains(body, `href="/library?tab=workflows&amp;model=1818841"`) {
+		t.Fatalf("multi import should link to the post-filtered library, got:\n%s", body)
+	}
+	if strings.Contains(body, "#wf-") {
+		t.Errorf("multi import must not carry a per-item anchor:\n%s", body)
 	}
 	if strings.Contains(body, `href="/workflows/`) {
 		t.Errorf("multi import should NOT deep-link to a single workflow:\n%s", body)
@@ -476,8 +480,8 @@ func TestImportResultLinksToTabForZero(t *testing.T) {
 	if !strings.Contains(body, "Imported 0 workflow(s)") {
 		t.Fatalf("expected 0 imported on re-import, got:\n%s", body)
 	}
-	if !strings.Contains(body, `href="/library?tab=workflows"`) {
-		t.Fatalf("zero-import should link to the library tab, got:\n%s", body)
+	if !strings.Contains(body, `href="/library?tab=workflows&amp;model=1818841"`) {
+		t.Fatalf("zero-import should link to the post-filtered library, got:\n%s", body)
 	}
 	if strings.Contains(body, `href="/workflows/`) {
 		t.Errorf("zero-import should NOT deep-link to a single workflow:\n%s", body)

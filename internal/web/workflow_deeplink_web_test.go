@@ -50,20 +50,25 @@ func TestWorkflowDeeplinkScriptPresent(t *testing.T) {
 	}
 }
 
-// TestDiscoverImportResultDeeplinksToItem proves the single-import "View in
-// library" outcome deep-links to the item anchor (/library?tab=workflows#wf-<id>)
-// rather than the standalone detail page.
+// TestDiscoverImportResultDeeplinksToItem proves the "View in library" outcome
+// lands on the library filtered to the SOURCE POST, and that a single import also
+// carries the item anchor (/library?tab=workflows&model=<id>#wf-<id>).
 func TestDiscoverImportResultDeeplinksToItem(t *testing.T) {
 	got := renderString(t, workflowImportResult(42, "Imported 1 workflow.", true, 7))
-	if !strings.Contains(got, `href="/library?tab=workflows#wf-7"`) {
-		t.Errorf("single-import result should deep-link to the item anchor:\n%s", got)
+	if !strings.Contains(got, `href="/library?tab=workflows&amp;model=42#wf-7"`) {
+		t.Errorf("single-import result should deep-link to the post-filtered item:\n%s", got)
 	}
-	// Zero/multi import falls back to the plain tab (no per-item anchor).
+	// Zero/multi import: the post filter, no per-item anchor.
 	multi := renderString(t, workflowImportResult(42, "Imported 3 workflows.", true, 0))
-	if !strings.Contains(multi, `href="/library?tab=workflows"`) {
-		t.Errorf("multi-import result should link to the workflows tab:\n%s", multi)
+	if !strings.Contains(multi, `href="/library?tab=workflows&amp;model=42"`) {
+		t.Errorf("multi-import result should link to the post-filtered library:\n%s", multi)
 	}
 	if strings.Contains(multi, "#wf-") {
 		t.Errorf("multi-import result must not carry a per-item anchor:\n%s", multi)
+	}
+	// An unknown/absent model id must NOT emit a filter that matches nothing.
+	none := renderString(t, workflowImportResult(0, "Imported 0 workflows.", false, 0))
+	if !strings.Contains(none, `href="/library?tab=workflows"`) || strings.Contains(none, "model=") {
+		t.Errorf("an absent model id should fall back to the plain tab:\n%s", none)
 	}
 }

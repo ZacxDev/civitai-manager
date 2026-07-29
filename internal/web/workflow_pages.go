@@ -92,11 +92,59 @@ type libraryWorkflowsView struct {
 	// Resolver resolves list-item model/version names + local-file presence from
 	// local state (built by the handler, which has store access).
 	Resolver workflowResolver
-	// Facets is the normalized browse-by selection (?eco=/?use=), and Counts is
-	// the per-bucket population of the WHOLE library (not of the filtered list) —
-	// so a chip's count stays meaningful while a filter is applied.
+	// Facets is the normalized browse-by selection (?eco=/?use=/?model=), and Counts
+	// is the per-bucket population of the SCOPE (the whole library, or — when a
+	// source-post filter is active — that post's workflows) rather than of the
+	// filtered list, so a chip's count stays meaningful while a filter is applied.
 	Facets libraryWorkflowFacets
 	Counts workflowFacetCounts
+	// SourceModelName is the cached CivitAI name of the ?model= post ("" when the
+	// model was never cached — the header then names the id only, and never invents
+	// a title).
+	SourceModelName string
+}
+
+// sourcePostHeader names the source post a ?model= filter is scoped to, links back
+// to it on civitai.com, and offers a one-click escape to the full library. It is
+// rendered ONLY while the filter is active.
+//
+// It exists because importing a CivitAI Workflows model routinely yields MANY
+// workflows (22 for one post in a real library); landing on an unfiltered list
+// after such an import makes the import look like it did nothing in particular.
+//
+// The model NAME is untrusted CivitAI text (escaped via g.Text); the href is built
+// from the numeric id only, so nothing from the request reaches the URL.
+func sourcePostHeader(modelID int, name string, shown int) g.Node {
+	ids := strconv.Itoa(modelID)
+	title := "Workflows from CivitAI model " + ids
+	if strings.TrimSpace(name) != "" {
+		title = name
+	}
+	count := strconv.Itoa(shown) + " workflow"
+	if shown != 1 {
+		count += "s"
+	}
+	return h.Div(
+		h.Class("rounded border border-slate-800 p-3 flex flex-wrap items-center justify-between gap-3"),
+		h.Div(
+			h.Div(h.Class("text-sm font-semibold text-slate-100"), g.Text(title)),
+			h.Div(h.Class("text-xs text-slate-400"),
+				g.Text(count+" imported from this CivitAI post")),
+		),
+		h.Div(h.Class("flex flex-wrap items-center gap-3"),
+			h.A(
+				h.Href("https://civitai.com/models/"+ids),
+				h.Target("_blank"), g.Attr("rel", "noopener noreferrer"),
+				h.Class("text-xs text-indigo-400 hover:underline"),
+				g.Text("View on CivitAI ↗"),
+			),
+			h.A(
+				h.Href("/library?tab=workflows"),
+				h.Class("text-xs text-indigo-400 hover:underline"),
+				g.Text("Show all workflows"),
+			),
+		),
+	)
 }
 
 // workflowsPanel is the "Workflows" Library tab: an import panel (paste JSON /
@@ -124,10 +172,23 @@ func workflowsPanel(lw libraryWorkflowsView, csrf string, extraAllowed bool) g.N
 		body = append(body, alert(level, "", g.Text(lw.Flash)))
 	}
 	body = append(body, workflowImportPanel(csrf, extraAllowed))
+	// The source-post scope header sits above the chips: it names WHERE this view
+	// came from before showing how it can be narrowed further.
+	if lw.Facets.Model > 0 {
+		body = append(body, sourcePostHeader(lw.Facets.Model, lw.SourceModelName, lw.Counts.Total))
+	}
 	// The browse-by chips sit ABOVE the stable scan container so a scan-status
 	// innerHTML swap never re-renders (or orphans) them.
 	if lw.Counts.Total > 0 {
 		body = append(body, workflowFacetBar(lw.Counts, lw.Facets))
+	}
+	// A source-post filter that matched nothing (a model with no imported workflows,
+	// or a stale/hand-typed id) gets the same guided empty state as an empty facet —
+	// the header above already says which post, so this only has to say "nothing
+	// here" and point back out.
+	if lw.Facets.Model > 0 && lw.Counts.Total == 0 {
+		body = append(body, workflowFacetEmptyLocal(lw.Facets))
+		return h.Div(h.Class("space-y-6"), g.Group(body))
 	}
 	// A filter that matched nothing gets its own guided state; without this the
 	// panel would render the generic "No workflows yet" and look like data loss.

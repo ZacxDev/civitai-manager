@@ -342,7 +342,17 @@ func versionNameFromRaw(raw []byte, versionID int) (string, bool) {
 // redirectWorkflows POST-redirect-GETs back to the Workflows Library tab with a
 // flash.
 func (s *Server) redirectWorkflows(w http.ResponseWriter, r *http.Request, msg, level string) {
+	s.redirectWorkflowsForModel(w, r, msg, level, 0)
+}
+
+// redirectWorkflowsForModel is redirectWorkflows scoped to a source post, so a
+// plain (non-htmx) Workflows-model import lands on the SAME filtered view its
+// inline result links to. modelID <= 0 omits the filter.
+func (s *Server) redirectWorkflowsForModel(w http.ResponseWriter, r *http.Request, msg, level string, modelID int) {
 	q := url.Values{"tab": {"workflows"}, "flash": {msg}, "level": {level}}
+	if modelID > 0 {
+		q.Set("model", strconv.Itoa(modelID))
+	}
 	http.Redirect(w, r, "/library?"+q.Encode(), http.StatusSeeOther)
 }
 

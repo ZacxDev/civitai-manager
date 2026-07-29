@@ -350,8 +350,20 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 		// narrow to the selection. Counts come from the unfiltered list so a chip's
 		// number stays meaningful while a filter is applied.
 		cls := classifyWorkflows(wfs, lw.Resolver)
+		// A ?model= source-post filter is a SCOPE, not a chip: apply it FIRST so the
+		// browse-by counts describe that post's workflows rather than the whole
+		// library (a chip reading "Flux · 40" while 3 of the post's workflows are
+		// visible would be lying about the view the user is in).
+		wfs, cls = scopeWorkflowsToSourceModel(wfs, cls, lw.Facets)
 		lw.Counts = countWorkflowFacets(cls)
 		lw.Workflows = filterWorkflows(wfs, cls, lw.Facets)
+		if lw.Facets.Model > 0 && lw.Resolver.cachedModel != nil {
+			// Name the post from the LOCAL cache only — never a civitai fetch on a page
+			// render. An uncached model simply shows its id.
+			if name, _, ok := lw.Resolver.cachedModel(lw.Facets.Model); ok {
+				lw.SourceModelName = name
+			}
+		}
 		if snap := s.workflowScanJobState(); snap.Started {
 			if snap.Running {
 				lw.ScanInitial = workflowScanScanning(snap, s.csrf)
