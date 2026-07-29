@@ -136,10 +136,10 @@ homebrew_casks:
 
     # A DELIBERATE GATEKEEPER BYPASS. Read this before changing it.
     #
-    # These binaries are not notarized (notarization needs an Apple Developer
-    # Program membership and, for GoReleaser, the Pro-only `notarize` pipe), so
-    # without this hook a macOS `brew install --cask` produces a binary that is
-    # KILLED on first run. Evidence, not guesswork:
+    # These binaries are not notarized — notarization needs a paid Apple
+    # Developer Program membership for the Developer ID certificate and the
+    # notary API key — so without this hook a macOS `brew install --cask`
+    # produces a binary that is KILLED on first run. Evidence, not guesswork:
     #
     #  * Homebrew quarantines the STAGED file, whatever the artifact type.
     #    `Cask::Download#extract_primary_container` ends with
@@ -177,9 +177,15 @@ homebrew_casks:
     # raising, by default) keeps a failed strip from taking the install down
     # while `print_stderr` still surfaces why it failed.
     #
-    # If this ever stops working — Apple can withdraw the bypass — the fix is
-    # Developer ID signing + notarization + a STAPLED .pkg/.dmg. Notarizing the
-    # bare binary is not enough: a ticket cannot be stapled to a bare Mach-O.
+    # The way out, if it is ever worth $99/yr: GoReleaser's `notarize.macos`
+    # pipe is OSS (internal/pipe/notary/macos.go, quill-based) and runs on a
+    # LINUX runner — no Mac needed — but it does need a Developer ID .p12 plus
+    # App Store Connect notary credentials. That is what GoReleaser's own cask
+    # relies on, which is why theirs carries no xattr hook; it is not a
+    # precedent an unsigned project can copy. Caveat even then: a notarization
+    # ticket cannot be STAPLED to a bare Mach-O (only .app/.pkg/.dmg/.kext), so
+    # Gatekeeper checks it online at first run. Shipping a stapled .pkg is the
+    # only fully offline-clean answer.
     caveats: |
       The release binaries are not notarized by Apple, so macOS would refuse to
       run this one after Homebrew quarantines it. This cask therefore removes the
