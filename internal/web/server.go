@@ -181,8 +181,6 @@ type Server struct {
 	// nodepackJob is the current (or most recent) background node-pack install, or
 	// nil before the first install is triggered.
 	nodepackJob *nodepackJob
-	// nodepackSeq is a monotonic per-install counter (guarded by nodepackMu).
-	nodepackSeq int64
 	// nodepackPoll / nodepackSettleWait are the install job's poll cadence and its
 	// minimum grace period before an entirely-idle Manager queue is believed. Set
 	// once in NewServer from the package defaults and never mutated afterwards, so

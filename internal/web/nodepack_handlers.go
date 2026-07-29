@@ -47,7 +47,6 @@ const (
 // All fields are read/written only under Server.nodepackMu.
 type nodepackJob struct {
 	running bool
-	seq     int64
 	// title / manualCmd are captured at start so the terminal fragment can name the
 	// pack and fall back to the manual command without re-deriving anything.
 	title     string
@@ -60,14 +59,12 @@ type nodepackJob struct {
 	// installed is true ONLY when ComfyUI-Manager's own installed-set diff showed
 	// the pack. It is what the UI keys "success" on — never the HTTP status of the
 	// install request.
-	installed  bool
-	finishedAt time.Time
+	installed bool
 }
 
 // nodepackSnapshot is a locked, self-consistent view of the install job.
 type nodepackSnapshot struct {
 	Started, Running bool
-	Seq              int64
 	Title            string
 	Message          string
 	ManualCmd        string
@@ -88,7 +85,7 @@ func (s *Server) nodepackJobState() nodepackSnapshot {
 	lines := make([]string, len(j.lines))
 	copy(lines, j.lines)
 	return nodepackSnapshot{
-		Started: true, Running: j.running, Seq: j.seq, Title: j.title,
+		Started: true, Running: j.running, Title: j.title,
 		Message: j.message, ManualCmd: j.manualCmd, Installed: j.installed,
 		Lines: lines,
 	}
@@ -106,7 +103,7 @@ func (s *Server) nodepackAppend(job *nodepackJob, line string) {
 // nodepackSettle marks the job finished with its terminal outcome.
 func (s *Server) nodepackSettle(job *nodepackJob, installed bool, msg string) {
 	s.nodepackMu.Lock()
-	job.running, job.installed, job.message, job.finishedAt = false, installed, msg, time.Now()
+	job.running, job.installed, job.message = false, installed, msg
 	s.nodepackMu.Unlock()
 }
 
@@ -257,9 +254,8 @@ func (s *Server) startNodepackInstall(pack comfy.Pack) (bool, string) {
 		return false, "Another node-pack install is already running. Wait for it to finish."
 	}
 	manual, _ := manualInstallCommand(pack, s.cfg.ComfyRoot)
-	s.nodepackSeq++
 	job := &nodepackJob{
-		running: true, seq: s.nodepackSeq,
+		running: true,
 		title:     packDisplayTitle(pack),
 		manualCmd: manual,
 		message:   "Asking ComfyUI-Manager to install this pack…",
