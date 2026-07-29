@@ -189,6 +189,43 @@ func resolveModelFragmentWithReason(query string, res *civitai.ModelSearchResult
 	return h.Div(g.Group(body))
 }
 
+// substituteOfferFragment renders the "this is not the file you asked for — install it
+// anyway?" confirmation. It is what a first click gets when the chosen model has no
+// file matching the workflow's reference: NOTHING has been downloaded at this point.
+//
+// The confirming button re-posts the SAME target plus confirm_substitute=1, so the
+// second click is unambiguous and the server never has to infer intent. The resolve
+// cards + search link follow, so choosing a different model stays reachable (the click
+// swapped the whole #run-status container, popover included). requested/remote are
+// untrusted strings and are escaped via g.Text / json.Marshal.
+func substituteOfferFragment(wfID int64, csrf, requested, remote, typ string, modelID int, query string, res *civitai.ModelSearchResult, mode string) g.Node {
+	vals := map[string]string{
+		"csrf_token":         csrf,
+		"filename":           requested,
+		"type":               typ,
+		"confirm_substitute": "1",
+	}
+	if modelID > 0 {
+		vals["model_id"] = strconv.Itoa(modelID)
+	}
+	b, _ := json.Marshal(vals)
+	confirm := civButton("filled", "sm", []g.Node{
+		h.Type("button"),
+		hx("post", "/workflows/"+strconv.FormatInt(wfID, 10)+"/download-and-run"),
+		hx("target", "#"+runStatusContainerID),
+		hx("swap", "innerHTML"),
+		hx("disabled-elt", "this"),
+		hx("vals", string(b)),
+	}, g.Text("Install "+remote+" as "+requested))
+
+	return h.Div(
+		h.P(g.Attr("role", "status"), h.Class("text-xs font-semibold text-amber-400 mb-2"),
+			g.Text(substituteOfferText(requested, remote))),
+		h.Div(h.Class("mb-3"), confirm),
+		resolveModelFragment(query, res, mode),
+	)
+}
+
 // resolveFallbackLink is the always-present deep link into the in-app model
 // search for the cleaned query. It is a plain navigation link (the search page
 // reads the `q` param).

@@ -71,7 +71,11 @@ func comfyTypeRoutable(civitaiType string) bool {
 // advertised size hint (for the free-disk pre-check and progress). It carries the
 // bare basename for display.
 type pendingDownload struct {
-	FileName          string
+	FileName string
+	// RemoteFileName is the name the file has ON CivitAI/HuggingFace. It differs from
+	// FileName only for a user-CONFIRMED substitution, and exists so every progress
+	// line names the bytes actually being fetched — never only the expected name.
+	RemoteFileName    string
 	URL               string
 	DestPath          string
 	MaxBytes          int64
@@ -83,6 +87,19 @@ type pendingDownload struct {
 	// SourceHF routes the fetch through the SSRF-hardened HuggingFace client instead
 	// of the civitai downloader.
 	SourceHF bool
+}
+
+// progressName is the name shown in every progress/status line for this download.
+// For a confirmed substitution it names BOTH files ("<remote> as <expected>") so the
+// user is never told they are fetching bytes they are not: the destination keeps the
+// workflow's reference name, but the bytes are a different file and the UI must say
+// so while they stream.
+func (pd pendingDownload) progressName() string {
+	remote := strings.TrimSpace(pd.RemoteFileName)
+	if remote == "" || strings.EqualFold(remote, pd.FileName) {
+		return pd.FileName
+	}
+	return remote + " as " + pd.FileName
 }
 
 // resolvedDownload is one file candidate parsed from a model-search raw body: a
@@ -128,9 +145,17 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 		return
 	}
 	typ := civitaiTypeParam(r.FormValue("type"))
-	// An optionally chosen model (from a disambiguation click) narrows resolution to
-	// exactly that model.
-	chosenModel, _ := strconv.Atoi(r.FormValue("model_id"))
+	// An optionally chosen model (from a card click) narrows resolution to exactly
+	// that model. A malformed value is REFUSED rather than silently read as "absent" —
+	// those two mean very different things now that a card always supplies one.
+	chosenModel, ok := parseModelIDParam(r.FormValue("model_id"))
+	if !ok {
+		http.Error(w, "bad model_id", http.StatusBadRequest)
+		return
+	}
+	// A user-confirmed substitution: install a DIFFERENTLY-NAMED remote file under the
+	// workflow's reference name. Only ever set by the explicit confirm button.
+	confirmed := r.FormValue("confirm_substitute") == "1"
 
 	// Not eligible → link-only fallback (never attempt a write/download).
 	if !s.comfyDownloadEligible() {
@@ -147,12 +172,20 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 		s.renderError(w, "load workflow", err)
 		return
 	}
+	// Bind the request to THIS workflow: `filename` is free-form and now steers a real
+	// download, so it must be a file this workflow actually references.
+	if !workflowReferencesFile(wf, filename) {
+		http.Error(w, "filename is not referenced by this workflow", http.StatusBadRequest)
+		return
+	}
 
 	// Fast path: for a routable CivitAI type whose destination already exists, skip
-	// the network entirely and just run the original workflow.
+	// the network entirely and just run the original workflow. Say so — this branch is
+	// what makes any earlier install (right or wrong) permanent, so it must not look
+	// like a fresh download.
 	if subdir, ok := comfy.TypeSubdir(typ); ok {
 		if dest, derr := comfy.SafeModelDest(s.cfg.ComfyModelPath, subdir, filename); derr == nil && fileExists(dest) {
-			s.startRun(wf, runOptions{})
+			s.startRunWithMessage(wf, runOptions{}, alreadyInstalledNote(filename))
 			s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 			return
 		}
@@ -162,33 +195,30 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 	// an auto-eligible HF match — curated/recognized-org + non-gated + exact + sha).
 	// Nothing installable → the resolve cards WITH the reason (no download): a silent
 	// re-render of the same panel is a dead button.
-	plan, ok := s.resolveInstallPlan(r.Context(), filename, typ, chosenModel)
-	if !ok {
-		reason := resolveReasonNoMatch
-		if chosenModel > 0 {
-			reason = resolveReasonChosenModel
+	plan, outcome := s.resolveInstallPlan(r.Context(), filename, typ, chosenModel)
+	switch outcome {
+	case resolveInstallOK:
+		// exact filename match — one click, straight to the download below.
+	case resolveInstallSubstitute:
+		// The resolved file is NOT the one the workflow asked for. OFFER it; never
+		// perform it on this click.
+		if !confirmed {
+			s.renderSubstituteOffer(w, r, id, typ, chosenModel, plan)
+			return
 		}
-		s.renderResolveFallback(w, r, filename, typ, reason)
+	default:
+		s.renderResolveFallback(w, r, filename, typ, resolveFailureReason(outcome, chosenModel))
 		return
 	}
 
 	// Already installed at the resolved destination → skip the download, run.
 	if fileExists(plan.DestPath) {
-		s.startRun(wf, runOptions{})
+		s.startRunWithMessage(wf, runOptions{}, alreadyInstalledNote(filename))
 		s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 		return
 	}
 
-	pd := pendingDownload{
-		FileName:          plan.FileName,
-		URL:               plan.URL,
-		DestPath:          plan.DestPath,
-		MaxBytes:          s.cfg.MaxFileSizeBytes,
-		ContentLengthHint: plan.ContentLengthHint,
-		ExpectedSHA256:    plan.ExpectedSHA256,
-		SourceHF:          plan.SourceHF,
-	}
-	s.startDownloadAndRun(wf, pd, runOptions{})
+	s.startDownloadAndRun(wf, planToPending(plan, s.cfg.MaxFileSizeBytes), runOptions{})
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, true, s.nsfwMode()))
 }
 
@@ -226,6 +256,7 @@ func (s *Server) handleWorkflowInstallOptionAndRun(w http.ResponseWriter, r *htt
 		return
 	}
 	typ := civitaiTypeParam(r.FormValue("install_type"))
+	installTarget := filename
 
 	// Fixes for the OTHER groups (the picks). Drop any fix keyed on the install
 	// target's own value — installing the exact file makes the original value valid,
@@ -253,12 +284,17 @@ func (s *Server) handleWorkflowInstallOptionAndRun(w http.ResponseWriter, r *htt
 		s.renderError(w, "load workflow", err)
 		return
 	}
+	// Bind the request to THIS workflow (see handleWorkflowDownloadAndRun).
+	if !workflowReferencesFile(wf, installTarget) {
+		http.Error(w, "install_filename is not referenced by this workflow", http.StatusBadRequest)
+		return
+	}
 
 	// Fast path: a routable CivitAI type whose destination already exists → skip the
 	// network and run with the picked option-fixes (the original value is valid).
 	if subdir, ok := comfy.TypeSubdir(typ); ok {
 		if dest, derr := comfy.SafeModelDest(s.cfg.ComfyModelPath, subdir, filename); derr == nil && fileExists(dest) {
-			s.startRun(wf, opts)
+			s.startRunWithMessage(wf, opts, alreadyInstalledNote(filename))
 			s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 			return
 		}
@@ -269,29 +305,23 @@ func (s *Server) handleWorkflowInstallOptionAndRun(w http.ResponseWriter, r *htt
 	// graph's own (invalid) value — so chosenModel = 0 is correct here and the
 	// detector's HF curated path stays reachable. Nothing installable → resolve cards
 	// WITH the reason, so this button can never look dead either.
-	plan, ok := s.resolveInstallPlan(r.Context(), filename, typ, 0)
-	if !ok {
-		s.renderResolveFallback(w, r, filename, typ, resolveReasonNoMatch)
+	plan, outcome := s.resolveInstallPlan(r.Context(), filename, typ, 0)
+	if outcome != resolveInstallOK {
+		// resolveInstallSubstitute is unreachable at chosenModel=0 (both the search and
+		// HF paths are exact-basename only); if that ever changes, DECLINE rather than
+		// install a differently-named file — there is no card here to confirm against.
+		s.renderResolveFallback(w, r, filename, typ, resolveFailureReason(outcome, 0))
 		return
 	}
 
 	// Already installed at the resolved destination → skip the download, run with fixes.
 	if fileExists(plan.DestPath) {
-		s.startRun(wf, opts)
+		s.startRunWithMessage(wf, opts, alreadyInstalledNote(filename))
 		s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 		return
 	}
 
-	pd := pendingDownload{
-		FileName:          plan.FileName,
-		URL:               plan.URL,
-		DestPath:          plan.DestPath,
-		MaxBytes:          s.cfg.MaxFileSizeBytes,
-		ContentLengthHint: plan.ContentLengthHint,
-		ExpectedSHA256:    plan.ExpectedSHA256,
-		SourceHF:          plan.SourceHF,
-	}
-	s.startDownloadAndRun(wf, pd, opts)
+	s.startDownloadAndRun(wf, planToPending(plan, s.cfg.MaxFileSizeBytes), opts)
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, true, s.nsfwMode()))
 }
 
@@ -299,7 +329,12 @@ func (s *Server) handleWorkflowInstallOptionAndRun(w http.ResponseWriter, r *htt
 // containment-checked destination under comfy_model_path, and — for a HuggingFace
 // source — the expected sha256 the bytes are verified against before the rename.
 type installPlan struct {
-	FileName          string
+	// FileName is the DESTINATION basename — the name the workflow references, which
+	// is what must land on disk for the graph to resolve.
+	FileName string
+	// RemoteFileName is what the file is actually called on CivitAI/HuggingFace. When
+	// it differs from FileName the install is a SUBSTITUTION and must be confirmed.
+	RemoteFileName    string
 	URL               string
 	DestPath          string
 	ContentLengthHint int64
@@ -310,43 +345,94 @@ type installPlan struct {
 	SourceHF bool
 }
 
+// substituted reports whether executing this plan would write bytes that are NOT the
+// file the workflow asked for.
+func (p installPlan) substituted() bool {
+	return strings.TrimSpace(p.RemoteFileName) != "" && !strings.EqualFold(p.RemoteFileName, p.FileName)
+}
+
+// installResolveOutcome is why resolution did (or did not) yield a one-click install.
+// It exists so the handler can answer with an ACCURATE reason instead of a single
+// undifferentiated "couldn't resolve", and so a substitution can be OFFERED rather
+// than performed.
+type installResolveOutcome int
+
+const (
+	// resolveInstallOK — an exact-filename match; download immediately.
+	resolveInstallOK installResolveOutcome = iota
+	// resolveInstallNone — nothing installable resolved at all.
+	resolveInstallNone
+	// resolveInstallNoFile — the CHOSEN model exists but has no downloadable file.
+	resolveInstallNoFile
+	// resolveInstallWrongType — the CHOSEN model is not the type this destination
+	// subfolder is for (e.g. a LORA id posted with type=Checkpoint).
+	resolveInstallWrongType
+	// resolveInstallSubstitute — resolved, but to a DIFFERENT file than the workflow
+	// references. NEVER auto-downloaded: the user must confirm.
+	resolveInstallSubstitute
+)
+
 // resolveInstallPlan resolves a missing FILENAME to an install plan. It tries CivitAI
 // first (only for a routable type, whose subdir gives the destination) and, on a
 // CivitAI miss, the HuggingFace fallback — but ONLY an auto-download-eligible HF match
 // (curated-map/recognized-org + non-gated + exact-basename + a captured sha256 + a
 // determinable ComfyUI subdir). An explicitly chosen CivitAI model (model_id) is
-// CivitAI-only and never falls back to HF. Returns ok=false when nothing installable
-// resolves (the caller then shows the resolve cards).
-func (s *Server) resolveInstallPlan(ctx context.Context, filename, typ string, chosenModel int) (installPlan, bool) {
+// CivitAI-only and never falls back to HF.
+//
+// The returned outcome distinguishes the failure modes so the caller can explain
+// itself, and — critically — flags resolveInstallSubstitute when the resolved remote
+// file is NOT the file the workflow references. That case must never download on the
+// first click: a model's primary version routinely carries a differently-named file
+// (Juggernaut XL has no juggernautXL_v9Rundiffusion.safetensors; its primary version
+// is Ragnarok), so auto-installing it would stream 6.6 GB of a DIFFERENT checkpoint to
+// disk under the expected name, invisibly and permanently (the fileExists fast path
+// then makes every later click a no-op).
+func (s *Server) resolveInstallPlan(ctx context.Context, filename, typ string, chosenModel int) (installPlan, installResolveOutcome) {
+	want := path.Base(strings.ReplaceAll(filename, "\\", "/"))
+
 	// CivitAI branch — needs a routable type so the destination subdir is defined.
 	if subdir, ok := comfy.TypeSubdir(typ); ok {
 		if dest, err := comfy.SafeModelDest(s.cfg.ComfyModelPath, subdir, filename); err == nil {
-			if src, ok := s.resolveDownloadSource(ctx, filename, typ, chosenModel); ok {
-				return installPlan{
-					FileName:          path.Base(strings.ReplaceAll(filename, "\\", "/")),
+			src, out := s.resolveDownloadSource(ctx, filename, typ, chosenModel)
+			switch out {
+			case resolveInstallOK:
+				plan := installPlan{
+					FileName:          want,
+					RemoteFileName:    path.Base(strings.ReplaceAll(src.FileName, "\\", "/")),
 					URL:               src.DownloadURL,
 					DestPath:          dest,
 					ContentLengthHint: src.SizeBytes,
-				}, true
+				}
+				if plan.substituted() {
+					return plan, resolveInstallSubstitute
+				}
+				return plan, resolveInstallOK
+			case resolveInstallNoFile, resolveInstallWrongType:
+				// An EXPLICIT model choice is CivitAI-only — never silently reinterpreted
+				// as a HuggingFace install.
+				return installPlan{}, out
 			}
 		}
 	}
 
-	// HuggingFace fallback — never for an explicitly chosen CivitAI model.
+	// HuggingFace fallback — never for an explicitly chosen CivitAI model. An eligible
+	// HF match is exact-basename by construction (hfInstallEligible), so it can never
+	// be a substitution.
 	if chosenModel == 0 {
 		if m := s.resolveHF(ctx, filename); m != nil && s.hfInstallEligible(m) {
 			if dest, err := comfy.SafeModelDest(s.cfg.ComfyModelPath, m.Subdir, m.FileName); err == nil {
 				return installPlan{
 					FileName:       m.FileName,
+					RemoteFileName: m.FileName,
 					URL:            m.URL,
 					DestPath:       dest,
 					ExpectedSHA256: m.SHA256,
 					SourceHF:       true,
-				}, true
+				}, resolveInstallOK
 			}
 		}
 	}
-	return installPlan{}, false
+	return installPlan{}, resolveInstallNone
 }
 
 // resolveReason* are the explanations rendered above the resolve cards when an
@@ -366,7 +452,95 @@ const (
 	resolveReasonNoMatch = "Nothing was downloaded: this filename did not identify a single CivitAI file. Pick the exact model below and use its Install and run button."
 	// A specific model WAS chosen (model_id) but it yielded no downloadable file.
 	resolveReasonChosenModel = "Nothing was downloaded: that CivitAI model has no downloadable file for this reference. Try one of the other matches below."
+	// The chosen model is not the kind of model this destination holds.
+	resolveReasonWrongType = "Nothing was downloaded: that CivitAI model is not the type this file slot expects, so installing it would put the wrong kind of model in the wrong folder."
+	// Defensive: a substitution reached a path that cannot offer a confirmation.
+	resolveReasonNeedsChoice = "Nothing was downloaded: the only file found has a different name than this reference, so it cannot be installed automatically. Pick the exact model you want."
 )
+
+// resolveFailureReason maps a non-installable outcome to its user-facing explanation.
+func resolveFailureReason(outcome installResolveOutcome, chosenModel int) string {
+	switch outcome {
+	case resolveInstallWrongType:
+		return resolveReasonWrongType
+	case resolveInstallNoFile:
+		return resolveReasonChosenModel
+	case resolveInstallSubstitute:
+		return resolveReasonNeedsChoice
+	default:
+		if chosenModel > 0 {
+			return resolveReasonChosenModel
+		}
+		return resolveReasonNoMatch
+	}
+}
+
+// substituteOfferText is the offer shown when the resolved file is NOT the file the
+// workflow references. It names BOTH concretely, because the whole hazard is that the
+// bytes and the on-disk name disagree.
+func substituteOfferText(requested, remote string) string {
+	return "Nothing was downloaded. This CivitAI model has no file named " + requested +
+		". Its current primary version provides " + remote +
+		" instead — a different file. Installing it would save " + remote +
+		" to disk under the name " + requested + ", and your workflow would run with that model."
+}
+
+// planToPending turns a resolved plan into the download job's input, carrying the
+// remote name through so progress lines can name the real bytes.
+func planToPending(plan installPlan, maxBytes int64) pendingDownload {
+	return pendingDownload{
+		FileName:          plan.FileName,
+		RemoteFileName:    plan.RemoteFileName,
+		URL:               plan.URL,
+		DestPath:          plan.DestPath,
+		MaxBytes:          maxBytes,
+		ContentLengthHint: plan.ContentLengthHint,
+		ExpectedSHA256:    plan.ExpectedSHA256,
+		SourceHF:          plan.SourceHF,
+	}
+}
+
+// parseModelIDParam reads the optional model_id form value. Absent/empty is a valid
+// "no chosen model" (0, true); a non-numeric or negative value is REFUSED (0, false)
+// rather than silently collapsing to "absent" — those two now take different code
+// paths (filename resolution vs a specific model), so conflating them hides a bug.
+func parseModelIDParam(v string) (int, bool) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, true
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// alreadyInstalledNote is the run-status line for the skip-the-download fast path. It
+// exists because that branch is what makes ANY earlier install permanent: without it,
+// clicking install on the right model after a wrong file already occupies the
+// destination looks identical to a successful fresh install.
+func alreadyInstalledNote(filename string) string {
+	return path.Base(strings.ReplaceAll(filename, "\\", "/")) +
+		" is already installed — nothing was downloaded. Starting run…"
+}
+
+// workflowReferencesFile reports whether a workflow's stored graph actually references
+// this model filename. Both `filename` and `model_id` arrive as free-form form fields
+// and now drive a real network fetch plus a filesystem write, so the target must be
+// bound to the workflow the request names — otherwise the endpoint installs arbitrary
+// (filename, model) pairs for any workflow id. Matching is on the raw reference OR its
+// basename, case-insensitively, since a reference may carry a subfolder prefix.
+//
+// It delegates to comfy.ReferencesModelFile — a pure function of the STORED graph, so
+// the check cannot break when a run job is replaced or the server restarts (a
+// run-state-based check would).
+func workflowReferencesFile(wf *store.Workflow, filename string) bool {
+	if wf == nil {
+		return false
+	}
+	return comfy.ReferencesModelFile(wf.Format, json.RawMessage(wf.Graph), filename)
+}
 
 // renderResolveFallback renders the existing resolve fragment (heuristic model
 // cards + "Search CivitAI" link) for a filename — the degrade path when a
@@ -379,6 +553,20 @@ func (s *Server) renderResolveFallback(w http.ResponseWriter, r *http.Request, f
 		res = s.resolveModels(r.Context(), query, typ)
 	}
 	s.render(w, http.StatusOK, resolveModelFragmentWithReason(query, res, s.nsfwMode(), reason))
+}
+
+// renderSubstituteOffer answers a click that resolved to a DIFFERENT file than the
+// workflow references: it downloads NOTHING and instead names both files and offers a
+// second, explicit click (confirm_substitute=1) that carries the same target. The
+// resolve cards are kept below so picking a different model stays one click away.
+func (s *Server) renderSubstituteOffer(w http.ResponseWriter, r *http.Request, wfID int64, typ string, chosenModel int, plan installPlan) {
+	query := comfy.CleanModelQuery(plan.FileName)
+	var res *civitai.ModelSearchResult
+	if query != "" {
+		res = s.resolveModels(r.Context(), query, typ)
+	}
+	s.render(w, http.StatusOK, substituteOfferFragment(
+		wfID, s.csrf, plan.FileName, plan.RemoteFileName, typ, chosenModel, query, res, s.nsfwMode()))
 }
 
 // fileExists reports whether path exists (any file type). Used to skip a download
@@ -403,7 +591,7 @@ func fileExists(path string) bool {
 // SDK's HTTPS-only, private-IP-blocking, civitai-host-scoped-token dialer, and by
 // the size cap and path-containment guards — but the CHOICE of file is a trust in
 // CivitAI, same as every other download in the app.
-func (s *Server) resolveDownloadSource(parent context.Context, filename, typ string, chosenModel int) (resolvedDownload, bool) {
+func (s *Server) resolveDownloadSource(parent context.Context, filename, typ string, chosenModel int) (resolvedDownload, installResolveOutcome) {
 	want := path.Base(strings.ReplaceAll(strings.TrimSpace(filename), "\\", "/"))
 
 	if chosenModel > 0 {
@@ -412,20 +600,45 @@ func (s *Server) resolveDownloadSource(parent context.Context, filename, typ str
 		_, raw, err := s.reader.GetModel(ctx, strconv.Itoa(chosenModel))
 		if err != nil {
 			s.log.Warn("download-and-run: GetModel failed", "model", chosenModel, "err", err)
-			return resolvedDownload{}, false
+			return resolvedDownload{}, resolveInstallNoFile
 		}
-		return pickFileFromModelRaw(raw, want)
+		var body modelDetailEnvelope
+		if err := json.Unmarshal(raw, &body); err != nil {
+			return resolvedDownload{}, resolveInstallNoFile
+		}
+		// Cross-check the model's TYPE against the destination we are about to write
+		// into. The destination subdir comes from the caller-supplied `type` form
+		// field; without this, a POST pairing type=Checkpoint with a LORA's model_id
+		// writes a LoRA into checkpoints/. An absent type on either side is not
+		// treated as a mismatch (the API omits it on some shapes) — only a real,
+		// contradicting value refuses.
+		if got, wantTyp := strings.TrimSpace(body.Type), strings.TrimSpace(typ); got != "" && wantTyp != "" && !strings.EqualFold(got, wantTyp) {
+			s.log.Warn("download-and-run: model type mismatch",
+				"model", chosenModel, "model_type", got, "requested_type", wantTyp)
+			return resolvedDownload{}, resolveInstallWrongType
+		}
+		rd, ok := pickFileFromModel(body, want)
+		if !ok {
+			return resolvedDownload{}, resolveInstallNoFile
+		}
+		return rd, resolveInstallOK
 	}
 
 	query := comfy.CleanModelQuery(filename)
 	if query == "" {
-		return resolvedDownload{}, false
+		return resolvedDownload{}, resolveInstallNone
 	}
 	res := s.resolveModels(parent, query, typ)
 	if res == nil || len(res.Raw) == 0 {
-		return resolvedDownload{}, false
+		return resolvedDownload{}, resolveInstallNone
 	}
-	return pickFileFromSearchRaw(res.Raw, want)
+	// Filename-only resolution is EXACT-match across the search results — it never
+	// substitutes, because with no chosen model there is no specific model to offer.
+	rd, ok := pickFileFromSearchRaw(res.Raw, want)
+	if !ok {
+		return resolvedDownload{}, resolveInstallNone
+	}
+	return rd, resolveInstallOK
 }
 
 // searchFileEnvelope decodes the file-bearing subset of a model-search /
@@ -440,7 +653,11 @@ type modelDetailEnvelope struct {
 }
 
 type modelWithVersions struct {
-	ID            int `json:"id"`
+	ID int `json:"id"`
+	// Type is the CivitAI model type ("Checkpoint", "LORA", …). Decoded so a chosen
+	// model_id can be cross-checked against the destination subfolder the caller's
+	// `type` field selects — see resolveDownloadSource.
+	Type          string `json:"type"`
 	ModelVersions []struct {
 		Files []struct {
 			Name        string  `json:"name"`
@@ -468,14 +685,25 @@ func pickFileFromSearchRaw(raw []byte, want string) (resolvedDownload, bool) {
 	return resolvedDownload{}, false
 }
 
-// pickFileFromModelRaw finds, in a single model's detail body, the file whose
-// basename equals want; failing that it falls back to the primary file of the
-// primary (positional [0]) version — the version the detail page defaults to.
+// pickFileFromModelRaw decodes a single model's detail body and delegates to
+// pickFileFromModel. Kept as the raw-bytes entry point for tests.
 func pickFileFromModelRaw(raw []byte, want string) (resolvedDownload, bool) {
 	var body modelDetailEnvelope
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return resolvedDownload{}, false
 	}
+	return pickFileFromModel(body, want)
+}
+
+// pickFileFromModel finds, in a single model's detail body, the file whose basename
+// equals want; failing that it falls back to the primary file of the primary
+// (positional [0]) version — the version the detail page defaults to.
+//
+// That fallback is a DIFFERENT FILE from the one asked for. Callers must treat a
+// returned FileName that differs from want as a substitution needing confirmation,
+// never as a match — CLAUDE.md already records that modelVersions[0] is the creator's
+// primary, not the newest or the intended one.
+func pickFileFromModel(body modelDetailEnvelope, want string) (resolvedDownload, bool) {
 	if rd, ok := body.pickFile(want); ok {
 		return rd, true
 	}
@@ -549,7 +777,7 @@ func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opt
 	ctx, cancel := context.WithTimeout(base, runJobBudget)
 	job := &runJob{
 		running: true, workflowID: wf.ID, phase: runPhaseDownloading,
-		message: "Preparing download…", startedAt: time.Now(), cancel: cancel,
+		message: "Preparing download of " + pd.progressName() + "…", startedAt: time.Now(), cancel: cancel,
 	}
 	s.runJob = job
 
@@ -597,7 +825,7 @@ func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opt
 // via cb. An already-present destination (ErrDestExists) is NOT an error — the
 // file is there, so the run can proceed.
 func (s *Server) downloadModelFile(ctx context.Context, pd pendingDownload, cb func(string)) error {
-	cb("Downloading " + pd.FileName + "…")
+	cb("Downloading " + pd.progressName() + "…")
 	if err := assertHTTPSDownloadURL(pd.URL); err != nil {
 		return err
 	}
@@ -617,7 +845,7 @@ func (s *Server) downloadModelFile(ctx context.Context, pd pendingDownload, cb f
 		contentLen = pd.ContentLengthHint
 	}
 	pr := &downloadProgressReader{
-		r: resp.Body, total: contentLen, name: pd.FileName, cb: cb, last: time.Now(),
+		r: resp.Body, total: contentLen, name: pd.progressName(), cb: cb, last: time.Now(),
 	}
 	// The HuggingFace path pins on a known sha256 (the tree's LFS oid); the civitai
 	// path has no hash to pin (empty → verification skipped, unchanged behavior).
