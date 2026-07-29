@@ -15,26 +15,26 @@ func TestIsBlockedIP(t *testing.T) {
 		ip      string
 		blocked bool
 	}{
-		{"127.0.0.1", true},          // loopback v4
-		{"::1", true},                // loopback v6
-		{"0.0.0.0", true},            // unspecified
-		{"169.254.169.254", true},    // link-local (cloud metadata)
-		{"169.254.1.1", true},        // link-local
-		{"10.0.0.1", true},           // RFC1918
-		{"172.16.5.5", true},         // RFC1918
-		{"192.168.1.1", true},        // RFC1918
-		{"100.64.0.1", true},         // CGNAT
-		{"100.127.255.1", true},      // CGNAT upper
-		{"fc00::1", true},            // ULA
-		{"fe80::1", true},            // link-local v6
-		{"224.0.0.1", true},          // multicast
-		{"::ffff:127.0.0.1", true},   // IPv4-mapped loopback
-		{"8.8.8.8", false},           // public
-		{"1.1.1.1", false},           // public
-		{"93.184.216.34", false},     // public (example.com)
+		{"127.0.0.1", true},             // loopback v4
+		{"::1", true},                   // loopback v6
+		{"0.0.0.0", true},               // unspecified
+		{"169.254.169.254", true},       // link-local (cloud metadata)
+		{"169.254.1.1", true},           // link-local
+		{"10.0.0.1", true},              // RFC1918
+		{"172.16.5.5", true},            // RFC1918
+		{"192.168.1.1", true},           // RFC1918
+		{"100.64.0.1", true},            // CGNAT
+		{"100.127.255.1", true},         // CGNAT upper
+		{"fc00::1", true},               // ULA
+		{"fe80::1", true},               // link-local v6
+		{"224.0.0.1", true},             // multicast
+		{"::ffff:127.0.0.1", true},      // IPv4-mapped loopback
+		{"8.8.8.8", false},              // public
+		{"1.1.1.1", false},              // public
+		{"93.184.216.34", false},        // public (example.com)
 		{"2606:4700:4700::1111", false}, // public v6
-		{"100.63.255.255", false},    // just below CGNAT
-		{"100.128.0.1", false},       // just above CGNAT
+		{"100.63.255.255", false},       // just below CGNAT
+		{"100.128.0.1", false},          // just above CGNAT
 	}
 	for _, c := range cases {
 		ip := net.ParseIP(c.ip)
@@ -59,7 +59,7 @@ func TestHostAllowed(t *testing.T) {
 		{"us.aws.cdn.hf.co", true},
 		{"cdn-lfs.huggingface.co", true},
 		{"cdn-lfs-us-1.huggingface.co", true},
-		{"HUGGINGFACE.CO", true}, // case-insensitive
+		{"HUGGINGFACE.CO", true},  // case-insensitive
 		{"huggingface.co.", true}, // trailing dot
 		{"evilhf.co", false},      // NOT a .hf.co dotted suffix
 		{"hf.co", false},          // bare parent, not the origin, no dotted suffix

@@ -17,17 +17,17 @@ import (
 // fakeComfy is an injectable comfyClient for the web run tests. It records calls
 // and returns programmed responses.
 type fakeComfy struct {
-	statsErr        error
-	info            comfy.ObjectInfo
-	infoErr         error
-	submitErr       error
-	history         *comfy.HistoryEntry
-	viewData        []byte
-	viewCT          string
+	statsErr  error
+	info      comfy.ObjectInfo
+	infoErr   error
+	submitErr error
+	history   *comfy.HistoryEntry
+	viewData  []byte
+	viewCT    string
 	// viewFunc, when set, overrides View entirely (per-ref bytes/CT/error) — used by
 	// the capture tests to model a partial fetch failure. Nil falls back to the
 	// static viewData/viewCT.
-	viewFunc func(comfy.ImageRef) ([]byte, string, error)
+	viewFunc        func(comfy.ImageRef) ([]byte, string, error)
 	objectInfoCalls int
 	submitCalled    bool
 	submittedGraph  json.RawMessage
@@ -46,8 +46,8 @@ type fakeComfy struct {
 	// assetErr set models it missing/garbage (the "zombie helper" state when the
 	// ping still answers). Nothing programs it per-call: the whole point is that
 	// ping and asset can disagree.
-	assetErr   error
-	assetCalls int
+	assetErr    error
+	assetCalls  int
 	openErr     error
 	openRelPath string
 	openCalls   int

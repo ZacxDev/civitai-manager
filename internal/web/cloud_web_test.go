@@ -182,9 +182,9 @@ func TestCloudPanelUIFormatConvertsShowsResources(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"converts it to API format",             // the will-convert note
-		"good.safetensors",                       // resource filename from the CONVERTED graph
-		"urn:air:sdxl:checkpoint:civitai:10@20",  // derived URN
-		"Estimate cost",                          // run controls present (runnable)
+		"good.safetensors",                      // resource filename from the CONVERTED graph
+		"urn:air:sdxl:checkpoint:civitai:10@20", // derived URN
+		"Estimate cost",                         // run controls present (runnable)
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("converted-panel missing %q:\n%s", want, body)

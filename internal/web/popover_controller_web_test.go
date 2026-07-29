@@ -18,12 +18,12 @@ import (
 func TestPopoverControllerScript(t *testing.T) {
 	js := renderString(t, modelPageScript())
 	for _, want := range []string{
-		"cm-pop-open",                // the class the controller toggles
-		".cm-vstatus, .cm-updated",   // both popover wrappers via delegation
+		"cm-pop-open",                  // the class the controller toggles
+		".cm-vstatus, .cm-updated",     // both popover wrappers via delegation
 		"addEventListener('mouseover'", // enter (delegated on document)
 		"addEventListener('mouseout'",  // leave
-		"200",                        // the grace-delay ms
-		"relatedTarget",              // treats the popover (child) as part of the region
+		"200",                          // the grace-delay ms
+		"relatedTarget",                // treats the popover (child) as part of the region
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("popover controller missing %q:\n%s", want, js)

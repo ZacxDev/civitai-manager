@@ -55,12 +55,12 @@ func TestSubscribeOptionsPanel(t *testing.T) {
 	}
 	out := rec.Body.String()
 	for _, want := range []string{
-		`id="subscribe-control-7"`,            // stable container
-		"Subscribe to Nice Model?",            // heading uses the cached name
-		`type="radio"`,                        // the mode choice
-		`value="auto_download"`,               // auto-download option
-		`value="notify_only"`,                 // notify-only option
-		`hx-post="/models/7/subscribe"`,       // Confirm posts subscribe
+		`id="subscribe-control-7"`,             // stable container
+		"Subscribe to Nice Model?",             // heading uses the cached name
+		`type="radio"`,                         // the mode choice
+		`value="auto_download"`,                // auto-download option
+		`value="notify_only"`,                  // notify-only option
+		`hx-post="/models/7/subscribe"`,        // Confirm posts subscribe
 		`hx-get="/models/7/subscribe-control"`, // Cancel returns collapsed
 		"Confirm",
 		"Cancel",
@@ -199,14 +199,14 @@ func TestSubscribeCSRFRejectedBeforeMutation(t *testing.T) {
 func TestCreatorSubscribeShowsSuccessNote(t *testing.T) {
 	out := renderString(t, subscribeInline("creator", "alice", "Subscribe to creator", "test-csrf"))
 	for _, want := range []string{
-		`hx-post="/subscribe"`,      // still the one-click dashboard subscribe
-		`name="creator"`,            // creator field
-		`value="alice"`,             // the target
-		`name="auto_download"`,      // auto-download on
-		"hx-on::after-request",      // reveals the note on success
-		"data-sub-note",             // the note element
-		"Subscribed ✓",              // the success message
-		"Subscribe to creator",      // the button label
+		`hx-post="/subscribe"`, // still the one-click dashboard subscribe
+		`name="creator"`,       // creator field
+		`value="alice"`,        // the target
+		`name="auto_download"`, // auto-download on
+		"hx-on::after-request", // reveals the note on success
+		"data-sub-note",        // the note element
+		"Subscribed ✓",         // the success message
+		"Subscribe to creator", // the button label
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("creator subscribe missing %q\n%s", want, out)

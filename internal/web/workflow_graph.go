@@ -325,7 +325,7 @@ func buildWorkflowGraphSVG(graph []byte) (g.Node, graphRenderStats, bool) {
 		// Responsive: fill the scroll container's width, cap intrinsic height.
 		g.Attr("width", f(vbW)),
 		g.Attr("height", f(vbH)),
-		h.Style("width:100%;height:auto;max-width:100%;min-width:"+f(minW)+"px;display:block"),
+		h.Style("width:100%;height:auto;max-width:100%;min-width:" + f(minW) + "px;display:block"),
 		g.Attr("role", "img"),
 		g.Attr("preserveAspectRatio", "xMidYMid meet"),
 	}

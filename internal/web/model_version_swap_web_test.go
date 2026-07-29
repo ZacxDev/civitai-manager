@@ -38,12 +38,12 @@ func TestModelVersionSwapHXFragment(t *testing.T) {
 	// Contains the region content: version tabs, showcase, version detail (files/
 	// metadata), community container.
 	for _, want := range []string{
-		"cm-version-tabs",            // the version tab bar re-renders inside the region
-		"cm-version-tab-active",      // an active tab is present after the swap
+		"cm-version-tabs",       // the version tab bar re-renders inside the region
+		"cm-version-tab-active", // an active tab is present after the swap
 		"Showcase images",
-		"cm-showcase-lg",             // the enlarged detail showcase
-		"Files &amp; metadata",       // the files/metadata section
-		"great-model.safetensors",    // the selected version's file list
+		"cm-showcase-lg",          // the enlarged detail showcase
+		"Files &amp; metadata",    // the files/metadata section
+		"great-model.safetensors", // the selected version's file list
 		`id="community-feed"`,
 		"versionId=11", // community feed keyed to the swapped version
 	} {
