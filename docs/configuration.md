@@ -97,6 +97,9 @@ outputs_max_bytes: "20GB"          # total size cap. Over it, the OLDEST
 hf_fallback: true                  # default ON; see the egress note below
 hf_token: ""                       # or HF_TOKEN; optional, anonymous works
 
+# --- Custom-node attribution ---
+resolve_node_packs: true           # default ON; see the egress note below
+
 # --- Storage ---
 # db_path: "~/.config/civitai-manager/civitai-manager.db"
 ```
@@ -151,12 +154,19 @@ paths, so you can make an informed decision about each:
 | Search, model metadata, subscriptions, downloads | `civitai.com` | on (this is the point of the tool) | — |
 | **Library scan hash matching** — sends your files' **SHA256 hashes** to CivitAI to identify them | `civitai.com` | **on** | CLI `scan --no-remote`; in the web UI untick "Match against CivitAI" |
 | **HuggingFace fallback resolver** — when CivitAI has no match for a missing model filename, that **filename** is sent to HuggingFace to look for a download | `huggingface.co` | **on** | `hf_fallback: false` |
+| **Custom-node attribution** — when a run reports missing ComfyUI node types a local ComfyUI-Manager could not place, those **node class names** are sent to the Comfy Registry and to ComfyUI-Manager's static index to find which pack provides them | `api.comfy.org`, `raw.githubusercontent.com` | **on** | `resolve_node_packs: false` |
 | Workflow runs / preflight | your `comfy_url` (loopback by default) | on | — |
 | **CivitAI Cloud runs** — sends the graph + resource list to CivitAI **and spends Buzz** from the account behind your token | `civitai.com` | **off** | opt in with `comfy_cloud: true` |
 
 The `hf_token` is sent **only** to HuggingFace hosts — never to civitai.com and
 never to a CDN redirect target. The fallback works fully anonymously without it
 for the public repos it targets.
+
+Custom-node attribution asks a locally-installed **ComfyUI-Manager first** (that
+is loopback and is never affected by `resolve_node_packs`); only the node class
+names Manager could not place go out to the two public indexes, and the answers
+are cached. With `resolve_node_packs: false` nothing leaves the machine and node
+types Manager cannot place are simply reported as unmatched.
 
 The web UI itself loads **no** external resources: the CSS and `htmx.min.js` are
 vendored into the binary with `go:embed`. There is no CDN, no external font, and

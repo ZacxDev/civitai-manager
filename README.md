@@ -250,10 +250,13 @@ Read these before you decide the tool is broken.
   protection is a per-process CSRF token. Binding a LAN address exposes an
   unauthenticated UI — *and your output gallery*. Read the
   [security notes](docs/configuration.md#security-notes) first.
-- **Two things phone home by default**, both disclosed and both switchable:
+- **Three things phone home by default**, all disclosed and all switchable:
   library scan matching sends your files' **SHA256 hashes** to CivitAI
-  (`scan --no-remote` to stop), and the HuggingFace fallback sends a missing
-  model's **filename** to HuggingFace (`hf_fallback: false` to stop). See
+  (`scan --no-remote` to stop), the HuggingFace fallback sends a missing
+  model's **filename** to HuggingFace (`hf_fallback: false` to stop), and
+  custom-node attribution sends missing **node class names** to the Comfy
+  Registry and ComfyUI-Manager's static index (`resolve_node_packs: false` to
+  stop). See
   [what talks to the network](docs/configuration.md#what-talks-to-the-network).
 - **This is v0.1.x.** The database schema and internal APIs still move between
   releases. Migrations run automatically and in order, but treat it as unstable
