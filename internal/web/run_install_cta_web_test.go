@@ -245,6 +245,30 @@ func (ds *downloadSeam) count() int {
 	return len(ds.phases)
 }
 
+// assertNoJobStarted proves a click created NO download/run job. It is checked
+// synchronously right after the POST on purpose: startDownloadAndRun/startRun publish
+// the job under runMu BEFORE the handler returns, so "still not running" immediately
+// after the response is a deterministic answer — waiting on the seam alone would race
+// the download goroutine and could pass vacuously.
+func assertNoJobStarted(t *testing.T, srv *Server, ds *downloadSeam) {
+	t.Helper()
+	st := srv.runJobState()
+	if st.Running {
+		t.Fatalf("a job is running after the click (phase %q) — nothing should have started", st.Phase)
+	}
+	if st.Phase == runPhaseDownloading {
+		t.Fatalf("job entered the downloading phase — nothing should have been fetched")
+	}
+	// Belt: give any (wrongly) spawned goroutine a chance to reach the seam.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if ds.count() > 0 {
+			t.Fatalf("a download started on this click — it must be confirmed first")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // jugSubstituteReader is the live-verified Juggernaut shape: the search finds the
 // models, and model 1's detail body has NO file named jugFile — its primary version
 // ships jugRagnarok instead.
@@ -284,9 +308,7 @@ func TestPrimaryInstallCTAOffersSubstitutionInsteadOfInstalling(t *testing.T) {
 	body := rec.Body.String()
 
 	// NOTHING may have been fetched or written.
-	if seam.count() != 0 {
-		t.Errorf("a download started on the FIRST click — a substitution must be confirmed first")
-	}
+	assertNoJobStarted(t, srv, seam)
 	if dl.calls != 0 {
 		t.Errorf("downloader called %d times, want 0", dl.calls)
 	}
@@ -466,8 +488,9 @@ func TestInstallRefusesTypeMismatch(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), resolveReasonWrongType) {
 		t.Errorf("a type mismatch must be refused with its own reason:\n%s", rec.Body.String())
 	}
-	if seam.count() != 0 || dl.calls != 0 {
-		t.Errorf("a LoRA must not be downloaded into checkpoints/ (seam=%d dl=%d)", seam.count(), dl.calls)
+	assertNoJobStarted(t, srv, seam)
+	if dl.calls != 0 {
+		t.Errorf("a LoRA must not be downloaded into checkpoints/ (dl=%d)", dl.calls)
 	}
 	if _, err := os.Stat(filepath.Join(comfyModels, "checkpoints", jugFile)); err == nil {
 		t.Error("a mismatched-type model was written into checkpoints/")
@@ -497,8 +520,9 @@ func TestInstallRefusesFilenameNotInWorkflow(t *testing.T) {
 			t.Errorf("%s with an unreferenced filename = %d, want 400", tc.path, rec.Code)
 		}
 	}
-	if seam.count() != 0 || dl.calls != 0 {
-		t.Errorf("nothing may be fetched for an unbound target (seam=%d dl=%d)", seam.count(), dl.calls)
+	assertNoJobStarted(t, srv, seam)
+	if dl.calls != 0 {
+		t.Errorf("nothing may be fetched for an unbound target (dl=%d)", dl.calls)
 	}
 }
 
