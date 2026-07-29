@@ -321,6 +321,14 @@ Releases ship for **linux, macOS, and Windows** on **amd64 and arm64**, with a
 > non-official tap must also be explicitly trusted, which the fully qualified
 > name above does for this cask alone.
 
+**macOS.** The binaries are not notarized, so a copy that arrives *quarantined*
+— a browser download, or a Homebrew cask install — is killed on first run with
+"Apple could not verify …". The cask handles this by stripping
+`com.apple.quarantine` (and says so in its caveats); `install.sh`, `curl`,
+`go install` and Nix never set the attribute in the first place. If you hit it
+anyway: `xattr -d com.apple.quarantine <path>`. See
+[docs/install.md](docs/install.md#macos-apple-could-not-verify-civitai-manager-is-free-of-malware).
+
 **Verifying a download.** Beyond `checksums.txt`, every artifact from v0.1.76 on
 carries a Sigstore-signed GitHub build attestation:
 

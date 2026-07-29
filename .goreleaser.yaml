@@ -134,16 +134,69 @@ homebrew_casks:
         base:
           branch: main
 
-    # The release binaries are not code-signed or notarized, so macOS
-    # quarantines them on download and the first run dies with "cannot be
-    # opened because the developer cannot be verified". Stripping the
-    # quarantine xattr at install time is the standard cask workaround for
-    # unsigned software.
+    # A DELIBERATE GATEKEEPER BYPASS. Read this before changing it.
+    #
+    # These binaries are not notarized (notarization needs an Apple Developer
+    # Program membership and, for GoReleaser, the Pro-only `notarize` pipe), so
+    # without this hook a macOS `brew install --cask` produces a binary that is
+    # KILLED on first run. Evidence, not guesswork:
+    #
+    #  * Homebrew quarantines the STAGED file, whatever the artifact type.
+    #    `Cask::Download#extract_primary_container` ends with
+    #    `Quarantine.propagate(from: container.path, to:)` (cask/download.rb),
+    #    the installer passes `to: @cask.staged_path` (cask/installer.rb), and
+    #    `Quarantine.propagate` globs `to/**/*` and writes
+    #    com.apple.quarantine to every non-symlink under it (cask/quarantine.rb).
+    #    Nothing there branches on `app`/`pkg`/`binary`. cask/artifact/binary.rb
+    #    only symlinks + chmods, so `$(brew --prefix)/bin/civitai-manager`
+    #    resolves to a quarantined file.
+    #  * `--no-quarantine` is GONE — deprecated in Homebrew 5.0, disabled in
+    #    5.1, deleted in 5.2. Users can no longer opt out at install time.
+    #  * A quarantined, non-notarized Mach-O run from Terminal is terminated by
+    #    syspolicyd ("Apple could not verify … is free of malware"), not merely
+    #    warned about. Reported against a Homebrew cask `binary` artifact on
+    #    macOS 26.4 (microsoft/vscode#309147, 2026-04) — this exact shape.
+    #  * Ad-hoc signing is NOT an alternative: `rcodesign print-signature-info`
+    #    on our own dist/ output shows the darwin/arm64 binary ALREADY carries
+    #    `CodeSignatureFlags(ADHOC | LINKER_SIGNED)` (Go's linker signs
+    #    darwin/arm64 automatically, `NeedCodeSign` in cmd/link/internal/ld),
+    #    and it is still quarantined and still blocked. Gatekeeper wants a
+    #    notarization ticket, which ad-hoc cannot provide.
+    #
+    # So the choice is: strip the xattr, or ship an install that fails on first
+    # run for every macOS user. We strip, and say so in `caveats` — Homebrew no
+    # longer shows its own "--no-quarantine bypasses Gatekeeper" warning here,
+    # so the disclosure has to come from us.
+    #
+    # The hook must not silently decline. The previous version gated on
+    # `system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0`, which
+    # on a Mac whose /usr/bin/xattr shells out to a missing `xcrun` fails the
+    # probe and skips the strip while still reporting a successful install.
+    # `File.executable?` avoids the Errno::ENOENT that would abort the install,
+    # and `must_succeed: false` (the cask DSL's `system_command` is `run!`, i.e.
+    # raising, by default) keeps a failed strip from taking the install down
+    # while `print_stderr` still surfaces why it failed.
+    #
+    # If this ever stops working — Apple can withdraw the bypass — the fix is
+    # Developer ID signing + notarization + a STAPLED .pkg/.dmg. Notarizing the
+    # bare binary is not enough: a ticket cannot be stapled to a bare Mach-O.
+    caveats: |
+      The release binaries are not notarized by Apple, so macOS would refuse to
+      run this one after Homebrew quarantines it. This cask therefore removes the
+      com.apple.quarantine attribute from the files it installed — the same thing
+      `brew install --no-quarantine` used to do, before Homebrew removed that flag.
+
+      Only the files from this cask are affected. If you would rather not have
+      that happen, install from a release tarball instead:
+      https://github.com/ZacxDev/civitai-manager/blob/main/docs/install.md
+
     hooks:
       post:
         install: |
-          if OS.mac? && system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/civitai-manager"]
+          if OS.mac? && File.executable?("/usr/bin/xattr")
+            system_command "/usr/bin/xattr",
+                           args:         ["-dr", "com.apple.quarantine", staged_path],
+                           must_succeed: false
           end
 
 snapshot:

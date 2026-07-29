@@ -69,6 +69,26 @@ something GOPRIVATE will paper over.
   `release.yml`'s attestation step carries
   `if: !cancelled() && hashFiles('dist/checksums.txt') != ''`: unguarded, a cask
   failure silently costs every artifact its provenance attestation.
+- **The cask's Gatekeeper bypass is deliberate — do not "clean it up".** The
+  postflight `xattr -dr com.apple.quarantine` is load-bearing, and it was
+  verified from Homebrew's source rather than assumed:
+  `Cask::Download#extract_primary_container` calls
+  `Quarantine.propagate(from:, to: staged_path)`, which globs `to/**/*` and
+  stamps every non-symlink — **no artifact-type branching**, so a `binary`-stanza
+  cask's Mach-O is quarantined and `$(brew --prefix)/bin/<name>` symlinks to it.
+  `--no-quarantine` was deprecated in Homebrew 5.0 and **deleted in 5.2**, so the
+  user cannot opt out. A quarantined non-notarized Mach-O run from Terminal is
+  **terminated** by syspolicyd, not warned about (reported against a cask
+  `binary` artifact on macOS 26.4, microsoft/vscode#309147). **Ad-hoc signing is
+  not a substitute**: `rcodesign print-signature-info` on our own dist/ output
+  shows darwin/arm64 ALREADY carries `ADHOC | LINKER_SIGNED` (Go's linker signs
+  darwin/arm64 — `NeedCodeSign` in `cmd/link/internal/ld/lib.go`), darwin/amd64
+  carries nothing, and neither satisfies Gatekeeper. The only real fix is
+  Developer ID + notarization + a **stapled** `.pkg`/`.dmg` (a ticket cannot be
+  stapled to a bare Mach-O). Two hazards if you edit the hook: the cask DSL's
+  `system_command` is `run!` (**raising**) — pass `must_succeed: false`; and
+  `Cask::DSL::Base#method_missing` **raises**, so `opoo`/`ohai` inside a
+  postflight abort the install.
 - **`docs/install.sh` is piped into strangers' shells.** POSIX sh, shellcheck-
   gated in CI, checksum verification is mandatory, no surprise `sudo`, https
   only. See `docs/README.md` for the rules before touching it.

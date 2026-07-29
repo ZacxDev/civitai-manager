@@ -103,9 +103,14 @@ brew upgrade --cask civitai-manager
 brew uninstall --cask civitai-manager
 ```
 
-The released binaries are not code-signed or notarized, so the cask strips
-`com.apple.quarantine` at install time. Without that, macOS refuses the first
-run with "cannot be opened because the developer cannot be verified".
+**On macOS the cask removes `com.apple.quarantine` from what it installed**, and
+its `caveats` tell you so at install time. This is a deliberate Gatekeeper
+bypass and it is not optional: Homebrew quarantines the staged binary for every
+cask regardless of artifact type, it removed the `--no-quarantine` opt-out in
+5.2, and the released binaries are not notarized — so without the strip, the
+first run is *killed* with "Apple could not verify …". Only files from this cask
+are touched. If you would rather make that call yourself, use a release tarball
+and see [macOS: "Apple could not verify …"](#macos-apple-could-not-verify-civitai-manager-is-free-of-malware).
 
 ---
 
@@ -199,6 +204,40 @@ against `checksums.txt` first:
 ```powershell
 Get-FileHash .\civitai-manager_0.1.76_windows_amd64.zip -Algorithm SHA256
 ```
+
+---
+
+## macOS: "Apple could not verify civitai-manager is free of malware"
+
+The release binaries are **not notarized by Apple**. Notarization requires a
+paid Apple Developer Program membership, and the releases are cross-compiled
+from Linux, so there is nothing to notarize with.
+
+macOS only enforces this on files carrying the `com.apple.quarantine`
+attribute, which is set by whatever downloaded them. In practice:
+
+| How you installed | Quarantined? | What happens |
+| --- | --- | --- |
+| `install.sh`, `curl`, `go install`, Nix, `.deb`/`.rpm` | No | Runs normally |
+| Downloaded the `.tar.gz` in a **browser** | Yes | First run is killed |
+| `brew install --cask` | Yes — Homebrew sets it | Handled: the cask strips it, and says so in its caveats |
+
+If you did hit the error — the process is terminated, not merely warned about —
+clear the attribute on the file you installed:
+
+```sh
+xattr -d com.apple.quarantine /usr/local/bin/civitai-manager
+```
+
+You can confirm before and after with `xattr -l /usr/local/bin/civitai-manager`
+(no output means it is not quarantined). Alternatively, approve it once under
+**System Settings → Privacy & Security**, where macOS offers "Open Anyway"
+after the first blocked run.
+
+Both of these are deliberate decisions to trust this binary. Check it against
+`checksums.txt` and the [build attestation](#verifying-a-download) first — those
+tell you the file really came from this repository's release pipeline, which is
+the assurance notarization would otherwise have given you.
 
 ---
 
