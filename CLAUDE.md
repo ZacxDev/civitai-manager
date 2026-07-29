@@ -263,6 +263,20 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   the poll loop).
 - **Hash cache** keyed by `(path, size, mtime)` makes re-scans fast — preserve the
   key; do not invalidate it gratuitously.
+- **Install-and-run must NEVER substitute a file silently.** CivitAI renames files
+  across versions, so a workflow's expected filename routinely matches **zero**
+  files inside the model that bears its name — `pickFileFromModelRaw`
+  (`internal/comfy/download_target.go`) then falls back to the primary version's
+  primary file. That fallback must be **offered, not performed**: the first click
+  returns an offer naming BOTH files, and only a second click carrying
+  `confirm_substitute=1` **and** `confirm_file=<remote basename>` proceeds — the
+  echoed basename means a primary-version promotion between the two clicks
+  re-offers instead of installing something the user never approved. Once
+  confirmed, every progress line must read `<remote> as <expected>`. An exact
+  filename match stays ONE click. The model's type is cross-checked against the
+  **destination folder** via `TypeSubdir`, **not** the raw type string —
+  LORA/LoCon/LyCORIS all route to `loras/` and must stay equivalent (a stricter
+  raw-string check shipped once and refused legitimate LoCon installs).
 - **Remote match defaults ON.** Scan matching (`match_remote`) is on by default and
   **sends file SHA256s to civitai.com**. Keep that opt-out honored and keep the
   data-egress behavior obvious to the user.
@@ -347,5 +361,17 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   `comfy:nodepack` URN** at submit — it needs a `comfyNodepackSnapshot` step →
   `nodepacklayer` AIR (post-paid), so custom-node cloud runs are NOT yet supported
   (see COMFYUI-INTEGRATION-DESIGN.md).
+- **Multi-mode template detection keys on `toggleRestriction`, not on bypass shape**
+  (`internal/comfy/modes.go`). Template packs ship several pipelines in ONE graph
+  with all but one bypassed. The mode set is derived from an **ACTIVE rgthree `Fast
+  Groups Bypasser`/`Fast Groups Muter` whose `properties.toggleRestriction` is
+  `"max one"` or `"always one"`** — i.e. the author's own declaration of
+  exclusivity — and group membership uses LiteGraph's `containsCentre` geometry.
+  **Group titles are labels only; never key on them.** This was chosen over the
+  obvious "uniformly bypassed groups" heuristic because, measured across 13 real
+  graphs, that heuristic misfires on **every** workflow in pack 1386234 (15–31
+  optional-feature groups each). A sub-group nested inside a mode group but driven
+  by a *different* toggler keeps its stored mode. Handles both bypassed (mode 4)
+  and muted (mode 2).
 - **Parallel subagents on this repo:** pass `isolation: "worktree"` so their edits
   can't collide in the shared working tree.
