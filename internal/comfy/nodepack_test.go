@@ -533,6 +533,65 @@ func TestMergePacksIdentityFallsBackToURL(t *testing.T) {
 	}
 }
 
+// TestMergePacksBridgesIDAndURLIdentity is a LIVE-CAUGHT regression. Merging the
+// real static extension-node-map (whose entries have NO pack id — the file is
+// keyed entirely by URL) with the real Registry result (which has an id) produced
+// comfy-mtb TWICE, because an id-first-else-url identity put them in separate
+// buckets. Two entries must merge when they share ANY identity key.
+func TestMergePacksBridgesIDAndURLIdentity(t *testing.T) {
+	// Exactly the live shapes: static index -> URL only; Registry -> id + URL.
+	static := []Pack{{
+		Title:      "MTB Nodes",
+		Repository: "https://github.com/melMass/comfy_mtb",
+		Classes:    []string{"Pick From Batch (mtb)"},
+		Source:     SourceMap,
+	}}
+	registry := []Pack{{
+		ID:         "comfy-mtb",
+		Title:      "comfy-mtb",
+		Repository: "https://github.com/melMass/comfy_mtb",
+		Version:    "0.5.4",
+		Classes:    []string{"Note Plus (mtb)"},
+		Source:     SourceRegistry,
+	}}
+	got := MergePacks(static, registry)
+	if len(got) != 1 {
+		t.Fatalf("got %d packs, want 1 — the same pack was double-listed: %+v", len(got), got)
+	}
+	if got[0].ID != "comfy-mtb" {
+		t.Errorf("ID = %q, want the id contributed by the Registry rung", got[0].ID)
+	}
+	if len(got[0].Classes) != 2 {
+		t.Errorf("Classes = %v, want both unioned", got[0].Classes)
+	}
+	if got[0].Source != SourceMap {
+		t.Errorf("Source = %q, want the strongest rung", got[0].Source)
+	}
+}
+
+// TestMergePacksCollapsesBridgedGroups: an entry carrying BOTH an id and a URL
+// that already belong to two separate groups must collapse them, not join one and
+// orphan the other.
+func TestMergePacksCollapsesBridgedGroups(t *testing.T) {
+	idOnly := []Pack{{ID: "comfy-mtb", Title: "comfy-mtb", Classes: []string{"A"}, Source: SourceRegistry}}
+	urlOnly := []Pack{{Title: "MTB", Repository: "https://github.com/melMass/comfy_mtb", Classes: []string{"B"}, Source: SourcePattern}}
+	bridge := []Pack{{ID: "comfy-mtb", Repository: "https://github.com/melMass/comfy_mtb", Classes: []string{"C"}, Installable: true, Source: SourceMap}}
+
+	got := MergePacks(idOnly, urlOnly, bridge)
+	if len(got) != 1 {
+		t.Fatalf("got %d packs, want 1: %+v", len(got), got)
+	}
+	if len(got[0].Classes) != 3 {
+		t.Errorf("Classes = %v, want A, B and C", got[0].Classes)
+	}
+	if !got[0].Installable {
+		t.Error("a proven-installable contribution must win")
+	}
+	if got[0].Source != SourceMap {
+		t.Errorf("Source = %q, want the strongest rung", got[0].Source)
+	}
+}
+
 // TestPatternMatchingIsUnanchored pins the semantics the real `\(mtb\)$` rule
 // needs. ComfyUI-Manager's own attribution (manager_core.py) uses re.search;
 // Go's regexp.MatchString matches that. An anchored implementation silently loses

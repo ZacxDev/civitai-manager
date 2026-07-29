@@ -396,61 +396,123 @@ func (ix *NodePackIndex) packFor(key string) Pack {
 
 // MergePacks folds attribution results from several rungs (map/pattern from
 // Attribute, registry from a Registry lookup) into one deterministic list,
-// unioning the Classes of packs that are the same pack.
+// unioning the Classes of packs that are the same pack. The strongest
+// (lowest-rank) Source wins for the merged entry.
 //
-// Identity is the pack id when known, else the normalized repository URL, else
-// the title — the Registry and Manager agree on the pack id for the packs both
-// know (comfy-mtb resolves through both live), so the union does not double-list
-// them. The strongest (lowest-rank) Source wins for the merged entry.
+// Identity is a SET of keys — the pack id AND the normalized repository URL —
+// and two entries merge when they share ANY key. Matching on one key alone is
+// not enough, and that was a live-caught bug: the static extension-node-map has
+// no pack ids at all, so its comfy-mtb entry is identified only by
+// github.com/melmass/comfy_mtb while the Registry's is identified only by the id
+// `comfy-mtb`. An id-first-else-url rule put them in different buckets and
+// double-listed the pack. Title is a LAST-RESORT key only (titles collide across
+// unrelated packs).
+//
+// Because one entry can carry keys belonging to two existing groups, matching
+// groups are collapsed together rather than merged into the first hit.
 func MergePacks(sets ...[]Pack) []Pack {
-	order := []string{}
-	byID := map[string]*Pack{}
+	var groups []*Pack
+	index := map[string]int{} // identity key -> group index
+
 	for _, set := range sets {
 		for _, p := range set {
-			id := packIdentity(p)
-			cur, ok := byID[id]
-			if !ok {
+			keys := packIdentityKeys(p)
+
+			// Every distinct group this entry belongs to, in ascending order.
+			var hits []int
+			seen := map[int]bool{}
+			for _, k := range keys {
+				if gi, ok := index[k]; ok && !seen[gi] {
+					seen[gi] = true
+					hits = append(hits, gi)
+				}
+			}
+			sort.Ints(hits)
+
+			if len(hits) == 0 {
 				cp := p
 				cp.Classes = sortedUnique(p.Classes)
-				byID[id] = &cp
-				order = append(order, id)
+				groups = append(groups, &cp)
+				gi := len(groups) - 1
+				for _, k := range keys {
+					index[k] = gi
+				}
 				continue
 			}
-			cur.Classes = sortedUnique(append(cur.Classes, p.Classes...))
-			if sourceRank[p.Source] < sourceRank[cur.Source] {
-				cur.Source = p.Source
+
+			target := hits[0]
+			// Collapse any further groups this entry bridges into the first.
+			for _, gi := range hits[1:] {
+				mergePackInto(groups[target], *groups[gi])
+				groups[gi] = nil
+				for k, v := range index {
+					if v == gi {
+						index[k] = target
+					}
+				}
 			}
-			// Prefer a populated field over an empty one; an Installable=true from
-			// any rung wins (it means getlist proved a registry release exists).
-			cur.ID = firstNonEmpty(cur.ID, p.ID)
-			cur.Repository = firstNonEmpty(cur.Repository, p.Repository)
-			cur.Version = firstNonEmpty(cur.Version, p.Version)
-			cur.Title = firstNonEmpty(cur.Title, p.Title)
-			if p.Installable {
-				cur.Installable = true
-				cur.Reason = ""
-			} else if !cur.Installable {
-				cur.Reason = firstNonEmpty(cur.Reason, p.Reason)
+			mergePackInto(groups[target], p)
+			for _, k := range keys {
+				index[k] = target
+			}
+			// A merged group may have gained new keys (an id or URL it lacked).
+			for _, k := range packIdentityKeys(*groups[target]) {
+				if _, ok := index[k]; !ok {
+					index[k] = target
+				}
 			}
 		}
 	}
-	out := make([]Pack, 0, len(order))
-	for _, id := range order {
-		out = append(out, *byID[id])
+
+	out := make([]Pack, 0, len(groups))
+	for _, g := range groups {
+		if g != nil {
+			out = append(out, *g)
+		}
 	}
 	sortPacks(out)
 	return out
 }
 
-// packIdentity is the merge key: pack id, else normalized repo URL, else title.
-func packIdentity(p Pack) string {
+// mergePackInto folds src into dst: classes union, the strongest Source wins,
+// empty fields are filled, and a proven-installable stays installable.
+func mergePackInto(dst *Pack, src Pack) {
+	dst.Classes = sortedUnique(append(dst.Classes, src.Classes...))
+	if sourceRank[src.Source] < sourceRank[dst.Source] {
+		dst.Source = src.Source
+	}
+	dst.ID = firstNonEmpty(dst.ID, src.ID)
+	dst.Repository = firstNonEmpty(dst.Repository, src.Repository)
+	dst.Version = firstNonEmpty(dst.Version, src.Version)
+	dst.Title = firstNonEmpty(dst.Title, src.Title)
+	// Installable is proven by ComfyUI-Manager's getlist; a rung that could not
+	// prove it (the Registry, or a Manager-less static index) must never downgrade
+	// a rung that did.
+	if src.Installable {
+		dst.Installable = true
+		dst.Reason = ""
+	} else if !dst.Installable {
+		dst.Reason = firstNonEmpty(dst.Reason, src.Reason)
+	}
+}
+
+// packIdentityKeys returns every key by which a pack may be recognised: its id
+// and its normalized repository URL. Title is used ONLY when the pack has
+// neither, because titles are not unique across packs.
+func packIdentityKeys(p Pack) []string {
+	var keys []string
 	if id := strings.TrimSpace(p.ID); id != "" {
-		return "id:" + strings.ToLower(id)
+		keys = append(keys, "id:"+strings.ToLower(id))
 	}
 	if n := normalizeRepoURL(p.Repository); n != "" {
-		return "url:" + n
+		keys = append(keys, "url:"+n)
 	}
-	return "title:" + strings.ToLower(strings.TrimSpace(p.Title))
+	if len(keys) == 0 {
+		if t := strings.TrimSpace(p.Title); t != "" {
+			keys = append(keys, "title:"+strings.ToLower(t))
+		}
+	}
+	return keys
 }
 
 // sortPacks orders packs by confidence rung, then title/id/repository, so the UI
