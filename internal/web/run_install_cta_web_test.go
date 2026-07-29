@@ -26,6 +26,13 @@ import (
 // no exact basename → nothing downloaded → the SAME panel re-rendered → dead button.
 const jugFile = "juggernautXL_v9Rundiffusion.safetensors"
 
+// jugGraph references jugFile, so the endpoint's workflow-binding check accepts it.
+const jugGraph = `{"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"` + jugFile + `"}}}`
+
+// jugRagnarok is the file Juggernaut XL's PRIMARY version actually ships — a different
+// file from the one the workflow references, hence a substitution.
+const jugRagnarok = "juggernautXL_ragnarok.safetensors"
+
 // jugSearchRaw mirrors that live shape: four plausible models, none of whose file
 // basenames equals the reference. Model 1 (the primary card) has a downloadable
 // primary file under a DIFFERENT name.
@@ -173,8 +180,7 @@ func newJugFixServer(t *testing.T, reader civitai.Reader, body []byte) (*Server,
 // terminal Fix popover markup (the panel the user is looking at before clicking).
 func jugPopover(t *testing.T, srv *Server) (wfID, body string) {
 	t.Helper()
-	wfID = seedWorkflow(t, srv, store.WorkflowFormatAPI,
-		`{"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"`+jugFile+`"}}}`)
+	wfID = seedWorkflow(t, srv, store.WorkflowFormatAPI, jugGraph)
 	if rec := post(t, srv, "/workflows/"+wfID+"/run", nil, true); rec.Code != http.StatusOK {
 		t.Fatalf("run = %d", rec.Code)
 	}
@@ -213,37 +219,56 @@ func TestInstallAndRunCTAAlwaysCarriesModelID(t *testing.T) {
 	}
 }
 
-// TestPrimaryInstallCTAStartsDownload is the live-reproduced bug as a test: an
-// ambiguous filename (no CivitAI file basename matches the reference), the REAL
-// popover, and the REAL request the primary button issues. It must actually start a
-// download+run — not re-render the panel.
-func TestPrimaryInstallCTAStartsDownload(t *testing.T) {
-	reader := &jugReader{
+// downloadSeam wraps srv.downloadFn to record, per invocation, the job phase and the
+// pendingDownload — so a test can assert a download really started (and with what)
+// through the seam rather than inferring it from a 200.
+type downloadSeam struct {
+	mu     sync.Mutex
+	phases []string
+	pds    []pendingDownload
+}
+
+func (ds *downloadSeam) install(srv *Server) {
+	real := srv.downloadModelFile
+	srv.downloadFn = func(ctx context.Context, pd pendingDownload, cb func(string)) error {
+		ds.mu.Lock()
+		ds.phases = append(ds.phases, srv.runJobState().Phase)
+		ds.pds = append(ds.pds, pd)
+		ds.mu.Unlock()
+		return real(ctx, pd, cb)
+	}
+}
+
+func (ds *downloadSeam) count() int {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	return len(ds.phases)
+}
+
+// jugSubstituteReader is the live-verified Juggernaut shape: the search finds the
+// models, and model 1's detail body has NO file named jugFile — its primary version
+// ships jugRagnarok instead.
+func jugSubstituteReader(t *testing.T) *jugReader {
+	t.Helper()
+	return &jugReader{
 		searchRaw: jugSearchRaw(t),
 		details: map[string][]byte{"1": []byte(
-			`{"id":1,"modelVersions":[{"id":10,"files":[{"name":"juggernautXL_ragnarok.safetensors","downloadUrl":"` +
-				jugPrimaryURL + `","sizeKB":8,"primary":true}]}]}`)},
+			`{"id":1,"type":"Checkpoint","modelVersions":[{"id":10,"files":[{"name":"` + jugRagnarok +
+				`","downloadUrl":"` + jugPrimaryURL + `","sizeKB":8,"primary":true}]}]}`)},
 	}
-	srv, dl, comfyModels := newJugFixServer(t, reader, []byte("JUGGERNAUTWEIGHTS"))
+}
 
-	// Record the job phase observed at the download seam: the job must be IN the
-	// downloading phase by the time bytes are fetched.
-	var seamMu sync.Mutex
-	var seamPhases []string
-	var seamURLs []string
-	realDownload := srv.downloadModelFile
-	srv.downloadFn = func(ctx context.Context, pd pendingDownload, cb func(string)) error {
-		seamMu.Lock()
-		seamPhases = append(seamPhases, srv.runJobState().Phase)
-		seamURLs = append(seamURLs, pd.URL)
-		seamMu.Unlock()
-		return realDownload(ctx, pd, cb)
-	}
+// TestPrimaryInstallCTAOffersSubstitutionInsteadOfInstalling is the audited hazard:
+// the primary card's model has no file named like the workflow's reference, so its
+// primary version's file would be installed UNDER THAT NAME. That must be an OFFER —
+// the first click downloads NOTHING and names both files.
+func TestPrimaryInstallCTAOffersSubstitutionInsteadOfInstalling(t *testing.T) {
+	reader := jugSubstituteReader(t)
+	srv, dl, comfyModels := newJugFixServer(t, reader, []byte("RAGNAROKWEIGHTS"))
+	seam := &downloadSeam{}
+	seam.install(srv)
 
-	// The popover comes from a REAL run whose preflight fails on the missing
-	// checkpoint (runFn unstubbed), so the CTA under test is the one users see.
 	wfID, panel := jugPopover(t, srv)
-	// Only the post-install run is stubbed (the fake ComfyUI would fail preflight again).
 	rr := &runRecorder{}
 	srv.runFn = rr.fn()
 	ctas := downloadAndRunCTAs(t, panel)
@@ -251,33 +276,102 @@ func TestPrimaryInstallCTAStartsDownload(t *testing.T) {
 		t.Fatalf("popover rendered no Install-and-run CTA:\n%s", panel)
 	}
 	primary := ctas[0]
-	if want := "/workflows/" + wfID + "/download-and-run"; primary.path != want {
-		t.Fatalf("primary CTA posts to %q, want %q", primary.path, want)
-	}
 
-	// withCSRF=false on purpose: the token must come from the BUTTON's own hx-vals,
-	// exactly as the browser would send it.
 	rec := post(t, srv, primary.path, primary.vals, false)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("primary Install-and-run = %d body=%s", rec.Code, rec.Body.String())
 	}
-	// The click must NOT answer with the resolver panel again.
+	body := rec.Body.String()
+
+	// NOTHING may have been fetched or written.
+	if seam.count() != 0 {
+		t.Errorf("a download started on the FIRST click — a substitution must be confirmed first")
+	}
+	if dl.calls != 0 {
+		t.Errorf("downloader called %d times, want 0", dl.calls)
+	}
+	if _, err := os.Stat(filepath.Join(comfyModels, "checkpoints", jugFile)); err == nil {
+		t.Error("a file was written for an unconfirmed substitution")
+	}
+	rr.mu.Lock()
+	ran := rr.calls
+	rr.mu.Unlock()
+	if ran != 0 {
+		t.Errorf("runFn called %d times, want 0", ran)
+	}
+
+	// The offer must name BOTH files concretely.
+	for _, want := range []string{jugFile, jugRagnarok, "Nothing was downloaded"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("substitution offer must name %q:\n%s", want, body)
+		}
+	}
+	// And it must carry a CONFIRMING action — an explicit second click.
+	confirms := downloadAndRunCTAs(t, body)
+	if len(confirms) != 1 {
+		t.Fatalf("offer must render exactly one confirming CTA, got %d:\n%s", len(confirms), body)
+	}
+	c := confirms[0]
+	if c.vals.Get("confirm_substitute") != "1" {
+		t.Errorf("confirming CTA must carry confirm_substitute=1, got %q", c.vals.Get("confirm_substitute"))
+	}
+	if c.vals.Get("model_id") != "1" || c.vals.Get("filename") != jugFile {
+		t.Errorf("confirming CTA lost its target: %v", c.vals)
+	}
+	if c.vals.Get("csrf_token") == "" {
+		t.Error("confirming CTA lost its CSRF token")
+	}
+	if want := "/workflows/" + wfID + "/download-and-run"; c.path != want {
+		t.Errorf("confirming CTA posts to %q, want %q", c.path, want)
+	}
+}
+
+// TestConfirmedSubstitutionInstallsAndNamesRealFile: the SECOND click installs, and
+// every progress line names the file actually being fetched — never only the expected
+// name.
+func TestConfirmedSubstitutionInstallsAndNamesRealFile(t *testing.T) {
+	reader := jugSubstituteReader(t)
+	srv, dl, comfyModels := newJugFixServer(t, reader, []byte("RAGNAROKWEIGHTS"))
+	seam := &downloadSeam{}
+	seam.install(srv)
+
+	wfID, panel := jugPopover(t, srv)
+	rr := &runRecorder{}
+	srv.runFn = rr.fn()
+	primary := downloadAndRunCTAs(t, panel)[0]
+
+	offer := post(t, srv, primary.path, primary.vals, false)
+	confirm := downloadAndRunCTAs(t, offer.Body.String())[0]
+
+	rec := post(t, srv, confirm.path, confirm.vals, false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("confirm = %d body=%s", rec.Code, rec.Body.String())
+	}
+	// The confirmation must NOT answer with the offer again.
 	if strings.Contains(rec.Body.String(), "Search CivitAI") {
-		t.Fatalf("primary CTA re-rendered the resolve panel instead of installing:\n%s", rec.Body.String())
+		t.Fatalf("confirmed substitution re-rendered the panel instead of installing:\n%s", rec.Body.String())
+	}
+	// The status text names BOTH files while the bytes stream.
+	if !strings.Contains(rec.Body.String(), jugRagnarok) {
+		t.Errorf("run status must name the REAL remote file %q:\n%s", jugRagnarok, rec.Body.String())
 	}
 	pollRunUntilDone(t, srv, wfID)
 
-	seamMu.Lock()
-	phases, urls := append([]string(nil), seamPhases...), append([]string(nil), seamURLs...)
-	seamMu.Unlock()
+	seam.mu.Lock()
+	phases, pds := append([]string(nil), seam.phases...), append([]pendingDownload(nil), seam.pds...)
+	seam.mu.Unlock()
 	if len(phases) != 1 {
-		t.Fatalf("download seam hit %d times, want 1 (the click must start exactly one download)", len(phases))
+		t.Fatalf("download seam hit %d times, want 1", len(phases))
 	}
 	if phases[0] != runPhaseDownloading {
 		t.Errorf("job phase at the download seam = %q, want %q", phases[0], runPhaseDownloading)
 	}
-	if urls[0] != jugPrimaryURL {
-		t.Errorf("downloaded %q, want the PRIMARY card's model file %q", urls[0], jugPrimaryURL)
+	if pds[0].URL != jugPrimaryURL {
+		t.Errorf("downloaded %q, want %q", pds[0].URL, jugPrimaryURL)
+	}
+	// The progress label must name the real file AS the expected one.
+	if got, want := pds[0].progressName(), jugRagnarok+" as "+jugFile; got != want {
+		t.Errorf("progress label = %q, want %q", got, want)
 	}
 	if ids := reader.modelIDs(); len(ids) == 0 || ids[0] != "1" {
 		t.Errorf("GetModel called with %v, want the primary card's model id 1", ids)
@@ -285,15 +379,146 @@ func TestPrimaryInstallCTAStartsDownload(t *testing.T) {
 	if dl.calls != 1 {
 		t.Errorf("downloader called %d times, want 1", dl.calls)
 	}
-	// The bytes land under the reference name so the ORIGINAL graph resolves.
+	// The bytes land under the REFERENCE name so the original graph resolves.
 	dest := filepath.Join(comfyModels, "checkpoints", jugFile)
-	if got, err := os.ReadFile(dest); err != nil || string(got) != "JUGGERNAUTWEIGHTS" {
+	if got, err := os.ReadFile(dest); err != nil || string(got) != "RAGNAROKWEIGHTS" {
 		t.Fatalf("model not installed at %s (got %q, err %v)", dest, got, err)
 	}
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
 	if rr.calls != 1 {
 		t.Errorf("runFn called %d times, want 1 (install THEN run)", rr.calls)
+	}
+}
+
+// TestExactMatchInstallsInOneClick is the regression guard for the case that is NOT a
+// substitution: when the model really has the referenced file, the first click must
+// download immediately — no confirmation friction, and the progress line names just
+// the one file.
+func TestExactMatchInstallsInOneClick(t *testing.T) {
+	reader := &jugReader{
+		searchRaw: jugSearchRaw(t),
+		details: map[string][]byte{"1": []byte(
+			`{"id":1,"type":"Checkpoint","modelVersions":[{"id":10,"files":[{"name":"` + jugFile +
+				`","downloadUrl":"` + jugPrimaryURL + `","sizeKB":8,"primary":true}]}]}`)},
+	}
+	srv, dl, comfyModels := newJugFixServer(t, reader, []byte("EXACTWEIGHTS"))
+	seam := &downloadSeam{}
+	seam.install(srv)
+
+	wfID, panel := jugPopover(t, srv)
+	rr := &runRecorder{}
+	srv.runFn = rr.fn()
+	primary := downloadAndRunCTAs(t, panel)[0]
+
+	rec := post(t, srv, primary.path, primary.vals, false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("install = %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "confirm_substitute") {
+		t.Fatalf("an EXACT filename match must not ask for confirmation:\n%s", rec.Body.String())
+	}
+	pollRunUntilDone(t, srv, wfID)
+
+	if seam.count() != 1 {
+		t.Fatalf("download seam hit %d times, want 1 (exact match is one click)", seam.count())
+	}
+	seam.mu.Lock()
+	label := seam.pds[0].progressName()
+	seam.mu.Unlock()
+	if label != jugFile {
+		t.Errorf("progress label = %q, want just %q (nothing was substituted)", label, jugFile)
+	}
+	if dl.calls != 1 {
+		t.Errorf("downloader called %d times, want 1", dl.calls)
+	}
+	if got, err := os.ReadFile(filepath.Join(comfyModels, "checkpoints", jugFile)); err != nil || string(got) != "EXACTWEIGHTS" {
+		t.Fatalf("model not installed (got %q, err %v)", got, err)
+	}
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+	if rr.calls != 1 {
+		t.Errorf("runFn called %d times, want 1", rr.calls)
+	}
+}
+
+// TestInstallRefusesTypeMismatch: a model_id whose model is a LORA must never be
+// written into checkpoints/ because the caller said type=Checkpoint.
+func TestInstallRefusesTypeMismatch(t *testing.T) {
+	reader := &jugReader{
+		searchRaw: jugSearchRaw(t),
+		details: map[string][]byte{"1": []byte(
+			`{"id":1,"type":"LORA","modelVersions":[{"id":10,"files":[{"name":"` + jugFile +
+				`","downloadUrl":"` + jugPrimaryURL + `","sizeKB":8,"primary":true}]}]}`)},
+	}
+	srv, dl, comfyModels := newJugFixServer(t, reader, []byte("LORAWEIGHTS"))
+	seam := &downloadSeam{}
+	seam.install(srv)
+	srv.runFn = (&runRecorder{}).fn()
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, jugGraph)
+
+	rec := post(t, srv, "/workflows/"+wfID+"/download-and-run", url.Values{
+		"filename": {jugFile}, "type": {"Checkpoint"}, "model_id": {"1"},
+	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("download-and-run = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), resolveReasonWrongType) {
+		t.Errorf("a type mismatch must be refused with its own reason:\n%s", rec.Body.String())
+	}
+	if seam.count() != 0 || dl.calls != 0 {
+		t.Errorf("a LoRA must not be downloaded into checkpoints/ (seam=%d dl=%d)", seam.count(), dl.calls)
+	}
+	if _, err := os.Stat(filepath.Join(comfyModels, "checkpoints", jugFile)); err == nil {
+		t.Error("a mismatched-type model was written into checkpoints/")
+	}
+}
+
+// TestInstallRefusesFilenameNotInWorkflow: filename and model_id are free-form form
+// fields; the target must belong to the workflow the request names, or an arbitrary
+// (workflow, file, model) triple could be installed.
+func TestInstallRefusesFilenameNotInWorkflow(t *testing.T) {
+	reader := jugSubstituteReader(t)
+	srv, dl, _ := newJugFixServer(t, reader, []byte("X"))
+	seam := &downloadSeam{}
+	seam.install(srv)
+	srv.runFn = (&runRecorder{}).fn()
+	// This workflow references jugFile — NOT the file the request will ask for.
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, jugGraph)
+
+	for _, tc := range []struct{ path, field string }{
+		{"/download-and-run", "filename"},
+		{"/install-option-and-run", "install_filename"},
+	} {
+		form := url.Values{"type": {"Checkpoint"}, "install_type": {"Checkpoint"}}
+		form.Set(tc.field, "somethingElse.safetensors")
+		rec := post(t, srv, "/workflows/"+wfID+tc.path, form, true)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s with an unreferenced filename = %d, want 400", tc.path, rec.Code)
+		}
+	}
+	if seam.count() != 0 || dl.calls != 0 {
+		t.Errorf("nothing may be fetched for an unbound target (seam=%d dl=%d)", seam.count(), dl.calls)
+	}
+}
+
+// TestInstallRefusesMalformedModelID: a malformed model_id must not silently read as
+// "no model chosen" — those take different resolution paths.
+func TestInstallRefusesMalformedModelID(t *testing.T) {
+	srv, dl, _ := newJugFixServer(t, jugSubstituteReader(t), []byte("X"))
+	srv.runFn = (&runRecorder{}).fn()
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, jugGraph)
+
+	for _, bad := range []string{"abc", "-4", "1e3"} {
+		rec := post(t, srv, "/workflows/"+wfID+"/download-and-run", url.Values{
+			"filename": {jugFile}, "type": {"Checkpoint"}, "model_id": {bad},
+		}, true)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("model_id=%q = %d, want 400", bad, rec.Code)
+		}
+	}
+	if dl.calls != 0 {
+		t.Errorf("downloader called %d times, want 0", dl.calls)
 	}
 }
 
@@ -308,7 +533,7 @@ func TestResolveFallbackExplainsWhyAndDiffersFromPanel(t *testing.T) {
 		ran++
 		return &runResult{}, nil
 	}
-	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"4":{"class_type":"X","inputs":{}}}`)
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, jugGraph)
 
 	// The pre-click panel: the same fragment renderer, no action taken.
 	pre := get(t, srv, "/workflows/run/resolve-model?filename="+url.QueryEscape(jugFile)+"&type=Checkpoint")
@@ -349,7 +574,7 @@ func TestResolveFallbackChosenModelReason(t *testing.T) {
 	}
 	srv, dl, _ := newJugFixServer(t, reader, []byte("X"))
 	srv.runFn = (&runRecorder{}).fn()
-	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"4":{"class_type":"X","inputs":{}}}`)
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, jugGraph)
 
 	rec := post(t, srv, "/workflows/"+wfID+"/download-and-run", url.Values{
 		"filename": {jugFile}, "type": {"Checkpoint"}, "model_id": {"1"},
@@ -376,7 +601,7 @@ func TestResolveFallbackNotEligibleReason(t *testing.T) {
 	srv, dl, _ := newJugFixServer(t, reader, []byte("X"))
 	srv.cfg.ComfyURL = "http://192.168.1.50:8188" // remote ComfyUI → not eligible
 	srv.runFn = (&runRecorder{}).fn()
-	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"4":{"class_type":"X","inputs":{}}}`)
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, jugGraph)
 
 	for _, path := range []string{"/download-and-run", "/install-option-and-run"} {
 		form := url.Values{"filename": {jugFile}, "type": {"Checkpoint"},
@@ -401,7 +626,7 @@ func TestInstallOptionAndRunFallbackExplainsWhy(t *testing.T) {
 	reader := &jugReader{searchRaw: jugSearchRaw(t)}
 	srv, dl, _ := newJugFixServer(t, reader, []byte("X"))
 	srv.runFn = (&runRecorder{}).fn()
-	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"4":{"class_type":"X","inputs":{}}}`)
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, jugGraph)
 
 	rec := post(t, srv, "/workflows/"+wfID+"/install-option-and-run", url.Values{
 		"install_filename": {jugFile}, "install_type": {"Checkpoint"},

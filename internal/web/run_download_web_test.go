@@ -208,7 +208,10 @@ func TestDownloadAndRunTraversalStaysInside(t *testing.T) {
 	reader := dlRunReader{searchRaw: searchRawWithFile(t, "../../etc/evil.safetensors", dlURL)}
 	srv, dl, comfyModels := newDownloadServer(t, reader, dlURL, []byte("X"))
 	srv.runFn = (&runRecorder{}).fn()
-	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"4":{"class_type":"CheckpointLoaderSimple","inputs":{}}}`)
+	// The graph must REFERENCE the target: the endpoint refuses a filename this
+	// workflow does not use (see workflowReferencesFile).
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI,
+		`{"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"../../etc/evil.safetensors"}}}`)
 
 	rec := post(t, srv, "/workflows/"+wfID+"/download-and-run", url.Values{
 		"filename": {"../../etc/evil.safetensors"},
@@ -248,11 +251,20 @@ func TestDownloadAndRunExistingFileSkipsDownload(t *testing.T) {
 	if err := os.WriteFile(dest, []byte("ORIGINAL"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"4":{"class_type":"CheckpointLoaderSimple","inputs":{}}}`)
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI,
+		`{"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"present.safetensors"}}}`)
 
-	post(t, srv, "/workflows/"+wfID+"/download-and-run", url.Values{
+	rec := post(t, srv, "/workflows/"+wfID+"/download-and-run", url.Values{
 		"filename": {"present.safetensors"}, "type": {"Checkpoint"},
 	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("download-and-run = %d", rec.Code)
+	}
+	// The skip-the-download path must SAY it skipped — this branch is what makes any
+	// earlier install permanent, so it must not read like a fresh download.
+	if !strings.Contains(rec.Body.String(), "already installed — nothing was downloaded") {
+		t.Errorf("already-installed fast path must say so:\n%s", rec.Body.String())
+	}
 	pollRunUntilDone(t, srv, wfID)
 
 	if dl.calls != 0 {
@@ -333,7 +345,8 @@ func TestDownloadAndRunUnknownTypeFallback(t *testing.T) {
 	reader := dlRunReader{searchRaw: searchRawWithFile(t, "foo.safetensors", dlURL)}
 	srv, dl, _ := newDownloadServer(t, reader, dlURL, []byte("D"))
 	srv.runFn = (&runRecorder{}).fn()
-	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"4":{"class_type":"X","inputs":{}}}`)
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI,
+		`{"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"foo.safetensors"}}}`)
 
 	// No/blank type → civitaiTypeParam yields "" → not routable.
 	rec := post(t, srv, "/workflows/"+wfID+"/download-and-run", url.Values{
@@ -359,7 +372,8 @@ func TestDownloadAndRunAmbiguousShowsCards(t *testing.T) {
 		ranCalls++
 		return &runResult{}, nil
 	}
-	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"4":{"class_type":"X","inputs":{}}}`)
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI,
+		`{"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"wanted.safetensors"}}}`)
 
 	rec := post(t, srv, "/workflows/"+wfID+"/download-and-run", url.Values{
 		"filename": {"wanted.safetensors"}, "type": {"Checkpoint"},
