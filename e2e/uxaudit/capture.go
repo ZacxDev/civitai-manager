@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
-	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/chromedp"
 )
 
@@ -48,6 +48,7 @@ type ViewCapture struct {
 	ScreenshotPNG []byte
 	AxeJSON       []byte // raw axe-core result JSON
 	NetworkJSON   []byte // marshaled []networkEvent
+	BodyText      string // document.body.innerText at capture time (for content assertions)
 
 	AxeViolations     int
 	ConsoleFirstParty int
@@ -111,11 +112,21 @@ func (b *Browser) Close() {
 // Capture navigates to pageURL at the given viewport and captures a full-page
 // screenshot, the axe-core violations, and the classified console/network events.
 func (b *Browser) Capture(pageURL string, vp Viewport) (ViewCapture, error) {
+	return b.CaptureWith(pageURL, vp, nil)
+}
+
+// CaptureWith is Capture with an optional list of interactive `prep` actions that
+// run AFTER the page has navigated + settled but BEFORE the axe scan + screenshot.
+// It is how the walk drives a real interaction into a stable end-state before
+// capturing it — e.g. opening the import <dialog>, or clicking Run and waiting for
+// the missing-models hero panel to render — so the captured PNG/axe/DOM reflect the
+// post-interaction view, not the initial load. prep is nil for a plain page load.
+func (b *Browser) CaptureWith(pageURL string, vp Viewport, prep []chromedp.Action) (ViewCapture, error) {
 	col := &collector{reqURLs: map[network.RequestID]string{}}
 	b.sess.set(col)
 	defer b.sess.set(nil)
 
-	pageCtx, cancel := context.WithTimeout(b.ctx, 45*time.Second)
+	pageCtx, cancel := context.WithTimeout(b.ctx, 90*time.Second)
 	defer cancel()
 
 	var axeJSON string
@@ -124,11 +135,16 @@ func (b *Browser) Capture(pageURL string, vp Viewport) (ViewCapture, error) {
 		chromedp.Navigate(pageURL),
 		chromedp.WaitReady("body", chromedp.ByQuery),
 		chromedp.Sleep(600 * time.Millisecond), // settle render/network
+	}
+	// Interactive prep (open a dialog, trigger a run, …) runs against the settled
+	// page, mutating the DOM into the state we want to audit.
+	tasks = append(tasks, prep...)
+	tasks = append(tasks,
 		chromedp.Evaluate(axeSource, nil),
 		chromedp.Evaluate(axeRunScript, &axeJSON, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
 			return p.WithAwaitPromise(true)
 		}),
-	}
+	)
 
 	var out ViewCapture
 	tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
@@ -142,6 +158,9 @@ func (b *Browser) Capture(pageURL string, vp Viewport) (ViewCapture, error) {
 		out.ScreenshotPNG = b
 		return nil
 	}))
+	// Grab the rendered body text so callers/tests can assert on CONTENT (e.g. the
+	// hero "Missing model files" panel), not just a non-empty screenshot.
+	tasks = append(tasks, chromedp.Evaluate(`document.body.innerText`, &out.BodyText))
 
 	if err := chromedp.Run(pageCtx, tasks); err != nil {
 		return out, err

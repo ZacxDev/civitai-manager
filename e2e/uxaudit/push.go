@@ -89,6 +89,64 @@ func (p *PushPayload) ReferencedFiles() map[string]bool {
 	return out
 }
 
+// MaxPages caps the pages a single push may carry (mirrors plugin.MaxPages, the
+// server's abuse guard). The harness self-checks against it before pushing.
+const MaxPages = 200
+
+// Validate checks the payload against the set of multipart filenames that will
+// accompany it, mirroring auditloop's server-side plugin.Validate so a malformed
+// push is caught here (and in tests) rather than surfacing as a remote 400. It
+// enforces: 1..MaxPages pages; a non-empty stable url + a known viewport + a
+// screenshot ref per page; a known finding type; and strict multipart integrity —
+// every referenced filename has a matching part AND every provided part is
+// referenced (no orphan uploads).
+func (p *PushPayload) Validate(provided map[string]bool) error {
+	if p.Environment != "" && p.Environment != EnvLab && p.Environment != "staging" && p.Environment != "prod" {
+		return fmt.Errorf("environment must be lab, staging or prod, got %q", p.Environment)
+	}
+	if len(p.Pages) == 0 {
+		return fmt.Errorf("no pages in payload")
+	}
+	if len(p.Pages) > MaxPages {
+		return fmt.Errorf("too many pages: %d (max %d)", len(p.Pages), MaxPages)
+	}
+	validType := map[string]bool{
+		"a11y": true, "console": true, "network": true, "perf": true, "layout": true, "other": true,
+	}
+	seenRefs := map[string]bool{}
+	for i, pg := range p.Pages {
+		if strings.TrimSpace(pg.URL) == "" {
+			return fmt.Errorf("page %d: url (stable page identity) is required", i)
+		}
+		if pg.Viewport != ViewportMobile && pg.Viewport != ViewportDesktop {
+			return fmt.Errorf("page %d: viewport must be %q or %q, got %q", i, ViewportMobile, ViewportDesktop, pg.Viewport)
+		}
+		if strings.TrimSpace(pg.Screenshot) == "" {
+			return fmt.Errorf("page %d: screenshot filename is required", i)
+		}
+		for _, ref := range []string{pg.Screenshot, pg.Axe, pg.Network} {
+			if ref == "" {
+				continue
+			}
+			if !provided[ref] {
+				return fmt.Errorf("page %d references file %q but no matching part was provided", i, ref)
+			}
+			seenRefs[ref] = true
+		}
+		for j, f := range pg.Findings {
+			if !validType[f.Type] {
+				return fmt.Errorf("page %d finding %d: unknown type %q", i, j, f.Type)
+			}
+		}
+	}
+	for name := range provided {
+		if !seenRefs[name] {
+			return fmt.Errorf("provided file %q is not referenced by any page", name)
+		}
+	}
+	return nil
+}
+
 // Upload builds the multipart body (a `metadata` field = metaJSON + one file part
 // per entry in files, each part's form-name == its filename) and POSTs it with the
 // bearer token. Mirrors plugin.Upload. A non-2xx yields an error with the server's
