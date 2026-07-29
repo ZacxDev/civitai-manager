@@ -160,8 +160,12 @@ label confidence.
 2. **Comfy Registry** (first-party): `GET https://api.comfy.org/comfy-nodes/{class}/node`
    → `{id, name, …}`. Verified live. ~334k node classes across ~4.9k packs, ~8× the
    static map. Not-found returns a `message` body, not an error status shape.
-3. **`extension-node-map.json`** as the no-Manager static source. Canonical URL is
-   the **`recent` channel path**, which both the V3 and V4 channel configs point at:
+3. **`extension-node-map.json`** as the no-Manager static source. ⚠ Corrected during
+   implementation: **100% of its 5573 keys are URLs** (vs 43% in the live
+   `getmappings`), and it **does** carry the same 38 `nodename_pattern` entries. So
+   both the URL leg of the join *and* the pattern rung are mandatory on the
+   no-Manager path too — not just the Manager path. Canonical URL is the **`recent`
+   channel path**, which both the V3 and V4 channel configs point at:
    `https://raw.githubusercontent.com/Comfy-Org/ComfyUI-Manager/main/node_db/new/extension-node-map.json`
    ⚠ `node_db/legacy/` and `node_db/forked/` return **`{}` with HTTP 200** — an
    empty-but-successful answer that reads as "no packs found". Never use those paths.
@@ -244,13 +248,27 @@ per-operation routes specifically breaking third-party callers. So the client
 **probes for a live endpoint and degrades to attribution-only** when none matches —
 it must never hard-code one line.
 
-**Presence detection** (in order, all three required to claim "installable"):
-1. ComfyUI server feature flag `extension.manager.supports_csrf_post` — the
-   sanctioned capability negotiation. Absent → assume V3-era semantics.
-2. A live endpoint probe. ⚠ Manager's **CLI-only mode** loads the package with the
-   **internal web API disabled** — so "the directory exists" and even "the module
-   loaded" are false positives. Only a live endpoint response counts.
-3. `getlist` says the pack is CNR-released (`cnr_latest != "nightly"`).
+**Presence detection.** ⚠ Corrected during implementation — the two "sanctioned"
+signals both turned out to be unusable, verified live:
+
+- 🔴 **`extension.manager.supports_csrf_post` DOES NOT EXIST.** Live `/api/features`
+  returns `extension.manager.supports_v4: true` — **on this V3.41 install**. That
+  string is hardcoded in ComfyUI *core* (`comfy_api/feature_flags.py:104`), not
+  contributed by Manager, so it reports V4 on a V3 server. Routing off it would send
+  V4 envelopes to a V3 Manager. **Do not use feature flags for this.**
+- 🔴 **The install endpoints CANNOT be probed.** aiohttp answers a GET on a POST-only
+  route with **404 — indistinguishable from an absent route**, so probing
+  `/api/manager/queue/install` always reports "absent".
+
+**What actually works:** identify each line by a read-only *sibling* endpoint —
+`/api/v2/manager/queue/status` (V4), `/api/v2/manager/queue/history` (V4 legacy),
+`/api/manager/queue/status` (V3) — and never issue a mutating request during
+detection. A test pins that the probe only ever issues GETs.
+
+Then: ⚠ Manager's **CLI-only mode** loads the package with the internal web API
+disabled, so "the directory exists" and even "the module loaded" are false
+positives — only a live endpoint response counts. And "installable" additionally
+requires `getlist` to report the pack CNR-released (`cnr_latest != "nightly"`).
 
 ⚠ `GET /customnode/getlist` **KeyErrors without the `mode` query param** (upstream
 issue #2740) — always send `mode=cache`.
