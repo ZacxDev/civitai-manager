@@ -37,6 +37,23 @@ import (
 // token B — that mapping is the table below, kept in sync by hand with the
 // component CSS. A real browser + axe run (e2e/uxaudit) remains the ground truth
 // for "which element actually renders which pair".
+//
+// THE LIGHT THEME DELIBERATELY FAILS — AND THAT IS ASSERTED, NOT SKIPPED
+// ---------------------------------------------------------------------
+// Brand fidelity was chosen over WCAG AA for the light theme (see the ACCEPTED
+// AA DEBT block in assets/app.css), so most light pairs below sit under 4.5:1.
+// Those pairs are NOT deleted and the checker is NOT weakened. Each carries a
+// `debt` entry naming the theme, the exact measured ratio and the reason, and
+// the test asserts the pair STILL fails at STILL that ratio. Consequences:
+//
+//   - a light pair that unexpectedly starts PASSING fails the build (the debt
+//     entry is stale — delete it and enjoy the win);
+//   - a light pair whose ratio MOVES in either direction fails the build (the
+//     palette changed; re-measure and re-decide, don't drift);
+//   - so the debt is pinned rather than forgotten, and an accidental edit to
+//     the light palette cannot slip through as "well, it already failed".
+//
+// The dark theme carries no debt entries at all: every pair must pass AA there.
 // ---------------------------------------------------------------------------
 
 // wcagAANormal is the WCAG 2.1 AA threshold for normal-size text. Large text
@@ -182,12 +199,51 @@ type bg struct {
 func plain(tok string) bg           { return bg{token: tok} }
 func tint(tok string, p float64) bg { return bg{token: tok, tintPct: p} }
 
+// knownDebt records a pair the project has DELIBERATELY left below its WCAG AA
+// threshold. `ratio` is the measured contrast ratio at the time the decision was
+// taken; `why` is the one-line justification. Both are asserted — see the block
+// comment at the top of this file for what that buys.
+type knownDebt struct {
+	ratio float64
+	why   string
+}
+
+// debtTolerance is how far a pinned debt ratio may move before the test fails.
+// It is wide enough to absorb last-ulp float differences and far too narrow to
+// absorb any real color change (the closest two distinct pinned ratios below
+// differ by 0.04).
+const debtTolerance = 0.005
+
+// The light theme's accepted-failure reasons. Kept as consts because they are
+// one decision, not twenty-five independent ones.
+const (
+	whyBrandBlue = "brand fidelity chosen over AA for the light-theme primary fill " +
+		"(#228BE6, the vendored CivitAI brand blue); see the ACCEPTED AA DEBT block in assets/app.css"
+	whyVendoredIntent = "light-theme vendored status palette kept as-is — same brand-fidelity " +
+		"call as the primary fill; see the ACCEPTED AA DEBT block in assets/app.css"
+	whyDimmedTint = "light text-dimmed stays at v0.1.71's #6b7280 (4.79:1 on the body, AA-clean " +
+		"there); darkening it further to clear the 12% tint too was rejected with the rest of the " +
+		"light-theme palette changes"
+	whySizeLarge = "the .cm-size-large orange stays at its pre-token literal #fb923c so the light " +
+		"palette is untouched; it is a file-size magnitude hint, not a brand color, but changing it " +
+		"is still a visible light-theme change"
+)
+
+// lightDebt is shorthand for "accepted failure in the light theme only".
+func lightDebt(ratio float64, why string) map[string]knownDebt {
+	return map[string]knownDebt{"light": {ratio: ratio, why: why}}
+}
+
 // pair is one foreground/background combination the UI actually produces.
 type pair struct {
 	what string // where this shows up, in UI terms
 	fg   string // foreground token
 	bg   bg
 	min  float64
+	// debt maps theme name -> accepted AA failure. A theme absent from this map
+	// must meet `min`. A theme present in it must MISS `min`, at the recorded
+	// ratio. Only "light" ever appears here.
+	debt map[string]knownDebt
 }
 
 // uiPairs enumerates every token pair the shipped UI paints, with the component
@@ -200,56 +256,86 @@ type pair struct {
 func uiPairs() []pair {
 	return []pair{
 		// Body text.
-		{"body text on the page", "--civitai-color-text", plain("--civitai-color-body"), wcagAANormal},
-		{"body text on surface-2", "--civitai-color-text", plain("--civitai-color-surface-2"), wcagAANormal},
+		{"body text on the page", "--civitai-color-text", plain("--civitai-color-body"), wcagAANormal, nil},
+		{"body text on surface-2", "--civitai-color-text", plain("--civitai-color-surface-2"), wcagAANormal, nil},
 
 		// The app's most-used secondary text (text-slate-400 / text-slate-500).
-		{"dimmed text on the page", "--civitai-color-text-dimmed", plain("--civitai-color-body"), wcagAANormal},
-		{"dimmed text on surface-2", "--civitai-color-text-dimmed", plain("--civitai-color-surface-2"), wcagAANormal},
-		{"dimmed text in a light button (flagToggle off)", "--civitai-color-text-dimmed-text", tint("--civitai-color-text-dimmed", 12), wcagAANormal},
+		{"dimmed text on the page", "--civitai-color-text-dimmed", plain("--civitai-color-body"), wcagAANormal, nil},
+		{"dimmed text on surface-2", "--civitai-color-text-dimmed", plain("--civitai-color-surface-2"), wcagAANormal, nil},
+		{"dimmed text in a light button (flagToggle off)", "--civitai-color-text-dimmed-text", tint("--civitai-color-text-dimmed", 12), wcagAANormal,
+			lightDebt(4.1348, whyDimmedTint)},
 
 		// Brand foreground: text-indigo-*, outline/subtle buttons, the navbar brand.
-		{"brand link/outline button on the page", "--civitai-color-primary-text", plain("--civitai-color-body"), wcagAANormal},
-		{"brand text on surface-2", "--civitai-color-primary-text", plain("--civitai-color-surface-2"), wcagAANormal},
-		{"brand text in a light button", "--civitai-color-primary-text", tint("--civitai-color-primary", 12), wcagAANormal},
-		{"brand text in a light badge", "--civitai-color-primary-text", tint("--civitai-color-primary", 14), wcagAANormal},
+		{"brand link/outline button on the page", "--civitai-color-primary-text", plain("--civitai-color-body"), wcagAANormal,
+			lightDebt(3.5269, whyBrandBlue)},
+		{"brand text on surface-2", "--civitai-color-primary-text", plain("--civitai-color-surface-2"), wcagAANormal,
+			lightDebt(3.5269, whyBrandBlue)},
+		{"brand text in a light button", "--civitai-color-primary-text", tint("--civitai-color-primary", 12), wcagAANormal,
+			lightDebt(3.0774, whyBrandBlue)},
+		{"brand text in a light badge", "--civitai-color-primary-text", tint("--civitai-color-primary", 14), wcagAANormal,
+			lightDebt(3.0067, whyBrandBlue)},
 
 		// Status foregrounds: text-emerald/amber/rose-*, recolored subtle buttons.
-		{"success text on the page", "--civitai-color-success-text", plain("--civitai-color-body"), wcagAANormal},
-		{"success text in a light badge", "--civitai-color-success-text", tint("--civitai-color-success", 14), wcagAANormal},
-		{"success text in a light button", "--civitai-color-success-text", tint("--civitai-color-success", 12), wcagAANormal},
-		{"error text on the page", "--civitai-color-error-text", plain("--civitai-color-body"), wcagAANormal},
-		{"error text in a light badge", "--civitai-color-error-text", tint("--civitai-color-error", 14), wcagAANormal},
-		{"warning text on the page", "--civitai-color-warning-text", plain("--civitai-color-body"), wcagAANormal},
-		{"warning text in a light badge", "--civitai-color-warning-text", tint("--civitai-color-warning", 14), wcagAANormal},
-		{"warning text in a light button", "--civitai-color-warning-text", tint("--civitai-color-warning", 12), wcagAANormal},
-		{"info text in a light badge", "--civitai-color-info-text", tint("--civitai-color-info", 14), wcagAANormal},
+		{"success text on the page", "--civitai-color-success-text", plain("--civitai-color-body"), wcagAANormal,
+			lightDebt(3.3964, whyVendoredIntent)},
+		{"success text in a light badge", "--civitai-color-success-text", tint("--civitai-color-success", 14), wcagAANormal,
+			lightDebt(2.9161, whyVendoredIntent)},
+		{"success text in a light button", "--civitai-color-success-text", tint("--civitai-color-success", 12), wcagAANormal,
+			lightDebt(2.9816, whyVendoredIntent)},
+		{"error text on the page", "--civitai-color-error-text", plain("--civitai-color-body"), wcagAANormal,
+			lightDebt(3.2567, whyVendoredIntent)},
+		{"error text in a light badge", "--civitai-color-error-text", tint("--civitai-color-error", 14), wcagAANormal,
+			lightDebt(2.7598, whyVendoredIntent)},
+		{"warning text on the page", "--civitai-color-warning-text", plain("--civitai-color-body"), wcagAANormal,
+			lightDebt(2.5483, whyVendoredIntent)},
+		{"warning text in a light badge", "--civitai-color-warning-text", tint("--civitai-color-warning", 14), wcagAANormal,
+			lightDebt(2.2351, whyVendoredIntent)},
+		{"warning text in a light button", "--civitai-color-warning-text", tint("--civitai-color-warning", 12), wcagAANormal,
+			lightDebt(2.2778, whyVendoredIntent)},
+		{"info text in a light badge", "--civitai-color-info-text", tint("--civitai-color-info", 14), wcagAANormal,
+			lightDebt(3.0067, whyBrandBlue)},
 
 		// The .cm-* custom components in app.css paint intent foregrounds on the
 		// surface token: status pills, the active library tab, the version-status
 		// and "updated" popovers, the rail's "all" link, the ✓ indicator.
-		{"status pill / active tab (brand) on surface", "--civitai-color-primary-text", plain("--civitai-color-surface"), wcagAANormal},
-		{"broken pill (warning) on surface", "--civitai-color-warning-text", plain("--civitai-color-surface"), wcagAANormal},
-		{"duplicate pill (info) on surface", "--civitai-color-info-text", plain("--civitai-color-surface"), wcagAANormal},
-		{"in-library ✓ (success) on surface", "--civitai-color-success-text", plain("--civitai-color-surface"), wcagAANormal},
-		{"huge-size label (error) on surface", "--civitai-color-error-text", plain("--civitai-color-surface"), wcagAANormal},
+		{"status pill / active tab (brand) on surface", "--civitai-color-primary-text", plain("--civitai-color-surface"), wcagAANormal,
+			lightDebt(3.5269, whyBrandBlue)},
+		{"broken pill (warning) on surface", "--civitai-color-warning-text", plain("--civitai-color-surface"), wcagAANormal,
+			lightDebt(2.5483, whyVendoredIntent)},
+		{"duplicate pill (info) on surface", "--civitai-color-info-text", plain("--civitai-color-surface"), wcagAANormal,
+			lightDebt(3.5269, whyBrandBlue)},
+		{"in-library ✓ (success) on surface", "--civitai-color-success-text", plain("--civitai-color-surface"), wcagAANormal,
+			lightDebt(3.3964, whyVendoredIntent)},
+		{"huge-size label (error) on surface", "--civitai-color-error-text", plain("--civitai-color-surface"), wcagAANormal,
+			lightDebt(3.2567, whyVendoredIntent)},
 		// The orange size tier has no design-system token of its own.
-		{"large-size label on the page", "--civitai-color-size-large", plain("--civitai-color-body"), wcagAANormal},
-		{"large-size label on surface", "--civitai-color-size-large", plain("--civitai-color-surface"), wcagAANormal},
+		{"large-size label on the page", "--civitai-color-size-large", plain("--civitai-color-body"), wcagAANormal,
+			lightDebt(2.2441, whySizeLarge)},
+		{"large-size label on surface", "--civitai-color-size-large", plain("--civitai-color-surface"), wcagAANormal,
+			lightDebt(2.2441, whySizeLarge)},
 
 		// Fills: the token is the BACKGROUND under primary-fg ink.
-		{"filled button label", "--civitai-color-primary-fg", plain("--civitai-color-primary"), wcagAANormal},
-		{"filled button label on hover", "--civitai-color-primary-fg", plain("--civitai-color-primary-hover"), wcagAANormal},
-		{"selected facet chip label", "--civitai-color-primary-fg", plain("--civitai-color-primary"), wcagAANormal},
-		{"filled warning button label (quarantine)", "--civitai-color-on-warning", plain("--civitai-color-warning"), wcagAANormal},
+		{"filled button label", "--civitai-color-primary-fg", plain("--civitai-color-primary"), wcagAANormal,
+			lightDebt(3.5269, whyBrandBlue)},
+		{"filled button label on hover", "--civitai-color-primary-fg", plain("--civitai-color-primary-hover"), wcagAANormal,
+			lightDebt(4.1605, whyBrandBlue)},
+		{"selected facet chip label", "--civitai-color-primary-fg", plain("--civitai-color-primary"), wcagAANormal,
+			lightDebt(3.5269, whyBrandBlue)},
+		{"filled warning button label (quarantine)", "--civitai-color-on-warning", plain("--civitai-color-warning"), wcagAANormal,
+			lightDebt(2.5483, whyVendoredIntent)},
 
-		// Non-text UI: the focus ring must be visible against the page.
-		{"focus ring against the page", "--civitai-color-primary", plain("--civitai-color-body"), wcagAAUI},
+		// Non-text UI: the focus ring must be visible against the page. This one
+		// still PASSES on light — 3.53:1 clears the 3:1 non-text threshold — which
+		// is why the brand blue is only a text-contrast problem.
+		{"focus ring against the page", "--civitai-color-primary", plain("--civitai-color-body"), wcagAAUI, nil},
 	}
 }
 
 // TestTokenContrast is the regression gate AND the reporter. Run with -v to see
-// every computed ratio for both themes.
+// every computed ratio for both themes, each tagged PASS or DEBT.
+//
+// A pair without a `debt` entry for the theme under test must meet its minimum.
+// A pair WITH one must still miss it, at the pinned ratio — see the file header.
 func TestTokenContrast(t *testing.T) {
 	for _, theme := range []string{"light", "dark"} {
 		t.Run(theme, func(t *testing.T) {
@@ -276,8 +362,31 @@ func TestTokenContrast(t *testing.T) {
 					desc = fmt.Sprintf("%s @%.0f%% over body", p.bg.token, p.bg.tintPct)
 				}
 				got := contrastRatio(fg, back)
-				t.Logf("%-42s %-34s on %-44s %5.2f:1 (min %.1f)", p.what, p.fg, desc, got, p.min)
-				if got < p.min {
+				d, isDebt := p.debt[theme]
+
+				tag := "PASS"
+				if isDebt {
+					tag = "DEBT"
+				}
+				t.Logf("%-4s %-42s %-34s on %-44s %5.2f:1 (min %.1f)", tag, p.what, p.fg, desc, got, p.min)
+
+				switch {
+				case isDebt && got >= p.min:
+					// The debt was paid off — good news, but the entry is now a lie.
+					t.Errorf("%s [%s]: %s on %s is %.4f:1, which MEETS the %.1f:1 minimum, but the pair "+
+						"is still marked as accepted debt. Delete its `debt` entry in uiPairs() so the "+
+						"pass is enforced from now on. (Recorded reason: %s)",
+						p.what, theme, p.fg, desc, got, p.min, d.why)
+				case isDebt && math.Abs(got-d.ratio) > debtTolerance:
+					// The palette moved under an accepted failure. Re-decide, don't drift.
+					t.Errorf("%s [%s]: %s on %s is %.4f:1, but this pair is pinned as accepted debt at "+
+						"%.4f:1. The %s palette changed. Re-measure, decide whether the new value is "+
+						"still acceptable, and update the `debt` entry in uiPairs() AND the ACCEPTED AA "+
+						"DEBT block in assets/app.css. (Recorded reason: %s)",
+						p.what, theme, p.fg, desc, got, d.ratio, theme, d.why)
+				case isDebt:
+					// Still exactly as bad as we signed up for.
+				case got < p.min:
 					t.Errorf("%s [%s]: %s on %s is %.2f:1, below the WCAG 2.1 AA minimum %.1f:1 — "+
 						"fix the token in assets/app.css (see the WCAG block there), not the element",
 						p.what, theme, p.fg, desc, got, p.min)
@@ -336,5 +445,53 @@ func TestThemeTokensResolveForBothThemes(t *testing.T) {
 	// The two themes must actually differ, or one of them is not being applied.
 	if light["--civitai-color-body"] == dark["--civitai-color-body"] {
 		t.Error("light and dark resolve the same --civitai-color-body — the theme parse is wrong")
+	}
+}
+
+// TestDarkThemeCarriesNoContrastDebt pins the shape of the decision, not just its
+// numbers: the light theme may hold accepted AA failures, the dark theme may not.
+// Without this, a future "just mark it as debt" edit could quietly downgrade the
+// one theme that is supposed to be AA-clean.
+func TestDarkThemeCarriesNoContrastDebt(t *testing.T) {
+	for _, p := range uiPairs() {
+		for theme := range p.debt {
+			if theme != "light" {
+				t.Errorf("%s: accepted contrast debt is recorded for the %q theme. Only the light "+
+					"theme may carry debt — the dark theme must meet WCAG 2.1 AA on every pair. "+
+					"Fix the token in assets/app.css instead of marking it as debt.", p.what, theme)
+			}
+		}
+	}
+}
+
+// TestAcceptedDebtIsDocumentedInCSS keeps the test table and the CSS honest about
+// each other. The ratios only mean something if the next person editing the light
+// palette finds the decision written next to the colors, so app.css must carry the
+// ACCEPTED AA DEBT block and the headline figure the decision was made on.
+func TestAcceptedDebtIsDocumentedInCSS(t *testing.T) {
+	css := appCSS(t)
+	for _, want := range []string{
+		"ACCEPTED AA DEBT",
+		"#228BE6",              // the brand blue the decision is about
+		"3.53:1",               // white-on-primary, the headline failing ratio
+		"#1864ab",              // the rejected AA-clean alternative, recorded so it is not re-derived
+		"contrast_web_test.go", // the pointer to where the debt is pinned
+	} {
+		if !strings.Contains(css, want) {
+			t.Errorf("assets/app.css must document the accepted light-theme AA debt and mention %q — "+
+				"the ratios in uiPairs() are only meaningful if the decision is recorded next to the colors", want)
+		}
+	}
+	// Guard the specific reverts, so a re-darkened light palette cannot ship while
+	// this file still claims the vendored brand colors are intact.
+	for _, banned := range []string{
+		"--civitai-color-primary: #1864ab",
+		"--civitai-color-primary-hover: #145591",
+		"--civitai-color-text-dimmed: #5f6672",
+	} {
+		if strings.Contains(css, banned) {
+			t.Errorf("app.css declares %q — the light theme must keep the vendored brand palette "+
+				"(see the ACCEPTED AA DEBT block); that darkening was deliberately reverted", banned)
+		}
 	}
 }
