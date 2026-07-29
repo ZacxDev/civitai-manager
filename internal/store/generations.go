@@ -34,7 +34,14 @@ type Generation struct {
 	// Params is the JSON snapshot of the applied run options (substitutions,
 	// option fixes, widget overrides) + resource/base info, so a re-run reproduces
 	// the parameterized run.
-	Params     string
+	Params string
+	// PresetID is the run preset ("tab") this run was started from, or nil for a
+	// run that did not come from one. ON DELETE SET NULL — deleting a preset must
+	// never delete the images it produced.
+	PresetID *int64
+	// PresetName is a SNAPSHOT of the preset's label at run time (the same idiom as
+	// WorkflowName), so a deleted preset's runs stay labeled.
+	PresetName string
 	Status     string
 	ImageCount int
 	CreatedAt  time.Time
@@ -68,7 +75,7 @@ type ListGenerationsOpts struct {
 }
 
 const generationCols = `id, workflow_id, workflow_name, prompt_id, base_model,
-	graph_hash, params, status, image_count, created_at`
+	graph_hash, params, preset_id, preset_name, status, image_count, created_at`
 
 // scanGeneration reads the core generation columns (generationCols order). It does
 // NOT populate FirstImageID (ListGenerations selects that separately).
@@ -79,18 +86,25 @@ func scanGeneration(sc scanner) (Generation, error) {
 		baseModel  sql.NullString
 		graphHash  sql.NullString
 		params     sql.NullString
+		presetID   sql.NullInt64
+		presetName sql.NullString
 		createdAt  string
 	)
 	if err := sc.Scan(&gen.ID, &workflowID, &gen.WorkflowName, &gen.PromptID,
-		&baseModel, &graphHash, &params, &gen.Status, &gen.ImageCount, &createdAt); err != nil {
+		&baseModel, &graphHash, &params, &presetID, &presetName,
+		&gen.Status, &gen.ImageCount, &createdAt); err != nil {
 		return Generation{}, err
 	}
 	if workflowID.Valid {
 		gen.WorkflowID = &workflowID.Int64
 	}
+	if presetID.Valid {
+		gen.PresetID = &presetID.Int64
+	}
 	gen.BaseModel = baseModel.String
 	gen.GraphHash = graphHash.String
 	gen.Params = params.String
+	gen.PresetName = presetName.String
 	gen.CreatedAt = parseTime(createdAt)
 	return gen, nil
 }
@@ -139,10 +153,11 @@ func (s *Store) InsertGeneration(ctx context.Context, gen *Generation, images []
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO generations
 			(workflow_id, workflow_name, prompt_id, base_model, graph_hash,
-			 params, status, image_count, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 params, preset_id, preset_name, status, image_count, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		nullInt64(gen.WorkflowID), gen.WorkflowName, gen.PromptID,
 		nullStr(gen.BaseModel), nullStr(gen.GraphHash), nullStr(gen.Params),
+		nullInt64(gen.PresetID), nullStr(gen.PresetName),
 		gen.Status, gen.ImageCount, formatTime(gen.CreatedAt))
 	if err != nil {
 		return 0, fmt.Errorf("insert generation: %w", err)
@@ -215,20 +230,26 @@ func (s *Store) ListGenerations(ctx context.Context, opts ListGenerationsOpts) (
 			baseModel  sql.NullString
 			graphHash  sql.NullString
 			params     sql.NullString
+			presetID   sql.NullInt64
+			presetName sql.NullString
 			createdAt  string
 			firstImg   int64
 		)
 		if err := rows.Scan(&gen.ID, &workflowID, &gen.WorkflowName, &gen.PromptID,
-			&baseModel, &graphHash, &params, &gen.Status, &gen.ImageCount,
-			&createdAt, &firstImg); err != nil {
+			&baseModel, &graphHash, &params, &presetID, &presetName,
+			&gen.Status, &gen.ImageCount, &createdAt, &firstImg); err != nil {
 			return nil, err
 		}
 		if workflowID.Valid {
 			gen.WorkflowID = &workflowID.Int64
 		}
+		if presetID.Valid {
+			gen.PresetID = &presetID.Int64
+		}
 		gen.BaseModel = baseModel.String
 		gen.GraphHash = graphHash.String
 		gen.Params = params.String
+		gen.PresetName = presetName.String
 		gen.CreatedAt = parseTime(createdAt)
 		gen.FirstImageID = firstImg
 		out = append(out, gen)
