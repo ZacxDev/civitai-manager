@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
+	"github.com/ZacxDev/civitai-manager/internal/comfy"
 	"github.com/ZacxDev/civitai-manager/internal/config"
 	"github.com/ZacxDev/civitai-manager/internal/library"
 	"github.com/ZacxDev/civitai-manager/internal/poller"
@@ -93,6 +94,12 @@ type Config struct {
 	// HFFallback enables the HuggingFace fallback (try HF when CivitAI resolution
 	// misses). Default resolved from config (on unless explicitly disabled).
 	HFFallback bool
+	// ResolveNodePacks enables the ONLINE half of custom-node attribution (send the
+	// class names ComfyUI-Manager could not place to api.comfy.org and
+	// raw.githubusercontent.com). Default resolved from config (on unless explicitly
+	// disabled). When false, attribution is local-Manager-only and NO request to
+	// either host is made. Manager itself is loopback and is never gated by this.
+	ResolveNodePacks bool
 }
 
 // Server wires the store, the CivitAI reader, and the subscriber into an
@@ -175,6 +182,13 @@ type Server struct {
 	// Registry, merged); tests inject a canned attribution so the render states
 	// are exercised without any network.
 	attributeFn func(ctx context.Context, classes []string) nodeAttribution
+	// nodePackResolverFn builds the OUTBOUND node-pack resolver (Comfy Registry +
+	// the static extension-node-map). Nil (production) means nodePackResolver()
+	// builds a real one — but ONLY when cfg.ResolveNodePacks is true. It is the sole
+	// owner of the hardened HTTP client for api.comfy.org /
+	// raw.githubusercontent.com, so a test that asserts this factory is never
+	// invoked has proven no socket to either host can be opened.
+	nodePackResolverFn func() *comfy.NodePackResolver
 	// nodepackMu guards nodepackJob. One node-pack install runs at a time (the same
 	// single-job guard the run/scan/discovery jobs use).
 	nodepackMu sync.Mutex

@@ -79,6 +79,13 @@ type nodeAttribution struct {
 	// through the whole run-status fragment chain; it is set OUTSIDE the
 	// attribution seam (from config), never derived from a third-party index.
 	ComfyRoot string
+	// RemoteLookup records whether the ONLINE rungs (Comfy Registry + the static
+	// extension-node-map) were allowed to run for this pass — i.e. the effective
+	// value of config `resolve_node_packs`. The panel's data-egress disclosure reads
+	// it so it can never claim egress that did not and will not happen. Like
+	// ComfyRoot it is set OUTSIDE the attribution seam, from config, so it stays
+	// correct even when a test injects a canned attribution.
+	RemoteLookup bool
 }
 
 // managerClient returns the ComfyUI-Manager client: the test seam when set,
@@ -94,9 +101,26 @@ func (s *Server) managerClient() managerClient {
 	return comfy.NewClient(s.cfg.ComfyURL, s.cfg.ComfyToken)
 }
 
-// nodePackResolver builds the cache-aware egress resolver (static
-// extension-node-map + Comfy Registry) over the SQLite node-pack cache.
+// nodePackResolver returns the cache-aware EGRESS resolver (static
+// extension-node-map + Comfy Registry) over the SQLite node-pack cache, or nil
+// when the online lookups are disabled (config `resolve_node_packs: false`).
+//
+// This mirrors hfClientOrNil: the opt-out lives at the point the outbound client
+// is CONSTRUCTED, so a disabled lookup never builds an http.Client, never
+// resolves a hostname and never opens a socket — as opposed to building the
+// resolver and then declining to use it. The resolver itself stays a pure
+// capability with no policy in it.
+//
+// Only the two PUBLIC hosts are gated. ComfyUI-Manager (managerClient) is on
+// loopback and is deliberately unaffected: with the flag off, attribution still
+// works fully whenever Manager is installed.
 func (s *Server) nodePackResolver() *comfy.NodePackResolver {
+	if s.nodePackResolverFn != nil {
+		return s.nodePackResolverFn()
+	}
+	if !s.cfg.ResolveNodePacks {
+		return nil
+	}
 	return comfy.NewNodePackResolver(s.store)
 }
 
@@ -110,7 +134,8 @@ func (s *Server) nodePackResolver() *comfy.NodePackResolver {
 //
 // It must NOT be called from a render/poll path: it reaches ComfyUI-Manager on
 // loopback and (for anything Manager could not place) api.comfy.org and
-// raw.githubusercontent.com.
+// raw.githubusercontent.com — the latter two only when `resolve_node_packs` is
+// on.
 func (s *Server) attributeMissingNodes(parent context.Context, classes []string) nodeAttribution {
 	if s.attributeFn != nil {
 		return s.attributeFn(parent, classes)
@@ -169,11 +194,34 @@ func (s *Server) realAttributeMissingNodes(parent context.Context, classes []str
 		}
 	}
 
+	// Both remaining rungs are OUTBOUND, so they live behind ONE gate: the resolver
+	// is built only when something is still unplaced (a fully-resolving Manager
+	// costs zero requests) AND `resolve_node_packs` is on. A nil res IS the opt-out
+	// — no resolver, hence no HTTP client, hence no DNS lookup and no connection to
+	// either public host; whatever Manager could not place stays unattributed.
+	if len(remaining) > 0 {
+		if res := s.nodePackResolver(); res != nil {
+			packs, un := s.attributeRemote(ctx, res, remaining)
+			sets, remaining = append(sets, packs...), un
+		}
+	}
+
+	out.Packs = comfy.MergePacks(sets...)
+	out.Unattributed = remaining
+	return out
+}
+
+// attributeRemote runs the two OUTBOUND rungs (static extension-node-map, then
+// the Comfy Registry) over the classes no local rung could place. It is only ever
+// reached with a non-nil resolver, i.e. with `resolve_node_packs` on.
+func (s *Server) attributeRemote(ctx context.Context, res *comfy.NodePackResolver, remaining []string) ([][]comfy.Pack, []string) {
+	var sets [][]comfy.Pack
+
 	// Rung 1' : the static extension-node-map, the no-Manager source. Same
 	// document shape as getmappings but WITHOUT the nodename_pattern rules and
 	// without cnr_latest, so nothing it produces is auto-installable.
 	if len(remaining) > 0 {
-		if raw, err := s.nodePackResolver().StaticIndex(ctx); err != nil {
+		if raw, err := res.StaticIndex(ctx); err != nil {
 			s.log.Warn("fetch static node-pack index failed", "err", err)
 		} else {
 			ix, bErr := comfy.BuildIndex(raw, nil)
@@ -192,7 +240,7 @@ func (s *Server) realAttributeMissingNodes(parent context.Context, classes []str
 		if len(ask) > maxRegistryClasses {
 			ask, overflow = ask[:maxRegistryClasses], ask[maxRegistryClasses:]
 		}
-		packs, un, errs := s.nodePackResolver().RegistryPacks(ctx, ask)
+		packs, un, errs := res.RegistryPacks(ctx, ask)
 		for _, e := range errs {
 			s.log.Warn("comfy registry lookup failed", "err", e)
 		}
@@ -200,7 +248,5 @@ func (s *Server) realAttributeMissingNodes(parent context.Context, classes []str
 		remaining = append(un, overflow...)
 	}
 
-	out.Packs = comfy.MergePacks(sets...)
-	out.Unattributed = remaining
-	return out
+	return sets, remaining
 }

@@ -67,12 +67,7 @@ func missingNodesPanel(attr nodeAttribution, missing []string, wfID int64, csrf,
 	if note := managerStateNote(attr); note != nil {
 		body = append(body, note)
 	}
-	// Data-egress disclosure, in the same spirit as the scan's remote-match notice:
-	// attribution asks ComfyUI-Manager first (loopback, no egress) and only sends
-	// the class names it could not place to two public third-party indexes.
-	body = append(body, h.P(h.Class("text-xs text-slate-500"),
-		g.Text("Pack names come from ComfyUI-Manager's local index; node types it cannot place "+
-			"are looked up against api.comfy.org and raw.githubusercontent.com.")))
+	body = append(body, nodePackEgressNotice(attr.RemoteLookup))
 
 	confident, likely := splitPacksByConfidence(attr.Packs)
 	if len(confident) > 0 {
@@ -98,6 +93,29 @@ func missingNodesPanel(attr nodeAttribution, missing []string, wfID int64, csrf,
 		body = append(body, h.Div(h.Class("pt-1"), restartComfyButton(csrf)))
 	}
 	return h.Div(h.Class("mt-2 space-y-2"), g.Group(body))
+}
+
+// nodePackEgressNotice renders the data-egress disclosure, in the same spirit as
+// the scan's remote-match notice. It has TWO states because the egress has an
+// opt-out (`resolve_node_packs`), and a panel that named two third-party hosts
+// while the lookups were switched off would be lying about what the app did.
+//
+// on  → Manager first (loopback), then the two public indexes for what it missed.
+// off → Manager only; nothing left the machine, and that is why some classes
+//
+//	below are unattributed. It names the key so the state is reversible.
+func nodePackEgressNotice(remote bool) g.Node {
+	if !remote {
+		return h.P(h.Class("text-xs text-slate-500"),
+			g.Text("Pack names come from ComfyUI-Manager's local index only. The online lookups "+
+				"(api.comfy.org, raw.githubusercontent.com) are turned off by "+
+				"resolve_node_packs: false, so nothing was sent off this machine — "+
+				"node types Manager cannot place stay unmatched."))
+	}
+	return h.P(h.Class("text-xs text-slate-500"),
+		g.Text("Pack names come from ComfyUI-Manager's local index; node types it cannot place "+
+			"are looked up against api.comfy.org and raw.githubusercontent.com "+
+			"(resolve_node_packs: false turns that off)."))
 }
 
 // splitPacksByConfidence separates the exact-match rungs (Manager's enumerated
