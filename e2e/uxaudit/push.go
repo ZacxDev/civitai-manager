@@ -106,9 +106,10 @@ const (
 // ValidateFiles enforces the per-file (16 MiB) and total (64 MiB) size caps that
 // auditloop applies server-side, so an oversized artifact fails locally before the
 // POST. It is separate from Validate (which vets the metadata shape and has only
-// filenames, not sizes) because only the caller holds the actual bytes. Non-fatal
-// at the walk level today — the push is skipped, the walk still writes local
-// artifacts.
+// filenames, not sizes) because only the caller holds the actual bytes. In Walk
+// this runs before artifacts are persisted, so an oversize fails the whole walk
+// (fail-loud beats a server-side 413); on the MaybePush path an oversize just
+// skips the push, non-fatally.
 func (p *PushPayload) ValidateFiles(files map[string][]byte) error {
 	var total int64
 	for name, data := range files {
