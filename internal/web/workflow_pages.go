@@ -92,11 +92,59 @@ type libraryWorkflowsView struct {
 	// Resolver resolves list-item model/version names + local-file presence from
 	// local state (built by the handler, which has store access).
 	Resolver workflowResolver
-	// Facets is the normalized browse-by selection (?eco=/?use=), and Counts is
-	// the per-bucket population of the WHOLE library (not of the filtered list) —
-	// so a chip's count stays meaningful while a filter is applied.
+	// Facets is the normalized browse-by selection (?eco=/?use=/?model=), and Counts
+	// is the per-bucket population of the SCOPE (the whole library, or — when a
+	// source-post filter is active — that post's workflows) rather than of the
+	// filtered list, so a chip's count stays meaningful while a filter is applied.
 	Facets libraryWorkflowFacets
 	Counts workflowFacetCounts
+	// SourceModelName is the cached CivitAI name of the ?model= post ("" when the
+	// model was never cached — the header then names the id only, and never invents
+	// a title).
+	SourceModelName string
+}
+
+// sourcePostHeader names the source post a ?model= filter is scoped to, links back
+// to it on civitai.com, and offers a one-click escape to the full library. It is
+// rendered ONLY while the filter is active.
+//
+// It exists because importing a CivitAI Workflows model routinely yields MANY
+// workflows (22 for one post in a real library); landing on an unfiltered list
+// after such an import makes the import look like it did nothing in particular.
+//
+// The model NAME is untrusted CivitAI text (escaped via g.Text); the href is built
+// from the numeric id only, so nothing from the request reaches the URL.
+func sourcePostHeader(modelID int, name string, shown int) g.Node {
+	ids := strconv.Itoa(modelID)
+	title := "Workflows from CivitAI model " + ids
+	if strings.TrimSpace(name) != "" {
+		title = name
+	}
+	count := strconv.Itoa(shown) + " workflow"
+	if shown != 1 {
+		count += "s"
+	}
+	return h.Div(
+		h.Class("rounded border border-slate-800 p-3 flex flex-wrap items-center justify-between gap-3"),
+		h.Div(
+			h.Div(h.Class("text-sm font-semibold text-slate-100"), g.Text(title)),
+			h.Div(h.Class("text-xs text-slate-400"),
+				g.Text(count+" imported from this CivitAI post")),
+		),
+		h.Div(h.Class("flex flex-wrap items-center gap-3"),
+			h.A(
+				h.Href("https://civitai.com/models/"+ids),
+				h.Target("_blank"), g.Attr("rel", "noopener noreferrer"),
+				h.Class("text-xs text-indigo-400 hover:underline"),
+				g.Text("View on CivitAI ↗"),
+			),
+			h.A(
+				h.Href("/library?tab=workflows"),
+				h.Class("text-xs text-indigo-400 hover:underline"),
+				g.Text("Show all workflows"),
+			),
+		),
+	)
 }
 
 // workflowsPanel is the "Workflows" Library tab: an import panel (paste JSON /
@@ -112,33 +160,52 @@ func workflowsPanel(lw libraryWorkflowsView, csrf string, extraAllowed bool) g.N
 		// Idle: the scan form card above the current list (rebuilt on each status swap).
 		scanInitial = workflowScanTerminal(lw.Workflows, workflowScanSnapshot{}, csrf, extraAllowed, lw.Resolver)
 	}
-	var body []g.Node
-	body = append(body, h.P(h.Class("text-sm text-slate-400"),
-		g.Text("Locally-curated ComfyUI workflows. Import an API/UI graph, extract one from a ComfyUI PNG, "+
-			"or scan your ComfyUI installs to index and auto-link saved workflows. Local run is coming in a later release.")))
+	// CONTROLS (head): the source-post scope header, then the browse-by chips. Both
+	// sit ABOVE the stable scan container so a scan-status innerHTML swap never
+	// re-renders (or orphans) them — unchanged; they simply live in the surface's
+	// head now instead of floating between two cards.
+	var controls []g.Node
+	if lw.Facets.Model > 0 {
+		controls = append(controls, sourcePostHeader(lw.Facets.Model, lw.SourceModelName, lw.Counts.Total))
+	}
+	if lw.Counts.Total > 0 {
+		controls = append(controls, workflowFacetBar(lw.Counts, lw.Facets))
+	}
+
+	// RESULTS: the scan control + workflow list, or — for a filter that matched
+	// nothing — the guided empty state instead (without it the panel would render the
+	// generic "No workflows yet" and look like data loss).
+	//
+	// The surface's results container IS the existing stable #workflow-scan-results
+	// element, so the re-arming workflow-scan poller keeps its exact target and can
+	// never orphan its #workflow-scan-poll. Nothing about the swap contract moved.
+	results := scanInitial
+	noneMatched := (lw.Facets.Model > 0 && lw.Counts.Total == 0) ||
+		(lw.Facets.any() && len(lw.Workflows) == 0 && lw.Counts.Total > 0)
+	if noneMatched {
+		results = workflowFacetEmptyLocal(lw.Facets)
+	}
+
+	var notice g.Node
 	if lw.Flash != "" {
 		level := lw.FlashLevel
 		if level == "" {
 			level = "info"
 		}
-		body = append(body, alert(level, "", g.Text(lw.Flash)))
+		notice = alert(level, "", g.Text(lw.Flash))
 	}
-	body = append(body, workflowImportPanel(csrf, extraAllowed))
-	// The browse-by chips sit ABOVE the stable scan container so a scan-status
-	// innerHTML swap never re-renders (or orphans) them.
-	if lw.Counts.Total > 0 {
-		body = append(body, workflowFacetBar(lw.Counts, lw.Facets))
-	}
-	// A filter that matched nothing gets its own guided state; without this the
-	// panel would render the generic "No workflows yet" and look like data loss.
-	if lw.Facets.any() && len(lw.Workflows) == 0 && lw.Counts.Total > 0 {
-		body = append(body, workflowFacetEmptyLocal(lw.Facets))
-		return h.Div(h.Class("space-y-6"), g.Group(body))
-	}
-	// The STABLE poll/results container: only its innerHTML is ever swapped, so the
-	// re-arming workflow-scan poller can never orphan its #workflow-scan-poll.
-	body = append(body, h.Div(h.ID(workflowScanResultsID), scanInitial))
-	return h.Div(h.Class("space-y-6"), g.Group(body))
+
+	return browseSurface(browseSurfaceSpec{
+		// No Title: the Library page already owns the single <h1> above the tab strip.
+		Blurb: "Locally-curated ComfyUI workflows. Import an API/UI graph, extract one from a ComfyUI PNG, " +
+			"or scan your ComfyUI installs to index and auto-link saved workflows.",
+		Aside:     workflowImportTrigger(extraAllowed),
+		Controls:  g.Group(controls),
+		Notice:    notice,
+		ResultsID: workflowScanResultsID,
+		Results:   results,
+		Foot:      []g.Node{workflowImportDialog(csrf, extraAllowed)},
+	})
 }
 
 // workflowImportDialogID is the native <dialog> opened by the "Import a workflow"
@@ -152,15 +219,16 @@ const workflowImportDialogID = "workflow-import-dialog"
 // their endpoints, CSRF, and loopback gate are unchanged — only relocated behind
 // the modal. The <dialog> itself is a transparent positioning shell; the visible
 // surface is a theme-aware card so it renders correctly under both data-themes.
-func workflowImportPanel(csrf string, extraAllowed bool) g.Node {
+// workflowImportTrigger is the "Add a workflow" action alone — it rides on the
+// browse surface's head row rather than in a card of its own, so the tab reads as
+// one surface (title/blurb + actions + filters, then the workflows). The <dialog>
+// it opens is emitted separately by workflowImportDialog.
+func workflowImportTrigger(extraAllowed bool) g.Node {
 	if !extraAllowed {
-		return card(
-			sectionTitle("Import a workflow"),
-			alert("warning", "",
-				g.Text("Workflow import is disabled when the server is bound to a non-loopback address.")),
-		)
+		return alert("warning", "",
+			g.Text("Workflow import is disabled when the server is bound to a non-loopback address."))
 	}
-	trigger := civButton("filled", "md", []g.Node{
+	return civButton("filled", "md", []g.Node{
 		h.Type("button"),
 		// Inline open — no external script. showModal() gives the native top-layer
 		// modal + backdrop; the dialog id is a constant, not user input.
@@ -170,8 +238,17 @@ func workflowImportPanel(csrf string, extraAllowed bool) g.Node {
 		h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("＋ ")),
 		g.Text("Add a workflow"),
 	)
+}
 
-	dialog := h.Dialog(
+// workflowImportDialog is the native <dialog> holding the paste-JSON and
+// upload-PNG import forms. The forms, their endpoints, CSRF and loopback gate are
+// unchanged — only the surrounding chrome moved. It renders nothing when import is
+// gated off (the trigger already says so).
+func workflowImportDialog(csrf string, extraAllowed bool) g.Node {
+	if !extraAllowed {
+		return nil
+	}
+	return h.Dialog(
 		h.ID(workflowImportDialogID),
 		// Transparent, chrome-less shell — the inner card provides the visible,
 		// theme-aware surface. Constrain width; the UA centers a showModal() dialog.
@@ -218,15 +295,6 @@ func workflowImportPanel(csrf string, extraAllowed bool) g.Node {
 				h.Form(h.Method("dialog"), h.Class("inline"),
 					btnSecondary(g.Text("Cancel")))),
 		),
-	)
-
-	return card(
-		h.Class("cm-lift"),
-		sectionTitle("Add a workflow"),
-		h.P(h.Class("text-sm text-slate-400 mb-3"),
-			g.Text("Paste an API/UI graph or extract one from a ComfyUI PNG. To index workflows already saved in your ComfyUI installs, use “Scan for workflows” below.")),
-		trigger,
-		dialog,
 	)
 }
 

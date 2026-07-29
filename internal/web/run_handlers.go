@@ -88,7 +88,11 @@ type runJob struct {
 	// aborted marks a run that never submitted because the UI→API conversion yielded
 	// zero runnable nodes (an all-disabled template / no installed node types). It
 	// gets a distinct "nothing to run" report rather than the generic failure alert.
-	aborted    bool
+	aborted bool
+	// uiFormat records whether the run's workflow is a UI-format ("Save") graph. It is
+	// carried on the JOB (not re-read per poll) so the failure report can offer the
+	// "Open in ComfyUI" escape hatch, which only applies to an editable UI graph.
+	uiFormat   bool
 	stopped    bool
 	err        error
 	startedAt  time.Time
@@ -137,6 +141,12 @@ type runOptions struct {
 	// name with the live schema. This is what makes an edit to a parameter that lives
 	// on an UPSTREAM node (a widget converted to an input) actually reach ComfyUI.
 	UIWidgetOverrides map[comfy.UIWidgetKey]string
+	// ModeSelection picks ONE pipeline out of a multi-mode template workflow, keyed by
+	// comfy.ModeSelector.Key → comfy.ModeGroup.Key. It is applied to a COPY of the UI
+	// graph BEFORE conversion (comfy.ApplyModeSelection), un-bypassing the chosen
+	// group's nodes so there is something to convert at all. Ephemeral like every other
+	// field here — the stored workflow is never rewritten.
+	ModeSelection map[string]string
 }
 
 // runUpdater lets runFn stream phase transitions into the job under the mutex.
@@ -184,6 +194,7 @@ func (s *Server) startRunWithMessage(wf *store.Workflow, opts runOptions, msg st
 	job := &runJob{
 		running: true, workflowID: wf.ID, phase: runPhasePreparing,
 		message: msg, startedAt: time.Now(), cancel: cancel,
+		uiFormat: wf.Format == store.WorkflowFormatUI,
 	}
 	s.runJob = job
 
@@ -338,6 +349,13 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater,
 		// the converter then maps it onto the right api input. The stored workflow is
 		// never touched (ApplyUIWidgetOverrides returns a new document).
 		uiGraph := json.RawMessage(wf.Graph)
+		// Multi-mode template: un-bypass the ONE pipeline the user picked before doing
+		// anything else, so the converter has a runnable graph to work with. Applied to a
+		// copy; a workflow with no mutually-exclusive selector (the overwhelming majority)
+		// gets its bytes back unchanged.
+		if len(opts.ModeSelection) > 0 {
+			uiGraph = comfy.ApplyModeSelection(uiGraph, opts.ModeSelection)
+		}
 		if len(opts.UIWidgetOverrides) > 0 {
 			uiGraph = comfy.ApplyUIWidgetOverrides(uiGraph, opts.UIWidgetOverrides)
 		}
@@ -491,6 +509,7 @@ type runSnapshot struct {
 	LibMeta          map[string]store.LocalModelMeta
 	Warnings         []string
 	Aborted          bool
+	UIFormat         bool
 	Stopped          bool
 }
 
@@ -511,7 +530,7 @@ func (s *Server) runJobState() runSnapshot {
 		PromptID: j.promptID, Phase: j.phase, Message: j.message, QueuePos: j.queuePos,
 		Images: imgs, Preflight: j.preflight, MissingModels: j.missingModels,
 		MissingResolved: j.missingResolved, LibMeta: j.libMeta,
-		Warnings: warns, Aborted: j.aborted, Stopped: j.stopped,
+		Warnings: warns, Aborted: j.aborted, UIFormat: j.uiFormat, Stopped: j.stopped,
 	}
 }
 
@@ -543,7 +562,7 @@ func (s *Server) handleWorkflowRun(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	s.startRun(wf, runOptions{})
+	s.startRun(wf, runOptions{ModeSelection: parseModeChoices(r.Form, wf)})
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 }
 

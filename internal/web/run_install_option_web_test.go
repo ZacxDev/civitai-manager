@@ -37,9 +37,11 @@ func TestBadOptionInstallActionRenders(t *testing.T) {
 		[]comfy.BadOption{detectorBadOption, wildcardBadOption}, 7, "csrf-tok", true))
 
 	for _, want := range []string{
-		"Install face_yolov9c.pt",              // the install CTA (basename)
-		"/workflows/7/install-option-and-run",  // the combined endpoint
-		`hx-include="closest form"`,            // pulls the other picks along
+		"Install face_yolov9c.pt",             // the install CTA (basename)
+		"/workflows/7/install-option-and-run", // the combined endpoint
+		// Pulls the other picks along — and, since multi-mode templates landed, the
+		// mode picker's selects too, so an install-and-run keeps the chosen pipeline.
+		`hx-include="closest form, #run-modes select"`,
 		"install_filename",                     // the install target in hx-vals
 		`<option value="bbox/face_yolov8m.pt"`, // the substitute dropdown still present
 		"Or substitute an installed file",      // model-file dropdown is optional

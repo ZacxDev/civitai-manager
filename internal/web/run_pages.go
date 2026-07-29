@@ -50,12 +50,15 @@ func runPanel(wf *store.Workflow, snap runSnapshot, csrf string, extraAllowed, d
 			h.Span(h.Class("text-sm text-slate-400"), g.Text("Checking ComfyUI…")),
 		),
 	}
+	// Multi-mode template picker (empty container for an ordinary workflow). It sits
+	// ABOVE Parameters because the choice determines which parameters exist.
+	body = append(body, runModesPanel(wf, csrf))
 	// Editable "Parameters" panel (prompts / KSampler settings / latent dimensions),
-	// detected from the graph and applied as per-run overrides. Absent when the graph
-	// exposes none of the curated inputs (e.g. an api-format graph with no widgets).
-	if params := runParametersPanel(wf, csrf); params != nil {
-		body = append(body, params)
-	}
+	// detected from the graph and applied as per-run overrides. Empty when the graph
+	// exposes none of the curated inputs (e.g. an api-format graph with no widgets, or
+	// a multi-mode template before a mode is picked). The container is STABLE so the
+	// mode picker can swap its innerHTML.
+	body = append(body, h.Div(h.ID(runParamsContainerID), runParametersPanel(wf, csrf)))
 	// Run job status container (unchanged): poller drives running → terminal.
 	body = append(body, h.Div(h.ID(runStatusContainerID), runStatusFragment(snap, wf.ID, csrf, dlEligible, mode)))
 	return card(body...)
@@ -105,6 +108,7 @@ func runButtonEnabled(id, csrf string) g.Node {
 		hx("target", "#"+runStatusContainerID),
 		hx("swap", "innerHTML"),
 		hx("disabled-elt", "this"),
+		hx("include", runModesInclude),
 		csrfInline(csrf),
 	}, g.Text("Run on ComfyUI"))
 }
@@ -229,7 +233,17 @@ func runTerminal(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mod
 		body = append(body, runFailure(snap, wfID, csrf, dlEligible, mode))
 	}
 	if wfID > 0 {
-		body = append(body, h.Div(h.Class("pt-1"), runAgainButton(wfID, csrf)))
+		actions := []g.Node{runAgainButton(wfID, csrf)}
+		// A FAILED run is exactly when the user needs the graph itself: preflight
+		// blocked it, the conversion warned, models are missing, or saved option values
+		// no longer resolve. Put the existing "Open in ComfyUI" flow right next to "Run
+		// again" so fixing it is one click — and keep it OFF the success path, where it
+		// would be clutter. It is REUSED, never re-implemented (openInComfyForm posts to
+		// /workflows/{id}/open-in-comfyui), and it applies only to an editable UI graph.
+		if snap.Phase != runPhaseDone && !snap.Stopped && snap.UIFormat {
+			actions = append(actions, openInComfyForm(strconv.FormatInt(wfID, 10), csrf, "subtle", "sm"))
+		}
+		body = append(body, h.Div(h.Class("pt-1 flex flex-wrap items-center gap-2"), g.Group(actions)))
 	}
 	return h.Div(h.Class("space-y-3"), g.Group(body))
 }
@@ -241,6 +255,7 @@ func runAgainButton(wfID int64, csrf string) g.Node {
 		hx("post", fmt.Sprintf("/workflows/%d/run", wfID)),
 		hx("target", "#"+runStatusContainerID),
 		hx("swap", "innerHTML"),
+		hx("include", runModesInclude),
 		csrfInline(csrf),
 	}, g.Text("Run again"))
 }
@@ -331,6 +346,7 @@ func incompatibleOptionsSection(bad []comfy.BadOption, wfID int64, csrf string, 
 		hx("target", "#"+runStatusContainerID),
 		hx("swap", "innerHTML"),
 		hx("disabled-elt", "find button[type='submit']"),
+		hx("include", runModesInclude),
 		h.Class("mt-3 space-y-3"),
 		h.Input(h.Type("hidden"), h.Name("csrf_token"), h.Value(csrf)),
 		h.Div(h.Class("text-xs font-semibold text-slate-200"), g.Text("Incompatible options")),
@@ -435,7 +451,7 @@ func badOptionInstallAction(bo comfy.BadOption, wfID int64, csrf string, dlEligi
 			hx("post", "/workflows/"+strconv.FormatInt(wfID, 10)+"/install-option-and-run"),
 			hx("target", "#"+runStatusContainerID),
 			hx("swap", "innerHTML"),
-			hx("include", "closest form"),
+			hx("include", "closest form, "+runModesInclude),
 			hx("disabled-elt", "this"),
 			hx("vals", string(b)),
 		}, g.Text(label)),

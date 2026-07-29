@@ -319,7 +319,7 @@ func (s *Server) importRespond(w http.ResponseWriter, r *http.Request, modelID i
 	if !ok {
 		level = "error"
 	}
-	s.redirectWorkflows(w, r, msg, level)
+	s.redirectWorkflowsForModel(w, r, msg, level, modelID)
 }
 
 // workflowImportContainerID is the stable element the import button and its result
@@ -352,20 +352,29 @@ func workflowImportAction(modelID int, csrf string) g.Node {
 
 // workflowImportResult renders the inline outcome that replaces the import button
 // after the POST: the counts line (green on success, amber on failure) plus a
-// "View in library" link. When EXACTLY ONE workflow was imported this request the
-// link deep-links to that workflow's page (/workflows/{id}); for zero or more than
-// one it falls back to the Workflows library tab.
+// "View in library" link.
+//
+// The link deep-links to the library FILTERED TO THIS SOURCE POST
+// (/library?tab=workflows&model=<id>). One CivitAI Workflows model routinely
+// unpacks into many workflows — 22 for one post in a real library — so landing on
+// the undifferentiated list made a large import look like nothing had happened.
+// The filtered view names the post and links back to it.
+//
+// When EXACTLY ONE workflow was imported this request, the item anchor is appended
+// as well, so the single new row is also scrolled to and highlighted by the
+// workflows-tab deeplink script. An unknown/absent model id falls back to the
+// plain Workflows tab rather than emitting a filter that matches nothing.
 func workflowImportResult(modelID int, msg string, ok bool, workflowID int64) g.Node {
 	cls := "text-xs text-amber-400"
 	if ok {
 		cls = "text-xs font-medium cm-ok"
 	}
-	// Deep-link to the imported item IN the library list (scroll-to + highlight via
-	// the workflows-tab deeplink script), not the standalone detail page — the user
-	// lands where the workflow lives among the others.
 	href := "/library?tab=workflows"
+	if modelID > 0 {
+		href = fmt.Sprintf("/library?tab=workflows&model=%d", modelID)
+	}
 	if workflowID > 0 {
-		href = fmt.Sprintf("/library?tab=workflows#wf-%d", workflowID)
+		href += fmt.Sprintf("#wf-%d", workflowID)
 	}
 	return g.Group([]g.Node{
 		h.P(h.Class(cls), g.Text(msg)),

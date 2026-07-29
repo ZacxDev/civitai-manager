@@ -225,10 +225,19 @@ type libraryWorkflowFacets struct {
 	// EcoNone / UseNone select the Unclassified bucket of that dimension.
 	EcoNone bool
 	UseNone bool
+	// Model narrows to the workflows imported from ONE CivitAI model — the "source
+	// post" filter. Importing a Workflows model routinely yields many workflows (22
+	// for one post in a real library), so the post-import "View in library" link
+	// lands here rather than dumping the user into an undifferentiated list.
+	//
+	// It is NOT a taxonomy facet: the value is a plain civitai model id, matched
+	// against the workflow row's own model_id (no cache lookup, so it works even for
+	// an uncached model). 0 means "not filtering".
+	Model int
 }
 
 func (f libraryWorkflowFacets) any() bool {
-	return f.Eco != nil || f.Use != nil || f.EcoNone || f.UseNone
+	return f.Eco != nil || f.Use != nil || f.EcoNone || f.UseNone || f.Model > 0
 }
 
 // normalizeLibraryWorkflowFacets resolves ?eco=/?use= for the library tab.
@@ -247,6 +256,12 @@ func normalizeLibraryWorkflowFacets(q url.Values) libraryWorkflowFacets {
 		f.UseNone = true
 	} else if u, ok := civitai.UseCaseBySlug(use); ok {
 		f.Use = &u
+	}
+	// ?model= narrows to one source post. A non-numeric or non-positive value is
+	// IGNORED (dropped) exactly like an unknown eco/use slug — it must never become a
+	// filter that silently matches nothing.
+	if n, err := strconv.Atoi(strings.TrimSpace(q.Get("model"))); err == nil && n > 0 {
+		f.Model = n
 	}
 	return f
 }
@@ -287,6 +302,9 @@ func (f libraryWorkflowFacets) summary() string {
 	case f.Use != nil:
 		parts = append(parts, f.Use.Label)
 	}
+	if f.Model > 0 {
+		parts = append(parts, "CivitAI model "+strconv.Itoa(f.Model))
+	}
 	return strings.Join(parts, " · ")
 }
 
@@ -316,6 +334,37 @@ func (f libraryWorkflowFacets) matches(cl workflowClassification) bool {
 	return true
 }
 
+// scopeWorkflowsToSourceModel narrows a list (and its index-aligned
+// classifications) to ONE CivitAI source post. It is applied BEFORE the browse-by
+// counts are taken, so within a post the chips describe the post. With no ?model=
+// filter it returns both slices untouched.
+func scopeWorkflowsToSourceModel(wfs []store.Workflow, cls []workflowClassification, f libraryWorkflowFacets) ([]store.Workflow, []workflowClassification) {
+	if f.Model <= 0 {
+		return wfs, cls
+	}
+	outW := make([]store.Workflow, 0, len(wfs))
+	outC := make([]workflowClassification, 0, len(wfs))
+	for i, wf := range wfs {
+		if !f.matchesWorkflow(wf) {
+			continue
+		}
+		outW = append(outW, wf)
+		if i < len(cls) {
+			outC = append(outC, cls[i])
+		} else {
+			outC = append(outC, workflowClassification{})
+		}
+	}
+	return outW, outC
+}
+
+// matchesWorkflow is the row-level half of the selection (the source-post filter),
+// ANDed with the classification half. A workflow with no civitai linkage can never
+// match a ?model= filter — which is correct: it did not come from that post.
+func (f libraryWorkflowFacets) matchesWorkflow(wf store.Workflow) bool {
+	return f.Model <= 0 || (wf.ModelID != nil && *wf.ModelID == f.Model)
+}
+
 // filterWorkflows keeps the workflows matching the selection, preserving order.
 // With NO facet selected it returns everything — including the unclassified ones.
 // Filtering is strictly opt-in; nothing is ever hidden by default.
@@ -325,7 +374,7 @@ func filterWorkflows(wfs []store.Workflow, cls []workflowClassification, f libra
 	}
 	out := make([]store.Workflow, 0, len(wfs))
 	for i, wf := range wfs {
-		if i < len(cls) && f.matches(cls[i]) {
+		if i < len(cls) && f.matches(cls[i]) && f.matchesWorkflow(wf) {
 			out = append(out, wf)
 		}
 	}
@@ -362,6 +411,11 @@ func libraryWorkflowHref(f libraryWorkflowFacets, dim, value string) string {
 	}
 	if use != "" {
 		q.Set("use", use)
+	}
+	// The source-post filter is a SCOPE, not a chip: toggling an ecosystem/use-case
+	// chip must narrow WITHIN the post the user came from, not silently escape it.
+	if f.Model > 0 {
+		q.Set("model", strconv.Itoa(f.Model))
 	}
 	return "/library?" + q.Encode()
 }
@@ -410,7 +464,9 @@ func workflowFacetBar(counts workflowFacetCounts, f libraryWorkflowFacets) g.Nod
 				" with no CivitAI link cannot have one. They are listed under Unclassified, never hidden."))
 	}
 
-	return card(
+	// A plain block, NOT a card: the bar now lives in the browse surface's controls
+	// slot, and a card here would paint a second border inside that one surface.
+	return h.Div(
 		h.Class("space-y-2"),
 		sectionTitle("Browse your workflows"),
 		facetChipRow("Ecosystem", ecoChips),
@@ -437,10 +493,14 @@ func libFacetChip(href, label string, count int, selected bool) g.Node {
 // matched nothing: it names the selection and offers a way back, rather than
 // looking like an empty library.
 func workflowFacetEmptyLocal(f libraryWorkflowFacets) g.Node {
+	what := f.summary()
+	if what != "" {
+		what = " " + what
+	}
 	return card(
 		h.Class("py-6 text-center"),
 		h.H3(h.Class("text-base font-semibold text-slate-200"),
-			g.Text("No "+f.summary()+" workflows in your library")),
+			g.Text("No"+what+" workflows in your library")),
 		h.P(h.Class("mx-auto mt-1 mb-3 max-w-md text-sm text-slate-400"),
 			g.Text("Your library has workflows, just none matching this filter. Clear it, or find more on CivitAI.")),
 		h.Div(h.Class("flex flex-wrap items-center justify-center gap-2"),

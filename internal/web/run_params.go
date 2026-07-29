@@ -42,7 +42,14 @@ func (s *Server) handleWorkflowRunWithParams(w http.ResponseWriter, r *http.Requ
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	s.startRun(wf, runOptions{UIWidgetOverrides: parseWidgetOverrides(r.Form, wf)})
+	// The mode picks ride along via hx-include, and they are applied FIRST: the
+	// Parameters panel for a multi-mode template is rendered against the graph with
+	// that mode enabled, so its widget keys only make sense in that same graph.
+	modes := parseModeChoices(r.Form, wf)
+	s.startRun(wf, runOptions{
+		ModeSelection:     modes,
+		UIWidgetOverrides: parseWidgetOverridesForModes(r.Form, wf, modes),
+	})
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 }
 
@@ -55,6 +62,24 @@ func (s *Server) handleWorkflowRunWithParams(w http.ResponseWriter, r *http.Requ
 // non-scalar one — so this is a lenient parse backed by a structural guarantee
 // downstream.
 func parseWidgetOverrides(form url.Values, wf *store.Workflow) map[comfy.UIWidgetKey]string {
+	return parseWidgetOverridesForModes(form, wf, nil)
+}
+
+// parseWidgetOverridesForModes is parseWidgetOverrides against the graph the run
+// will ACTUALLY convert. For a multi-mode template the stored graph has every
+// pipeline bypassed, and DetectRunInputs (correctly) surfaces nothing from a
+// bypassed node — so the allow-list has to be derived from the mode-applied copy,
+// exactly the graph the panel was rendered from. An empty choice set is the stored
+// graph, so ordinary workflows are byte-for-byte unaffected.
+func parseWidgetOverridesForModes(form url.Values, wf *store.Workflow, modes map[string]string) map[comfy.UIWidgetKey]string {
+	graph := []byte(wf.Graph)
+	if len(modes) > 0 && wf.Format == store.WorkflowFormatUI {
+		graph = comfy.ApplyModeSelection(graph, modes)
+	}
+	return parseWidgetOverridesAgainst(form, graph)
+}
+
+func parseWidgetOverridesAgainst(form url.Values, graph []byte) map[comfy.UIWidgetKey]string {
 	nodes, widgets, values := form["wp_node"], form["wp_widget"], form["wp_value"]
 	n := len(nodes)
 	if len(widgets) < n {
@@ -67,7 +92,7 @@ func parseWidgetOverrides(form url.Values, wf *store.Workflow) map[comfy.UIWidge
 		return nil
 	}
 	allowed := make(map[comfy.UIWidgetKey]bool)
-	for _, ri := range comfy.DetectRunInputs([]byte(wf.Graph), nil) {
+	for _, ri := range comfy.DetectRunInputs(graph, nil) {
 		allowed[comfy.UIWidgetKey{NodeID: ri.NodeID, Widget: ri.WidgetIndex}] = true
 	}
 	out := make(map[comfy.UIWidgetKey]string, n)
@@ -128,6 +153,7 @@ func runParametersPanel(wf *store.Workflow, csrf string) g.Node {
 		hx("target", "#"+runStatusContainerID),
 		hx("swap", "innerHTML"),
 		hx("disabled-elt", "find button[type='submit']"),
+		hx("include", runModesInclude),
 		h.Class("mt-3 space-y-3"),
 		h.Input(h.Type("hidden"), h.Name("csrf_token"), h.Value(csrf)),
 		g.Group(fields),
