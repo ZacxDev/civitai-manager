@@ -4,7 +4,7 @@ civitai-manager is a single static Go binary. There is no runtime to install, no
 database server, and no container. Pick whichever of these suits you.
 
 > **What ships when.** The install script, `.deb`/`.rpm` packages, the Homebrew
-> cask and build attestations all arrive with **v0.1.76**. Releases up to and
+> cask and build attestations all arrive with **v0.1.77**. Releases up to and
 > including v0.1.75 have tarballs, zips and `checksums.txt` only. The Nix flake
 > and `go install` work today.
 
@@ -33,13 +33,13 @@ Options, as flags or environment variables:
 
 ```sh
 # a specific release
-curl -fsSL https://zacxdev.github.io/civitai-manager/install.sh | sh -s -- --version 0.1.76
+curl -fsSL https://zacxdev.github.io/civitai-manager/install.sh | sh -s -- --version 0.1.77
 
 # a specific prefix — the binary lands in <prefix>/bin
 curl -fsSL https://zacxdev.github.io/civitai-manager/install.sh | sh -s -- --prefix ~/.local
 
 # same thing with env vars
-curl -fsSL https://zacxdev.github.io/civitai-manager/install.sh | VERSION=0.1.76 PREFIX=/opt/cm sh
+curl -fsSL https://zacxdev.github.io/civitai-manager/install.sh | VERSION=0.1.77 PREFIX=/opt/cm sh
 ```
 
 **It will not quietly ask for your password.** With no `--prefix` it installs to
@@ -64,10 +64,10 @@ if you prefer that origin.
 
 ## Homebrew
 
-> **From v0.1.76 on.** [`ZacxDev/homebrew-tap`](https://github.com/ZacxDev/homebrew-tap)
+> **From v0.1.77 on.** [`ZacxDev/homebrew-tap`](https://github.com/ZacxDev/homebrew-tap)
 > is live and the release workflow publishes the cask to it, but the cask file
 > is written by the release itself — so the commands below only work once a
-> release from **v0.1.76** onwards has been cut. Check the
+> release from **v0.1.77** onwards has been cut. Check the
 > [releases page](https://github.com/ZacxDev/civitai-manager/releases).
 
 civitai-manager is distributed as a **cask** from a personal tap. Casks cover
@@ -165,7 +165,7 @@ install the binary to `/usr/bin/civitai-manager` and the licence and README to
 `/usr/share/doc/civitai-manager/`.
 
 ```sh
-VERSION=0.1.76
+VERSION=0.1.77
 ARCH=amd64   # or arm64
 
 # Debian / Ubuntu
@@ -185,7 +185,7 @@ If you want unattended upgrades, use the install script or Nix instead.
 ## Manual download
 
 ```sh
-VERSION=0.1.76
+VERSION=0.1.77
 FILE="civitai-manager_${VERSION}_linux_amd64.tar.gz"   # or darwin_arm64, linux_arm64, darwin_amd64
 
 curl -fsSLO "https://github.com/ZacxDev/civitai-manager/releases/download/v${VERSION}/${FILE}"
@@ -202,7 +202,7 @@ unzip it, and put `civitai-manager.exe` somewhere on your `PATH`. Verify the zip
 against `checksums.txt` first:
 
 ```powershell
-Get-FileHash .\civitai-manager_0.1.76_windows_amd64.zip -Algorithm SHA256
+Get-FileHash .\civitai-manager_0.1.77_windows_amd64.zip -Algorithm SHA256
 ```
 
 ---
@@ -276,13 +276,13 @@ sha256sum --check --ignore-missing checksums.txt
 This proves the file you have matches the file the release lists. It does not by
 itself prove where that file came from.
 
-**2. Build provenance.** From v0.1.76, every published artifact carries a
+**2. Build provenance.** From v0.1.77, every published artifact carries a
 [GitHub artifact attestation](https://docs.github.com/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds)
 — a Sigstore-signed statement of which repository, workflow and commit produced
 it. Verify it with the GitHub CLI:
 
 ```sh
-gh attestation verify --owner ZacxDev civitai-manager_0.1.76_linux_amd64.tar.gz
+gh attestation verify --owner ZacxDev civitai-manager_0.1.77_linux_amd64.tar.gz
 ```
 
 A pass means that exact file was produced by a workflow run in

@@ -292,8 +292,8 @@ nix profile install github:ZacxDev/civitai-manager
 brew install --cask ZacxDev/tap/civitai-manager
 
 # Debian/Ubuntu and Fedora/RHEL packages are attached to each release
-sudo dpkg -i civitai-manager_0.1.76_linux_amd64.deb
-sudo rpm  -i civitai-manager_0.1.76_linux_amd64.rpm
+sudo dpkg -i civitai-manager_0.1.77_linux_amd64.deb
+sudo rpm  -i civitai-manager_0.1.77_linux_amd64.rpm
 
 # Go 1.25+
 go install github.com/ZacxDev/civitai-manager@latest
@@ -312,14 +312,17 @@ SQLite is the pure-Go `modernc.org/sqlite` driver, so everything builds with
 Releases ship for **linux, macOS, and Windows** on **amd64 and arm64**, with a
 `checksums.txt`.
 
-> The install script, the packages, the cask and the attestations below all
-> arrive with **v0.1.76**; releases up to v0.1.75 have tarballs and
-> `checksums.txt` only. [`ZacxDev/homebrew-tap`](https://github.com/ZacxDev/homebrew-tap)
-> exists and the release workflow publishes to it, but the cask file itself only
-> lands there with the first release from v0.1.76 on — until that release is
-> cut, `brew install` has nothing to find. Since **Homebrew 6.0.0** a
-> non-official tap must also be explicitly trusted, which the fully qualified
-> name above does for this cask alone.
+> The install script, the packages, the cask and the attestations below arrive
+> with **v0.1.77**; releases up to v0.1.75 have tarballs and `checksums.txt`
+> only. The cask is live in
+> [`ZacxDev/homebrew-tap`](https://github.com/ZacxDev/homebrew-tap) and is
+> regenerated on every release. Since **Homebrew 6.0.0** a non-official tap must
+> also be explicitly trusted, which the fully qualified name above does for this
+> cask alone.
+>
+> The macOS cask has **not been tested on real hardware** — the maintainer has
+> no Mac. The Linux paths and the tarballs are verified; if `brew install
+> --cask` misbehaves on macOS, please open an issue.
 
 **macOS.** The binaries are not notarized, so a copy that arrives *quarantined*
 — a browser download, or a Homebrew cask install — is killed on first run with
@@ -329,11 +332,11 @@ Releases ship for **linux, macOS, and Windows** on **amd64 and arm64**, with a
 anyway: `xattr -d com.apple.quarantine <path>`. See
 [docs/install.md](docs/install.md#macos-apple-could-not-verify-civitai-manager-is-free-of-malware).
 
-**Verifying a download.** Beyond `checksums.txt`, every artifact from v0.1.76 on
+**Verifying a download.** Beyond `checksums.txt`, every artifact from v0.1.77 on
 carries a Sigstore-signed GitHub build attestation:
 
 ```sh
-gh attestation verify --owner ZacxDev civitai-manager_0.1.76_linux_amd64.tar.gz
+gh attestation verify --owner ZacxDev civitai-manager_0.1.77_linux_amd64.tar.gz
 ```
 
 A pass means that exact file was built by a workflow run in this repository.
