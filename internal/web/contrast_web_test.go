@@ -426,6 +426,66 @@ func TestContrastMathMatchesWCAGReference(t *testing.T) {
 	}
 }
 
+// TestLightThemeIsAliasOnly is the "net visual change in the light theme is
+// zero" claim, made mechanical.
+//
+// The AA fix is dark-theme-only, but its plumbing is not: tailwind.config.js,
+// the [data-civitai-ui] variant rules in app.css and layout.go's tokenVars all
+// now read `--civitai-color-<intent>-text` where they used to read
+// `--civitai-color-<intent>`. If the light theme did not define those tokens the
+// affected elements would fall through to an unset value; if it defined them as
+// anything OTHER than the base token, the light theme would silently recolor.
+//
+// So every light `-text` token must resolve to EXACTLY its base token, and the
+// two extra tokens the plumbing introduced must resolve to exactly what the
+// element painted before they existed:
+//
+//   - `on-warning` is the ink tokenVarsFilled pins on a filled warning button.
+//     Before it existed that button used the theme's ordinary filled-button ink,
+//     `--civitai-color-primary-fg`.
+//   - `size-large` replaced a `color: #fb923c` literal in `.cm-size-large`.
+//
+// Get any of these wrong and the light theme changes appearance — which is the
+// one thing this branch is not allowed to do.
+func TestLightThemeIsAliasOnly(t *testing.T) {
+	light := themeTokens(t, "light")
+
+	get := func(tok string) rgb {
+		t.Helper()
+		c, ok := light[tok]
+		if !ok {
+			t.Fatalf("%s does not resolve in the light theme — the elements pointed at it would "+
+				"fall through to an unset value", tok)
+		}
+		return c
+	}
+
+	for _, intent := range []string{"primary", "info", "success", "error", "warning", "text-dimmed"} {
+		base, text := get("--civitai-color-"+intent), get("--civitai-color-"+intent+"-text")
+		if base != text {
+			t.Errorf("light --civitai-color-%s-text is %v but its base --civitai-color-%s is %v. "+
+				"On the light theme the `-text` tokens must be pure aliases: the AA fix is "+
+				"dark-theme-only, and every element the plumbing repointed at `-text` must keep "+
+				"painting the base color it painted before the split.", intent, text, intent, base)
+		}
+	}
+
+	if got, want := get("--civitai-color-on-warning"), get("--civitai-color-primary-fg"); got != want {
+		t.Errorf("light --civitai-color-on-warning is %v, want --civitai-color-primary-fg %v — "+
+			"tokenVarsFilled would repaint the filled quarantine button's label", got, want)
+	}
+
+	// The literal `.cm-size-large` carried before --civitai-color-size-large existed.
+	wantOrange, err := parseHex("#fb923c")
+	if err != nil {
+		t.Fatalf("parse #fb923c: %v", err)
+	}
+	if got := get("--civitai-color-size-large"); got != wantOrange {
+		t.Errorf("light --civitai-color-size-large is %v, want the pre-token literal %v — "+
+			"the 2-6GB size tier would change color on the light theme", got, wantOrange)
+	}
+}
+
 // TestThemeTokensResolveForBothThemes guards the parser: every token the pair
 // table names must resolve in BOTH themes. A token defined for only one theme
 // falls back to the other theme's value (or to nothing) and silently breaks the
