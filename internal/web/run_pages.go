@@ -156,7 +156,7 @@ func runStatusFragment(snap runSnapshot, wfID int64, csrf string, dlEligible boo
 	// in-flight poll — renders the poller-less "Run stopped" view at once, halting
 	// the poll loop instead of re-arming it (the same guard the scan job uses).
 	if snap.Stopped {
-		return runStopped(wfID, csrf)
+		return runStopped(snap, wfID, csrf)
 	}
 	if snap.Running {
 		return runRunning(snap, wfID, csrf)
@@ -164,13 +164,25 @@ func runStatusFragment(snap runSnapshot, wfID int64, csrf string, dlEligible boo
 	return runTerminal(snap, wfID, csrf, dlEligible, mode)
 }
 
+// dataRunSeq stamps the run's monotonic identity onto a run-status fragment root as
+// data-run-seq. It is present on EVERY fragment that represents an actual run (running,
+// stopped, terminal) so a caller can pin to a specific run regardless of which phase it
+// observes. Omitted (empty node) for seq<=0 (idle / no run yet). This is the single
+// DOM hook the ux-audit harness keys on to distinguish THIS run from a stale prior one.
+func dataRunSeq(seq int64) g.Node {
+	if seq <= 0 {
+		return g.Group(nil)
+	}
+	return g.Attr("data-run-seq", strconv.FormatInt(seq, 10))
+}
+
 // runStopped is the terminal fragment after an explicit Stop (no poller).
-func runStopped(wfID int64, csrf string) g.Node {
+func runStopped(snap runSnapshot, wfID int64, csrf string) g.Node {
 	body := []g.Node{h.P(h.Class("text-sm text-amber-400"), g.Text("Run stopped."))}
 	if wfID > 0 {
 		body = append(body, h.Div(h.Class("pt-1"), runAgainButton(wfID, csrf)))
 	}
-	return h.Div(h.Class("space-y-3"), g.Group(body))
+	return h.Div(dataRunSeq(snap.Seq), h.Class("space-y-3"), g.Group(body))
 }
 
 // runPoller is the one-shot re-arming poll element driving the running view to its
@@ -203,6 +215,7 @@ func runRunning(snap runSnapshot, wfID int64, csrf string) g.Node {
 	}, g.Text("Stop"))
 
 	return h.Div(
+		dataRunSeq(snap.Seq),
 		h.Class("space-y-3"),
 		h.Div(h.Class("flex items-center gap-2 text-sm text-slate-300"),
 			spinnerGlyph(),
@@ -245,7 +258,7 @@ func runTerminal(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mod
 		}
 		body = append(body, h.Div(h.Class("pt-1 flex flex-wrap items-center gap-2"), g.Group(actions)))
 	}
-	return h.Div(h.Class("space-y-3"), g.Group(body))
+	return h.Div(dataRunSeq(snap.Seq), h.Class("space-y-3"), g.Group(body))
 }
 
 // runAgainButton re-triggers a run into the same stable container.

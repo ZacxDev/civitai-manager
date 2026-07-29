@@ -65,6 +65,10 @@ const (
 type runJob struct {
 	running    bool
 	workflowID int64
+	// seq is this run's monotonic identity (Server.runSeq at start time). It is
+	// surfaced as data-run-seq on the run-status fragment so a run's terminal panel is
+	// distinguishable from a stale prior run's panel in the shared #run-status.
+	seq        int64
 	promptID   string
 	phase      string
 	queuePos   int
@@ -191,8 +195,9 @@ func (s *Server) startRunWithMessage(wf *store.Workflow, opts runOptions, msg st
 		base = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(base, runJobBudget)
+	s.runSeq++
 	job := &runJob{
-		running: true, workflowID: wf.ID, phase: runPhasePreparing,
+		running: true, workflowID: wf.ID, seq: s.runSeq, phase: runPhasePreparing,
 		message: msg, startedAt: time.Now(), cancel: cancel,
 		uiFormat: wf.Format == store.WorkflowFormatUI,
 	}
@@ -498,6 +503,7 @@ func (s *Server) stopRun() {
 type runSnapshot struct {
 	Started, Running bool
 	WorkflowID       int64
+	Seq              int64
 	PromptID         string
 	Phase            string
 	Message          string
@@ -526,7 +532,7 @@ func (s *Server) runJobState() runSnapshot {
 	warns := make([]string, len(j.warnings))
 	copy(warns, j.warnings)
 	return runSnapshot{
-		Started: true, Running: j.running, WorkflowID: j.workflowID,
+		Started: true, Running: j.running, WorkflowID: j.workflowID, Seq: j.seq,
 		PromptID: j.promptID, Phase: j.phase, Message: j.message, QueuePos: j.queuePos,
 		Images: imgs, Preflight: j.preflight, MissingModels: j.missingModels,
 		MissingResolved: j.missingResolved, LibMeta: j.libMeta,

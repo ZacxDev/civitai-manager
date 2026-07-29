@@ -186,6 +186,13 @@ type Server struct {
 	runMu sync.Mutex
 	// runJob is the current (or most recent) background run, or nil before the first.
 	runJob *runJob
+	// runSeq is a monotonic per-run counter (guarded by runMu). Every started run is
+	// stamped with the next value and it is surfaced as data-run-seq on the run-status
+	// fragment, giving each run a stable, strictly-increasing DOM identity. This lets a
+	// caller (e.g. the ux-audit harness) tell THIS run's terminal panel apart from a
+	// stale panel left in #run-status by a prior run of the same workflow, without
+	// having to catch the transient in-flight "Stop" fragment.
+	runSeq int64
 
 	// cloudClientFn builds the CivitAI orchestration (cloud) client. Nil
 	// (production) builds a comfy.CloudClient from the default base URL + the
