@@ -1,0 +1,26 @@
+{
+ "comfyui-mxtoolkit": {
+  "ver": "0.9.92",
+  "cnr_id": "comfyui-mxtoolkit",
+  "aux_id": null,
+  "enabled": true
+ },
+ "ComfyUI-GGUF": {
+  "ver": "1.1.1",
+  "cnr_id": "comfyui-gguf",
+  "aux_id": null,
+  "enabled": true
+ },
+ "comfyui-kjnodes": {
+  "ver": "1.1.1",
+  "cnr_id": "comfyui-kjnodes",
+  "aux_id": null,
+  "enabled": true
+ },
+ "comfyui_controlnet_aux": {
+  "ver": "e8b689a513c3e6b63edc44066560ca5919c0576e",
+  "cnr_id": "comfyui_controlnet_aux",
+  "aux_id": "Fannovel16/comfyui_controlnet_aux",
+  "enabled": true
+ }
+}

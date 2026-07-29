@@ -1,0 +1,20 @@
+{
+ "comfyui-mxtoolkit": {
+  "ver": "0.9.92",
+  "cnr_id": "comfyui-mxtoolkit",
+  "aux_id": null,
+  "enabled": true
+ },
+ "ComfyUI-GGUF": {
+  "ver": "1.1.1",
+  "cnr_id": "comfyui-gguf",
+  "aux_id": null,
+  "enabled": true
+ },
+ "comfyui-kjnodes": {
+  "ver": "1.1.1",
+  "cnr_id": "comfyui-kjnodes",
+  "aux_id": null,
+  "enabled": true
+ }
+}

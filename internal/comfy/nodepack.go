@@ -280,6 +280,14 @@ func compileSafePattern(pat string) *regexp.Regexp {
 //
 // Ordering is deterministic: packs sort by confidence rung, then title, then id,
 // then repository; each pack's Classes and unattributed are sorted.
+//
+// Results are grouped by (pack, RUNG), so one pack CAN appear twice when it was
+// reached two ways — live, comfy-mtb comes back once at map confidence for
+// "Pick From Batch (mtb)" and again at pattern confidence for "Note Plus (mtb)".
+// That is deliberate: those two classes are not equally certain and collapsing
+// them would launder the weaker one into the stronger label. A caller that wants
+// exactly one entry per pack must fold them with MergePacks and accept that the
+// strongest rung then labels the whole group.
 func (ix *NodePackIndex) Attribute(missing []string) (packs []Pack, unattributed []string) {
 	if ix == nil {
 		return nil, sortedUnique(missing)
