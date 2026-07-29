@@ -1,0 +1,1024 @@
+{
+ "id": "97d1fced-e48e-43d3-af92-c5330b869f46",
+ "revision": 0,
+ "last_node_id": 2854,
+ "last_link_id": 42645,
+ "nodes": [
+  {
+   "id": 1577,
+   "type": "WidgetToString",
+   "pos": [
+    -2230,
+    -2360
+   ],
+   "size": [
+    300,
+    160
+   ],
+   "flags": {
+    "collapsed": true,
+    "pinned": true
+   },
+   "order": 194,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "any_input",
+     "shape": 7,
+     "type": "*",
+     "link": 15461
+    }
+   ],
+   "outputs": [
+    {
+     "name": "STRING",
+     "type": "STRING",
+     "links": [
+      15462
+     ]
+    }
+   ],
+   "properties": {
+    "cnr_id": "comfyui-kjnodes",
+    "ver": "1.3.5",
+    "Node name for S&R": "WidgetToString",
+    "enableTabs": false,
+    "tabWidth": 65,
+    "tabXOffset": 10,
+    "hasSecondTab": false,
+    "secondTabText": "Send Back",
+    "secondTabOffset": 80,
+    "secondTabWidth": 65,
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "input_ue_unconnectable": {},
+     "version": "7.7"
+    }
+   },
+   "widgets_values": [
+    0,
+    "unet_name",
+    false,
+    "",
+    2
+   ],
+   "color": "#222",
+   "bgcolor": "#000"
+  },
+  {
+   "id": 1323,
+   "type": "UNETLoader",
+   "pos": [
+    -2230,
+    -2490
+   ],
+   "size": [
+    310,
+    90
+   ],
+   "flags": {
+    "collapsed": false,
+    "pinned": true
+   },
+   "order": 36,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "label": "MODEL",
+     "name": "MODEL",
+     "type": "MODEL",
+     "links": [
+      13847,
+      15461
+     ]
+    }
+   ],
+   "properties": {
+    "cnr_id": "comfy-core",
+    "ver": "0.7.0",
+    "Node name for S&R": "UNETLoader",
+    "enableTabs": false,
+    "tabWidth": 65,
+    "tabXOffset": 10,
+    "hasSecondTab": false,
+    "secondTabText": "Send Back",
+    "secondTabOffset": 80,
+    "secondTabWidth": 65,
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "version": "7.5.2",
+     "input_ue_unconnectable": {}
+    }
+   },
+   "widgets_values": [
+    "ZIT\\Z-Image Turbo bf16.safetensors",
+    "default"
+   ],
+   "color": "#223",
+   "bgcolor": "#335",
+   "shape": 2
+  },
+  {
+   "id": 1561,
+   "type": "Checkpoint Loader with Name (Image Saver)",
+   "pos": [
+    -2230,
+    -1740
+   ],
+   "size": [
+    310,
+    120
+   ],
+   "flags": {
+    "pinned": true
+   },
+   "order": 37,
+   "mode": 4,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "MODEL",
+     "type": "MODEL",
+     "links": [
+      15409
+     ]
+    },
+    {
+     "name": "CLIP",
+     "type": "CLIP",
+     "links": [
+      15410
+     ]
+    },
+    {
+     "name": "VAE",
+     "type": "VAE",
+     "links": [
+      15412
+     ]
+    },
+    {
+     "name": "model_name",
+     "type": "STRING",
+     "links": [
+      15408
+     ]
+    }
+   ],
+   "title": "Checkpoint Loader",
+   "properties": {
+    "cnr_id": "comfyui-image-saver",
+    "ver": "1.21.0",
+    "Node name for S&R": "Checkpoint Loader with Name (Image Saver)",
+    "enableTabs": false,
+    "tabWidth": 65,
+    "tabXOffset": 10,
+    "hasSecondTab": false,
+    "secondTabText": "Send Back",
+    "secondTabOffset": 80,
+    "secondTabWidth": 65,
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "input_ue_unconnectable": {},
+     "version": "7.7"
+    }
+   },
+   "widgets_values": [
+    "ZIT\\gonzalomoZpop_v30AIO.safetensors"
+   ],
+   "color": "#2a363b",
+   "bgcolor": "#3f5159"
+  },
+  {
+   "id": 1325,
+   "type": "CLIPLoader",
+   "pos": [
+    -2230,
+    -2320
+   ],
+   "size": [
+    310,
+    110
+   ],
+   "flags": {
+    "pinned": true
+   },
+   "order": 39,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "label": "CLIP",
+     "name": "CLIP",
+     "type": "CLIP",
+     "links": [
+      13850
+     ]
+    }
+   ],
+   "properties": {
+    "cnr_id": "comfy-core",
+    "ver": "0.7.0",
+    "Node name for S&R": "CLIPLoader",
+    "enableTabs": false,
+    "tabWidth": 65,
+    "tabXOffset": 10,
+    "hasSecondTab": false,
+    "secondTabText": "Send Back",
+    "secondTabOffset": 80,
+    "secondTabWidth": 65,
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "version": "7.5.2",
+     "input_ue_unconnectable": {}
+    }
+   },
+   "widgets_values": [
+    "qwen_3_4b.safetensors",
+    "lumina2",
+    "default"
+   ],
+   "color": "#432",
+   "bgcolor": "#653",
+   "shape": 2
+  },
+  {
+   "id": 1329,
+   "type": "Fast Groups Bypasser (rgthree)",
+   "pos": [
+    -2240,
+    -2670
+   ],
+   "size": [
+    330,
+    110
+   ],
+   "flags": {
+    "pinned": true
+   },
+   "order": 40,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "OPT_CONNECTION",
+     "type": "*",
+     "links": null
+    }
+   ],
+   "title": "Model selector",
+   "properties": {
+    "matchColors": "",
+    "matchTitle": "Model",
+    "showNav": false,
+    "showAllGraphs": true,
+    "sort": "position",
+    "customSortAlphabet": "",
+    "toggleRestriction": "always one",
+    "enableTabs": false,
+    "tabWidth": 65,
+    "tabXOffset": 10,
+    "hasSecondTab": false,
+    "secondTabText": "Send Back",
+    "secondTabOffset": 80,
+    "secondTabWidth": 65,
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "input_ue_unconnectable": {},
+     "version": "7.5.2"
+    }
+   },
+   "color": "#3b5d4e",
+   "bgcolor": "#27493a"
+  },
+  {
+   "id": 1678,
+   "type": "UnetLoaderGGUF",
+   "pos": [
+    -2230,
+    -2120
+   ],
+   "size": [
+    310,
+    90
+   ],
+   "flags": {
+    "pinned": true
+   },
+   "order": 41,
+   "mode": 4,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "MODEL",
+     "type": "MODEL",
+     "links": [
+      17488,
+      17489
+     ]
+    }
+   ],
+   "properties": {
+    "cnr_id": "comfyui-gguf",
+    "ver": "1.1.9",
+    "Node name for S&R": "UnetLoaderGGUF",
+    "enableTabs": false,
+    "tabWidth": 65,
+    "tabXOffset": 10,
+    "hasSecondTab": false,
+    "secondTabText": "Send Back",
+    "secondTabOffset": 80,
+    "secondTabWidth": 65,
+    "ue_properties": {
+     "widget_ue_connectable": {
+      "unet_name": true
+     },
+     "version": "7.7",
+     "input_ue_unconnectable": {}
+    }
+   },
+   "widgets_values": [
+    "Z-Image\\swiftFastAndDetailed_neo.gguf"
+   ],
+   "color": "#223",
+   "bgcolor": "#335"
+  },
+  {
+   "id": 1578,
+   "type": "WidgetToString",
+   "pos": [
+    -2230,
+    -1830
+   ],
+   "size": [
+    300,
+    160
+   ],
+   "flags": {
+    "collapsed": true,
+    "pinned": true
+   },
+   "order": 196,
+   "mode": 4,
+   "inputs": [
+    {
+     "name": "any_input",
+     "shape": 7,
+     "type": "*",
+     "link": 17489
+    }
+   ],
+   "outputs": [
+    {
+     "name": "STRING",
+     "type": "STRING",
+     "links": [
+      15464
+     ]
+    }
+   ],
+   "properties": {
+    "cnr_id": "comfyui-kjnodes",
+    "ver": "1.3.5",
+    "Node name for S&R": "WidgetToString",
+    "enableTabs": false,
+    "tabWidth": 65,
+    "tabXOffset": 10,
+    "hasSecondTab": false,
+    "secondTabText": "Send Back",
+    "secondTabOffset": 80,
+    "secondTabWidth": 65,
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "input_ue_unconnectable": {},
+     "version": "7.7"
+    }
+   },
+   "widgets_values": [
+    133,
+    "unet_name",
+    false,
+    "",
+    2
+   ],
+   "color": "#222",
+   "bgcolor": "#000"
+  },
+  {
+   "id": 1670,
+   "type": "ClipLoaderGGUF",
+   "pos": [
+    -2230,
+    -1990
+   ],
+   "size": [
+    310,
+    110
+   ],
+   "flags": {
+    "pinned": true
+   },
+   "order": 43,
+   "mode": 4,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "CLIP",
+     "type": "CLIP",
+     "links": [
+      16695
+     ]
+    }
+   ],
+   "properties": {
+    "cnr_id": "gguf",
+    "ver": "2.8.3",
+    "Node name for S&R": "ClipLoaderGGUF",
+    "enableTabs": false,
+    "tabWidth": 65,
+    "tabXOffset": 10,
+    "hasSecondTab": false,
+    "secondTabText": "Send Back",
+    "secondTabOffset": 80,
+    "secondTabWidth": 65,
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "input_ue_unconnectable": {},
+     "version": "7.8"
+    }
+   },
+   "widgets_values": [
+    "huihui-qwen3-4b-abliterated-v2-q8_0.gguf",
+    "lumina2",
+    "default"
+   ],
+   "color": "#432",
+   "bgcolor": "#653"
+  },
+  {
+   "id": 2006,
+   "type": "PreviewImage",
+   "pos": [
+    -3840,
+    -1440
+   ],
+   "size": [
+    420,
+    530
+   ],
+   "flags": {},
+   "order": 380,
+   "mode": 4,
+   "inputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "link": 18797
+    }
+   ],
+   "outputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "links": null
+    }
+   ],
+   "properties": {
+    "cnr_id": "comfy-core",
+    "ver": "0.7.0",
+    "Node name for S&R": "PreviewImage",
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "input_ue_unconnectable": {},
+     "version": "7.5.2"
+    },
+    "enableTabs": false,
+    "tabWidth": 65,
+    "tabXOffset": 10,
+    "hasSecondTab": false,
+    "secondTabText": "Send Back",
+    "secondTabOffset": 80,
+    "secondTabWidth": 65
+   },
+   "widgets_values": [],
+   "color": "#233",
+   "bgcolor": "#355",
+   "shape": 2
+  },
+  {
+   "id": 2009,
+   "type": "Largest Int (JPS)",
+   "pos": [
+    -3840,
+    -1600
+   ],
+   "size": [
+    270,
+    130
+   ],
+   "flags": {
+    "collapsed": true
+   },
+   "order": 206,
+   "mode": 4,
+   "inputs": [
+    {
+     "name": "int_a",
+     "type": "INT",
+     "widget": {
+      "name": "int_a"
+     },
+     "link": 18800
+    },
+    {
+     "name": "int_b",
+     "type": "INT",
+     "widget": {
+      "name": "int_b"
+     },
+     "link": 18801
+    }
+   ],
+   "outputs": [
+    {
+     "name": "larger_int",
+     "type": "INT",
+     "links": []
+    },
+    {
+     "name": "smaller_int",
+     "type": "INT",
+     "links": [
+      18830
+     ]
+    },
+    {
+     "name": "is_a_larger",
+     "type": "INT",
+     "links": null
+    }
+   ],
+   "properties": {
+    "cnr_id": "ComfyUI_JPS-Nodes",
+    "ver": "0e2a9aca02b17dde91577bfe4b65861df622dcaf",
+    "Node name for S&R": "Largest Int (JPS)",
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "input_ue_unconnectable": {},
+     "version": "7.5.2"
+    },
+    "enableTabs": false,
+    "tabWidth": 65,
+    "tabXOffset": 10,
+    "hasSecondTab": false,
+    "secondTabText": "Send Back",
+    "secondTabOffset": 80,
+    "secondTabWidth": 65
+   },
+   "widgets_values": [
+    1,
+    1
+   ],
+   "color": "#222",
+   "bgcolor": "#000",
+   "shape": 2
+  },
+  {
+   "id": 2018,
+   "type": "ImageResizeKJv2",
+   "pos": [
+    -3140,
+    -1500
+   ],
+   "size": [
+    270,
+    290
+   ],
+   "flags": {
+    "collapsed": true
+   },
+   "order": 207,
+   "mode": 2,
+   "inputs": [
+    {
+     "name": "image",
+     "type": "IMAGE",
+     "link": 18817
+    },
+    {
+     "name": "mask",
+     "shape": 7,
+     "type": "MASK",
+     "link": null
+    },
+    {
+     "name": "width",
+     "type": "INT",
+     "widget": {
+      "name": "width"
+     },
+     "link": 18818
+    },
+    {
+     "name": "height",
+     "type": "INT",
+     "widget": {
+      "name": "height"
+     },
+     "link": 18819
+    }
+   ],
+   "outputs": [
+    {
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "links": [
+      18799
+     ]
+    },
+    {
+     "name": "width",
+     "type": "INT",
+     "links": null
+    },
+    {
+     "name": "height",
+     "type": "INT",
+     "links": null
+    },
+    {
+     "name": "mask",
+     "type": "MASK",
+     "links": null
+    }
+   ],
+   "properties": {
+    "cnr_id": "comfyui-kjnodes",
+    "ver": "204f6d5aae73b10c0fe2fb26e61405fd6337bb77",
+    "Node name for S&R": "ImageResizeKJv2",
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "input_ue_unconnectable": {},
+     "version": "7.5.2"
+    },
+    "enableTabs": false,
+    "tabWidth": 65,
+    "tabXOffset": 10,
+    "hasSecondTab": false,
+    "secondTabText": "Send Back",
+    "secondTabOffset": 80,
+    "secondTabWidth": 65
+   },
+   "widgets_values": [
+    512,
+    512,
+    "nearest-exact",
+    "stretch",
+    "0, 0, 0",
+    "center",
+    2,
+    "cpu"
+   ],
+   "color": "#222",
+   "bgcolor": "#000"
+  },
+  {
+   "id": 2019,
+   "type": "LoadImage",
+   "pos": [
+    -3140,
+    -1460
+   ],
+   "size": [
+    420,
+    540
+   ],
+   "flags": {},
+   "order": 83,
+   "mode": 2,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "slot_index": 0,
+     "links": [
+      18817
+     ]
+    },
+    {
+     "name": "MASK",
+     "type": "MASK",
+     "links": null
+    }
+   ],
+   "properties": {
+    "cnr_id": "comfy-core",
+    "ver": "0.3.30",
+    "Node name for S&R": "LoadImage",
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "version": "7.5.1",
+     "input_ue_unconnectable": {}
+    },
+    "enableTabs": false,
+    "tabWidth": 65,
+    "tabXOffset": 10,
+    "hasSecondTab": false,
+    "secondTabText": "Send Back",
+    "secondTabOffset": 80,
+    "secondTabWidth": 65
+   },
+   "widgets_values": [
+    "Untitled.png",
+    "image"
+   ],
+   "color": "#366b19",
+   "bgcolor": "#225705",
+   "shape": 2
+  },
+  {
+   "id": 2032,
+   "type": "AIO_Preprocessor",
+   "pos": [
+    -3840,
+    -1560
+   ],
+   "size": [
+    420,
+    90
+   ],
+   "flags": {},
+   "order": 360,
+   "mode": 4,
+   "inputs": [
+    {
+     "name": "image",
+     "type": "IMAGE",
+     "link": 18829
+    },
+    {
+     "name": "resolution",
+     "shape": 7,
+     "type": "INT",
+     "widget": {
+      "name": "resolution"
+     },
+     "link": 18830
+    }
+   ],
+   "outputs": [
+    {
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "links": [
+      18798
+     ]
+    }
+   ],
+   "properties": {
+    "cnr_id": "comfyui_controlnet_aux",
+    "ver": "1.1.3",
+    "Node name for S&R": "AIO_Preprocessor",
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "input_ue_unconnectable": {},
+     "version": "7.5.2"
+    },
+    "enableTabs": false,
+    "tabWidth": 65,
+    "tabXOffset": 10,
+    "hasSecondTab": false,
+    "secondTabText": "Send Back",
+    "secondTabOffset": 80,
+    "secondTabWidth": 65
+   },
+   "widgets_values": [
+    "HEDPreprocessor",
+    512
+   ],
+   "color": "#e92424",
+   "bgcolor": "#d51010"
+  },
+  {
+   "id": 2005,
+   "type": "ImageResizeKJv2",
+   "pos": [
+    -3580,
+    -1600
+   ],
+   "size": [
+    210,
+    340
+   ],
+   "flags": {
+    "collapsed": true
+   },
+   "order": 348,
+   "mode": 4,
+   "inputs": [
+    {
+     "name": "image",
+     "type": "IMAGE",
+     "link": 18794
+    },
+    {
+     "name": "mask",
+     "shape": 7,
+     "type": "MASK",
+     "link": null
+    },
+    {
+     "name": "width",
+     "type": "INT",
+     "widget": {
+      "name": "width"
+     },
+     "link": 18795
+    },
+    {
+     "name": "height",
+     "type": "INT",
+     "widget": {
+      "name": "height"
+     },
+     "link": 18796
+    }
+   ],
+   "outputs": [
+    {
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "links": [
+      18829
+     ]
+    },
+    {
+     "name": "width",
+     "type": "INT",
+     "links": null
+    },
+    {
+     "name": "height",
+     "type": "INT",
+     "links": null
+    },
+    {
+     "name": "mask",
+     "type": "MASK",
+     "links": null
+    }
+   ],
+   "properties": {
+    "cnr_id": "comfyui-kjnodes",
+    "ver": "204f6d5aae73b10c0fe2fb26e61405fd6337bb77",
+    "Node name for S&R": "ImageResizeKJv2",
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "input_ue_unconnectable": {},
+     "version": "7.5.2"
+    },
+    "enableTabs": false,
+    "tabWidth": 65,
+    "tabXOffset": 10,
+    "hasSecondTab": false,
+    "secondTabText": "Send Back",
+    "secondTabOffset": 80,
+    "secondTabWidth": 65
+   },
+   "widgets_values": [
+    512,
+    512,
+    "nearest-exact",
+    "crop",
+    "0, 0, 0",
+    "center",
+    2,
+    "cpu"
+   ],
+   "color": "#222",
+   "bgcolor": "#000"
+  },
+  {
+   "id": 2031,
+   "type": "Fast Groups Muter (rgthree)",
+   "pos": [
+    -3150,
+    -1680
+   ],
+   "size": [
+    260,
+    100
+   ],
+   "flags": {},
+   "order": 169,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "OPT_CONNECTION",
+     "type": "*",
+     "links": null
+    }
+   ],
+   "title": "Picture or Mask?",
+   "properties": {
+    "matchColors": "",
+    "matchTitle": "'",
+    "showNav": false,
+    "showAllGraphs": true,
+    "sort": "position",
+    "customSortAlphabet": "",
+    "toggleRestriction": "max one",
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "input_ue_unconnectable": {},
+     "version": "7.5.2"
+    },
+    "enableTabs": false,
+    "tabWidth": 65,
+    "tabXOffset": 10,
+    "hasSecondTab": false,
+    "secondTabText": "Send Back",
+    "secondTabOffset": 80,
+    "secondTabWidth": 65
+   },
+   "color": "#ff4646",
+   "bgcolor": "#fa3232",
+   "shape": 2
+  }
+ ],
+ "links": [],
+ "groups": [
+  {
+   "id": 174,
+   "title": "Diffusion Model",
+   "bounding": [
+    -2240,
+    -2550,
+    330,
+    350
+   ],
+   "color": "#b58b2a",
+   "flags": {
+    "pinned": true
+   }
+  },
+  {
+   "id": 175,
+   "title": "GGUF Model",
+   "bounding": [
+    -2240,
+    -2190,
+    330,
+    370
+   ],
+   "color": "#b58b2a",
+   "flags": {
+    "pinned": true
+   }
+  },
+  {
+   "id": 176,
+   "title": "Checkpoint Model",
+   "bounding": [
+    -2240,
+    -1810,
+    330,
+    200
+   ],
+   "color": "#b58b2a",
+   "flags": {
+    "pinned": true
+   }
+  },
+  {
+   "id": 277,
+   "title": "Create Mask'",
+   "bounding": [
+    -3850,
+    -1670,
+    440,
+    770
+   ],
+   "color": "#3f789e",
+   "flags": {}
+  },
+  {
+   "id": 278,
+   "title": "Load Mask'",
+   "bounding": [
+    -3150,
+    -1570,
+    440,
+    660
+   ],
+   "color": "#3f789e",
+   "flags": {}
+  }
+ ],
+ "config": {},
+ "extra": {},
+ "version": 0.4
+}

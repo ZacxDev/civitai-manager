@@ -1,0 +1,2421 @@
+{
+ "id": "6a713c5d-cf63-4c36-b734-7ca2fca9f1eb",
+ "revision": 0,
+ "last_node_id": 403,
+ "last_link_id": 498,
+ "nodes": [
+  {
+   "id": 143,
+   "type": "NormalizeAudioLoudness",
+   "pos": [
+    -677.9211566520943,
+    1035.2052498711587
+   ],
+   "size": [
+    432.0482482910156,
+    58
+   ],
+   "flags": {},
+   "order": 120,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "audio",
+     "name": "audio",
+     "type": "AUDIO",
+     "link": 232
+    },
+    {
+     "localized_name": "lufs",
+     "name": "lufs",
+     "type": "FLOAT",
+     "widget": {
+      "name": "lufs"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "audio",
+     "name": "audio",
+     "type": "AUDIO",
+     "links": [
+      236
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "NormalizeAudioLoudness",
+    "cnr_id": "ComfyUI-WanVideoWrapper",
+    "ver": "90c3bbb6c2e4ff5e05305e765d007d5e58428ce4",
+    "aux_id": "kijai/ComfyUI-WanVideoWrapper",
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "version": "7.1",
+     "input_ue_unconnectable": {}
+    }
+   },
+   "widgets_values": [
+    -25
+   ],
+   "color": "#232",
+   "bgcolor": "#353"
+  },
+  {
+   "id": 125,
+   "type": "MMAudioFeatureUtilsLoader",
+   "pos": [
+    2075.179742766943,
+    839.9478644002173
+   ],
+   "size": [
+    487.2332763671875,
+    154
+   ],
+   "flags": {},
+   "order": 0,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "bigvgan_vocoder_model",
+     "name": "bigvgan_vocoder_model",
+     "shape": 7,
+     "type": "VOCODER_MODEL",
+     "link": null
+    },
+    {
+     "localized_name": "vae_model",
+     "name": "vae_model",
+     "type": "COMBO",
+     "widget": {
+      "name": "vae_model"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "synchformer_model",
+     "name": "synchformer_model",
+     "type": "COMBO",
+     "widget": {
+      "name": "synchformer_model"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "clip_model",
+     "name": "clip_model",
+     "type": "COMBO",
+     "widget": {
+      "name": "clip_model"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "mode",
+     "name": "mode",
+     "shape": 7,
+     "type": "COMBO",
+     "widget": {
+      "name": "mode"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "precision",
+     "name": "precision",
+     "shape": 7,
+     "type": "COMBO",
+     "widget": {
+      "name": "precision"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "mmaudio_featureutils",
+     "name": "mmaudio_featureutils",
+     "type": "MMAUDIO_FEATUREUTILS",
+     "links": [
+      219
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "MMAudioFeatureUtilsLoader",
+    "cnr_id": "comfyui-mmaudio",
+    "ver": "841b307095f3cdc448d940a5787bc36706e49f1d"
+   },
+   "widgets_values": [
+    "mmaudio_vae_44k_fp16.safetensors",
+    "mmaudio_synchformer_fp16.safetensors",
+    "apple_DFN5B-CLIP-ViT-H-14-384_fp16.safetensors",
+    "44k",
+    "fp16"
+   ],
+   "color": "#222",
+   "bgcolor": "#000"
+  },
+  {
+   "id": 139,
+   "type": "NormalizeAudioLoudness",
+   "pos": [
+    2095.6527854845767,
+    1589.1210454919913
+   ],
+   "size": [
+    432.0482482910156,
+    58
+   ],
+   "flags": {},
+   "order": 160,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "audio",
+     "name": "audio",
+     "type": "AUDIO",
+     "link": 228
+    },
+    {
+     "localized_name": "lufs",
+     "name": "lufs",
+     "type": "FLOAT",
+     "widget": {
+      "name": "lufs"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "audio",
+     "name": "audio",
+     "type": "AUDIO",
+     "links": [
+      229
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "NormalizeAudioLoudness",
+    "cnr_id": "ComfyUI-WanVideoWrapper",
+    "ver": "90c3bbb6c2e4ff5e05305e765d007d5e58428ce4",
+    "aux_id": "kijai/ComfyUI-WanVideoWrapper",
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "version": "7.1",
+     "input_ue_unconnectable": {}
+    }
+   },
+   "widgets_values": [
+    -25
+   ],
+   "color": "#222",
+   "bgcolor": "#000"
+  },
+  {
+   "id": 155,
+   "type": "Label (rgthree)",
+   "pos": [
+    -1034.5294749242603,
+    1386.8231144819715
+   ],
+   "size": [
+    1097.75390625,
+    75
+   ],
+   "flags": {
+    "allow_interaction": true
+   },
+   "order": 1,
+   "mode": 4,
+   "inputs": [],
+   "outputs": [],
+   "title": "AUDIO2VIDEO WORKFLOW",
+   "properties": {
+    "fontSize": 75,
+    "fontFamily": "Arial Black",
+    "fontColor": "#0C6388",
+    "textAlign": "left",
+    "backgroundColor": "transparent",
+    "padding": 0,
+    "borderRadius": 0,
+    "angle": 0,
+    "widget_ue_connectable": {}
+   },
+   "color": "#fff0",
+   "bgcolor": "#fff0"
+  },
+  {
+   "id": 81,
+   "type": "SaveImage",
+   "pos": [
+    3467.983669299386,
+    607.7675607195919
+   ],
+   "size": [
+    270,
+    270
+   ],
+   "flags": {
+    "collapsed": true
+   },
+   "order": 150,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "imagens",
+     "name": "images",
+     "type": "IMAGE",
+     "link": 155
+    },
+    {
+     "localized_name": "prefixo_do_arquivo",
+     "name": "filename_prefix",
+     "type": "STRING",
+     "widget": {
+      "name": "filename_prefix"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "images",
+     "name": "images",
+     "type": "IMAGE",
+     "links": null
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "SaveImage",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.41",
+    "widget_ue_connectable": {}
+   },
+   "widgets_values": [
+    "Video/%date:yyyy-MM-dd%/%date:hhmmss%LASTFRAME"
+   ],
+   "color": "#432",
+   "bgcolor": "#653",
+   "shape": 2
+  },
+  {
+   "id": 147,
+   "type": "VHS_VideoInfo",
+   "pos": [
+    -1309.5762855043633,
+    145.52189998601165
+   ],
+   "size": [
+    260,
+    260
+   ],
+   "flags": {
+    "collapsed": true
+   },
+   "order": 94,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "video_info",
+     "name": "video_info",
+     "type": "VHS_VIDEOINFO",
+     "link": 233
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "source_fps\ud83d\udfe8",
+     "name": "source_fps\ud83d\udfe8",
+     "type": "FLOAT",
+     "links": []
+    },
+    {
+     "localized_name": "source_frame_count\ud83d\udfe8",
+     "name": "source_frame_count\ud83d\udfe8",
+     "type": "INT",
+     "links": []
+    },
+    {
+     "localized_name": "source_duration\ud83d\udfe8",
+     "name": "source_duration\ud83d\udfe8",
+     "type": "FLOAT",
+     "links": []
+    },
+    {
+     "localized_name": "source_width\ud83d\udfe8",
+     "name": "source_width\ud83d\udfe8",
+     "type": "INT",
+     "links": []
+    },
+    {
+     "localized_name": "source_height\ud83d\udfe8",
+     "name": "source_height\ud83d\udfe8",
+     "type": "INT",
+     "links": []
+    },
+    {
+     "localized_name": "loaded_fps\ud83d\udfe6",
+     "name": "loaded_fps\ud83d\udfe6",
+     "type": "FLOAT",
+     "slot_index": 5,
+     "links": []
+    },
+    {
+     "localized_name": "loaded_frame_count\ud83d\udfe6",
+     "name": "loaded_frame_count\ud83d\udfe6",
+     "type": "INT",
+     "slot_index": 6,
+     "links": []
+    },
+    {
+     "localized_name": "loaded_duration\ud83d\udfe6",
+     "name": "loaded_duration\ud83d\udfe6",
+     "type": "FLOAT",
+     "slot_index": 7,
+     "links": [
+      234
+     ]
+    },
+    {
+     "localized_name": "loaded_width\ud83d\udfe6",
+     "name": "loaded_width\ud83d\udfe6",
+     "type": "INT",
+     "links": []
+    },
+    {
+     "localized_name": "loaded_height\ud83d\udfe6",
+     "name": "loaded_height\ud83d\udfe6",
+     "type": "INT",
+     "links": []
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "VHS_VideoInfo",
+    "cnr_id": "comfyui-videohelpersuite",
+    "ver": "6e7f63867584bb1fb4944d36172e7f98436da9a1"
+   },
+   "widgets_values": {},
+   "color": "#233",
+   "bgcolor": "#355"
+  },
+  {
+   "id": 164,
+   "type": "SaveImage",
+   "pos": [
+    -1673.3366993853697,
+    609.52896175689
+   ],
+   "size": [
+    270,
+    270
+   ],
+   "flags": {
+    "collapsed": true
+   },
+   "order": 153,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "imagens",
+     "name": "images",
+     "type": "IMAGE",
+     "link": 256
+    },
+    {
+     "localized_name": "prefixo_do_arquivo",
+     "name": "filename_prefix",
+     "type": "STRING",
+     "widget": {
+      "name": "filename_prefix"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "images",
+     "name": "images",
+     "type": "IMAGE",
+     "links": null
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "SaveImage",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.41",
+    "widget_ue_connectable": {}
+   },
+   "widgets_values": [
+    "Video/%date:yyyy-MM-dd%/%date:hhmmss%LASTFRAME"
+   ],
+   "color": "#432",
+   "bgcolor": "#653",
+   "shape": 2
+  },
+  {
+   "id": 166,
+   "type": "ImageScaleBy",
+   "pos": [
+    -1864.0156029650789,
+    609.60855160064
+   ],
+   "size": [
+    270,
+    82
+   ],
+   "flags": {
+    "collapsed": true
+   },
+   "order": 147,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "imagem",
+     "name": "image",
+     "type": "IMAGE",
+     "link": 259
+    },
+    {
+     "localized_name": "m\u00e9todo de upscaling",
+     "name": "upscale_method",
+     "type": "COMBO",
+     "widget": {
+      "name": "upscale_method"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "fator de escala",
+     "name": "scale_by",
+     "type": "FLOAT",
+     "widget": {
+      "name": "scale_by"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "IMAGEM",
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "links": [
+      256,
+      374
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "ImageScaleBy",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.47",
+    "widget_ue_connectable": {}
+   },
+   "widgets_values": [
+    "lanczos",
+    2.0000000000000004
+   ],
+   "color": "#432",
+   "bgcolor": "#653",
+   "shape": 2
+  },
+  {
+   "id": 168,
+   "type": "ModelSamplingSD3",
+   "pos": [
+    -3459.385202995271,
+    100.0321003889486
+   ],
+   "size": [
+    315,
+    58
+   ],
+   "flags": {},
+   "order": 108,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "modelo",
+     "name": "model",
+     "type": "MODEL",
+     "link": 261
+    },
+    {
+     "localized_name": "deslocamento",
+     "name": "shift",
+     "type": "FLOAT",
+     "widget": {
+      "name": "shift"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "MODELO",
+     "name": "MODEL",
+     "type": "MODEL",
+     "slot_index": 0,
+     "links": [
+      360
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "ModelSamplingSD3",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.46",
+    "widget_ue_connectable": {
+     "shift": true
+    }
+   },
+   "widgets_values": [
+    8.000000000000002
+   ],
+   "color": "#432",
+   "bgcolor": "#653"
+  },
+  {
+   "id": 169,
+   "type": "ModelSamplingSD3",
+   "pos": [
+    -3458.7213236007397,
+    231.53134889358705
+   ],
+   "size": [
+    315,
+    58
+   ],
+   "flags": {},
+   "order": 109,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "modelo",
+     "name": "model",
+     "type": "MODEL",
+     "link": 262
+    },
+    {
+     "localized_name": "deslocamento",
+     "name": "shift",
+     "type": "FLOAT",
+     "widget": {
+      "name": "shift"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "MODELO",
+     "name": "MODEL",
+     "type": "MODEL",
+     "slot_index": 0,
+     "links": [
+      366
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "ModelSamplingSD3",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.46",
+    "widget_ue_connectable": {
+     "shift": true
+    }
+   },
+   "widgets_values": [
+    8.000000000000002
+   ],
+   "color": "#432",
+   "bgcolor": "#653"
+  },
+  {
+   "id": 171,
+   "type": "VAEDecode",
+   "pos": [
+    -3007.4181018374807,
+    608.2023012618401
+   ],
+   "size": [
+    210,
+    46
+   ],
+   "flags": {
+    "collapsed": true
+   },
+   "order": 134,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "amostras",
+     "name": "samples",
+     "type": "LATENT",
+     "link": 263
+    },
+    {
+     "localized_name": "vae",
+     "name": "vae",
+     "type": "VAE",
+     "link": 264
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "IMAGEM",
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "slot_index": 0,
+     "links": [
+      260,
+      279
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "VAEDecode",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.46",
+    "widget_ue_connectable": {}
+   },
+   "widgets_values": [],
+   "color": "#432",
+   "bgcolor": "#653",
+   "shape": 2
+  },
+  {
+   "id": 179,
+   "type": "easy cleanGpuUsed",
+   "pos": [
+    -3191.53656209444,
+    612.2547324263892
+   ],
+   "size": [
+    172.913671875,
+    26
+   ],
+   "flags": {
+    "collapsed": true
+   },
+   "order": 131,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "anything",
+     "name": "anything",
+     "type": "*",
+     "link": 370
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "output",
+     "name": "output",
+     "type": "*",
+     "links": [
+      263
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "easy cleanGpuUsed",
+    "cnr_id": "comfyui-easy-use",
+    "ver": "de92038f88317699f314be85e5c7af84f1ab9c3a",
+    "widget_ue_connectable": {}
+   },
+   "widgets_values": [],
+   "color": "#432",
+   "bgcolor": "#653",
+   "shape": 2
+  },
+  {
+   "id": 207,
+   "type": "NormalizeAudioLoudness",
+   "pos": [
+    -3141.0314992240483,
+    1589.1946065199616
+   ],
+   "size": [
+    432.0482482910156,
+    58
+   ],
+   "flags": {},
+   "order": 158,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "audio",
+     "name": "audio",
+     "type": "AUDIO",
+     "link": 300
+    },
+    {
+     "localized_name": "lufs",
+     "name": "lufs",
+     "type": "FLOAT",
+     "widget": {
+      "name": "lufs"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "audio",
+     "name": "audio",
+     "type": "AUDIO",
+     "links": [
+      287
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "NormalizeAudioLoudness",
+    "cnr_id": "ComfyUI-WanVideoWrapper",
+    "ver": "90c3bbb6c2e4ff5e05305e765d007d5e58428ce4",
+    "aux_id": "kijai/ComfyUI-WanVideoWrapper",
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "version": "7.1",
+     "input_ue_unconnectable": {}
+    }
+   },
+   "widgets_values": [
+    -25
+   ],
+   "color": "#222",
+   "bgcolor": "#000"
+  },
+  {
+   "id": 39,
+   "type": "VAELoader",
+   "pos": [
+    2779.159122366677,
+    295.00473589861593
+   ],
+   "size": [
+    210,
+    58
+   ],
+   "flags": {},
+   "order": 2,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "vae_name",
+     "name": "vae_name",
+     "type": "COMBO",
+     "widget": {
+      "name": "vae_name"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "vae",
+     "name": "VAE",
+     "type": "VAE",
+     "slot_index": 0,
+     "links": [
+      76,
+      99
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "VAELoader",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.46",
+    "widget_ue_connectable": {
+     "vae_name": true
+    }
+   },
+   "widgets_values": [
+    "Wan2_1_VAE_fp32.safetensors"
+   ],
+   "color": "#223",
+   "bgcolor": "#335"
+  },
+  {
+   "id": 90,
+   "type": "CLIPTextEncode",
+   "pos": [
+    705.4831932173793,
+    747.1086461897477
+   ],
+   "size": [
+    440,
+    160
+   ],
+   "flags": {
+    "collapsed": true
+   },
+   "order": 107,
+   "mode": 4,
+   "inputs": [
+    {
+     "label": " ",
+     "localized_name": "clip",
+     "name": "clip",
+     "type": "CLIP",
+     "link": 165
+    },
+    {
+     "localized_name": "texto",
+     "name": "text",
+     "type": "STRING",
+     "widget": {
+      "name": "text"
+     },
+     "link": 338
+    }
+   ],
+   "outputs": [
+    {
+     "label": " ",
+     "localized_name": "CONDICIONAMENTO",
+     "name": "CONDITIONING",
+     "type": "CONDITIONING",
+     "links": [
+      166
+     ]
+    }
+   ],
+   "title": "Positive encode",
+   "properties": {
+    "Node name for S&R": "CLIPTextEncode",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.26",
+    "widget_ue_connectable": {
+     "text": true
+    }
+   },
+   "widgets_values": [
+    ""
+   ],
+   "color": "#222",
+   "bgcolor": "#000",
+   "shape": 1
+  },
+  {
+   "id": 77,
+   "type": "VHS_VideoCombine",
+   "pos": [
+    2638.6006173505134,
+    704.182397694818
+   ],
+   "size": [
+    518.3888428006667,
+    334
+   ],
+   "flags": {},
+   "order": 163,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "images",
+     "name": "images",
+     "type": "IMAGE",
+     "link": 488
+    },
+    {
+     "localized_name": "audio",
+     "name": "audio",
+     "shape": 7,
+     "type": "AUDIO",
+     "link": 229
+    },
+    {
+     "localized_name": "meta_batch",
+     "name": "meta_batch",
+     "shape": 7,
+     "type": "VHS_BatchManager",
+     "link": null
+    },
+    {
+     "localized_name": "vae",
+     "name": "vae",
+     "shape": 7,
+     "type": "VAE",
+     "link": null
+    },
+    {
+     "localized_name": "frame_rate",
+     "name": "frame_rate",
+     "type": "FLOAT",
+     "widget": {
+      "name": "frame_rate"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "loop_count",
+     "name": "loop_count",
+     "type": "INT",
+     "widget": {
+      "name": "loop_count"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "filename_prefix",
+     "name": "filename_prefix",
+     "type": "STRING",
+     "widget": {
+      "name": "filename_prefix"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "format",
+     "name": "format",
+     "type": "COMBO",
+     "widget": {
+      "name": "format"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "pingpong",
+     "name": "pingpong",
+     "type": "BOOLEAN",
+     "widget": {
+      "name": "pingpong"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "save_output",
+     "name": "save_output",
+     "type": "BOOLEAN",
+     "widget": {
+      "name": "save_output"
+     },
+     "link": null
+    },
+    {
+     "name": "pix_fmt",
+     "type": [
+      "yuv420p",
+      "yuv420p10le"
+     ],
+     "widget": {
+      "name": "pix_fmt"
+     },
+     "link": null
+    },
+    {
+     "name": "crf",
+     "type": "INT",
+     "widget": {
+      "name": "crf"
+     },
+     "link": null
+    },
+    {
+     "name": "save_metadata",
+     "type": "BOOLEAN",
+     "widget": {
+      "name": "save_metadata"
+     },
+     "link": null
+    },
+    {
+     "name": "trim_to_audio",
+     "type": "BOOLEAN",
+     "widget": {
+      "name": "trim_to_audio"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "Filenames",
+     "name": "Filenames",
+     "type": "VHS_FILENAMES",
+     "links": null
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "VHS_VideoCombine",
+    "cnr_id": "comfyui-videohelpersuite",
+    "ver": "4c7858ddd5126f7293dc3c9f6e0fc4c263cde079",
+    "widget_ue_connectable": {}
+   },
+   "widgets_values": {
+    "frame_rate": 32,
+    "loop_count": 0,
+    "filename_prefix": "Video/%date:yyyy-MM-dd%/%date:hhmmss%",
+    "format": "video/h264-mp4",
+    "pix_fmt": "yuv420p",
+    "crf": 19,
+    "save_metadata": true,
+    "trim_to_audio": false,
+    "pingpong": false,
+    "save_output": true,
+    "videopreview": {
+     "hidden": true,
+     "paused": false,
+     "params": {
+      "filename": "103738_00001.mp4",
+      "subfolder": "Video\\2026-07-21",
+      "type": "output",
+      "format": "video/h264-mp4",
+      "frame_rate": 32,
+      "workflow": "103738_00001.png",
+      "fullpath": "F:\\AI\\StabilityMatrix\\Packages\\ComfyUI\\output\\Video\\2026-07-21\\103738_00001.mp4"
+     }
+    }
+   },
+   "color": "#232",
+   "bgcolor": "#353",
+   "shape": 2
+  },
+  {
+   "id": 157,
+   "type": "Label (rgthree)",
+   "pos": [
+    -820.5199471045568,
+    -414.929825556608
+   ],
+   "size": [
+    676.19384765625,
+    55
+   ],
+   "flags": {
+    "allow_interaction": true
+   },
+   "order": 3,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [],
+   "title": "Choose Your Workflow",
+   "properties": {
+    "fontSize": 55,
+    "fontFamily": "Arial Black",
+    "fontColor": "#0C6388",
+    "textAlign": "left",
+    "backgroundColor": "transparent",
+    "padding": 0,
+    "borderRadius": 0,
+    "angle": 0,
+    "widget_ue_connectable": {}
+   },
+   "color": "#fff0",
+   "bgcolor": "#fff0"
+  },
+  {
+   "id": 204,
+   "type": "MMAudioFeatureUtilsLoader",
+   "pos": [
+    -3161.5045419416824,
+    840.0214254281866
+   ],
+   "size": [
+    487.2332763671875,
+    154
+   ],
+   "flags": {},
+   "order": 6,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "bigvgan_vocoder_model",
+     "name": "bigvgan_vocoder_model",
+     "shape": 7,
+     "type": "VOCODER_MODEL",
+     "link": null
+    },
+    {
+     "localized_name": "vae_model",
+     "name": "vae_model",
+     "type": "COMBO",
+     "widget": {
+      "name": "vae_model"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "synchformer_model",
+     "name": "synchformer_model",
+     "type": "COMBO",
+     "widget": {
+      "name": "synchformer_model"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "clip_model",
+     "name": "clip_model",
+     "type": "COMBO",
+     "widget": {
+      "name": "clip_model"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "mode",
+     "name": "mode",
+     "shape": 7,
+     "type": "COMBO",
+     "widget": {
+      "name": "mode"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "precision",
+     "name": "precision",
+     "shape": 7,
+     "type": "COMBO",
+     "widget": {
+      "name": "precision"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "mmaudio_featureutils",
+     "name": "mmaudio_featureutils",
+     "type": "MMAUDIO_FEATUREUTILS",
+     "links": [
+      304
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "MMAudioFeatureUtilsLoader",
+    "cnr_id": "comfyui-mmaudio",
+    "ver": "841b307095f3cdc448d940a5787bc36706e49f1d"
+   },
+   "widgets_values": [
+    "mmaudio_vae_44k_fp16.safetensors",
+    "mmaudio_synchformer_fp16.safetensors",
+    "apple_DFN5B-CLIP-ViT-H-14-384_fp16.safetensors",
+    "44k",
+    "fp16"
+   ],
+   "color": "#222",
+   "bgcolor": "#000"
+  },
+  {
+   "id": 148,
+   "type": "VHS_VideoCombine",
+   "pos": [
+    -75.49419026697393,
+    160.49938756489996
+   ],
+   "size": [
+    430.7106089912743,
+    334
+   ],
+   "flags": {},
+   "order": 124,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "images",
+     "name": "images",
+     "type": "IMAGE",
+     "link": 249
+    },
+    {
+     "localized_name": "audio",
+     "name": "audio",
+     "shape": 7,
+     "type": "AUDIO",
+     "link": 236
+    },
+    {
+     "localized_name": "meta_batch",
+     "name": "meta_batch",
+     "shape": 7,
+     "type": "VHS_BatchManager",
+     "link": null
+    },
+    {
+     "localized_name": "vae",
+     "name": "vae",
+     "shape": 7,
+     "type": "VAE",
+     "link": null
+    },
+    {
+     "localized_name": "frame_rate",
+     "name": "frame_rate",
+     "type": "FLOAT",
+     "widget": {
+      "name": "frame_rate"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "loop_count",
+     "name": "loop_count",
+     "type": "INT",
+     "widget": {
+      "name": "loop_count"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "filename_prefix",
+     "name": "filename_prefix",
+     "type": "STRING",
+     "widget": {
+      "name": "filename_prefix"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "format",
+     "name": "format",
+     "type": "COMBO",
+     "widget": {
+      "name": "format"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "pingpong",
+     "name": "pingpong",
+     "type": "BOOLEAN",
+     "widget": {
+      "name": "pingpong"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "save_output",
+     "name": "save_output",
+     "type": "BOOLEAN",
+     "widget": {
+      "name": "save_output"
+     },
+     "link": null
+    },
+    {
+     "name": "pix_fmt",
+     "type": [
+      "yuv420p",
+      "yuv420p10le"
+     ],
+     "widget": {
+      "name": "pix_fmt"
+     },
+     "link": null
+    },
+    {
+     "name": "crf",
+     "type": "INT",
+     "widget": {
+      "name": "crf"
+     },
+     "link": null
+    },
+    {
+     "name": "save_metadata",
+     "type": "BOOLEAN",
+     "widget": {
+      "name": "save_metadata"
+     },
+     "link": null
+    },
+    {
+     "name": "trim_to_audio",
+     "type": "BOOLEAN",
+     "widget": {
+      "name": "trim_to_audio"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "Filenames",
+     "name": "Filenames",
+     "type": "VHS_FILENAMES",
+     "links": null
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "VHS_VideoCombine",
+    "cnr_id": "comfyui-videohelpersuite",
+    "ver": "4c7858ddd5126f7293dc3c9f6e0fc4c263cde079",
+    "widget_ue_connectable": {}
+   },
+   "widgets_values": {
+    "frame_rate": 25,
+    "loop_count": 0,
+    "filename_prefix": "Video/%date:yyyy-MM-dd%/%date:hhmmss%",
+    "format": "video/h264-mp4",
+    "pix_fmt": "yuv420p",
+    "crf": 19,
+    "save_metadata": true,
+    "trim_to_audio": false,
+    "pingpong": false,
+    "save_output": true,
+    "videopreview": {
+     "hidden": false,
+     "paused": false,
+     "params": {
+      "filename": "154646_00001-audio.mp4",
+      "subfolder": "Video\\2026-03-13",
+      "type": "output",
+      "format": "video/h264-mp4",
+      "frame_rate": 25,
+      "workflow": "154646_00001.png",
+      "fullpath": "F:\\AI\\StabilityMatrix\\Packages\\ComfyUI\\output\\Video\\2026-03-13\\154646_00001-audio.mp4"
+     }
+    }
+   },
+   "color": "#232",
+   "bgcolor": "#353",
+   "shape": 2
+  },
+  {
+   "id": 126,
+   "type": "MMAudioSampler",
+   "pos": [
+    2080.261814350017,
+    1055.486047997482
+   ],
+   "size": [
+    490,
+    460
+   ],
+   "flags": {},
+   "order": 157,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "mmaudio_model",
+     "name": "mmaudio_model",
+     "type": "MMAUDIO_MODEL",
+     "link": 218
+    },
+    {
+     "localized_name": "feature_utils",
+     "name": "feature_utils",
+     "type": "MMAUDIO_FEATUREUTILS",
+     "link": 219
+    },
+    {
+     "localized_name": "images",
+     "name": "images",
+     "shape": 7,
+     "type": "IMAGE",
+     "link": 489
+    },
+    {
+     "localized_name": "duration",
+     "name": "duration",
+     "type": "FLOAT",
+     "widget": {
+      "name": "duration"
+     },
+     "link": 226
+    },
+    {
+     "localized_name": "steps",
+     "name": "steps",
+     "type": "INT",
+     "widget": {
+      "name": "steps"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "cfg",
+     "name": "cfg",
+     "type": "FLOAT",
+     "widget": {
+      "name": "cfg"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "seed",
+     "name": "seed",
+     "type": "INT",
+     "widget": {
+      "name": "seed"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "prompt",
+     "name": "prompt",
+     "type": "STRING",
+     "widget": {
+      "name": "prompt"
+     },
+     "link": 339
+    },
+    {
+     "localized_name": "negative_prompt",
+     "name": "negative_prompt",
+     "type": "STRING",
+     "widget": {
+      "name": "negative_prompt"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "mask_away_clip",
+     "name": "mask_away_clip",
+     "type": "BOOLEAN",
+     "widget": {
+      "name": "mask_away_clip"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "force_offload",
+     "name": "force_offload",
+     "type": "BOOLEAN",
+     "widget": {
+      "name": "force_offload"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "audio",
+     "name": "audio",
+     "type": "AUDIO",
+     "slot_index": 0,
+     "links": [
+      228
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "MMAudioSampler",
+    "cnr_id": "comfyui-mmaudio",
+    "ver": "841b307095f3cdc448d940a5787bc36706e49f1d"
+   },
+   "widgets_values": [
+    3,
+    75,
+    5,
+    148603596688686,
+    "randomize",
+    "",
+    "(low quality, speech, talking, voice lines, dialogue, low bitrate, background music)",
+    false,
+    true
+   ],
+   "color": "#222",
+   "bgcolor": "#000"
+  },
+  {
+   "id": 297,
+   "type": "ModelSamplingSD3",
+   "pos": [
+    -537.3782095539626,
+    2446.388477138572
+   ],
+   "size": [
+    315,
+    58
+   ],
+   "flags": {},
+   "order": 111,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "modelo",
+     "name": "model",
+     "type": "MODEL",
+     "link": 390
+    },
+    {
+     "localized_name": "deslocamento",
+     "name": "shift",
+     "type": "FLOAT",
+     "widget": {
+      "name": "shift"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "MODELO",
+     "name": "MODEL",
+     "type": "MODEL",
+     "slot_index": 0,
+     "links": [
+      416
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "ModelSamplingSD3",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.46",
+    "widget_ue_connectable": {
+     "shift": true
+    }
+   },
+   "widgets_values": [
+    8.000000000000002
+   ],
+   "color": "#432",
+   "bgcolor": "#653"
+  },
+  {
+   "id": 298,
+   "type": "ModelSamplingSD3",
+   "pos": [
+    -536.7143301594314,
+    2577.8877256432106
+   ],
+   "size": [
+    315,
+    58
+   ],
+   "flags": {},
+   "order": 112,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "modelo",
+     "name": "model",
+     "type": "MODEL",
+     "link": 391
+    },
+    {
+     "localized_name": "deslocamento",
+     "name": "shift",
+     "type": "FLOAT",
+     "widget": {
+      "name": "shift"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "MODELO",
+     "name": "MODEL",
+     "type": "MODEL",
+     "slot_index": 0,
+     "links": [
+      421
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "ModelSamplingSD3",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.46",
+    "widget_ue_connectable": {
+     "shift": true
+    }
+   },
+   "widgets_values": [
+    8.000000000000002
+   ],
+   "color": "#432",
+   "bgcolor": "#653"
+  },
+  {
+   "id": 303,
+   "type": "NormalizeAudioLoudness",
+   "pos": [
+    328.0937227747642,
+    3899.580175137956
+   ],
+   "size": [
+    432.0482482910156,
+    58
+   ],
+   "flags": {},
+   "order": 159,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "audio",
+     "name": "audio",
+     "type": "AUDIO",
+     "link": 396
+    },
+    {
+     "localized_name": "lufs",
+     "name": "lufs",
+     "type": "FLOAT",
+     "widget": {
+      "name": "lufs"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "audio",
+     "name": "audio",
+     "type": "AUDIO",
+     "links": [
+      426
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "NormalizeAudioLoudness",
+    "cnr_id": "ComfyUI-WanVideoWrapper",
+    "ver": "90c3bbb6c2e4ff5e05305e765d007d5e58428ce4",
+    "aux_id": "kijai/ComfyUI-WanVideoWrapper",
+    "ue_properties": {
+     "widget_ue_connectable": {},
+     "version": "7.1",
+     "input_ue_unconnectable": {}
+    }
+   },
+   "widgets_values": [
+    -25
+   ],
+   "color": "#222",
+   "bgcolor": "#000"
+  },
+  {
+   "id": 304,
+   "type": "CLIPTextEncode",
+   "pos": [
+    -1059.6342445996004,
+    3061.0755756836047
+   ],
+   "size": [
+    440,
+    160
+   ],
+   "flags": {
+    "collapsed": true
+   },
+   "order": 114,
+   "mode": 4,
+   "inputs": [
+    {
+     "label": " ",
+     "localized_name": "clip",
+     "name": "clip",
+     "type": "CLIP",
+     "link": 397
+    },
+    {
+     "localized_name": "texto",
+     "name": "text",
+     "type": "STRING",
+     "widget": {
+      "name": "text"
+     },
+     "link": 398
+    }
+   ],
+   "outputs": [
+    {
+     "label": " ",
+     "localized_name": "CONDICIONAMENTO",
+     "name": "CONDITIONING",
+     "type": "CONDITIONING",
+     "links": [
+      448
+     ]
+    }
+   ],
+   "title": "Positive encode",
+   "properties": {
+    "Node name for S&R": "CLIPTextEncode",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.26",
+    "widget_ue_connectable": {
+     "text": true
+    }
+   },
+   "widgets_values": [
+    ""
+   ],
+   "color": "#222",
+   "bgcolor": "#000",
+   "shape": 1
+  },
+  {
+   "id": 326,
+   "type": "MMAudioFeatureUtilsLoader",
+   "pos": [
+    307.62068005713,
+    3150.4069940461773
+   ],
+   "size": [
+    487.2332763671875,
+    154
+   ],
+   "flags": {},
+   "order": 14,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "bigvgan_vocoder_model",
+     "name": "bigvgan_vocoder_model",
+     "shape": 7,
+     "type": "VOCODER_MODEL",
+     "link": null
+    },
+    {
+     "localized_name": "vae_model",
+     "name": "vae_model",
+     "type": "COMBO",
+     "widget": {
+      "name": "vae_model"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "synchformer_model",
+     "name": "synchformer_model",
+     "type": "COMBO",
+     "widget": {
+      "name": "synchformer_model"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "clip_model",
+     "name": "clip_model",
+     "type": "COMBO",
+     "widget": {
+      "name": "clip_model"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "mode",
+     "name": "mode",
+     "shape": 7,
+     "type": "COMBO",
+     "widget": {
+      "name": "mode"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "precision",
+     "name": "precision",
+     "shape": 7,
+     "type": "COMBO",
+     "widget": {
+      "name": "precision"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "mmaudio_featureutils",
+     "name": "mmaudio_featureutils",
+     "type": "MMAUDIO_FEATUREUTILS",
+     "links": [
+      429
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "MMAudioFeatureUtilsLoader",
+    "cnr_id": "comfyui-mmaudio",
+    "ver": "841b307095f3cdc448d940a5787bc36706e49f1d"
+   },
+   "widgets_values": [
+    "mmaudio_vae_44k_fp16.safetensors",
+    "mmaudio_synchformer_fp16.safetensors",
+    "apple_DFN5B-CLIP-ViT-H-14-384_fp16.safetensors",
+    "44k",
+    "fp16"
+   ],
+   "color": "#222",
+   "bgcolor": "#000"
+  },
+  {
+   "id": 331,
+   "type": "MMAudioModelLoader",
+   "pos": [
+    304.255972947372,
+    3015.7320567066095
+   ],
+   "size": [
+    490,
+    82
+   ],
+   "flags": {},
+   "order": 15,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "mmaudio_model",
+     "name": "mmaudio_model",
+     "type": "COMBO",
+     "widget": {
+      "name": "mmaudio_model"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "base_precision",
+     "name": "base_precision",
+     "type": "COMBO",
+     "widget": {
+      "name": "base_precision"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "mmaudio_model",
+     "name": "mmaudio_model",
+     "type": "MMAUDIO_MODEL",
+     "slot_index": 0,
+     "links": [
+      428
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "MMAudioModelLoader",
+    "cnr_id": "comfyui-mmaudio",
+    "ver": "841b307095f3cdc448d940a5787bc36706e49f1d"
+   },
+   "widgets_values": [
+    "mmaudio_large_44k_v2_fp16.safetensors",
+    "fp16"
+   ],
+   "color": "#222",
+   "bgcolor": "#000"
+  },
+  {
+   "id": 336,
+   "type": "MMAudioSampler",
+   "pos": [
+    312.7027516402047,
+    3365.9451776434444
+   ],
+   "size": [
+    490,
+    460
+   ],
+   "flags": {},
+   "order": 156,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "mmaudio_model",
+     "name": "mmaudio_model",
+     "type": "MMAUDIO_MODEL",
+     "link": 428
+    },
+    {
+     "localized_name": "feature_utils",
+     "name": "feature_utils",
+     "type": "MMAUDIO_FEATUREUTILS",
+     "link": 429
+    },
+    {
+     "localized_name": "images",
+     "name": "images",
+     "shape": 7,
+     "type": "IMAGE",
+     "link": 497
+    },
+    {
+     "localized_name": "duration",
+     "name": "duration",
+     "type": "FLOAT",
+     "widget": {
+      "name": "duration"
+     },
+     "link": 431
+    },
+    {
+     "localized_name": "steps",
+     "name": "steps",
+     "type": "INT",
+     "widget": {
+      "name": "steps"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "cfg",
+     "name": "cfg",
+     "type": "FLOAT",
+     "widget": {
+      "name": "cfg"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "seed",
+     "name": "seed",
+     "type": "INT",
+     "widget": {
+      "name": "seed"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "prompt",
+     "name": "prompt",
+     "type": "STRING",
+     "widget": {
+      "name": "prompt"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "negative_prompt",
+     "name": "negative_prompt",
+     "type": "STRING",
+     "widget": {
+      "name": "negative_prompt"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "mask_away_clip",
+     "name": "mask_away_clip",
+     "type": "BOOLEAN",
+     "widget": {
+      "name": "mask_away_clip"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "force_offload",
+     "name": "force_offload",
+     "type": "BOOLEAN",
+     "widget": {
+      "name": "force_offload"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "audio",
+     "name": "audio",
+     "type": "AUDIO",
+     "slot_index": 0,
+     "links": [
+      396
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "MMAudioSampler",
+    "cnr_id": "comfyui-mmaudio",
+    "ver": "841b307095f3cdc448d940a5787bc36706e49f1d"
+   },
+   "widgets_values": [
+    3,
+    100,
+    5,
+    228747398730168,
+    "randomize",
+    "",
+    "(low quality, speech, talking, voice lines, dialogue, low bitrate, background music)",
+    false,
+    true
+   ],
+   "color": "#222",
+   "bgcolor": "#000"
+  },
+  {
+   "id": 202,
+   "type": "Fast Groups Bypasser (rgthree)",
+   "pos": [
+    -4140.499515031272,
+    1533.8522536185806
+   ],
+   "size": [
+    230.51671767080688,
+    82
+   ],
+   "flags": {},
+   "order": 22,
+   "mode": 4,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "OPT_CONNECTION",
+     "type": "*",
+     "links": null
+    }
+   ],
+   "title": "Audio Enabler",
+   "properties": {
+    "matchColors": "black",
+    "matchTitle": "",
+    "showNav": false,
+    "showAllGraphs": true,
+    "sort": "custom alphabet",
+    "customSortAlphabet": "",
+    "toggleRestriction": "default"
+   },
+   "color": "#222",
+   "bgcolor": "#000"
+  },
+  {
+   "id": 124,
+   "type": "MMAudioModelLoader",
+   "pos": [
+    2071.8150356571846,
+    705.2729270606495
+   ],
+   "size": [
+    490,
+    82
+   ],
+   "flags": {},
+   "order": 23,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "mmaudio_model",
+     "name": "mmaudio_model",
+     "type": "COMBO",
+     "widget": {
+      "name": "mmaudio_model"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "base_precision",
+     "name": "base_precision",
+     "type": "COMBO",
+     "widget": {
+      "name": "base_precision"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "mmaudio_model",
+     "name": "mmaudio_model",
+     "type": "MMAUDIO_MODEL",
+     "slot_index": 0,
+     "links": [
+      218
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "MMAudioModelLoader",
+    "cnr_id": "comfyui-mmaudio",
+    "ver": "841b307095f3cdc448d940a5787bc36706e49f1d"
+   },
+   "widgets_values": [
+    "mmaudio_large_44k_v2_fp16.safetensors",
+    "fp16"
+   ],
+   "color": "#222",
+   "bgcolor": "#000"
+  },
+  {
+   "id": 339,
+   "type": "Fast Groups Bypasser (rgthree)",
+   "pos": [
+    -661.4076775215658,
+    3845.873808587242
+   ],
+   "size": [
+    247.36296073567598,
+    82
+   ],
+   "flags": {},
+   "order": 24,
+   "mode": 4,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "OPT_CONNECTION",
+     "type": "*",
+     "links": null
+    }
+   ],
+   "title": "Audio Enabler",
+   "properties": {
+    "matchColors": "green",
+    "matchTitle": "",
+    "showNav": false,
+    "showAllGraphs": true,
+    "sort": "custom alphabet",
+    "customSortAlphabet": "",
+    "toggleRestriction": "default"
+   },
+   "color": "#222",
+   "bgcolor": "#000"
+  },
+  {
+   "id": 384,
+   "type": "VAEDecode",
+   "pos": [
+    489.6509923084281,
+    2913.596691951767
+   ],
+   "size": [
+    210,
+    46
+   ],
+   "flags": {
+    "collapsed": true
+   },
+   "order": 135,
+   "mode": 4,
+   "inputs": [
+    {
+     "localized_name": "amostras",
+     "name": "samples",
+     "type": "LATENT",
+     "link": 481
+    },
+    {
+     "localized_name": "vae",
+     "name": "vae",
+     "type": "VAE",
+     "link": 484
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "IMAGEM",
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "slot_index": 0,
+     "links": [
+      486
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "VAEDecode",
+    "cnr_id": "comfy-core",
+    "ver": "0.3.46",
+    "widget_ue_connectable": {}
+   },
+   "widgets_values": [],
+   "color": "#432",
+   "bgcolor": "#653",
+   "shape": 2
+  },
+  {
+   "id": 252,
+   "type": "Note Plus (mtb)",
+   "pos": [
+    -549.1769528232152,
+    -313.1847336208881
+   ],
+   "size": [
+    696.2527232670017,
+    172
+   ],
+   "flags": {},
+   "order": 44,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [],
+   "title": "Note+",
+   "properties": {
+    "css": "/** here you can write css**/\nh1 {\n    color: whitesmoke;\n}",
+    "theme": "one_dark"
+   },
+   "widgets_values": [
+    "- Choose IMAGE2VIDEO if you want to make a video from an image!\r\n\r\n- Choose TEXT2VIDEO if you want to make a video from text!\r\n\r\n- Choose FIRST2LASTFRAME if you want to make a video using the first and last frame of a video!\r\n\r\n- Choose AUDIO2VIDEO if you want to add audio to a video you have/made!"
+   ],
+   "color": "#222",
+   "bgcolor": "#000",
+   "shape": 1
+  },
+  {
+   "id": 136,
+   "type": "Fast Groups Bypasser (rgthree)",
+   "pos": [
+    1089.5281473926314,
+    1535.0393144151842
+   ],
+   "size": [
+    230.51671767080688,
+    82
+   ],
+   "flags": {},
+   "order": 82,
+   "mode": 4,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "OPT_CONNECTION",
+     "type": "*",
+     "links": null
+    }
+   ],
+   "title": "Audio Enabler",
+   "properties": {
+    "matchColors": "brown",
+    "matchTitle": "",
+    "showNav": false,
+    "showAllGraphs": true,
+    "sort": "custom alphabet",
+    "customSortAlphabet": "",
+    "toggleRestriction": "default"
+   },
+   "color": "#222",
+   "bgcolor": "#000"
+  },
+  {
+   "id": 151,
+   "type": "Fast Groups Bypasser (rgthree)",
+   "pos": [
+    -1091.0352485324106,
+    -301.889263885423
+   ],
+   "size": [
+    503.14083876915504,
+    178
+   ],
+   "flags": {},
+   "order": 86,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "OPT_CONNECTION",
+     "type": "*",
+     "links": null
+    }
+   ],
+   "title": "Worflows",
+   "properties": {
+    "matchColors": "purple",
+    "matchTitle": "",
+    "showNav": true,
+    "showAllGraphs": true,
+    "sort": "position",
+    "customSortAlphabet": "",
+    "toggleRestriction": "max one"
+   },
+   "color": "#222",
+   "bgcolor": "#000"
+  }
+ ],
+ "links": [],
+ "groups": [
+  {
+   "id": 15,
+   "title": "T2V AUDIO",
+   "bounding": [
+    2044.4088362683278,
+    623.6703334046384,
+    535.1708899581913,
+    1326.6022720138076
+   ],
+   "color": "#b06634",
+   "flags": {}
+  },
+  {
+   "id": 17,
+   "title": "TEXT2VIDEO",
+   "bounding": [
+    523.9770665762343,
+    -60.868876703897755,
+    3226.6174807462276,
+    2040.974770657849
+   ],
+   "color": "#a1309b",
+   "flags": {}
+  },
+  {
+   "id": 18,
+   "title": "AUDIO2VIDEO",
+   "bounding": [
+    -1418.4181554027966,
+    -53.50245308407172,
+    1905.1214254667125,
+    1559.2822587788357
+   ],
+   "color": "#a1309b",
+   "flags": {}
+  },
+  {
+   "id": 34,
+   "title": "IMAGE2VIDEO",
+   "bounding": [
+    -5248.5060732119,
+    -55.17905204047594,
+    3767.9568627636363,
+    2034.4761405070853
+   ],
+   "color": "#a1309b",
+   "flags": {}
+  },
+  {
+   "id": 33,
+   "title": "I2V AUDIO",
+   "bounding": [
+    -3192.2754484402967,
+    623.7438944326075,
+    545.0755387382374,
+    1329.129156216163
+   ],
+   "color": "#444",
+   "flags": {}
+  },
+  {
+   "id": 35,
+   "title": "WORKFLOW SELECTION",
+   "bounding": [
+    -1173.0161647950877,
+    -473.8857929785088,
+    1362.101176127967,
+    379.2125608191071
+   ],
+   "color": "#b58b2a",
+   "flags": {}
+  },
+  {
+   "id": 36,
+   "title": "FIRST2LASTFRAME",
+   "bounding": [
+    -2323.7022023209606,
+    2299.5678866418166,
+    3748.4059646220558,
+    2002.794210072611
+   ],
+   "color": "#a1309b",
+   "flags": {}
+  },
+  {
+   "id": 47,
+   "title": "F2LF AUDIO",
+   "bounding": [
+    276.8497735585162,
+    2934.1294630505986,
+    548.4532121982198,
+    1338.4573626001093
+   ],
+   "color": "#8A8",
+   "flags": {}
+  }
+ ],
+ "config": {},
+ "extra": {},
+ "version": 0.4
+}
