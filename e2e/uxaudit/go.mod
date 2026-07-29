@@ -1,13 +1,22 @@
 module github.com/ZacxDev/civitai-manager/e2e/uxaudit
 
-go 1.25.0
+go 1.26
 
-require github.com/ZacxDev/civitai-manager v0.0.0
+require (
+	github.com/ZacxDev/civitai-manager v0.0.0
+	github.com/chromedp/cdproto v0.0.0-20260719223732-95f6af754cfe
+	github.com/chromedp/chromedp v0.16.0
+)
 
 require (
 	github.com/aymerick/douceur v0.2.0 // indirect
+	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/civitai/cli v0.1.82-0.20260724032407-d217cf7a4774 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68 // indirect
+	github.com/gobwas/httphead v0.1.0 // indirect
+	github.com/gobwas/pool v0.2.1 // indirect
+	github.com/gobwas/ws v1.4.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
