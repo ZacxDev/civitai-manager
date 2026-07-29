@@ -90,6 +90,7 @@ func serveRun(ctx context.Context, st *store.Store, client civitai.Client, cfg *
 		MaxFileSizeBytes:    cfg.MaxFileSizeBytes,
 		HFToken:             cfg.HFToken,
 		HFFallback:          cfg.HFFallbackEnabled(),
+		ResolveNodePacks:    cfg.ResolveNodePacksEnabled(),
 	}, log)
 	// Tie background discovery crawls to the server lifecycle: cancelling ctx on
 	// shutdown cancels any in-flight crawl instead of leaking its goroutine.
