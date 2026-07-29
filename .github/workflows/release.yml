@@ -8,18 +8,20 @@ on:
     tags:
       - "v*"
 
-permissions:
-  # Required for GoReleaser to create the GitHub Release and upload artifacts.
-  contents: write
-  # Keyless signing of the build provenance: the OIDC token identifies this
-  # workflow to Sigstore, so no cosign key or secret is involved.
-  id-token: write
-  attestations: write
-
 jobs:
   goreleaser:
     name: goreleaser
     runs-on: ubuntu-latest
+    # Scoped to the job rather than the workflow. Identical today with a single
+    # job, but a second job added later would inherit `contents: write` and an
+    # OIDC token it has no business holding.
+    permissions:
+      # Required for GoReleaser to create the GitHub Release and upload artifacts.
+      contents: write
+      # Keyless signing of the build provenance: the OIDC token identifies this
+      # workflow to Sigstore, so no cosign key or secret is involved.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v5
         with:
@@ -51,7 +53,23 @@ jobs:
       #
       # Users verify a download with:
       #   gh attestation verify --owner ZacxDev civitai-manager_X_linux_amd64.tar.gz
+      #
+      # This step MUST run even when the GoReleaser step failed. GoReleaser
+      # publishes the GitHub Release *before* it runs the Homebrew cask pipe
+      # (v2.17.1 internal/pipe/publish/publish.go: `release.Pipe{}` on line 59,
+      # `cask.Pipe{}` on line 64), so a tap-token expiry or a scope
+      # error fails `Run GoReleaser` at a point where the artifacts are already
+      # public. Without this guard the attestation would silently never be
+      # produced and `gh attestation verify` would answer "no attestations
+      # found" for a release users can already download.
+      #
+      # `hashFiles(...) != ''` keeps it honest: it only runs once GoReleaser has
+      # actually written the checksums, so a build that failed before producing
+      # artifacts skips it instead of failing twice with a confusing message.
+      # The job still fails — a failed step is what marks the job failed, and
+      # this one runs after it rather than in place of it.
       - name: Attest build provenance
+        if: ${{ !cancelled() && hashFiles('dist/checksums.txt') != '' }}
         uses: actions/attest@v4
         with:
           subject-checksums: dist/checksums.txt
