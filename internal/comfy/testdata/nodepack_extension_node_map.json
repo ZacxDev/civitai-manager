@@ -1,0 +1,35 @@
+{
+ "https://github.com/melMass/comfy_mtb": [
+  [
+   "Animation Builder (mtb)",
+   "Any To String (mtb)",
+   "Batch Float (mtb)"
+  ],
+  {
+   "nodename_pattern": "\\(mtb\\)$",
+   "title_aux": "MTB Nodes"
+  }
+ ],
+ "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes": [
+  [
+   "CR 8 Channel In",
+   "CR 8 Channel Out",
+   "CR Apply ControlNet"
+  ],
+  {
+   "author": "Suzie1",
+   "nickname": "Comfyroll Studio",
+   "title": "Comfyroll Studio",
+   "title_aux": "Comfyroll Studio"
+  }
+ ],
+ "https://github.com/GACLove/ComfyUI-VFI": [
+  [
+   "CalculateLoadedFPS",
+   "RIFEInterpolation"
+  ],
+  {
+   "title_aux": "ComfyUI-VFI"
+  }
+ ]
+}

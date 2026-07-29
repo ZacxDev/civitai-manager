@@ -1,0 +1,137 @@
+{
+ "channel": "default",
+ "node_packs": {
+  "ComfyUI_Comfyroll_CustomNodes": {
+   "author": "Unclaimed",
+   "files": [
+    "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes"
+   ],
+   "id": "ComfyUI_Comfyroll_CustomNodes",
+   "install_type": "git-clone",
+   "reference": "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes",
+   "title": "Comfyroll Studio",
+   "cnr_latest": "nightly",
+   "health": "-",
+   "repository": "https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes",
+   "state": "not-installed",
+   "version": "nightly",
+   "update-state": "false",
+   "stars": 1282,
+   "last_update": "2024-07-24 11:16:13",
+   "trust": true
+  },
+  "comfy-mtb": {
+   "author": "mel",
+   "files": [
+    "https://github.com/melMass/comfy_mtb"
+   ],
+   "id": "comfy-mtb",
+   "install_type": "git-clone",
+   "nodename_pattern": "\\(mtb\\)$",
+   "reference": "https://github.com/melMass/comfy_mtb",
+   "title": "comfy-mtb",
+   "cnr_latest": "0.5.4",
+   "health": "-",
+   "repository": "https://github.com/melMass/comfy_mtb",
+   "state": "not-installed",
+   "version": "0.5.4",
+   "update-state": "false",
+   "stars": 722,
+   "last_update": "2026-07-04 19:40:35",
+   "trust": true,
+   "is_favorite": true
+  },
+  "ComfyUI-VFI": {
+   "author": "GACLove",
+   "files": [
+    "https://github.com/GACLove/ComfyUI-VFI"
+   ],
+   "install_type": "git-clone",
+   "reference": "https://github.com/GACLove/ComfyUI-VFI",
+   "title": "ComfyUI-VFI",
+   "repository": "https://github.com/GACLove/ComfyUI-VFI",
+   "version": "unknown",
+   "state": "not-installed",
+   "stars": 55,
+   "last_update": "2025-09-30 09:55:40",
+   "trust": true
+  },
+  "derfuu_comfyui_moddednodes": {
+   "author": "derfuu",
+   "files": [
+    "https://github.com/Derfuu/Derfuu_ComfyUI_ModdedNodes"
+   ],
+   "id": "derfuu_comfyui_moddednodes",
+   "install_type": "git-clone",
+   "nodename_pattern": "^DF_",
+   "reference": "https://github.com/Derfuu/Derfuu_ComfyUI_ModdedNodes",
+   "title": "Derfuu_ComfyUI_ModdedNodes",
+   "cnr_latest": "1.0.1",
+   "health": "-",
+   "repository": "https://github.com/Derfuu/Derfuu_ComfyUI_ModdedNodes",
+   "state": "not-installed",
+   "version": "1.0.1",
+   "update-state": "false",
+   "stars": 456,
+   "last_update": "2024-06-22 02:12:19",
+   "trust": true
+  },
+  "ComfyUI-Hallo": {
+   "author": "Unclaimed",
+   "files": [
+    "https://github.com/AIFSH/ComfyUI-Hallo"
+   ],
+   "id": "ComfyUI-Hallo",
+   "install_type": "git-clone",
+   "reference": "https://github.com/AIFSH/ComfyUI-Hallo",
+   "title": "ComfyUI-Hallo",
+   "cnr_latest": "nightly",
+   "health": "-",
+   "repository": "https://github.com/AIFSH/ComfyUI-Hallo",
+   "state": "not-installed",
+   "version": "nightly",
+   "update-state": "false",
+   "stars": 304,
+   "last_update": "2024-06-24 06:43:23",
+   "trust": true
+  },
+  "ComfyUI-MimicMotion": {
+   "author": "Unclaimed",
+   "files": [
+    "https://github.com/AIFSH/ComfyUI-MimicMotion"
+   ],
+   "id": "ComfyUI-MimicMotion",
+   "install_type": "git-clone",
+   "reference": "https://github.com/AIFSH/ComfyUI-MimicMotion",
+   "title": "ComfyUI-MimicMotion",
+   "cnr_latest": "nightly",
+   "health": "-",
+   "repository": "https://github.com/AIFSH/ComfyUI-MimicMotion",
+   "state": "not-installed",
+   "version": "nightly",
+   "update-state": "false",
+   "stars": 386,
+   "last_update": "2024-08-06 06:21:16",
+   "trust": true
+  },
+  "DHLive-ComfyUI": {
+   "author": "Unclaimed",
+   "files": [
+    "https://github.com/AIFSH/DHLive-ComfyUI"
+   ],
+   "id": "DHLive-ComfyUI",
+   "install_type": "git-clone",
+   "reference": "https://github.com/AIFSH/DHLive-ComfyUI",
+   "title": "DHLive-ComfyUI",
+   "cnr_latest": "nightly",
+   "health": "-",
+   "repository": "https://github.com/AIFSH/DHLive-ComfyUI",
+   "state": "not-installed",
+   "version": "nightly",
+   "update-state": "false",
+   "stars": 25,
+   "last_update": "2024-11-14 01:45:45",
+   "trust": true
+  }
+ }
+}

@@ -165,6 +165,29 @@ type Server struct {
 	// Nil (production) builds a comfy.Client from cfg.ComfyURL/ComfyToken; tests
 	// inject a fake to exercise the real run orchestration and the view proxy.
 	comfyClientFn func() comfyClient
+	// managerClientFn builds the ComfyUI-Manager client used by custom-node
+	// attribution and the gated node-pack install. Nil (production) builds a
+	// comfy.Client from cfg.ComfyURL/ComfyToken; tests inject a fake so the
+	// install/restart flows run without a real ComfyUI-Manager.
+	managerClientFn func() managerClient
+	// attributeFn is the at-settle custom-node attribution seam. Nil (production)
+	// uses realAttributeMissingNodes (Manager indexes → static index → Comfy
+	// Registry, merged); tests inject a canned attribution so the render states
+	// are exercised without any network.
+	attributeFn func(ctx context.Context, classes []string) nodeAttribution
+	// nodepackMu guards nodepackJob. One node-pack install runs at a time (the same
+	// single-job guard the run/scan/discovery jobs use).
+	nodepackMu sync.Mutex
+	// nodepackJob is the current (or most recent) background node-pack install, or
+	// nil before the first install is triggered.
+	nodepackJob *nodepackJob
+	// nodepackPoll / nodepackSettleWait are the install job's poll cadence and its
+	// minimum grace period before an entirely-idle Manager queue is believed. Set
+	// once in NewServer from the package defaults and never mutated afterwards, so
+	// the install goroutine reads them race-free; tests shorten them on their own
+	// Server instance before starting an install.
+	nodepackPoll   time.Duration
+	nodepackSettleWait time.Duration
 	// captureFn is the output-capture seam invoked after a successful run settles
 	// (off runMu, success path only). Nil (production) uses captureGeneration
 	// (View → atomic write → InsertGeneration, best-effort); tests inject a seam to
@@ -372,6 +395,8 @@ func NewServer(st *store.Store, reader civitai.Reader, sub Subscriber, cfg Confi
 	return &Server{
 		store: st, reader: reader, sub: sub, cfg: cfg, log: log, csrf: newCSRFToken(),
 		cloudPollInterval: defaultCloudPollInterval,
+		nodepackPoll:      nodepackPollInterval,
+		nodepackSettleWait: nodepackMinSettle,
 		popularVal:        map[bool]*civitai.ModelSearchResult{},
 		popularExp:        map[bool]time.Time{},
 		resolveVal:        map[string]*civitai.ModelSearchResult{},
@@ -562,6 +587,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /workflows/run/view", s.handleWorkflowRunView)
 	// Missing-model resolution fragment (read-only GET, loopback-gated, TTL-cached).
 	mux.HandleFunc("GET /workflows/run/resolve-model", s.handleWorkflowResolveModel)
+	// Gated custom-node-pack install + the explicit ComfyUI restart. Both DELEGATE
+	// to ComfyUI-Manager (we never write custom_nodes/), and both carry the same
+	// CSRF + loopback gating as every other endpoint that reaches the local ComfyUI.
+	// The literal /workflows/nodepacks/… paths never collide with /workflows/{id}
+	// (ServeMux prefers the more-specific literal segment).
+	mux.HandleFunc("POST /workflows/{id}/nodepacks/install", s.handleWorkflowNodepackInstall)
+	mux.HandleFunc("GET /workflows/nodepacks/status", s.handleWorkflowNodepackStatus)
+	mux.HandleFunc("POST /workflows/nodepacks/restart", s.handleWorkflowNodepackRestart)
 
 	mux.HandleFunc("GET /workflows/{id}/cloud", s.handleWorkflowCloud)
 	mux.HandleFunc("POST /workflows/{id}/cloud/whatif", s.handleWorkflowCloudWhatif)
