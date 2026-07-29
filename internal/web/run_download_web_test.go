@@ -83,6 +83,32 @@ type runRecorder struct {
 	calls int
 	opts  []runOptions
 	wfIDs []int64
+	// gate, when non-nil, makes the fake run BLOCK until it is closed — see hold().
+	gate chan struct{}
+}
+
+// hold makes the fake run park before it settles, and returns the release func.
+//
+// Why this exists: a run handler publishes the job under runMu, spawns the
+// goroutine, and THEN renders the status fragment from a fresh snapshot. With a
+// fake runner that returns instantly, the goroutine can settle the job before the
+// handler takes that snapshot — so the response legitimately shows the TERMINAL
+// state and any transient phase message ("… is already installed — nothing was
+// downloaded. Starting run…") is gone. That is a race in the TEST, not the
+// product: the real runFn does network I/O (SystemStats, then ObjectInfo) and
+// cannot possibly settle inside that window, so a user always sees the message.
+//
+// Holding the run makes the window deterministic without a sleep and without
+// weakening the assertion. It parks inside runFn, which holds NO lock (runMu is
+// taken only by the job publish before, and by the settle after), so the
+// handler's snapshot is never blocked by it.
+func (rr *runRecorder) hold() (release func()) {
+	rr.mu.Lock()
+	rr.gate = make(chan struct{})
+	g := rr.gate
+	rr.mu.Unlock()
+	var once sync.Once
+	return func() { once.Do(func() { close(g) }) }
 }
 
 func (rr *runRecorder) fn() func(context.Context, *store.Workflow, runUpdater, runOptions) (*runResult, error) {
@@ -91,7 +117,11 @@ func (rr *runRecorder) fn() func(context.Context, *store.Workflow, runUpdater, r
 		rr.calls++
 		rr.opts = append(rr.opts, opts)
 		rr.wfIDs = append(rr.wfIDs, wf.ID)
+		gate := rr.gate
 		rr.mu.Unlock()
+		if gate != nil {
+			<-gate
+		}
 		up.setPhase(runPhaseRunning, "Generating…", 0)
 		return &runResult{PromptID: "p1"}, nil
 	}
@@ -254,6 +284,13 @@ func TestDownloadAndRunExistingFileSkipsDownload(t *testing.T) {
 	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI,
 		`{"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"present.safetensors"}}}`)
 
+	// Park the run before it settles, so the fragment this POST returns is the one a
+	// real user sees: the just-started job carrying its opening message. Without this
+	// the instant fake runner can settle first and the response shows the terminal
+	// state instead — a race in the test, not in the product (see runRecorder.hold).
+	release := rr.hold()
+	defer release()
+
 	rec := post(t, srv, "/workflows/"+wfID+"/download-and-run", url.Values{
 		"filename": {"present.safetensors"}, "type": {"Checkpoint"},
 	}, true)
@@ -265,6 +302,7 @@ func TestDownloadAndRunExistingFileSkipsDownload(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "already installed — nothing was downloaded") {
 		t.Errorf("already-installed fast path must say so:\n%s", rec.Body.String())
 	}
+	release()
 	pollRunUntilDone(t, srv, wfID)
 
 	if dl.calls != 0 {
