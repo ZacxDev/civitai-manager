@@ -1449,3 +1449,44 @@ html {
   background: color-mix(in srgb, var(--civitai-color-primary) 16%, transparent);
   border-color: var(--civitai-color-primary);
 }
+
+/*
+ * ---------------------------------------------------------------------------
+ * .cm-browse — the ONE continuous browse surface
+ * ---------------------------------------------------------------------------
+ * /search, /workflows/discover and the Library "Workflows" tab used to render
+ * their filter CONTROLS in one card and their RESULTS in a separate block below,
+ * so a visible seam sat between the filter and the thing it filters. These rules
+ * make the controls and the results one panel: the head is separated from the
+ * body by a hairline rule inside the same surface, not by a gap between two
+ * cards.
+ *
+ * Theme-aware by construction — every colour is a --civitai-* token, so both
+ * data-theme paths follow the design system with no per-theme branch.
+ */
+.cm-browse-head {
+  border-bottom: 1px solid var(--civitai-color-border);
+  padding-bottom: 1rem;
+  margin-bottom: 1rem;
+}
+/*
+ * The title/blurb column and the optional trailing action share one row and wrap
+ * on a narrow viewport rather than overflowing.
+ */
+.cm-browse-titlerow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+/*
+ * The head's <h1> carries a bottom margin of its own (pageTitle); inside the
+ * title row the rule below already provides the separation, so collapse it.
+ */
+.cm-browse-titlerow h1 {
+  margin-bottom: 0;
+}
+.cm-browse-controls {
+  margin-top: 1rem;
+}

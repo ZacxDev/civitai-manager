@@ -110,34 +110,18 @@ func discoverFeedHeading(sort, period string, f workflowFacets) string {
 // and a chip href can never go stale against the query in the box.
 func workflowDiscoverPage(v workflowDiscoverView, theme string, rail ...railData) g.Node {
 	return page("Discover workflows", theme, v.CSRF, v.Mode, railOf(rail),
-		card(
-			pageTitle("Discover workflows"),
-			h.P(h.Class("text-sm text-slate-400 mb-3"),
-				g.Text("Browse ComfyUI workflows on CivitAI by ecosystem, use case, or keyword. Your search is sent to civitai.com. Importing downloads the workflow zip with your token and stores each workflow locally.")),
-			h.Form(
-				h.Class("flex flex-wrap items-end gap-3"),
-				hx("get", "/workflows/discover"),
-				hx("target", "#discover-results"),
-				hx("swap", "innerHTML"),
-				hx("trigger", "submit"),
-				h.Div(
-					h.Class("min-w-[12rem] flex-1"),
-					textInput("text-input", "discover-q", "Query",
-						h.Type("text"), h.Name("q"), h.Value(v.Query),
-						h.Placeholder("Search workflows by name, tag, …")),
-				),
-				labeledSelect("discover-sort", "sort", "Sort", searchSortOptions, v.Sort),
-				labeledSelect("discover-period", "period", "Period", searchPeriodOptions, v.Period),
+		browseSurface(browseSurfaceSpec{
+			Title: "Discover workflows",
+			Blurb: "Browse ComfyUI workflows on CivitAI by ecosystem, use case, or keyword. Your search is sent to civitai.com. Importing downloads the workflow zip with your token and stores each workflow locally.",
+			Controls: browseFilterForm("/workflows/discover", "discover-results", "discover",
+				v.Query, "Search workflows by name, tag, …", v.Sort, v.Period,
 				// Carry the selected facets through a sort/period/query change, so
 				// changing the sort of a faceted view does not silently clear it.
-				facetHiddenInputs(v.Facets),
-				btnPrimary(g.Text("Search")),
-			),
-		),
-		h.Div(h.ID("discover-results"), workflowDiscoverResults(v)),
-		lightboxOverlay(),
-		modelPageScript(),
-		libraryCarouselScript(),
+				facetHiddenInputs(v.Facets)),
+			ResultsID: "discover-results",
+			Results:   workflowDiscoverResults(v),
+			Foot:      []g.Node{lightboxOverlay(), modelPageScript(), libraryCarouselScript()},
+		}),
 	)
 }
 

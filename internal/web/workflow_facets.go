@@ -464,7 +464,9 @@ func workflowFacetBar(counts workflowFacetCounts, f libraryWorkflowFacets) g.Nod
 				" with no CivitAI link cannot have one. They are listed under Unclassified, never hidden."))
 	}
 
-	return card(
+	// A plain block, NOT a card: the bar now lives in the browse surface's controls
+	// slot, and a card here would paint a second border inside that one surface.
+	return h.Div(
 		h.Class("space-y-2"),
 		sectionTitle("Browse your workflows"),
 		facetChipRow("Ecosystem", ecoChips),

@@ -524,34 +524,20 @@ func progressBar(it store.QueueItem) g.Node {
 // "Popular this month" for the empty-query default feed).
 func searchPage(query string, res *civitai.ModelSearchResult, subs map[int]*store.Subscription, csrf, theme, mode, heading, sortSel, periodSel string, rail ...railData) g.Node {
 	return page("Models", theme, csrf, mode, railOf(rail),
-		card(
-			// The page's single <h1>. searchResults' own heading (the "Popular this
-			// month" label on the result grid below) stays an <h2>.
-			pageTitle("Search models"),
-			h.Form(
-				h.Class("flex flex-wrap items-end gap-3"),
-				hx("get", "/search"),
-				hx("target", "#search-results"),
-				hx("swap", "innerHTML"),
-				hx("trigger", "submit"),
-				h.Div(
-					h.Class("min-w-[12rem] flex-1"),
-					textInput("text-input", "search-q", "Query",
-						h.Type("text"), h.Name("q"), h.Value(query),
-						h.Placeholder("Search by name, tag, …")),
-				),
-				// Sort + period filter dropdowns (GET params threaded into the civitai
-				// query). Their values are the exact civitai query strings.
-				labeledSelect("search-sort", "sort", "Sort", searchSortOptions, sortSel),
-				labeledSelect("search-period", "period", "Period", searchPeriodOptions, periodSel),
-				btnPrimary(g.Text("Search")),
-			),
-		),
-		h.Div(h.ID("search-results"), searchResults(res, subs, mode, csrf, heading)),
-		// Showcase carousels reuse the shared lightbox + interaction scripts.
-		lightboxOverlay(),
-		modelPageScript(),
-		libraryCarouselScript(),
+		// ONE continuous surface: the page's single <h1>, the filter row, then the
+		// results flowing on below a hairline rule — the same browseSurface shape
+		// /workflows/discover and the Library Workflows tab use. searchResults' own
+		// heading (the "Popular this month" label on the grid) stays an <h2>.
+		browseSurface(browseSurfaceSpec{
+			Title: "Search models",
+			Blurb: "Search CivitAI for models to subscribe to. Your query is sent to civitai.com.",
+			Controls: browseFilterForm("/search", "search-results", "search",
+				query, "Search by name, tag, …", sortSel, periodSel),
+			ResultsID: "search-results",
+			Results:   searchResults(res, subs, mode, csrf, heading),
+			// Showcase carousels reuse the shared lightbox + interaction scripts.
+			Foot: []g.Node{lightboxOverlay(), modelPageScript(), libraryCarouselScript()},
+		}),
 	)
 }
 
@@ -563,12 +549,13 @@ func searchResults(res *civitai.ModelSearchResult, subs map[int]*store.Subscript
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("Enter a query to search CivitAI."))
 	}
 	if len(res.Items) == 0 {
-		return card(emptyState(
+		// Inside the browse surface, so the content only (a card here would nest).
+		return emptyState(
 			"No models matched that search",
 			"CivitAI matched nothing for this query with these filters. Try a shorter or "+
 				"more general term, or widen the Sort/Period filters — an empty query "+
 				"shows what is popular this month.",
-			"/search", "Browse popular models"))
+			"/search", "Browse popular models")
 	}
 	images := parseSearchImages(res.Raw)
 	// Per-model newest version info (from the SAME raw already parsed for images) →
