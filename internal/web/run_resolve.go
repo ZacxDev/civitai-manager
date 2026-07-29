@@ -135,16 +135,37 @@ const resolveLimit = "5"
 // resolveMaxCards caps how many model-match cards a resolve fragment renders.
 const resolveMaxCards = 5
 
-// resolveModelFragment renders the resolution result: a heuristic-match note,
-// up to resolveMaxCards model cards (deep-linking to the in-app model page), and
-// an always-present "Search CivitAI for '<query>'" fallback link. Zero matches
-// (or an empty query) renders only the note + fallback link. Every untrusted
-// string (model names via modelCardCore, the query) is escaped.
+// resolveModelFragment renders the resolution result for a FIRST display (the GET
+// panel) — no action has happened, so there is nothing to explain.
 func resolveModelFragment(query string, res *civitai.ModelSearchResult, mode string) g.Node {
-	body := []g.Node{
+	return resolveModelFragmentWithReason(query, res, mode, "")
+}
+
+// resolveModelFragmentWithReason renders the resolution result: an optional
+// leading REASON line, a heuristic-match note, up to resolveMaxCards model cards
+// (deep-linking to the in-app model page), and an always-present "Search CivitAI
+// for '<query>'" fallback link. Zero matches (or an empty query) renders only the
+// note + fallback link. Every untrusted string (model names via modelCardCore, the
+// query) is escaped.
+//
+// reason MUST be non-empty whenever this fragment is the ANSWER TO A CLICK. Without
+// it the response is byte-identical to the panel the user was already looking at,
+// which is indistinguishable from a dead button — exactly the failure the
+// filename-resolving primary CTA used to produce. Reasons are the resolveReason*
+// constants in run_download.go.
+func resolveModelFragmentWithReason(query string, res *civitai.ModelSearchResult, mode, reason string) g.Node {
+	var body []g.Node
+	if strings.TrimSpace(reason) != "" {
+		body = append(body, h.P(
+			g.Attr("role", "status"),
+			h.Class("text-xs font-semibold text-amber-400 mb-2"),
+			g.Text(reason),
+		))
+	}
+	body = append(body,
 		h.P(h.Class("text-xs text-slate-400 mb-2"),
 			g.Text("Matched from the filename — verify this is the model you want.")),
-	}
+	)
 
 	if res != nil && len(res.Items) > 0 {
 		items := res.Items
@@ -166,6 +187,48 @@ func resolveModelFragment(query string, res *civitai.ModelSearchResult, mode str
 
 	body = append(body, resolveFallbackLink(query))
 	return h.Div(g.Group(body))
+}
+
+// substituteOfferFragment renders the "this is not the file you asked for — install it
+// anyway?" confirmation. It is what a first click gets when the chosen model has no
+// file matching the workflow's reference: NOTHING has been downloaded at this point.
+//
+// The confirming button re-posts the SAME target plus confirm_substitute=1, so the
+// second click is unambiguous and the server never has to infer intent. The resolve
+// cards + search link follow, so choosing a different model stays reachable (the click
+// swapped the whole #run-status container, popover included). requested/remote are
+// untrusted strings and are escaped via g.Text / json.Marshal.
+func substituteOfferFragment(wfID int64, csrf, requested, remote, typ string, modelID int, query string, res *civitai.ModelSearchResult, mode string) g.Node {
+	vals := map[string]string{
+		"csrf_token": csrf,
+		"filename":   requested,
+		"type":       typ,
+		// confirm_substitute records THAT a substitution was approved; confirm_file
+		// records WHICH ONE. Without the latter the approval is unbound: the second
+		// click re-resolves, and if CivitAI promoted a new primary version in between,
+		// a different file would install under an approval the user never gave.
+		"confirm_substitute": "1",
+		"confirm_file":       remote,
+	}
+	if modelID > 0 {
+		vals["model_id"] = strconv.Itoa(modelID)
+	}
+	b, _ := json.Marshal(vals)
+	confirm := civButton("filled", "sm", []g.Node{
+		h.Type("button"),
+		hx("post", "/workflows/"+strconv.FormatInt(wfID, 10)+"/download-and-run"),
+		hx("target", "#"+runStatusContainerID),
+		hx("swap", "innerHTML"),
+		hx("disabled-elt", "this"),
+		hx("vals", string(b)),
+	}, g.Text("Install "+remote+" as "+requested))
+
+	return h.Div(
+		h.P(g.Attr("role", "status"), h.Class("text-xs font-semibold text-amber-400 mb-2"),
+			g.Text(substituteOfferText(requested, remote))),
+		h.Div(h.Class("mb-3"), confirm),
+		resolveModelFragment(query, res, mode),
+	)
 }
 
 // resolveFallbackLink is the always-present deep link into the in-app model
@@ -450,9 +513,10 @@ func civitaiMatchSection(mm comfy.MissingModel, res missingResolution, wfID int6
 		images := parseSearchImages(res.Result.Raw)
 		updated := newestVersionInfoByModel(res.Result.Raw)
 		primary := items[0]
-		// Primary: install resolves by FILENAME (no model_id) — the strong signal.
+		// Primary: install THIS card's model (its id rides along) — see
+		// installAndRunButton for why a card never resolves by filename alone.
 		body = append(body, modelCardCore(primary, images[primary.ID], mode, updated[primary.ID],
-			installAndRunButton(mm, primary.ID, false, dlEligible, wfID, csrf)))
+			installAndRunButton(mm, primary.ID, dlEligible, wfID, csrf)))
 		alts := items[1:]
 		if len(alts) > fixAltCap {
 			alts = alts[:fixAltCap]
@@ -462,7 +526,7 @@ func civitaiMatchSection(mm comfy.MissingModel, res missingResolution, wfID int6
 			for _, it := range alts {
 				// Alternate: install passes model_id to disambiguate to THIS model.
 				cards = append(cards, modelCardCore(it, images[it.ID], mode, updated[it.ID],
-					installAndRunButton(mm, it.ID, true, dlEligible, wfID, csrf)))
+					installAndRunButton(mm, it.ID, dlEligible, wfID, csrf)))
 			}
 			body = append(body,
 				h.P(h.Class("text-xs text-slate-400 mt-4 mb-2"), g.Text("Other possible matches:")),
@@ -489,9 +553,18 @@ func civitaiMatchSection(mm comfy.MissingModel, res missingResolution, wfID int6
 // local ComfyUI + a routable type) it POSTs the (CSRF-carrying) download-and-run
 // request and swaps the stable #run-status container. When NOT eligible it renders
 // a DISABLED CTA + a one-line reason + a "View on CivitAI ↗" link (never hidden).
-// passModelID disambiguates an alternate card to a specific model; the primary
-// omits model_id so the endpoint resolves by filename.
-func installAndRunButton(mm comfy.MissingModel, modelID int, passModelID, dlEligible bool, wfID int64, csrf string) g.Node {
+//
+// EVERY card — primary and alternate alike — carries its own model_id. A card is a
+// SPECIFIC, named, pictured model, so the click must install THAT model; there is
+// no reason to make the endpoint re-guess from the filename. The primary used to
+// omit model_id and resolve by filename instead, which dead-ended whenever no
+// CivitAI file's basename equalled the workflow's reference (the common case —
+// checkpoints get renamed across versions): the endpoint resolved nothing, wrote
+// nothing, and answered with the SAME panel, so the most prominent button in the
+// resolver looked like a no-op while the alternates beside it worked. Do not
+// reintroduce a model-id-less card CTA (TestInstallAndRunCTAAlwaysCarriesModelID
+// pins this).
+func installAndRunButton(mm comfy.MissingModel, modelID int, dlEligible bool, wfID int64, csrf string) g.Node {
 	if !(dlEligible && comfyTypeRoutable(mm.CivitaiType)) {
 		return h.Div(h.Class("mt-1 space-y-1"),
 			h.Div(h.Class("flex flex-wrap items-center gap-2"),
@@ -506,7 +579,7 @@ func installAndRunButton(mm comfy.MissingModel, modelID int, passModelID, dlElig
 		)
 	}
 	vals := map[string]string{"csrf_token": csrf, "filename": mm.Filename, "type": mm.CivitaiType}
-	if passModelID && modelID > 0 {
+	if modelID > 0 {
 		vals["model_id"] = strconv.Itoa(modelID)
 	}
 	b, _ := json.Marshal(vals)

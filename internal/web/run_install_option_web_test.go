@@ -202,7 +202,8 @@ func TestInstallOptionAndRunUnconfiguredFallback(t *testing.T) {
 		ran++
 		return &runResult{}, nil
 	}
-	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"4":{"class_type":"X","inputs":{}}}`)
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI,
+		`{"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"foo.safetensors"}}}`)
 
 	rec := post(t, srv, "/workflows/"+wfID+"/install-option-and-run", url.Values{
 		"install_filename": {"foo.safetensors"}, "install_type": {"Checkpoint"},

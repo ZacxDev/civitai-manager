@@ -162,6 +162,14 @@ func (s *Server) comfy() comfyClient {
 // The run derives its context from the server base context (so shutdown cancels it)
 // with the runaway-backstop budget.
 func (s *Server) startRun(wf *store.Workflow, opts runOptions) {
+	s.startRunWithMessage(wf, opts, "Starting run…")
+}
+
+// startRunWithMessage is startRun with the job's OPENING status line supplied, so a
+// caller that reached the run by a notable route (e.g. "the file was already installed,
+// nothing was downloaded") can say so instead of showing an indistinguishable
+// "Starting run…". msg is server-authored text, never reflected request input.
+func (s *Server) startRunWithMessage(wf *store.Workflow, opts runOptions, msg string) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	if s.runJob != nil && s.runJob.running {
@@ -175,7 +183,7 @@ func (s *Server) startRun(wf *store.Workflow, opts runOptions) {
 	ctx, cancel := context.WithTimeout(base, runJobBudget)
 	job := &runJob{
 		running: true, workflowID: wf.ID, phase: runPhasePreparing,
-		message: "Starting run…", startedAt: time.Now(), cancel: cancel,
+		message: msg, startedAt: time.Now(), cancel: cancel,
 	}
 	s.runJob = job
 
