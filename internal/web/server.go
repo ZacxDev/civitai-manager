@@ -165,6 +165,16 @@ type Server struct {
 	// Nil (production) builds a comfy.Client from cfg.ComfyURL/ComfyToken; tests
 	// inject a fake to exercise the real run orchestration and the view proxy.
 	comfyClientFn func() comfyClient
+	// managerClientFn builds the ComfyUI-Manager client used by custom-node
+	// attribution and the gated node-pack install. Nil (production) builds a
+	// comfy.Client from cfg.ComfyURL/ComfyToken; tests inject a fake so the
+	// install/restart flows run without a real ComfyUI-Manager.
+	managerClientFn func() managerClient
+	// attributeFn is the at-settle custom-node attribution seam. Nil (production)
+	// uses realAttributeMissingNodes (Manager indexes → static index → Comfy
+	// Registry, merged); tests inject a canned attribution so the render states
+	// are exercised without any network.
+	attributeFn func(ctx context.Context, classes []string) nodeAttribution
 	// captureFn is the output-capture seam invoked after a successful run settles
 	// (off runMu, success path only). Nil (production) uses captureGeneration
 	// (View → atomic write → InsertGeneration, best-effort); tests inject a seam to

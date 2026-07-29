@@ -88,7 +88,11 @@ type runJob struct {
 	// basename. Both are read-only after settle.
 	missingResolved map[string]missingResolution
 	libMeta         map[string]store.LocalModelMeta
-	warnings        []string
+	// nodeAttr is the at-settle custom-node attribution for preflight.MissingNodes
+	// (which pack provides each missing class_type, and whether it can be installed).
+	// Computed ONCE at settle — never per poll — and read-only afterwards.
+	nodeAttr nodeAttribution
+	warnings []string
 	// aborted marks a run that never submitted because the UI→API conversion yielded
 	// zero runnable nodes (an all-disabled template / no installed node types). It
 	// gets a distinct "nothing to run" report rather than the generic failure alert.
@@ -119,8 +123,12 @@ type runResult struct {
 	// settle so the terminal popover renders inline without any per-poll API call.
 	MissingResolved map[string]missingResolution
 	LibMeta         map[string]store.LocalModelMeta
-	Warnings        []string
-	PromptID        string
+	// NodeAttr is the custom-node attribution for Preflight.MissingNodes, resolved
+	// at settle alongside MissingResolved so the failure panel is actionable
+	// without any per-poll network call.
+	NodeAttr nodeAttribution
+	Warnings []string
+	PromptID string
 }
 
 // runOptions carries per-run overrides that must NOT be persisted to the stored
@@ -305,6 +313,7 @@ func (s *Server) applyRunOutcomeLocked(job *runJob, res *runResult, err error) {
 	case res != nil && res.Preflight != nil:
 		job.phase, job.preflight, job.missingModels = runPhaseFailed, res.Preflight, res.MissingModels
 		job.missingResolved, job.libMeta = res.MissingResolved, res.LibMeta
+		job.nodeAttr = res.NodeAttr
 		job.message = preflightMessage(res.Preflight)
 	case res != nil && len(res.Warnings) > 0:
 		job.phase, job.warnings = runPhaseFailed, res.Warnings
@@ -419,6 +428,16 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater,
 		var missing []comfy.MissingModel
 		var resolved map[string]missingResolution
 		var libMeta map[string]store.LocalModelMeta
+		// Attribute the missing custom-node classes to the packs that provide them,
+		// HERE at settle (bounded), so the terminal panel can offer a gated install
+		// and the ~1s run-status poll never reaches ComfyUI-Manager or the Registry.
+		// Attribution runs on the CONVERTED api graph's missing classes (the
+		// preflight report), never on the raw UI graph — subgraph UUIDs and rgthree
+		// UI-only nodes have already been dropped by then.
+		var nodeAttr nodeAttribution
+		if len(report.MissingNodes) > 0 {
+			nodeAttr = s.attributeMissingNodes(ctx, report.MissingNodes)
+		}
 		if len(report.MissingModels) > 0 {
 			missing = comfy.AnalyzeMissingModels(apiGraph, info, report.MissingModels, wf.BaseModel)
 			// Resolve each missing model to CivitAI + enrich substitute candidates ONCE,
@@ -428,7 +447,7 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater,
 		}
 		return &runResult{
 			Preflight: &report, MissingModels: missing,
-			MissingResolved: resolved, LibMeta: libMeta,
+			MissingResolved: resolved, LibMeta: libMeta, NodeAttr: nodeAttr,
 		}, nil
 	}
 
@@ -513,6 +532,7 @@ type runSnapshot struct {
 	MissingModels    []comfy.MissingModel
 	MissingResolved  map[string]missingResolution
 	LibMeta          map[string]store.LocalModelMeta
+	NodeAttr         nodeAttribution
 	Warnings         []string
 	Aborted          bool
 	UIFormat         bool
@@ -535,7 +555,7 @@ func (s *Server) runJobState() runSnapshot {
 		Started: true, Running: j.running, WorkflowID: j.workflowID, Seq: j.seq,
 		PromptID: j.promptID, Phase: j.phase, Message: j.message, QueuePos: j.queuePos,
 		Images: imgs, Preflight: j.preflight, MissingModels: j.missingModels,
-		MissingResolved: j.missingResolved, LibMeta: j.libMeta,
+		MissingResolved: j.missingResolved, LibMeta: j.libMeta, NodeAttr: j.nodeAttr,
 		Warnings: warns, Aborted: j.aborted, UIFormat: j.uiFormat, Stopped: j.stopped,
 	}
 }
