@@ -30,6 +30,11 @@ jobs:
             exit 1
           fi
 
+      # docs/install.sh is fed to `sh` off the internet, so it is linted as
+      # POSIX sh (not bash) on every change. shellcheck ships on the runner.
+      - name: shellcheck (docs/install.sh)
+        run: shellcheck --shell=sh docs/install.sh
+
       - name: go build
         run: go build ./...
 
