@@ -1081,7 +1081,57 @@ test-covered renderer on the run page. It is deliberately structured so
 
 ---
 
-## Open questions / needs the user's decision
+## ✅ RESOLVED — all seven answered 2026-07-29. These are now constraints.
+
+**Release split (raised in review, not in the list below): SHIP IN TWO RELEASES.**
+- **R1 — presets:** migration 0014, tabs, Fork, reconciliation, mode capture.
+  Mode capture alone closes the `SESSION-HANDOFF.md:71` deferred gap.
+- **R2 — batch:** Queue ×N, the `runJob` extension, and the
+  `applyRunOutcomeLocked` split.
+
+Rationale: R1 and R2 are independent features sharing one migration, and the
+single riskiest edit in the whole design (splitting `applyRunOutcomeLocked`, which
+can open the singleton and let two runs submit concurrently — a nondeterministic,
+load-dependent failure) sits in R2. Landing it in the same release as brand-new
+reconciliation logic means a bug neither change would cause alone. Splitting also
+halves each `/audit-pr` surface. **R1 must not implement any batch machinery.**
+
+1. **Mode ownership → (c).** The page-level `#run-modes` picker is the source of
+   truth; a preset's stored mode only **pre-selects** it on tab open. The UI must
+   make it visible that the picker is authoritative. Option (b) (moving the mode
+   `<select>` inside the preset form) stays a possible follow-up — deliberately NOT
+   in R1, because `runModesInclude` is depended on by every run control and two
+   high-blast changes to the run path in one release is the failure mode being
+   avoided by the R1/R2 split.
+2. **Presets are UI-format only.** `DetectRunInputs` returns nothing for api graphs,
+   so tabs / Fork / Queue ×N render only for `wf.Format == store.WorkflowFormatUI`.
+   An api workflow keeps today's single Run button, unchanged.
+3. **Recovery paths stay single-run.** `startDownloadAndRun`, substitute, and
+   option-fix each carry their own confirm semantics; batching them would muddy
+   those and nobody asks to run a recovery N times.
+4. **Caps: `maxBatchCount = 25` (as designed), `maxPresetsPerWorkflow = 12`, quick
+   picks 2/4/8/16.** 25 was chosen over a lower cap deliberately: the ceiling is
+   *provable* (25 × the 30-min `runJobBudget` = 12.5 h) rather than arbitrary.
+   ⚠ Consequence to keep visible in the UI: a batch holds the run singleton for its
+   whole duration and multiplies `enforceOutputsCap` eviction pressure on older
+   generations N-fold.
+5. **Server restart mid-batch loses the remainder — accepted.** No `run_batches`
+   row. A durable row can be left permanently "running" after a crash — a row that
+   lies — and this repo already paid for that failure shape with the comfyext
+   zombie-ping. Completed items are captured; the UI states the loss plainly.
+6. **"Open as preset" on the generation page: worth doing, but NOT in R1.** It is
+   the strongest argument for the feature (today a drifted "Re-run this" 409s into a
+   dead end), and it is also the surface most likely to expose reconciliation bugs.
+   Land it once reconciliation has real mileage.
+7. **Save requires an EXPLICIT "Adopt current graph" confirmation while the drift
+   banner is showing.** Save must not silently re-stamp `graph_hash`. This is the
+   same shape as the repo's `install-and-run must NEVER substitute a file silently —
+   offered, not performed` invariant: a user clicking Save means "save my text", not
+   "I certify this whole param set against a graph I did not inspect".
+
+---
+
+## Open questions (original — answers recorded above)
 
 1. **🔴 Mode ownership — the one thing this design cannot settle from the code.**
    Decision 4 says a tab holds the *full* run-parameter set, which includes the
