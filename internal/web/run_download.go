@@ -813,6 +813,7 @@ func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opt
 	job := &runJob{
 		running: true, workflowID: wf.ID, phase: runPhaseDownloading,
 		message: "Preparing download of " + pd.progressName() + "…", startedAt: time.Now(), cancel: cancel,
+		uiFormat: wf.Format == store.WorkflowFormatUI,
 	}
 	s.runJob = job
 

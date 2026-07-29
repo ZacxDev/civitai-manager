@@ -284,7 +284,10 @@ func (s *Server) handleWorkflowRunSubstitute(w http.ResponseWriter, r *http.Requ
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	s.startRun(wf, runOptions{Substitute: map[string]string{filename: substitute}})
+	s.startRun(wf, runOptions{
+		Substitute:    map[string]string{filename: substitute},
+		ModeSelection: parseModeChoices(r.Form, wf),
+	})
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 }
 
@@ -320,7 +323,10 @@ func (s *Server) handleWorkflowRunWithOptions(w http.ResponseWriter, r *http.Req
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	s.startRun(wf, runOptions{OptionFixes: parseOptionFixes(r.Form)})
+	s.startRun(wf, runOptions{
+		OptionFixes:   parseOptionFixes(r.Form),
+		ModeSelection: parseModeChoices(r.Form, wf),
+	})
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 }
 
