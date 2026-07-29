@@ -64,9 +64,10 @@ if you prefer that origin.
 
 ## Homebrew
 
-> **Not available yet.** The `ZacxDev/homebrew-tap` repository does not exist
-> yet, so the commands below will fail until it does. Everything on the
-> release side is wired up and waiting for it. Watch the
+> **From v0.1.76 on.** [`ZacxDev/homebrew-tap`](https://github.com/ZacxDev/homebrew-tap)
+> is live and the release workflow publishes the cask to it, but the cask file
+> is written by the release itself — so the commands below only work once a
+> release from **v0.1.76** onwards has been cut. Check the
 > [releases page](https://github.com/ZacxDev/civitai-manager/releases).
 
 civitai-manager is distributed as a **cask** from a personal tap. Casks cover
@@ -166,7 +167,7 @@ ARCH=amd64   # or arm64
 curl -fsSLO "https://github.com/ZacxDev/civitai-manager/releases/download/v${VERSION}/civitai-manager_${VERSION}_linux_${ARCH}.deb"
 sudo dpkg -i "civitai-manager_${VERSION}_linux_${ARCH}.deb"
 
-# Fedora / RHEL / openSUSE  (rpm arch names: x86_64, aarch64)
+# Fedora / RHEL / openSUSE
 curl -fsSLO "https://github.com/ZacxDev/civitai-manager/releases/download/v${VERSION}/civitai-manager_${VERSION}_linux_${ARCH}.rpm"
 sudo rpm -i "civitai-manager_${VERSION}_linux_${ARCH}.rpm"
 ```

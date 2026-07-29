@@ -314,10 +314,12 @@ Releases ship for **linux, macOS, and Windows** on **amd64 and arm64**, with a
 
 > The install script, the packages, the cask and the attestations below all
 > arrive with **v0.1.76**; releases up to v0.1.75 have tarballs and
-> `checksums.txt` only. The Homebrew tap repo does not exist yet, so `brew
-> install` will not work until it does — and since **Homebrew 6.0.0** a
-> non-official tap must be explicitly trusted, which the fully qualified name
-> above does for this cask alone.
+> `checksums.txt` only. [`ZacxDev/homebrew-tap`](https://github.com/ZacxDev/homebrew-tap)
+> exists and the release workflow publishes to it, but the cask file itself only
+> lands there with the first release from v0.1.76 on — until that release is
+> cut, `brew install` has nothing to find. Since **Homebrew 6.0.0** a
+> non-official tap must also be explicitly trusted, which the fully qualified
+> name above does for this cask alone.
 
 **Verifying a download.** Beyond `checksums.txt`, every artifact from v0.1.76 on
 carries a Sigstore-signed GitHub build attestation:

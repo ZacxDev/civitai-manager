@@ -96,31 +96,34 @@ amd64/arm64 (`CGO_ENABLED=0`) and publishes a GitHub Release containing:
 The version, commit, and build date are injected into the binary via ldflags and
 are visible with `civitai-manager --version`.
 
-### Homebrew — what is still missing
+### Homebrew — how the cask is published
 
 `.goreleaser.yaml` has a working `homebrew_casks:` block (not the deprecated
 `brews:`, which GoReleaser removes in v3), configured for **pull-request**
 delivery so a compromised release workflow can only propose a tap change rather
-than force-push one. Publishing is **off** until two things exist:
+than force-push one.
 
-1. A public repo **`ZacxDev/homebrew-tap`** with a `Casks/` directory and a
-   `main` branch:
-   ```sh
-   gh repo create ZacxDev/homebrew-tap --public \
-     --description "Homebrew tap for ZacxDev tools"
-   ```
-2. A repository secret **`HOMEBREW_TAP_GITHUB_TOKEN`** on *this* repo — a
-   fine-grained PAT scoped to `ZacxDev/homebrew-tap` only, with **Contents:
-   read/write** and **Pull requests: read/write**:
-   ```sh
-   gh secret set HOMEBREW_TAP_GITHUB_TOKEN --repo ZacxDev/civitai-manager
-   ```
+Both halves are now in place: **`ZacxDev/homebrew-tap`** is public with a `main`
+branch and a `Casks/` directory, and the **`HOMEBREW_TAP_GITHUB_TOKEN`** secret
+(a fine-grained PAT scoped to that tap only, **Contents: read/write** +
+**Pull requests: read/write**) is set on this repo. A tagged release therefore
+opens a PR against the tap with the regenerated cask. homebrew-core is not an
+option: its policy requires 75 stars (225 to self-submit).
 
-Until then `homebrew_casks[0].skip_upload` evaluates to `true`, GoReleaser still
-writes `dist/homebrew/Casks/civitai-manager.rb` for inspection, and the release
-succeeds untouched. Once the secret exists it flips to `false` on its own — no
-config change. homebrew-core is not an option: its policy requires 75 stars (225
-to self-submit).
+**Do not delete `homebrew_casks[0].skip_upload`.** It is not leftover
+scaffolding from before the tap existed — it is the reason a release does not
+die on the secret. `skip_upload` evaluates to `true` whenever
+`HOMEBREW_TAP_GITHUB_TOKEN` is empty, and GoReleaser resolves it *before* it
+expands `repository.token`. Without it, any run where the secret is absent,
+revoked, unavailable (a fork, a re-run from a PR context) or simply expired
+fails template expansion and takes the whole release down — and by that point
+the GitHub Release has already been published, because GoReleaser runs
+`release.Pipe{}` before `cask.Pipe{}`. With the guard, the cask is skipped, the
+`dist/homebrew/Casks/civitai-manager.rb` artifact is still written for
+inspection, and the release stands.
+
+If a release lands without a tap PR, check the secret before assuming a bug —
+that is exactly what the guard looks like when it fires.
 
 Notes:
 - Use [conventional commit](https://www.conventionalcommits.org/) prefixes

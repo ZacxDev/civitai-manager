@@ -57,14 +57,25 @@ something GOPRIVATE will paper over.
   add a new top-level directory the build needs, add it to the fileset.
 - **`brews:` is dead** — hard-deprecated in GoReleaser v2.16, removed in v3.
   `homebrew_casks:` is the supported spelling and covers Linux too.
-- **The Homebrew cask publish is guarded by `skip_upload`** keyed off
-  `HOMEBREW_TAP_GITHUB_TOKEN`, because neither `ZacxDev/homebrew-tap` nor the
-  secret exists yet. GoReleaser resolves `skip_upload` **before**
-  `repository.token`, so the missing secret cannot fail a release. Do not "clean
-  up" that guard until the tap exists.
+- **The Homebrew cask publish is LIVE.** `ZacxDev/homebrew-tap` is public with
+  `main` + `Casks/`, and `HOMEBREW_TAP_GITHUB_TOKEN` is set on this repo
+  (verified 2026-07-28), so a tagged release opens a cask PR against the tap.
+  The `skip_upload` guard **stays** — it is a permanent fail-soft, not
+  scaffolding for the pre-tap era. GoReleaser resolves `skip_upload` **before**
+  `repository.token`, so an expired/revoked/absent secret skips the cask instead
+  of failing the release. That matters because GoReleaser publishes the GitHub
+  Release (`release.Pipe{}`) **before** the cask (`cask.Pipe{}`) — a late cask
+  failure aborts the job with the artifacts already public. For the same reason
+  `release.yml`'s attestation step carries
+  `if: !cancelled() && hashFiles('dist/checksums.txt') != ''`: unguarded, a cask
+  failure silently costs every artifact its provenance attestation.
 - **`docs/install.sh` is piped into strangers' shells.** POSIX sh, shellcheck-
   gated in CI, checksum verification is mandatory, no surprise `sudo`, https
   only. See `docs/README.md` for the rules before touching it.
+  **busybox is a first-class target:** Alpine/musl ships busybox `wget` and NO
+  curl, and busybox `wget` does not implement GNU's `--https-only` — it prints
+  usage and fails, which surfaced as a bogus `download failed: <url>`. Probe for
+  a wget flag before using it; do not assume GNU wget.
 
 **Deployed ≠ verified.** A green Release job is not proof the binary runs. To
 verify a release: download the released tarball for your platform, check it

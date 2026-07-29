@@ -101,19 +101,22 @@ homebrew_casks:
     description: Subscribe to CivitAI models/creators and auto-download new versions
     license: Apache-2.0
 
-    # PUBLISHING IS OFF UNTIL THE OWNER OPTS IN.
+    # KEEP THIS. It is a permanent fail-soft, not scaffolding.
     #
-    # Neither ZacxDev/homebrew-tap nor the HOMEBREW_TAP_GITHUB_TOKEN secret
-    # exists yet. Without this guard, a tagged release would reach the cask
-    # publish step, fail to expand `.Env.HOMEBREW_TAP_GITHUB_TOKEN`, and take
-    # the whole release down with it. With it, GoReleaser still WRITES
-    # dist/homebrew/Casks/civitai-manager.rb (so the artifact is reviewable)
-    # and simply skips the upload.
+    # ZacxDev/homebrew-tap exists (public, `main`, `Casks/`) and the
+    # HOMEBREW_TAP_GITHUB_TOKEN secret is set, so this normally evaluates to
+    # `false` and the cask is published. Do not "clean it up" on the grounds
+    # that the tap now exists — that is not what it guards.
     #
-    # GoReleaser resolves `skip_upload` before it touches `repository.token`,
-    # so the token template below is never evaluated while the secret is
-    # absent. Once the secret exists, this flips to false on its own — no
-    # config change needed.
+    # What it guards: GoReleaser resolves `skip_upload` BEFORE it expands
+    # `repository.token`. Any run where the secret is missing — expired or
+    # revoked PAT, a fork, a manual `goreleaser release` from a laptop — would
+    # otherwise fail to expand `.Env.HOMEBREW_TAP_GITHUB_TOKEN` and take the
+    # whole release down. And it would do so LATE: GoReleaser publishes the
+    # GitHub Release (`release.Pipe{}`) before it runs the cask
+    # (`cask.Pipe{}`), so the artifacts are already public by then. With the
+    # guard, the cask is skipped, dist/homebrew/Casks/civitai-manager.rb is
+    # still written for inspection, and the release stands.
     skip_upload: '{{ if eq (envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "") "" }}true{{ else }}false{{ end }}'
 
     repository:
