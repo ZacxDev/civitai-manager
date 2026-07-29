@@ -200,10 +200,15 @@ func resolveModelFragmentWithReason(query string, res *civitai.ModelSearchResult
 // untrusted strings and are escaped via g.Text / json.Marshal.
 func substituteOfferFragment(wfID int64, csrf, requested, remote, typ string, modelID int, query string, res *civitai.ModelSearchResult, mode string) g.Node {
 	vals := map[string]string{
-		"csrf_token":         csrf,
-		"filename":           requested,
-		"type":               typ,
+		"csrf_token": csrf,
+		"filename":   requested,
+		"type":       typ,
+		// confirm_substitute records THAT a substitution was approved; confirm_file
+		// records WHICH ONE. Without the latter the approval is unbound: the second
+		// click re-resolves, and if CivitAI promoted a new primary version in between,
+		// a different file would install under an approval the user never gave.
 		"confirm_substitute": "1",
+		"confirm_file":       remote,
 	}
 	if modelID > 0 {
 		vals["model_id"] = strconv.Itoa(modelID)

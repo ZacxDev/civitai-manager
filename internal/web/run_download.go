@@ -154,15 +154,15 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 		return
 	}
 	// A user-confirmed substitution: install a DIFFERENTLY-NAMED remote file under the
-	// workflow's reference name. Only ever set by the explicit confirm button.
+	// workflow's reference name. Only ever set by the explicit confirm button, which
+	// also echoes WHICH remote file was approved.
 	confirmed := r.FormValue("confirm_substitute") == "1"
+	approvedFile := strings.TrimSpace(r.FormValue("confirm_file"))
 
-	// Not eligible → link-only fallback (never attempt a write/download).
-	if !s.comfyDownloadEligible() {
-		s.renderResolveFallback(w, r, filename, typ, resolveReasonNotEligible)
-		return
-	}
-
+	// Load + bind the request to THIS workflow FIRST: `filename` is free-form and now
+	// steers a real download, so it must be a file this workflow actually references.
+	// This precedes the eligibility check so the endpoint's contract is uniform — an
+	// unreferenced target is refused whether or not this server can install anything.
 	wf, err := s.store.GetWorkflow(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
@@ -172,10 +172,14 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	// Bind the request to THIS workflow: `filename` is free-form and now steers a real
-	// download, so it must be a file this workflow actually references.
 	if !workflowReferencesFile(wf, filename) {
 		http.Error(w, "filename is not referenced by this workflow", http.StatusBadRequest)
+		return
+	}
+
+	// Not eligible → link-only fallback (never attempt a write/download).
+	if !s.comfyDownloadEligible() {
+		s.renderResolveFallback(w, r, filename, typ, resolveReasonNotEligible)
 		return
 	}
 
@@ -201,8 +205,11 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 		// exact filename match — one click, straight to the download below.
 	case resolveInstallSubstitute:
 		// The resolved file is NOT the one the workflow asked for. OFFER it; never
-		// perform it on this click.
-		if !confirmed {
+		// perform it on this click. A confirmation counts ONLY for the exact file it
+		// approved: if re-resolution now yields something else (CivitAI promoted a new
+		// primary version between the two clicks), re-offer instead of installing a
+		// file the user never saw.
+		if !confirmed || !strings.EqualFold(approvedFile, plan.RemoteFileName) {
 			s.renderSubstituteOffer(w, r, id, typ, chosenModel, plan)
 			return
 		}
@@ -256,7 +263,6 @@ func (s *Server) handleWorkflowInstallOptionAndRun(w http.ResponseWriter, r *htt
 		return
 	}
 	typ := civitaiTypeParam(r.FormValue("install_type"))
-	installTarget := filename
 
 	// Fixes for the OTHER groups (the picks). Drop any fix keyed on the install
 	// target's own value — installing the exact file makes the original value valid,
@@ -269,12 +275,9 @@ func (s *Server) handleWorkflowInstallOptionAndRun(w http.ResponseWriter, r *htt
 	}
 	opts := runOptions{OptionFixes: fixes}
 
-	// Not eligible → link-only fallback (never attempt a write/download).
-	if !s.comfyDownloadEligible() {
-		s.renderResolveFallback(w, r, filename, typ, resolveReasonNotEligible)
-		return
-	}
-
+	// Load + bind BEFORE the eligibility check, so an unreferenced target is refused
+	// identically whether or not this server can install (see
+	// handleWorkflowDownloadAndRun).
 	wf, err := s.store.GetWorkflow(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
@@ -284,9 +287,14 @@ func (s *Server) handleWorkflowInstallOptionAndRun(w http.ResponseWriter, r *htt
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	// Bind the request to THIS workflow (see handleWorkflowDownloadAndRun).
-	if !workflowReferencesFile(wf, installTarget) {
+	if !workflowReferencesFile(wf, filename) {
 		http.Error(w, "install_filename is not referenced by this workflow", http.StatusBadRequest)
+		return
+	}
+
+	// Not eligible → link-only fallback (never attempt a write/download).
+	if !s.comfyDownloadEligible() {
+		s.renderResolveFallback(w, r, filename, typ, resolveReasonNotEligible)
 		return
 	}
 
@@ -500,6 +508,29 @@ func planToPending(plan installPlan, maxBytes int64) pendingDownload {
 	}
 }
 
+// typeDestinationMismatch reports whether a CivitAI model's own type would route to a
+// DIFFERENT ComfyUI folder than the requested type does — the only thing that actually
+// matters, since the requested type is what picks the destination subdir.
+//
+// It compares mapped destinations rather than type strings so the several CivitAI
+// types that share one folder (LORA / LoCon / LyCORIS → loras/) are treated as
+// equivalent. It concedes rather than refuses whenever it cannot tell: an empty type
+// on either side (the API omits it on some shapes) or a type comfy cannot map. Those
+// concessions are safe — an unmappable REQUESTED type never reaches here anyway,
+// because resolveInstallPlan only enters the CivitAI branch for a routable type.
+func typeDestinationMismatch(modelType, requestedType string) (bool, string, string) {
+	got, wantTyp := strings.TrimSpace(modelType), strings.TrimSpace(requestedType)
+	if got == "" || wantTyp == "" {
+		return false, got, wantTyp
+	}
+	gotSub, gotOK := comfy.TypeSubdir(got)
+	wantSub, wantOK := comfy.TypeSubdir(wantTyp)
+	if !gotOK || !wantOK {
+		return false, got, wantTyp
+	}
+	return gotSub != wantSub, got, wantTyp
+}
+
 // parseModelIDParam reads the optional model_id form value. Absent/empty is a valid
 // "no chosen model" (0, true); a non-numeric or negative value is REFUSED (0, false)
 // rather than silently collapsing to "absent" — those two now take different code
@@ -607,13 +638,17 @@ func (s *Server) resolveDownloadSource(parent context.Context, filename, typ str
 			return resolvedDownload{}, resolveInstallNoFile
 		}
 		// Cross-check the model's TYPE against the destination we are about to write
-		// into. The destination subdir comes from the caller-supplied `type` form
-		// field; without this, a POST pairing type=Checkpoint with a LORA's model_id
-		// writes a LoRA into checkpoints/. An absent type on either side is not
-		// treated as a mismatch (the API omits it on some shapes) — only a real,
-		// contradicting value refuses.
-		if got, wantTyp := strings.TrimSpace(body.Type), strings.TrimSpace(typ); got != "" && wantTyp != "" && !strings.EqualFold(got, wantTyp) {
-			s.log.Warn("download-and-run: model type mismatch",
+		// into: without it, a POST pairing type=Checkpoint with a LORA's model_id
+		// writes a LoRA into checkpoints/.
+		//
+		// The invariant is the DESTINATION, not the type string. comfy.TypeSubdir
+		// deliberately maps LORA, LoCon and LyCORIS all to loras/, and the resolver
+		// routinely pairs them: a workflow's lora_name input makes InferCivitaiType
+		// return "LORA", so a LoCon model's card posts type=LORA against a LoCon
+		// model — a raw string compare hard-refuses a card that works, while nothing
+		// could have landed in the wrong folder.
+		if mismatch, got, wantTyp := typeDestinationMismatch(body.Type, typ); mismatch {
+			s.log.Warn("download-and-run: model type routes to a different folder",
 				"model", chosenModel, "model_type", got, "requested_type", wantTyp)
 			return resolvedDownload{}, resolveInstallWrongType
 		}

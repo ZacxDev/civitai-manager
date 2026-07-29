@@ -294,7 +294,8 @@ func TestDownloadAndRunUnconfiguredFallback(t *testing.T) {
 		ranCalls++
 		return &runResult{}, nil
 	}
-	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"4":{"class_type":"X","inputs":{}}}`)
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI,
+		`{"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"foo.safetensors"}}}`)
 
 	rec := post(t, srv, "/workflows/"+wfID+"/download-and-run", url.Values{
 		"filename": {"foo.safetensors"}, "type": {"Checkpoint"},
@@ -322,7 +323,8 @@ func TestDownloadAndRunRemoteComfyFallback(t *testing.T) {
 	srv, dl, _ := newDownloadServer(t, reader, dlURL, []byte("D"))
 	srv.cfg.ComfyURL = "http://192.168.1.50:8188" // remote ComfyUI
 	srv.runFn = (&runRecorder{}).fn()
-	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"4":{"class_type":"X","inputs":{}}}`)
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI,
+		`{"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"foo.safetensors"}}}`)
 
 	rec := post(t, srv, "/workflows/"+wfID+"/download-and-run", url.Values{
 		"filename": {"foo.safetensors"}, "type": {"Checkpoint"},

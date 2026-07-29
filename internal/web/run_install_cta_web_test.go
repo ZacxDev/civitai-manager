@@ -497,6 +497,193 @@ func TestInstallRefusesTypeMismatch(t *testing.T) {
 	}
 }
 
+// TestInstallAllowsSameFolderTypes: LORA, LoCon and LyCORIS all live in loras/, and
+// the resolver routinely pairs them — a workflow's lora_name input makes
+// InferCivitaiType return "LORA", so a LoCon model's card posts type=LORA. Comparing
+// raw type STRINGS hard-refuses that working card; the invariant is the destination
+// FOLDER, so these must install.
+func TestInstallAllowsSameFolderTypes(t *testing.T) {
+	const loraFile = "someStyle_v1.safetensors"
+	const loraGraph = `{"4":{"class_type":"LoraLoader","inputs":{"lora_name":"` + loraFile + `"}}}`
+
+	for _, modelType := range []string{"LoCon", "LyCORIS", "LORA", "lora"} {
+		t.Run(modelType, func(t *testing.T) {
+			reader := &jugReader{
+				searchRaw: jugSearchRaw(t),
+				details: map[string][]byte{"1": []byte(
+					`{"id":1,"type":"` + modelType + `","modelVersions":[{"id":10,"files":[{"name":"` + loraFile +
+						`","downloadUrl":"` + jugPrimaryURL + `","sizeKB":8,"primary":true}]}]}`)},
+			}
+			srv, dl, comfyModels := newJugFixServer(t, reader, []byte("LORAWEIGHTS"))
+			seam := &downloadSeam{}
+			seam.install(srv)
+			rr := &runRecorder{}
+			srv.runFn = rr.fn()
+			wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, loraGraph)
+
+			rec := post(t, srv, "/workflows/"+wfID+"/download-and-run", url.Values{
+				"filename": {loraFile}, "type": {"LORA"}, "model_id": {"1"},
+			}, true)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("download-and-run = %d", rec.Code)
+			}
+			if strings.Contains(rec.Body.String(), resolveReasonWrongType) {
+				t.Fatalf("%s routes to loras/ exactly like LORA — it must NOT be refused:\n%s",
+					modelType, rec.Body.String())
+			}
+			pollRunUntilDone(t, srv, wfID)
+
+			if seam.count() != 1 || dl.calls != 1 {
+				t.Fatalf("%s should install (seam=%d dl=%d)", modelType, seam.count(), dl.calls)
+			}
+			if got, err := os.ReadFile(filepath.Join(comfyModels, "loras", loraFile)); err != nil || string(got) != "LORAWEIGHTS" {
+				t.Fatalf("%s not installed into loras/ (got %q, err %v)", modelType, got, err)
+			}
+		})
+	}
+}
+
+// TestTypeDestinationMismatch pins the predicate directly: same folder → no mismatch,
+// different folder → mismatch, and every "cannot tell" case concedes.
+func TestTypeDestinationMismatch(t *testing.T) {
+	cases := []struct {
+		modelType, requested string
+		want                 bool
+	}{
+		{"LoCon", "LORA", false},   // both → loras/
+		{"LyCORIS", "LORA", false}, // both → loras/
+		{"LORA", "LoCon", false},
+		{"lora", "LORA", false}, // case-insensitive
+		{"Checkpoint", "Checkpoint", false},
+		{"LORA", "Checkpoint", true}, // loras/ vs checkpoints/ — the real hazard
+		{"Checkpoint", "VAE", true},
+		{"TextualInversion", "LORA", true},
+		{"", "Checkpoint", false},          // absent model type → concede
+		{"Checkpoint", "", false},          // absent requested type → concede
+		{"Workflows", "Checkpoint", false}, // unmappable model type → concede
+	}
+	for _, c := range cases {
+		got, _, _ := typeDestinationMismatch(c.modelType, c.requested)
+		if got != c.want {
+			t.Errorf("typeDestinationMismatch(%q, %q) = %v, want %v", c.modelType, c.requested, got, c.want)
+		}
+	}
+}
+
+// shiftingReader resolves model 1 to fileA on the FIRST GetModel and fileB after —
+// modelling CivitAI promoting a new primary version between the offer and the confirm.
+type shiftingReader struct {
+	stubReader
+	searchRaw    []byte
+	fileA, fileB string
+	mu           sync.Mutex
+	calls        int
+}
+
+func (r *shiftingReader) SearchModels(context.Context, url.Values) (*civitai.ModelSearchResult, error) {
+	return &civitai.ModelSearchResult{
+		Items: []civitai.ModelListItem{{ID: 1, Name: "Juggernaut XL", Type: "Checkpoint"}},
+		Raw:   r.searchRaw,
+	}, nil
+}
+
+func (r *shiftingReader) GetModel(context.Context, string) (*civitai.ModelDetail, []byte, error) {
+	r.mu.Lock()
+	r.calls++
+	name := r.fileA
+	if r.calls > 1 {
+		name = r.fileB
+	}
+	r.mu.Unlock()
+	return &civitai.ModelDetail{ID: 1, Name: "Juggernaut XL"}, []byte(
+		`{"id":1,"type":"Checkpoint","modelVersions":[{"id":10,"files":[{"name":"` + name +
+			`","downloadUrl":"` + jugPrimaryURL + `","sizeKB":8,"primary":true}]}]}`), nil
+}
+
+// TestConfirmationBindsToTheApprovedFile: the approval is for ONE specific file. If
+// re-resolution yields a different one between the two clicks, the confirmed click
+// must re-offer — never install a file the user never saw.
+func TestConfirmationBindsToTheApprovedFile(t *testing.T) {
+	const promoted = "juggernautXL_ragnarokV2.safetensors"
+	reader := &shiftingReader{searchRaw: jugSearchRaw(t), fileA: jugRagnarok, fileB: promoted}
+	srv, dl, comfyModels := newJugFixServer(t, reader, []byte("SHIFTED"))
+	seam := &downloadSeam{}
+	seam.install(srv)
+	rr := &runRecorder{}
+	srv.runFn = rr.fn()
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, jugGraph)
+
+	// First click → an offer naming jugRagnarok.
+	offer := post(t, srv, "/workflows/"+wfID+"/download-and-run", url.Values{
+		"filename": {jugFile}, "type": {"Checkpoint"}, "model_id": {"1"},
+	}, true)
+	if offer.Code != http.StatusOK {
+		t.Fatalf("offer = %d", offer.Code)
+	}
+	confirm := downloadAndRunCTAs(t, offer.Body.String())[0]
+	if got := confirm.vals.Get("confirm_file"); got != jugRagnarok {
+		t.Fatalf("confirm CTA must name the approved file, got %q", got)
+	}
+
+	// Second click carries that approval — but CivitAI now resolves to `promoted`.
+	rec := post(t, srv, confirm.path, confirm.vals, false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("confirm = %d", rec.Code)
+	}
+	body := rec.Body.String()
+
+	assertNoJobStarted(t, srv, seam)
+	if dl.calls != 0 {
+		t.Errorf("a file the user never approved was downloaded (dl=%d)", dl.calls)
+	}
+	if _, err := os.Stat(filepath.Join(comfyModels, "checkpoints", jugFile)); err == nil {
+		t.Error("an unapproved substitution was written to disk")
+	}
+	// A FRESH offer naming the NEW file must come back.
+	if !strings.Contains(body, promoted) {
+		t.Errorf("expected a fresh offer naming %q:\n%s", promoted, body)
+	}
+	reoffer := downloadAndRunCTAs(t, body)
+	if len(reoffer) != 1 {
+		t.Fatalf("expected exactly one re-offer CTA, got %d", len(reoffer))
+	}
+	if got := reoffer[0].vals.Get("confirm_file"); got != promoted {
+		t.Errorf("re-offer must approve the NEW file, got %q", got)
+	}
+}
+
+// TestConfirmWithoutApprovedFileReOffers: a confirm_substitute=1 that names no file
+// (e.g. a hand-rolled request, or a stale button from before this binding existed)
+// must not install — the approval has to say WHICH file.
+func TestConfirmWithoutApprovedFileReOffers(t *testing.T) {
+	srv, dl, _ := newJugFixServer(t, jugSubstituteReader(t), []byte("X"))
+	seam := &downloadSeam{}
+	seam.install(srv)
+	srv.runFn = (&runRecorder{}).fn()
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, jugGraph)
+
+	for _, approved := range []string{"", "somethingElse.safetensors"} {
+		form := url.Values{
+			"filename": {jugFile}, "type": {"Checkpoint"}, "model_id": {"1"},
+			"confirm_substitute": {"1"},
+		}
+		if approved != "" {
+			form.Set("confirm_file", approved)
+		}
+		rec := post(t, srv, "/workflows/"+wfID+"/download-and-run", form, true)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("confirm_file=%q → %d", approved, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), jugRagnarok) {
+			t.Errorf("confirm_file=%q should re-offer naming %q:\n%s", approved, jugRagnarok, rec.Body.String())
+		}
+	}
+	assertNoJobStarted(t, srv, seam)
+	if dl.calls != 0 {
+		t.Errorf("an unbound confirmation installed something (dl=%d)", dl.calls)
+	}
+}
+
 // TestInstallRefusesFilenameNotInWorkflow: filename and model_id are free-form form
 // fields; the target must belong to the workflow the request names, or an arbitrary
 // (workflow, file, model) triple could be installed.
