@@ -183,6 +183,13 @@ type Server struct {
 	nodepackJob *nodepackJob
 	// nodepackSeq is a monotonic per-install counter (guarded by nodepackMu).
 	nodepackSeq int64
+	// nodepackPoll / nodepackSettleWait are the install job's poll cadence and its
+	// minimum grace period before an entirely-idle Manager queue is believed. Set
+	// once in NewServer from the package defaults and never mutated afterwards, so
+	// the install goroutine reads them race-free; tests shorten them on their own
+	// Server instance before starting an install.
+	nodepackPoll   time.Duration
+	nodepackSettleWait time.Duration
 	// captureFn is the output-capture seam invoked after a successful run settles
 	// (off runMu, success path only). Nil (production) uses captureGeneration
 	// (View → atomic write → InsertGeneration, best-effort); tests inject a seam to
@@ -390,6 +397,8 @@ func NewServer(st *store.Store, reader civitai.Reader, sub Subscriber, cfg Confi
 	return &Server{
 		store: st, reader: reader, sub: sub, cfg: cfg, log: log, csrf: newCSRFToken(),
 		cloudPollInterval: defaultCloudPollInterval,
+		nodepackPoll:      nodepackPollInterval,
+		nodepackSettleWait: nodepackMinSettle,
 		popularVal:        map[bool]*civitai.ModelSearchResult{},
 		popularExp:        map[bool]time.Time{},
 		resolveVal:        map[string]*civitai.ModelSearchResult{},

@@ -375,14 +375,14 @@ func (s *Server) waitForNodepackInstall(ctx context.Context, mc managerClient, i
 		}
 		if busy {
 			sawBusy = true
-		} else if sawBusy || time.Since(start) >= nodepackMinSettle {
+		} else if sawBusy || time.Since(start) >= s.nodepackSettleWait {
 			return false
 		}
 
 		select {
 		case <-ctx.Done():
 			return false
-		case <-time.After(nodepackPollInterval):
+		case <-time.After(s.nodepackPoll):
 		}
 	}
 }
