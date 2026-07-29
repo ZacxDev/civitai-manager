@@ -104,6 +104,20 @@ if command -v curl >/dev/null 2>&1; then
 	DOWNLOADER=curl
 elif command -v wget >/dev/null 2>&1; then
 	DOWNLOADER=wget
+	# GNU wget's --https-only additionally refuses an https -> http *redirect*,
+	# which the scheme check in fetch() cannot see. busybox wget — what Alpine
+	# and most musl images ship, and they ship no curl — has no such option: it
+	# answers `--https-only` by printing its usage and failing, so every
+	# download died with a "download failed: <url>" that blamed a perfectly good
+	# URL. Probe for the flag instead of assuming it. Without it we still refuse
+	# to *start* a non-https fetch (the `case` below), which is the guarantee
+	# that actually matters here, and the mandatory checksum check downstream is
+	# unaffected either way.
+	if wget --help 2>&1 | grep -q -- '--https-only'; then
+		wget_get() { wget -q --https-only -O "$2" "$1"; }
+	else
+		wget_get() { wget -q -O "$2" "$1"; }
+	fi
 else
 	die "need curl or wget on PATH"
 fi
@@ -118,7 +132,7 @@ fetch() {
 		curl -fsSL --proto '=https' --tlsv1.2 -o "$2" "$1" ||
 			die "download failed: $1"
 	else
-		wget -q --https-only -O "$2" "$1" ||
+		wget_get "$1" "$2" ||
 			die "download failed: $1"
 	fi
 }
@@ -134,7 +148,7 @@ resolve_latest() {
 		# .../releases/tag/v0.1.75 -> v0.1.75
 		printf '%s\n' "${effective##*/}"
 	else
-		wget -q --https-only -O - "$API_LATEST" 2>/dev/null |
+		wget_get "$API_LATEST" - 2>/dev/null |
 			sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
 			head -n 1
 	fi
@@ -142,7 +156,10 @@ resolve_latest() {
 
 if [ -z "$VERSION" ]; then
 	log "==> resolving the latest release"
-	VERSION="$(resolve_latest)" ||
+	# The wget branch is a pipeline, so its exit status is `head`'s and is
+	# always 0 — an empty result is the real failure signal, not a non-zero rc.
+	VERSION="$(resolve_latest)" || VERSION=""
+	[ -n "$VERSION" ] ||
 		die "could not resolve the latest release; pass --version <x.y.z>"
 fi
 
