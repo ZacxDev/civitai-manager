@@ -93,6 +93,9 @@ input[type="radio"] {
   /* Ink for a FILLED component whose background is this token (tokenVarsFilled).
    * White on #e8590c is 3.55:1; this ink is 4.81:1. */
   --civitai-color-on-warning: #1a1b1e;
+
+  /* The .cm-size-large orange tier has no design-system token. 7.61:1 here. */
+  --civitai-color-size-large: #fb923c;
 }
 
 /*
@@ -132,6 +135,11 @@ input[type="radio"] {
 
   /* White on #fd7e14 is 2.55:1; this ink is 6.70:1. */
   --civitai-color-on-warning: #1a1b1e;
+
+  /* The shared #fb923c orange is 7.61:1 on dark but only 2.24:1 here — it was
+   * hardcoded as "a fixed, legible orange", which was only ever true on dark.
+   * 4.98:1. */
+  --civitai-color-size-large: #b45309;
 }
 
 /*
@@ -326,7 +334,7 @@ input[type="radio"] {
   color: var(--civitai-color-text);
 }
 .lib-tab-active {
-  color: var(--civitai-color-primary);
+  color: var(--civitai-color-primary-text);
   border-bottom-color: var(--civitai-color-primary);
 }
 
@@ -334,23 +342,25 @@ input[type="radio"] {
  * File-size magnitude tiers (.cm-size-*) — see sizeCell/sizeClass in
  * library_pages.go. The Size cell is color-coded by magnitude so large files
  * stand out at a glance. Thresholds: <500MB muted, 500MB–2GB yellow, 2–6GB
- * orange, >6GB red. Three tiers resolve from --civitai-* semantic tokens so they
- * are correct in both light and dark (data-theme); the orange mid-tier has no
- * design-system token, so it uses a fixed, legible orange. Kept unlayered so it
- * wins over the app (Tailwind) layer without touching any @civitai/components rule.
+ * orange, >6GB red. All four tiers resolve from --civitai-* tokens so they are
+ * correct in both light and dark (data-theme). The orange mid-tier has no
+ * design-system token, so app.css defines --civitai-color-size-large per theme —
+ * it used to be a hardcoded #fb923c, which is 7.61:1 on dark but 2.24:1 on light.
+ * Kept unlayered so it wins over the app (Tailwind) layer without touching any
+ * @civitai/components rule.
  */
 .cm-size-small {
   color: var(--civitai-color-text-dimmed);
 }
 .cm-size-medium {
-  color: var(--civitai-color-warning);
+  color: var(--civitai-color-warning-text);
 }
 .cm-size-large {
-  color: #fb923c;
+  color: var(--civitai-color-size-large);
   font-weight: 500;
 }
 .cm-size-huge {
-  color: var(--civitai-color-error);
+  color: var(--civitai-color-error-text);
   font-weight: 600;
 }
 
@@ -372,11 +382,11 @@ th[data-sortable] .cm-sort-ind::after {
 }
 th[data-sortable][aria-sort="ascending"] .cm-sort-ind::after {
   content: " \25B2"; /* ▲ */
-  color: var(--civitai-color-primary);
+  color: var(--civitai-color-primary-text);
 }
 th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   content: " \25BC"; /* ▼ */
-  color: var(--civitai-color-primary);
+  color: var(--civitai-color-primary-text);
 }
 
 /*
@@ -688,7 +698,7 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   font-size: 0.8125rem;
   font-weight: 500;
   cursor: pointer;
-  color: var(--civitai-color-primary);
+  color: var(--civitai-color-primary-text);
   background: transparent;
   border: 1px solid var(--civitai-color-border);
   transition: background 120ms ease, border-color 120ms ease;
@@ -723,15 +733,15 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   color: var(--civitai-color-text-dimmed);
 }
 .cm-pill-dup {
-  color: var(--civitai-color-info);
+  color: var(--civitai-color-info-text);
   border-color: var(--civitai-color-info);
 }
 .cm-pill-update {
-  color: var(--civitai-color-primary);
+  color: var(--civitai-color-primary-text);
   border-color: var(--civitai-color-primary);
 }
 .cm-pill-broken {
-  color: var(--civitai-color-warning);
+  color: var(--civitai-color-warning-text);
   border-color: var(--civitai-color-warning);
 }
 
@@ -743,7 +753,7 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  * green deterministic and theme-aware. No CDN.
  */
 .cm-ok {
-  color: var(--civitai-color-success);
+  color: var(--civitai-color-success-text);
 }
 
 /*
@@ -864,7 +874,7 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   border-radius: 9999px;
   font-size: 0.72rem;
   font-weight: 600;
-  color: var(--civitai-color-primary);
+  color: var(--civitai-color-primary-text);
   border: 1px solid color-mix(in srgb, var(--civitai-color-primary) 55%, transparent);
   background: color-mix(in srgb, var(--civitai-color-primary) 12%, transparent);
   transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
@@ -901,7 +911,7 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 }
 .cm-vstatus-title {
   font-weight: 600;
-  color: var(--civitai-color-primary);
+  color: var(--civitai-color-primary-text);
   margin-bottom: 0.15rem;
 }
 .cm-vstatus-date {
@@ -948,7 +958,7 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 }
 .cm-updated-title {
   font-weight: 600;
-  color: var(--civitai-color-primary);
+  color: var(--civitai-color-primary-text);
   margin-bottom: 0.15rem;
 }
 .cm-updated-date {
@@ -1362,7 +1372,7 @@ html {
 }
 .cm-rail-all {
   font-size: 0.75rem;
-  color: var(--civitai-color-primary);
+  color: var(--civitai-color-primary-text);
   text-decoration: none;
 }
 .cm-rail-all:hover {

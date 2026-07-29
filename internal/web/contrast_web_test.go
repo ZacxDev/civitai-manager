@@ -225,6 +225,18 @@ func uiPairs() []pair {
 		{"warning text in a light button", "--civitai-color-warning-text", tint("--civitai-color-warning", 12), wcagAANormal},
 		{"info text in a light badge", "--civitai-color-info-text", tint("--civitai-color-info", 14), wcagAANormal},
 
+		// The .cm-* custom components in app.css paint intent foregrounds on the
+		// surface token: status pills, the active library tab, the version-status
+		// and "updated" popovers, the rail's "all" link, the ✓ indicator.
+		{"status pill / active tab (brand) on surface", "--civitai-color-primary-text", plain("--civitai-color-surface"), wcagAANormal},
+		{"broken pill (warning) on surface", "--civitai-color-warning-text", plain("--civitai-color-surface"), wcagAANormal},
+		{"duplicate pill (info) on surface", "--civitai-color-info-text", plain("--civitai-color-surface"), wcagAANormal},
+		{"in-library ✓ (success) on surface", "--civitai-color-success-text", plain("--civitai-color-surface"), wcagAANormal},
+		{"huge-size label (error) on surface", "--civitai-color-error-text", plain("--civitai-color-surface"), wcagAANormal},
+		// The orange size tier has no design-system token of its own.
+		{"large-size label on the page", "--civitai-color-size-large", plain("--civitai-color-body"), wcagAANormal},
+		{"large-size label on surface", "--civitai-color-size-large", plain("--civitai-color-surface"), wcagAANormal},
+
 		// Fills: the token is the BACKGROUND under primary-fg ink.
 		{"filled button label", "--civitai-color-primary-fg", plain("--civitai-color-primary"), wcagAANormal},
 		{"filled button label on hover", "--civitai-color-primary-fg", plain("--civitai-color-primary-hover"), wcagAANormal},
