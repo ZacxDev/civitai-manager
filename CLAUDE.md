@@ -30,13 +30,41 @@ private, and a `sum.golang.org … 500` plus an `undefined:` cascade from
 now see that signature, treat it as a genuine failure to investigate, not
 something GOPRIVATE will paper over.
 
-## Release flow — tag → GoReleaser → GitHub Release
+## Release flow — bump flake → tag → GoReleaser → GitHub Release
 
-1. Tag a semver on `main`: `git tag vX.Y.Z && git push origin vX.Y.Z`.
-2. `.github/workflows/release.yml` runs **GoReleaser** (`goreleaser-action@v6`,
+1. **Bump `version` in `flake.nix`** and commit it. It is a hard-coded string
+   feeding the same `-X main.version` ldflag GoReleaser uses; forget it and Nix
+   users get a binary reporting the PREVIOUS release.
+2. Tag a semver on `main`: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+3. `.github/workflows/release.yml` runs **GoReleaser** (`goreleaser-action@v7`,
    `release --clean`). Builds are **`CGO_ENABLED=0`** (pure-Go SQLite driver
    cross-compiles cleanly) across **6 targets** — `{linux, darwin, windows}` ×
-   `{amd64, arm64}` — producing a GitHub Release with tarballs + `checksums.txt`.
+   `{amd64, arm64}` — producing a GitHub Release with tarballs, **`.deb`/`.rpm`**
+   (`nfpms:`, linux amd64+arm64), `checksums.txt`, and **build attestations**
+   (`actions/attest@v4`, `subject-checksums: dist/checksums.txt`, keyless OIDC).
+
+**Distribution gotchas that cost real bugs:**
+
+- **`flake.nix`'s `vendorHash` is not derived from anything the Go build reads.**
+  A `go get` silently invalidates it and `nix build
+  github:ZacxDev/civitai-manager` starts failing for everyone with a hash
+  mismatch — this shipped broken on the public path once already. After any
+  `go.mod`/`go.sum` change: `nix build .`, copy the `got:` hash from the error,
+  paste it in. **Never guess it.** The `nix flake check` CI job is the only thing
+  that catches this.
+- **The flake's `src` is a `lib.fileset`, not `./.`** — deliberately. `src = ./.`
+  swept untracked `.claude/` agent worktrees into the build and broke it. If you
+  add a new top-level directory the build needs, add it to the fileset.
+- **`brews:` is dead** — hard-deprecated in GoReleaser v2.16, removed in v3.
+  `homebrew_casks:` is the supported spelling and covers Linux too.
+- **The Homebrew cask publish is guarded by `skip_upload`** keyed off
+  `HOMEBREW_TAP_GITHUB_TOKEN`, because neither `ZacxDev/homebrew-tap` nor the
+  secret exists yet. GoReleaser resolves `skip_upload` **before**
+  `repository.token`, so the missing secret cannot fail a release. Do not "clean
+  up" that guard until the tap exists.
+- **`docs/install.sh` is piped into strangers' shells.** POSIX sh, shellcheck-
+  gated in CI, checksum verification is mandatory, no surprise `sudo`, https
+  only. See `docs/README.md` for the rules before touching it.
 
 **Deployed ≠ verified.** A green Release job is not proof the binary runs. To
 verify a release: download the released tarball for your platform, check it

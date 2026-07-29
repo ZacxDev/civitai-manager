@@ -654,17 +654,31 @@ ckpt_name: 'value not in list'</code></div>
 
     <div class="grid two">
       <div>
-        <h3 style="margin-bottom:.75rem">Download a release</h3>
-<pre><code><span class="cmt"># linux/amd64 — swap for darwin_arm64, linux_arm64, …</span>
-VERSION=0.1.73
-curl -sSLO "https://github.com/ZacxDev/civitai-manager/releases/download/v${VERSION}/civitai-manager_${VERSION}_linux_amd64.tar.gz"
-curl -sSLO "https://github.com/ZacxDev/civitai-manager/releases/download/v${VERSION}/checksums.txt"
-sha256sum --check --ignore-missing checksums.txt
-tar -xzf "civitai-manager_${VERSION}_linux_amd64.tar.gz"
-sudo install civitai-manager /usr/local/bin/</code></pre>
+        <h3 style="margin-bottom:.75rem">Install script</h3>
+<pre><code><span class="cmt"># detects OS/arch, verifies against checksums.txt</span>
+curl -fsSL https://zacxdev.github.io/civitai-manager/install.sh | sh</code></pre>
+        <p style="color:var(--fg-muted);font-size:.95rem;margin-top:.6rem">
+          Installs to <code>/usr/local</code> when that's already writable, otherwise
+          <code>~/.local</code> — no surprise <code>sudo</code>. Read it first:
+          <a href="https://github.com/ZacxDev/civitai-manager/blob/main/docs/install.sh">install.sh</a>.
+        </p>
 
-        <h3 style="margin:1.5rem 0 .75rem">Or with Go 1.25+</h3>
-<pre><code>go install github.com/ZacxDev/civitai-manager@latest</code></pre>
+        <h3 style="margin:1.5rem 0 .75rem">Nix</h3>
+<pre><code><span class="cmt"># run it without installing anything</span>
+nix run github:ZacxDev/civitai-manager -- --version
+nix profile install github:ZacxDev/civitai-manager</code></pre>
+
+        <h3 style="margin:1.5rem 0 .75rem">Homebrew, packages, Go</h3>
+<pre><code>brew install --cask ZacxDev/tap/civitai-manager
+sudo dpkg -i civitai-manager_0.1.76_linux_amd64.deb
+sudo rpm  -i civitai-manager_0.1.76_linux_amd64.rpm
+go install github.com/ZacxDev/civitai-manager@latest</code></pre>
+        <p style="color:var(--fg-muted);font-size:.95rem;margin-top:.6rem">
+          The script, packages, cask and attestations ship from <strong>v0.1.76</strong>;
+          the Homebrew tap isn't published yet. Every option, plus
+          <code>gh attestation verify</code>, is in the
+          <a href="https://github.com/ZacxDev/civitai-manager/blob/main/docs/install.md">install guide</a>.
+        </p>
       </div>
 
       <div>

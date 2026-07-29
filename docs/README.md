@@ -1,12 +1,42 @@
 # `docs/` — project site and reference docs
 
-This directory holds two things:
+This directory holds three things:
 
 1. **`index.html`** — a self-contained landing page intended to be served by
    GitHub Pages.
-2. **Reference documentation** (`configuration.md`, `cli.md`, `testing.md`) —
-   the long-form material that used to live in the root `README.md`. These are
-   linked from the README and read fine on github.com without Pages enabled.
+2. **Reference documentation** (`install.md`, `configuration.md`, `cli.md`,
+   `testing.md`) — the long-form material that used to live in the root
+   `README.md`. These are linked from the README and read fine on github.com
+   without Pages enabled.
+3. **`install.sh`** — the `curl | sh` installer, served from this directory at
+   `https://zacxdev.github.io/civitai-manager/install.sh`.
+
+## Editing `install.sh`
+
+It is a POSIX-sh script that strangers pipe into a shell, so it is held to a
+higher bar than the rest of the docs:
+
+- **POSIX `sh`, not bash.** CI runs `shellcheck --shell=sh docs/install.sh` on
+  every change and the build fails on any finding.
+- **Every URL is a hard-coded `https://github.com` URL**, and `fetch()` refuses
+  anything that is not https. Do not add a URL override.
+- **`--version` is validated against a semver pattern** before it is
+  interpolated into a download URL.
+- **The tarball is verified against the release's `checksums.txt`** and a
+  mismatch aborts before anything is unpacked. Do not weaken or make this
+  optional.
+- **No surprise `sudo`.** With no `--prefix` it uses `/usr/local` only when
+  already writable and otherwise `$HOME/.local`. When an explicitly requested
+  prefix needs elevation, it prints the exact command before running it.
+- **The only path it deletes is its own `mktemp -d`.**
+
+Test a change end to end against a real release into a scratch prefix, under
+both `sh` and `dash`:
+
+```sh
+sh docs/install.sh --version 0.1.75 --prefix /tmp/cm-test
+/tmp/cm-test/bin/civitai-manager --version
+```
 
 ## Enabling GitHub Pages
 

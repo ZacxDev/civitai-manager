@@ -13,9 +13,32 @@ go test ./...
 ```
 
 CI (`.github/workflows/ci.yml`) runs the above on every push to `main` and every
-pull request, plus `go test -race` on the concurrency-sensitive packages and a
+pull request, plus `go test -race` on the concurrency-sensitive packages, a
 compile-only check of the build-tagged integration suite (`go build -tags
-integration ./...`).
+integration ./...`), `shellcheck --shell=sh docs/install.sh`, and `nix flake
+check`.
+
+## The Nix flake
+
+```sh
+nix build .              # build the package
+nix run .# -- --version  # run it
+nix flake check -L       # what CI runs
+nix develop              # Go toolchain, goreleaser, actionlint, shellcheck, nixfmt
+nix fmt                  # nixfmt
+```
+
+**`vendorHash` in `flake.nix` is not derived from anything the Go build reads**,
+so a `go get` silently invalidates it and `nix build
+github:ZacxDev/civitai-manager` starts failing for everyone with a hash
+mismatch. That has already happened once. After any `go.mod`/`go.sum` change:
+run `nix build .`, take the `got:` hash out of the error, and paste it into
+`vendorHash`. Never guess it. The `nix flake check` CI job exists purely to catch
+this.
+
+The flake's `version` is a hard-coded string that feeds the same `-X
+main.version` ldflag GoReleaser uses. **Bump it in the commit you tag** (see
+below) or Nix users get a binary whose `--version` reports the previous release.
 
 ## Live integration tests
 
@@ -48,25 +71,60 @@ Releases are built by [GoReleaser](https://goreleaser.com) (config:
 `.goreleaser.yaml`) and published to **GitHub Releases** by
 `.github/workflows/release.yml`, which triggers on any pushed `v*` tag.
 
-To cut a release, tag a commit on `main` with a semver tag and push it:
+To cut a release: bump `version` in `flake.nix` to the new number, commit that on
+`main`, then tag and push.
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+# 1. flake.nix:  version = "0.1.76";
+git commit -m "chore: flake version 0.1.76" flake.nix
+git tag v0.1.76
+git push origin main v0.1.76
 ```
 
-That is the **only** step. The workflow then cross-compiles `civitai-manager`
-for linux/darwin/windows on amd64/arm64 (`CGO_ENABLED=0`), builds tar.gz/zip
-archives (with `README.md` + `LICENSE`), a `checksums.txt`, and a
-conventional-commit changelog, and uploads them all to a new GitHub Release. The
-version, commit, and build date are injected into the binary via ldflags and are
-visible with `civitai-manager --version`.
+The workflow then cross-compiles `civitai-manager` for linux/darwin/windows on
+amd64/arm64 (`CGO_ENABLED=0`) and publishes a GitHub Release containing:
+
+- **tar.gz / zip archives** (with `README.md` + `LICENSE`) for all six targets,
+- **`.deb` and `.rpm`** packages for linux amd64 and arm64,
+- **`checksums.txt`**,
+- a conventional-commit changelog,
+- **build attestations** — `actions/attest` signs Sigstore provenance for every
+  artifact listed in `checksums.txt`, keyless via the workflow's OIDC token. No
+  secret involved. Users verify with
+  `gh attestation verify --owner ZacxDev <file>`.
+
+The version, commit, and build date are injected into the binary via ldflags and
+are visible with `civitai-manager --version`.
+
+### Homebrew — what is still missing
+
+`.goreleaser.yaml` has a working `homebrew_casks:` block (not the deprecated
+`brews:`, which GoReleaser removes in v3), configured for **pull-request**
+delivery so a compromised release workflow can only propose a tap change rather
+than force-push one. Publishing is **off** until two things exist:
+
+1. A public repo **`ZacxDev/homebrew-tap`** with a `Casks/` directory and a
+   `main` branch:
+   ```sh
+   gh repo create ZacxDev/homebrew-tap --public \
+     --description "Homebrew tap for ZacxDev tools"
+   ```
+2. A repository secret **`HOMEBREW_TAP_GITHUB_TOKEN`** on *this* repo — a
+   fine-grained PAT scoped to `ZacxDev/homebrew-tap` only, with **Contents:
+   read/write** and **Pull requests: read/write**:
+   ```sh
+   gh secret set HOMEBREW_TAP_GITHUB_TOKEN --repo ZacxDev/civitai-manager
+   ```
+
+Until then `homebrew_casks[0].skip_upload` evaluates to `true`, GoReleaser still
+writes `dist/homebrew/Casks/civitai-manager.rb` for inspection, and the release
+succeeds untouched. Once the secret exists it flips to `false` on its own — no
+config change. homebrew-core is not an option: its policy requires 75 stars (225
+to self-submit).
 
 Notes:
 - Use [conventional commit](https://www.conventionalcommits.org/) prefixes
   (`feat:`, `fix:`, `docs:`) so the generated changelog groups cleanly.
-- Homebrew/tap publishing is **not** configured (it needs a separate tap repo +
-  token). A commented stub is in `.goreleaser.yaml` if you want it later.
 - Validate config changes locally without publishing:
   ```sh
   goreleaser check
