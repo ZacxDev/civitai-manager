@@ -325,7 +325,7 @@ func subscriptionsTable(subs []store.Subscription, errMsg, csrf string) g.Node {
 			h.THead(
 				h.Tr(
 					h.Class("text-left text-slate-400 border-b border-slate-800"),
-					th("Target"), th("Kind"), th("Flags"), th("Interval"), th("Last polled"), th(""),
+					th("Target"), th("Kind"), th("Flags"), th("Interval"), th("Last polled"), thHidden("Actions"),
 				),
 			),
 			h.TBody(g.Group(rows)),
@@ -335,6 +335,15 @@ func subscriptionsTable(subs []store.Subscription, errMsg, csrf string) g.Node {
 
 func th(text string) g.Node {
 	return h.Th(h.Class("px-3 py-2 font-medium"), g.Text(text))
+}
+
+// thHidden is a header cell whose label is announced but not painted — for a
+// column of row actions that needs no visible title. An empty <th> trips axe's
+// `empty-table-header` rule and leaves screen-reader users with an unnamed
+// column, so the name is carried in a visually-hidden span rather than dropped.
+func thHidden(label string) g.Node {
+	return h.Th(h.Class("px-3 py-2 font-medium"),
+		h.Span(h.Class("cm-sr-only"), g.Text(label)))
 }
 
 func subscriptionRow(s store.Subscription, csrf string) g.Node {
@@ -372,7 +381,7 @@ func subscriptionRow(s store.Subscription, csrf string) g.Node {
 				hx("target", "#sub-"+strconv.FormatInt(s.ID, 10)),
 				hx("swap", "outerHTML"),
 				hx("confirm", "Unsubscribe from "+target+"?"),
-				h.StyleAttr("--civitai-color-primary:var(--civitai-color-error)"),
+				h.StyleAttr(tokenVars("error")),
 			}, g.Text("Unsubscribe")),
 		),
 	)
@@ -401,7 +410,7 @@ func flagToggle(s store.Subscription, field, label string, on bool, csrf string)
 		hx("vals", vals),
 		hx("target", "#sub-"+strconv.FormatInt(s.ID, 10)),
 		hx("swap", "outerHTML"),
-		h.StyleAttr("--civitai-color-primary:var(--civitai-color-" + tok + ")"),
+		h.StyleAttr(tokenVars(tok)),
 	}, g.Text(label))
 }
 
