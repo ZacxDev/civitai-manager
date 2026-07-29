@@ -107,6 +107,41 @@ func TestRunModesPickerRendersOnRealTemplate(t *testing.T) {
 	}
 }
 
+// TestRunModesBlurbMatchesTheGraph pins that the explanation does not overclaim.
+// Real data has BOTH shapes: 581 ships every pipeline off (the run genuinely
+// cannot work until you pick), 588 ships one already live (the picker is a swap).
+func TestRunModesBlurbMatchesTheGraph(t *testing.T) {
+	allOff, err := os.ReadFile("../comfy/testdata/wf581_modes_multimode.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	onLive, err := os.ReadFile("../comfy/testdata/wf588_modes_muter.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	off := renderString(t, runModesPanel(
+		&store.Workflow{ID: 1, Format: store.WorkflowFormatUI, Graph: string(allOff)}, "tok"))
+	if !strings.Contains(off, "ships with all of them switched off") {
+		t.Errorf("581 (every pipeline bypassed) should say so:\n%s", off)
+	}
+
+	live := renderString(t, runModesPanel(
+		&store.Workflow{ID: 2, Format: store.WorkflowFormatUI, Graph: string(onLive)}, "tok"))
+	if strings.Contains(live, "ships with all of them switched off") {
+		t.Errorf("588 ships 'Diffusion Model' ENABLED — the blurb must not claim otherwise:\n%s", live)
+	}
+	if !strings.Contains(live, "The one its author left enabled is selected") {
+		t.Errorf("588's blurb should describe the pre-selected mode:\n%s", live)
+	}
+	// …and that pre-selection is really rendered on the live mode (never a
+	// "Choose a mode…" placeholder for a selector that already has one).
+	sel := comfy.DetectModeSelectors(onLive)[0]
+	if !strings.Contains(live, `<option value="`+sel.Selected()+`" selected`) {
+		t.Errorf("588's live mode %q should be pre-selected:\n%s", sel.Selected(), live)
+	}
+}
+
 // TestRunModesPickerAbsentForOrdinaryWorkflow is the regression guard at the UI
 // level: an ordinary workflow renders the stable container and nothing else.
 func TestRunModesPickerAbsentForOrdinaryWorkflow(t *testing.T) {

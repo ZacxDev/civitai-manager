@@ -99,11 +99,33 @@ func runModesPanel(wf *store.Workflow, csrf string) g.Node {
 		h.Class("mt-3 rounded border border-slate-800 p-3 space-y-3"),
 		h.Div(h.Class("text-xs font-semibold text-slate-200"), g.Text("Workflow mode")),
 		h.P(h.Class("text-xs text-slate-400"),
-			g.Text("This workflow packs several pipelines into one file and ships with all of them "+
-				"switched off. Pick the one to run — the choice applies to this run only, the saved "+
-				"workflow is unchanged.")),
+			g.Text(runModesBlurb(sels)),
+		),
 		g.Group(blocks),
 	)
+}
+
+// runModesBlurb explains the picker WITHOUT overclaiming. The 581 shape ships
+// every pipeline switched off (so the run genuinely cannot work until the user
+// picks); the 588 shape ships one already live (so the picker is a swap, not a
+// prerequisite). Saying "ships with all of them switched off" on the latter would
+// be plainly false, and the user is looking at a pre-selected dropdown that
+// contradicts it.
+func runModesBlurb(sels []comfy.ModeSelector) string {
+	allOff := true
+	for _, s := range sels {
+		if s.Selected() != "" {
+			allOff = false
+		}
+	}
+	if allOff {
+		return "This workflow packs several pipelines into one file and ships with all of them " +
+			"switched off. Pick the one to run — the choice applies to this run only, the saved " +
+			"workflow is unchanged."
+	}
+	return "This workflow packs several mutually-exclusive pipelines into one file. " +
+		"The one its author left enabled is selected; changing it applies to this run only, " +
+		"the saved workflow is unchanged."
 }
 
 // runModeSelect renders one selector's <select>. The currently-live mode (if any) is
