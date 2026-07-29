@@ -41,9 +41,11 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Publishing the Homebrew cask is OFF until this secret exists.
-          # .goreleaser.yaml keys `homebrew_casks[0].skip_upload` off it, so an
-          # absent secret skips the cask cleanly instead of failing the release.
+          # This secret exists, so the cask is published (as a PR against
+          # ZacxDev/homebrew-tap). `homebrew_casks[0].skip_upload` in
+          # .goreleaser.yaml is keyed off it as a permanent fail-soft: if the
+          # PAT is ever revoked or expires, the cask is skipped rather than
+          # failing the release after the artifacts are already public.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
       # Signs build provenance for every artifact listed in checksums.txt —
