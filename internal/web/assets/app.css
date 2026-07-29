@@ -58,11 +58,23 @@ input[type="radio"] {
  * tailwind.config.js maps the text-only shades (indigo/emerald/amber/rose 200-400)
  * onto them.
  *
+ * SCOPE: THE AA FIX IS APPLIED TO THE DARK THEME ONLY
+ * ---------------------------------------------------
+ * The light theme keeps the vendored brand palette EXACTLY as shipped — see the
+ * "ACCEPTED AA DEBT" block below. Its `-text` tokens exist only because the
+ * plumbing (tailwind.config.js, the variant rules below, layout.go's tokenVars)
+ * is theme-agnostic and now reads `-text` everywhere: each light `-text` token is
+ * an ALIAS of its base token, so every light foreground resolves to the same
+ * value it had before the split. The aliases are `var()` indirections rather
+ * than copied literals precisely so they can never drift from the base token.
+ *
  * Ratios below are WCAG 2.1 relative-luminance ratios against the theme body
  * (#1A1B1E dark / #fefefe light) and against the 12%/14% color-mix tints the
  * component CSS derives from the BASE token for `light`-variant buttons and
  * badges. Threshold is 4.5:1 (normal text). They are pinned by the table-driven
- * test in contrast_web_test.go, which recomputes them from these very files.
+ * test in contrast_web_test.go, which recomputes them from these very files —
+ * including the light-theme failures, which are pinned as accepted debt so that
+ * "still exactly this bad" is asserted rather than forgotten.
  */
 
 /*
@@ -99,47 +111,82 @@ input[type="radio"] {
 }
 
 /*
- * LIGHT — here the base `primary` ALSO had to move, because it is a real fill:
- * white-on-#228BE6 was 3.53:1, so every `filled` button (Search, Import, Scan)
- * failed. Darkening it fixes the fill AND the foreground at once (contrast is
- * symmetric and the body is near-white), so primary-text can share the value.
+ * ---------------------------------------------------------------------------
+ * ACCEPTED AA DEBT — THE LIGHT THEME DELIBERATELY FAILS WCAG AA. DO NOT "FIX".
+ * ---------------------------------------------------------------------------
+ * The light theme's brand blue is `--civitai-color-primary: #228BE6`, straight
+ * from the vendored @civitai/theme. As the FILL of a `filled` button it carries
+ * white (`--civitai-color-primary-fg: #fefefe`) text at **3.53:1** — below the
+ * 4.5:1 AA minimum for normal text. Every filled primary control (Search,
+ * Import, Scan, Subscribe, the selected facet chip) is affected, and because
+ * contrast is symmetric and the body is near-white, the same value used as a
+ * FOREGROUND on #fefefe is the same 3.53:1. (Round figures elsewhere say
+ * "3.52:1" — that assumes pure #ffffff ink; the shipped ink is #fefefe.)
  *
- *   primary       BEFORE #228BE6            = 3.53:1  FAIL (as fill AND as text)
- *                 AFTER  #1864ab            = 6.04:1  (tint 4.91, white-on 6.04)
- *   text-dimmed   BEFORE #868e96 vendored   = 3.29:1  FAIL
- *                 (v0.1.71 shipped #6b7280 = 4.79:1 on the body, but only 4.02:1
- *                  on the 12%/14% tint the `light` button variant puts it on)
- *                 AFTER  #5f6672            = 5.74:1  (tint14 4.76, tint12 4.89)
- *   success       BEFORE #299C7A on tint    = 2.91:1  FAIL
- *                 AFTER  #0a6e52            = 6.19:1  (tint 5.30)
- *   error         BEFORE #fa5252            = 3.26:1  FAIL
- *                 AFTER  #b02525            = 6.64:1  (tint 5.62)
- *   warning       BEFORE #fd7e14            = 2.55:1  FAIL
- *                 AFTER  #9c4221            = 6.48:1  (tint 5.68)
+ * A fix exists and was measured: darkening the token to #1864ab clears AA in
+ * both roles (6.04:1). **It was rejected.** Brand fidelity was chosen over AA
+ * for the light theme — the shipped blue is the CivitAI brand blue and this app
+ * is not going to render it as a different colour. The same call keeps
+ * text-dimmed at v0.1.71's #6b7280 and the .cm-size-large orange at #fb923c.
  *
- * The base success/error/warning/info values are deliberately LEFT ALONE: they
- * are only ever tint sources (badges are `light`-variant only), so keeping them
- * preserves the familiar green/red/orange washes while the text on top darkens.
+ * Consequences, so nobody re-derives them:
+ *   - The light theme is NOT WCAG 2.1 AA clean. An axe run against it will keep
+ *     reporting `color-contrast` nodes. That is expected output, not a
+ *     regression, and the dark theme is the AA-clean one.
+ *   - contrast_web_test.go keeps every failing light pair in its table, tagged
+ *     as accepted debt with the exact measured ratio. It asserts they STILL
+ *     fail at that ratio, so a stealth change to the light palette — in either
+ *     direction — breaks the build instead of passing unnoticed.
+ *
+ * If you are here to raise these ratios: that is a product decision about the
+ * brand colour, not a CSS cleanup. Get it decided first, then update both this
+ * block and the `debt` entries in contrast_web_test.go.
+ *
+ * LIGHT tokens below are therefore either the vendored value (nothing declared
+ * = inherited from civitai-theme.css) or an exact ALIAS of it. Net rendering
+ * change vs. the pre-split UI: zero.
+ *
+ *   primary        #228BE6  vendored, untouched   3.53:1 white-on  DEBT
+ *   primary-hover  #1C7ED6  vendored, untouched   4.16:1 white-on  DEBT
+ *   text-dimmed    #6b7280  v0.1.71 override      4.79:1 on body   passes
+ *                  (vendored #868e96 is 3.29:1 — that override stays; it is
+ *                   still only 4.13:1 on the 12% tint, which is DEBT)
+ *   success        #299C7A  vendored, untouched   3.40:1 on body   DEBT
+ *   error          #fa5252  vendored, untouched   3.26:1 on body   DEBT
+ *   warning        #fd7e14  vendored, untouched   2.55:1 on body   DEBT
+ *   info           #228BE6  vendored, untouched   3.53:1 on body   DEBT
+ *   size-large     #fb923c  pre-token literal     2.24:1 on body   DEBT
+ *
+ * By contrast the DARK theme is AA-clean on every pair in that table — the
+ * `-text` split exists precisely so it could be, without moving any fill.
  */
 [data-theme="light"] {
-  --civitai-color-primary: #1864ab;
-  --civitai-color-primary-hover: #145591;
-  --civitai-color-text-dimmed: #5f6672;
+  /* The v0.1.71 dimmed-text override is the ONE light-theme colour change that
+   * survives: it is a neutral grey, carries no brand identity, and lifts the
+   * app's most-used secondary text from 3.29:1 to 4.79:1 on the body. */
+  --civitai-color-text-dimmed: #6b7280;
 
-  --civitai-color-primary-text: #1864ab;
-  --civitai-color-info-text: #1864ab;
-  --civitai-color-success-text: #0a6e52;
-  --civitai-color-error-text: #b02525;
-  --civitai-color-warning-text: #9c4221;
+  /* Aliases, not new colours. The plumbing reads `-text` everywhere; on light
+   * that must resolve to exactly the base token so nothing shifts. Written as
+   * var() indirections so they cannot drift if a base token ever moves. */
+  --civitai-color-primary-text: var(--civitai-color-primary);
+  --civitai-color-info-text: var(--civitai-color-info);
+  --civitai-color-success-text: var(--civitai-color-success);
+  --civitai-color-error-text: var(--civitai-color-error);
+  --civitai-color-warning-text: var(--civitai-color-warning);
   --civitai-color-text-dimmed-text: var(--civitai-color-text-dimmed);
 
-  /* White on #fd7e14 is 2.55:1; this ink is 6.70:1. */
-  --civitai-color-on-warning: #1a1b1e;
+  /* Ink for a filled warning button (tokenVarsFilled). On dark this is a dark
+   * ink chosen for AA; on light it aliases the theme's normal filled-button ink
+   * so the button renders exactly as it did before tokenVarsFilled existed.
+   * White on #fd7e14 is 2.55:1 — accepted debt, same call as the brand blue. */
+  --civitai-color-on-warning: var(--civitai-color-primary-fg);
 
-  /* The shared #fb923c orange is 7.61:1 on dark but only 2.24:1 here — it was
-   * hardcoded as "a fixed, legible orange", which was only ever true on dark.
-   * 4.98:1. */
-  --civitai-color-size-large: #b45309;
+  /* The .cm-size-large orange tier has no design-system token; this is the
+   * literal that .cm-size-large hardcoded before the token existed. 2.24:1 on
+   * the light body — accepted debt (it is a magnitude hint, not a brand
+   * colour, but changing it is still a visible palette change). */
+  --civitai-color-size-large: #fb923c;
 }
 
 /*
@@ -344,10 +391,12 @@ input[type="radio"] {
  * stand out at a glance. Thresholds: <500MB muted, 500MB–2GB yellow, 2–6GB
  * orange, >6GB red. All four tiers resolve from --civitai-* tokens so they are
  * correct in both light and dark (data-theme). The orange mid-tier has no
- * design-system token, so app.css defines --civitai-color-size-large per theme —
- * it used to be a hardcoded #fb923c, which is 7.61:1 on dark but 2.24:1 on light.
- * Kept unlayered so it wins over the app (Tailwind) layer without touching any
- * @civitai/components rule.
+ * design-system token, so app.css defines --civitai-color-size-large per theme
+ * instead of hardcoding #fb923c here — that literal is 7.61:1 on dark but only
+ * 2.24:1 on light. Light KEEPS #fb923c anyway (accepted debt, see the AA block
+ * at the top); the token exists so dark and light can diverge if that call ever
+ * changes. Kept unlayered so it wins over the app (Tailwind) layer without
+ * touching any @civitai/components rule.
  */
 .cm-size-small {
   color: var(--civitai-color-text-dimmed);
@@ -1574,6 +1623,12 @@ html {
  * 1.35:1 on light — the single worst contrast pair in the whole UI. Descendants
  * of the selected chip inherit the chip's own foreground instead. This rule is
  * unlayered so it beats the Tailwind utility in the `app` layer.
+ *
+ * This one applies to BOTH themes on purpose, and is the only light-theme
+ * rendering change in the AA work. It is not a palette/brand question — the
+ * count was near-invisible grey-on-blue at 1.35:1 — so the "brand fidelity wins
+ * in light" call above does not cover it. Scope it to [data-theme="dark"] if you
+ * ever want light byte-for-byte identical to the pre-AA build.
  */
 .cm-facet-chip-on * {
   color: inherit;
