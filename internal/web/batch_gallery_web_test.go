@@ -233,9 +233,12 @@ func TestGalleryTileLinksToBatch(t *testing.T) {
 		t.Errorf("tile caption missing the clickable batch link.\nwant substring: %s\ngot:\n%s", want, main)
 	}
 	// The tile's own detail link is now a full-bleed overlay anchor UNDER the
-	// caption, so the batch link is reachable at all.
-	if !strings.Contains(main, `class="absolute inset-0 z-10"`) {
-		t.Error("tile is missing the full-bleed overlay detail anchor")
+	// caption, so the batch link is reachable at all. cm-tile-link is load-bearing
+	// for accessibility, not decoration: the app-wide focus ring is drawn OUTSIDE
+	// the border box and the tile's overflow-hidden clips it away, so without this
+	// class a keyboard user gets no visible focus on any gallery tile (WCAG 2.4.7).
+	if !strings.Contains(main, `class="cm-tile-link absolute inset-0 z-10"`) {
+		t.Error("tile is missing the full-bleed overlay detail anchor (or its cm-tile-link focus class)")
 	}
 	// A nested <a> would be invalid HTML and unnested by the browser — the tile
 	// must no longer wrap its children in an anchor.

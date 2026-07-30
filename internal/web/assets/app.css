@@ -336,6 +336,52 @@ input[type="radio"] {
 }
 
 /*
+ * .cm-tile-link — the output tile's FULL-BLEED overlay anchor (generationTile in
+ * outputs_pages.go). The offset MUST be negative; this is not a style preference.
+ *
+ * The anchor is `absolute inset-0`, so its border box is exactly its parent's
+ * padding box — and that parent carries `overflow-hidden`. The rules above draw
+ * the ring OUTSIDE the border box (outline-offset: +2px, plus a 4px outward
+ * box-shadow halo), which lands entirely in the clipped region: the element is
+ * focused, :focus-visible matches, the outline computes — and NOTHING paints.
+ * WCAG 2.4.7.
+ *
+ * Reproduced A/B in headless Brave with real Tab keypresses, reading the FOCUSED
+ * element rather than a chosen selector. With +2px: activeElement is this anchor,
+ * `:focus-visible` true, computed `outline: rgb(25,113,194) solid 2px;
+ * outline-offset: 2px`, host tile `overflow: hidden` — and the screenshot shows
+ * no ring at all. With -3px, same element and same computed outline, the ring is
+ * plainly visible on BOTH themes (dark #1971C2, light #228BE6), including drawn
+ * over a near-white thumbnail.
+ *
+ * The tile used to BE the <a>, so its ring was drawn on the tile's own outer edge
+ * and could not be clipped by its own overflow. Wrapping the tile in a div and
+ * making the link an overlay (so the caption's batch link is clickable) is what
+ * moved the ring inside the clip.
+ *
+ * Drawing the ring INWARD puts it back on screen. Only the offset is overridden —
+ * colour and width still come from the shared rule, so the ring stays identical to
+ * every other control and follows the theme. -3px sits it just inside the tile
+ * edge, clear of the rounded corners. The outward box-shadow halo is still clipped
+ * and is deliberately not replaced: the outline alone is the WCAG-relevant ring,
+ * and an inset halo would wash out the thumbnail underneath.
+ *
+ * Specificity: the base rule is `:where(a, …):focus-visible` — :where() is zero,
+ * so it scores (0,1,0) and this class selector's (0,2,0) wins. Confirmed by
+ * READING BACK the resolved value on the focused element (-3px), not by reasoning
+ * about the cascade.
+ *
+ * ⚠ A positive value here is INERT and looks correct: it merely restates the
+ * shared offset, so nothing fails and the ring silently disappears. CSS is not
+ * compiled, so build/vet/test cannot catch it — TestTileFocusRingIsDrawnInward
+ * (ux_audit_web_test.go) pins the sign for exactly that reason. This shipped as a
+ * +2px no-op once already.
+ */
+.cm-tile-link:focus-visible {
+  outline-offset: -3px;
+}
+
+/*
  * Library underline tab strip (.lib-tab*) — see libraryTabStrip in
  * library_pages.go. Plain text links with an accent underline on the active tab,
  * muted inactive tabs, and a subtle hover. All colors resolve from --civitai-*

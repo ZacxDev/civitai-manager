@@ -286,6 +286,50 @@ func TestFocusVisibleRingExists(t *testing.T) {
 	}
 }
 
+// TestTileFocusRingIsDrawnInward pins the SIGN of .cm-tile-link's outline-offset.
+//
+// The gallery tile's detail link is `absolute inset-0` inside a tile carrying
+// overflow-hidden, so its border box IS the clip boundary: the shared ring above
+// (outline-offset: +2px plus an outward box-shadow) is drawn entirely inside the
+// clipped region and NOTHING paints. Only a NEGATIVE offset puts it back on
+// screen. Verified A/B in headless Brave — with +2px the anchor is focused,
+// :focus-visible matches, the outline computes, and the screenshot shows no ring.
+//
+// This test exists because that failure mode is INVISIBLE to the normal gate: CSS
+// is not compiled, a positive value merely restates the inherited offset, and
+// nothing errors. The rule shipped once as an inert `outline-offset: 2px` sitting
+// under a comment that argued at length for a negative one — build, vet, test and
+// gofmt were all green. Assert the sign, not the exact value, so the ring can be
+// re-tuned without churning this test.
+func TestTileFocusRingIsDrawnInward(t *testing.T) {
+	css := appCSS(t)
+
+	const sel = ".cm-tile-link:focus-visible"
+	i := strings.Index(css, sel)
+	if i < 0 {
+		t.Fatalf("app.css has no %s rule — the gallery tile's overlay anchor would "+
+			"inherit the app-wide OUTWARD ring, which its overflow-hidden clips away "+
+			"entirely (WCAG 2.4.7)", sel)
+	}
+	block := css[i:]
+	if j := strings.Index(block, "}"); j >= 0 {
+		block = block[:j]
+	}
+
+	const decl = "outline-offset:"
+	k := strings.Index(block, decl)
+	if k < 0 {
+		t.Fatalf("%s must set outline-offset; block was:\n%s", sel, block)
+	}
+	value := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(block[k+len(decl):]), ";"))
+	if !strings.HasPrefix(value, "-") {
+		t.Errorf("%s has outline-offset: %s — a non-negative offset is INERT here. The "+
+			"anchor is absolute inset-0 inside an overflow-hidden tile, so an outward "+
+			"ring lands in the clipped region and the tile shows NO keyboard focus at "+
+			"all. It must be negative.", sel, value)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // F3 / F11 — 390px overflow
 // ---------------------------------------------------------------------------

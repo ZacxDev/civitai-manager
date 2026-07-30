@@ -126,8 +126,12 @@ func generationTile(gen store.Generation) g.Node {
 		thumb,
 		// Full-bleed detail link, UNDER the caption bar (z-10 vs z-20) so the
 		// caption's own batch link stays reachable. aria-label because it has no
-		// text content.
-		h.A(h.Href(detailHref), g.Attr("aria-label", label), h.Class("absolute inset-0 z-10")),
+		// text content. .cm-tile-link draws its focus ring INWARD — the app-wide
+		// ring is drawn outside the border box, which this tile's overflow-hidden
+		// clips away entirely (see app.css); without it the tile has no visible
+		// keyboard focus at all.
+		h.A(h.Href(detailHref), g.Attr("aria-label", label),
+			h.Class("cm-tile-link absolute inset-0 z-10")),
 		// Caption overlay: label + optional batch + meta. g.Text escapes the
 		// untrusted-ish name. The bar is pointer-events-none so it never steals a
 		// click from the overlay anchor above.
