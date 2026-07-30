@@ -116,9 +116,10 @@ func TestCommunityCacheFailOpenServesStale(t *testing.T) {
 	}
 }
 
-// TestCommunityCacheErrorNoCacheShowsNote proves a fetch error with NO usable
-// cache renders the graceful error note.
-func TestCommunityCacheErrorNoCacheShowsNote(t *testing.T) {
+// TestCommunityCacheErrorNoCacheRendersNothing proves a fetch error with NO usable
+// cache degrades to an EMPTY fragment — 200, but no heading and no error note (the
+// failure is logged server-side instead of scarring the page).
+func TestCommunityCacheErrorNoCacheRendersNothing(t *testing.T) {
 	reader := newModelReader(t)
 	reader.communityErr = errors.New("boom")
 	srv := newModelServer(t, reader)
@@ -127,8 +128,8 @@ func TestCommunityCacheErrorNoCacheShowsNote(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("errored feed = %d, want 200", code)
 	}
-	if !strings.Contains(body, "load community images") {
-		t.Errorf("fetch error with no cache should show the error note:\n%s", body)
+	if strings.TrimSpace(body) != "" {
+		t.Errorf("fetch error with no cache should render nothing, got:\n%s", body)
 	}
 }
 
@@ -148,7 +149,7 @@ func TestCommunityCacheEmptyResultServesStale(t *testing.T) {
 	backdateCommunityCache(t, srv, 7, 11, 2*communityCacheTTL)
 
 	// Now upstream returns an EMPTY (non-nil) result. The prior non-empty cache
-	// must be served rather than the "No community images yet." note.
+	// must be served rather than an empty (omitted) section.
 	empty := newModelReader(t)
 	empty.communityImages = []civitai.ImageItem{}
 	srv.reader = empty

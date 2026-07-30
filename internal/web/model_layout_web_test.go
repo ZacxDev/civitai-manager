@@ -27,7 +27,7 @@ func TestModelDetailSectionOrder(t *testing.T) {
 
 	tabs := idx("cm-version-tabs")
 	showcase := idx("cm-showcase-lg")
-	files := idx("Files &amp; metadata") // sectionTitle escapes the ampersand
+	files := idx(">Download</h2>") // the download card heading
 	community := idx(`id="community-feed"`)
 	desc := idx(">Description<")
 	tags := idx("cm-tag-chip")
@@ -77,7 +77,7 @@ func TestModelVersionTabsMarkup(t *testing.T) {
 		SelectedVersionID: 11,
 		LocalVersionIDs:   map[int]bool{10: true}, // user owns v1 only
 	}
-	out := renderString(t, modelVersionTabsCard(view))
+	out := renderString(t, modelVersionTabs(view))
 
 	// One tab per version, each carrying the full htmx contract + href fallback.
 	for _, verID := range []int{11, 10} {
@@ -163,7 +163,7 @@ func TestModelVersionTabsEscaping(t *testing.T) {
 		},
 	}
 
-	tabs := renderString(t, modelVersionTabsCard(view))
+	tabs := renderString(t, modelVersionTabs(view))
 	if strings.Contains(tabs, "<script>alert('ver')") {
 		t.Errorf("version name must be escaped in the tab bar:\n%s", tabs)
 	}
@@ -171,7 +171,7 @@ func TestModelVersionTabsEscaping(t *testing.T) {
 		t.Error("version name should appear HTML-escaped")
 	}
 
-	files := renderString(t, versionDetailCard(view, "csrf-token"))
+	files := renderString(t, versionDownloadCard(view, "csrf-token"))
 	if strings.Contains(files, "<script>alert('file')") {
 		t.Errorf("file name must be escaped in the file list:\n%s", files)
 	}

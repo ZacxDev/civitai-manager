@@ -42,7 +42,7 @@ func TestModelVersionSwapHXFragment(t *testing.T) {
 		"cm-version-tab-active", // an active tab is present after the swap
 		"Showcase images",
 		"cm-showcase-lg",          // the enlarged detail showcase
-		"Files &amp; metadata",    // the files/metadata section
+		">Download</h2>",          // the download card heading
 		"great-model.safetensors", // the selected version's file list
 		`id="community-feed"`,
 		"versionId=11", // community feed keyed to the swapped version

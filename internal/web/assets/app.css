@@ -527,27 +527,38 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 }
 
 /*
- * Model version TAB BAR (.cm-version-tabs) — see modelVersionTabsCard in
- * model_pages.go. A single horizontally-scrolling row of version tabs under the
- * header (replaces the old vertical list); it never wraps, so many versions
- * scroll rather than stack. Colors come from the --civitai-* theme tokens so
- * both light/dark render correctly, independent of the purged Tailwind build.
+ * Model version TAB BAR (.cm-version-tabs) — see modelVersionTabs in
+ * model_pages.go. A row of version tabs along the bottom edge of the combined
+ * model header card. Colors come from the --civitai-* theme tokens so both
+ * light/dark render correctly, independent of the purged Tailwind build.
+ *
+ * WRAPS, does not scroll. It used to be `flex-wrap: nowrap; overflow-x: auto`.
+ * That had to go when the tabs gained their publish-date popover: per CSS
+ * Overflow, `overflow-x: auto` forces the computed `overflow-y` to `auto` too, so
+ * the strip became a scroll container and CLIPPED any absolutely-positioned child
+ * — the popover would have been unreachable, hidden below the strip's edge. A
+ * wrapping row also just shows every version at once instead of hiding some
+ * behind a scrollbar the user has to discover. (The many-version case is already
+ * handled upstream by the base-model group pills below.)
  *
  * TOKEN NAME: the inactive tab color is --civitai-color-text-DIMMED. It used to
  * read --civitai-color-text-muted, which @civitai/theme does not define at all —
  * so the var() always fell through to its hardcoded #94a3b8 fallback, i.e. 2.53:1
  * on the light theme, and the tabs never re-themed. Same fix on .cm-vgroup-pill.
+ *
+ * TOKEN SPLIT: the ACTIVE tab paints --civitai-color-primary-TEXT (the AA-contrast
+ * foreground), not the bare --civitai-color-primary fill token — see the WCAG
+ * block below. The underline bar is non-text UI and keeps currentColor.
  */
 .cm-version-tabs {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 0.25rem;
-  overflow-x: auto;
-  scroll-behavior: smooth;
   border-bottom: 1px solid var(--civitai-color-border);
   padding-bottom: 0.125rem;
 }
 .cm-version-tab {
+  position: relative;
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -557,21 +568,96 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   border: 1px solid transparent;
   border-top-left-radius: 0.375rem;
   border-top-right-radius: 0.375rem;
-  border-bottom: 2px solid transparent;
   margin-bottom: -1px;
   font-size: 0.875rem;
   color: var(--civitai-color-text-dimmed, #94a3b8);
   cursor: pointer;
   text-decoration: none;
+  transition: color 0.18s ease, background-color 0.18s ease;
 }
-.cm-version-tab:hover {
+/*
+ * The active/hover underline is a ::after bar that scales out from the centre —
+ * the tab bar's one piece of motion. On hover it grows to 60% as a hint; the
+ * active tab's runs a keyframe (not a transition) because the tab markup is
+ * re-rendered by htmx on every version swap and transitions do not fire on a
+ * freshly-inserted node, so the swap would otherwise be motionless.
+ */
+.cm-version-tab::after {
+  content: "";
+  position: absolute;
+  left: 0.5rem;
+  right: 0.5rem;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: center;
+  transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.cm-version-tab:hover,
+.cm-version-tab:focus-visible {
   color: var(--civitai-color-text, #e2e8f0);
   background: var(--civitai-color-surface, rgba(148, 163, 184, 0.08));
 }
+.cm-version-tab:hover::after,
+.cm-version-tab:focus-visible::after {
+  transform: scaleX(0.6);
+}
 .cm-version-tab-active {
-  color: var(--civitai-color-primary, #818cf8);
-  border-bottom-color: var(--civitai-color-primary, #818cf8);
+  color: var(--civitai-color-primary-text, #818cf8);
   font-weight: 600;
+}
+.cm-version-tab-active::after {
+  transform: scaleX(1);
+  animation: cm-tab-underline 0.28s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+@keyframes cm-tab-underline {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-version-tab,
+  .cm-version-tab::after {
+    transition: none;
+  }
+  .cm-version-tab-active::after {
+    animation: none;
+    transform: scaleX(1);
+  }
+}
+
+/*
+ * .cm-vdate — the per-version-tab publish-date affordance (versionDatePopover in
+ * model_pages.go): a small inline clock glyph that opens the SHARED
+ * .cm-updated/.cm-updated-pop popover (same wrapper class, same hover controller
+ * in modelPageScript, same CSS rules further down this file — no second popover
+ * mechanism). Only the icon's box and its hover tint live here.
+ *
+ * cursor: inherit keeps the enclosing tab's pointer (.cm-updated sets `default`).
+ */
+.cm-vdate {
+  display: inline-flex;
+  align-items: center;
+  cursor: inherit;
+  transition: color 0.15s ease;
+}
+.cm-vdate:hover {
+  color: var(--civitai-color-primary-text);
+}
+.cm-vdate-ico {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-vdate {
+    transition: none;
+  }
 }
 
 /*
@@ -600,19 +686,48 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   color: var(--civitai-color-text-dimmed, #94a3b8);
   background: transparent;
   cursor: pointer;
+  transition: color 0.18s ease, background-color 0.18s ease,
+    border-color 0.18s ease;
 }
 .cm-vgroup-pill:hover {
   color: var(--civitai-color-text, #e2e8f0);
   background: var(--civitai-color-surface, rgba(148, 163, 184, 0.08));
 }
 .cm-vgroup-pill-active {
-  color: var(--civitai-color-primary, #818cf8);
+  color: var(--civitai-color-primary-text, #818cf8);
   border-color: var(--civitai-color-primary, #818cf8);
   font-weight: 600;
 }
 .cm-vgroup-pill-count {
   font-size: 0.6875rem;
   opacity: 0.75;
+}
+/*
+ * Switching base-model groups fades the newly-shown tab panel in. cmVGroup only
+ * toggles the `hidden` attribute, and an element inside display:none does not run
+ * its animation — so the animation RESTARTS the moment a panel is unhidden, which
+ * is exactly the transition we want, with no JS beyond the existing toggle.
+ * Deliberately opacity-only: a `transform` here would establish a containing
+ * block and re-anchor the tabs' date popovers.
+ */
+.cm-vgroup {
+  animation: cm-vgroup-in 0.22s ease both;
+}
+@keyframes cm-vgroup-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-vgroup-pill {
+    transition: none;
+  }
+  .cm-vgroup {
+    animation: none;
+  }
 }
 
 /*
@@ -1013,6 +1128,95 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 .cm-updated-date {
   color: var(--civitai-color-text-dimmed);
   margin-top: 0.15rem;
+}
+
+/*
+ * Model DOWNLOAD card (.cm-dl-file / .cm-meta-reveal) — see versionDownloadCard +
+ * versionMetadataReveal in model_pages.go. The card's primary job is the download,
+ * so each file is a full-width row (name left, type/size/Download right) that
+ * lifts subtly on hover, and everything descriptive is folded into a
+ * collapsed-by-default <details>.
+ *
+ * Both the row hover and the disclosure's open motion are pure CSS and are turned
+ * off under prefers-reduced-motion. All colors resolve from --civitai-* tokens so
+ * the two data-theme paths render; kept here (not as Tailwind utilities) so no new
+ * class enters the purged output.css build.
+ */
+.cm-dl-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--civitai-color-border);
+  border-radius: 0.5rem;
+  background: transparent;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.cm-dl-file:hover {
+  background: var(--civitai-color-surface);
+  border-color: var(--civitai-color-primary);
+}
+.cm-meta-reveal {
+  border-top: 1px solid var(--civitai-color-border);
+  padding-top: 0.5rem;
+}
+.cm-meta-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--civitai-color-text-dimmed);
+  transition: color 0.15s ease;
+}
+/* Hide the native disclosure marker in both engines (WebKit needs its own rule). */
+.cm-meta-summary::-webkit-details-marker {
+  display: none;
+}
+.cm-meta-summary:hover,
+.cm-meta-reveal[open] > .cm-meta-summary {
+  color: var(--civitai-color-text);
+}
+.cm-meta-chevron {
+  display: inline-block;
+  font-size: 0.95rem;
+  line-height: 1;
+  transition: transform 0.18s ease;
+}
+.cm-meta-reveal[open] > .cm-meta-summary .cm-meta-chevron {
+  transform: rotate(90deg);
+}
+.cm-meta-body {
+  margin-top: 0.5rem;
+}
+.cm-meta-reveal[open] > .cm-meta-body {
+  animation: cm-meta-in 0.18s ease both;
+}
+@keyframes cm-meta-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-dl-file,
+  .cm-meta-summary,
+  .cm-meta-chevron {
+    transition: none;
+  }
+  .cm-meta-reveal[open] > .cm-meta-body {
+    animation: none;
+  }
 }
 
 /*

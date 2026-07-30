@@ -10,7 +10,7 @@ import (
 
 // groupedTabsView builds a modelDetailView whose model carries the given version
 // summaries, with the selected version + local set, for unit-testing
-// modelVersionTabsCard's flat vs grouped rendering.
+// modelVersionTabs's flat vs grouped rendering.
 func groupedTabsView(sel int, vers []civitai.ModelVersionSummary, local map[int]bool) modelDetailView {
 	if local == nil {
 		local = map[int]bool{}
@@ -47,7 +47,7 @@ func TestVersionGroupsRendersSelectorWhenManyMultiBase(t *testing.T) {
 	vers := manyMultiBaseVersions()
 	// Selected version 6 is in the "Pony" group (the 2nd group, index 1).
 	// Version 2 (SDXL) is in the user's library.
-	out := renderString(t, modelVersionTabsCard(groupedTabsView(6, vers, map[int]bool{2: true})))
+	out := renderString(t, modelVersionTabs(groupedTabsView(6, vers, map[int]bool{2: true})))
 
 	if !strings.Contains(out, `data-cm-vgroups="true"`) {
 		t.Fatalf("grouped path should render the vgroups wrapper:\n%s", out)
@@ -112,7 +112,7 @@ func TestVersionGroupsFlatWhenFewVersions(t *testing.T) {
 		{ID: 2, Name: "v2", BaseModel: "Pony"},
 		{ID: 3, Name: "v3", BaseModel: "Illustrious"},
 	}
-	out := renderString(t, modelVersionTabsCard(groupedTabsView(2, vers, nil)))
+	out := renderString(t, modelVersionTabs(groupedTabsView(2, vers, nil)))
 
 	if strings.Contains(out, "cm-vgroup-pill") || strings.Contains(out, "data-cm-vgroups") {
 		t.Errorf("few versions must NOT render the base-model selector:\n%s", out)
@@ -136,7 +136,7 @@ func TestVersionGroupsFlatWhenSingleBaseModel(t *testing.T) {
 	for i := 1; i <= 12; i++ {
 		vers = append(vers, civitai.ModelVersionSummary{ID: i, Name: fmt.Sprintf("v%d", i), BaseModel: "SDXL 1.0"})
 	}
-	out := renderString(t, modelVersionTabsCard(groupedTabsView(1, vers, nil)))
+	out := renderString(t, modelVersionTabs(groupedTabsView(1, vers, nil)))
 
 	if strings.Contains(out, "cm-vgroup-pill") || strings.Contains(out, "data-cm-vgroups") {
 		t.Errorf("a single-base-model list must NOT render the selector:\n%s", out)
@@ -182,7 +182,7 @@ func TestVersionGroupsEscaping(t *testing.T) {
 	vers = append(vers, civitai.ModelVersionSummary{
 		ID: 99, Name: "<script>alert(1)</script>", BaseModel: "<b>Flux</b>",
 	})
-	out := renderString(t, modelVersionTabsCard(groupedTabsView(6, vers, nil)))
+	out := renderString(t, modelVersionTabs(groupedTabsView(6, vers, nil)))
 
 	if strings.Contains(out, "<script>alert(1)</script>") {
 		t.Errorf("a version name with markup must be escaped, not rendered raw:\n%s", out)

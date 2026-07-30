@@ -333,21 +333,45 @@ func workflowImportContainerID(modelID int) string {
 // POSTs the import endpoint (CSRF via hx-vals) and swaps its own container with
 // the result. A short note makes the civitai.com egress explicit.
 func workflowImportAction(modelID int, csrf string) g.Node {
+	return workflowImportActionWith(modelID, csrf, true)
+}
+
+// workflowImportActionBare is workflowImportAction WITHOUT the explanatory
+// paragraph under the button. The model DETAIL page uses it: that copy was
+// removed there deliberately, and the egress it described is carried by the
+// button's own title/aria-label instead. The discover CARDS keep the paragraph
+// (they are a browse surface where the button has no surrounding context), so the
+// two surfaces differ by exactly this one node.
+func workflowImportActionBare(modelID int, csrf string) g.Node {
+	return workflowImportActionWith(modelID, csrf, false)
+}
+
+// importEgressNote is the one sentence describing what the import button actually
+// does over the network. It stays visible on the discover cards and, on the
+// detail page, moves into the button's title/aria-label — it is never dropped
+// outright, because it is the only place the civitai.com egress is disclosed.
+const importEgressNote = "Downloads the workflow zip from civitai.com using your token, then stores each workflow locally."
+
+func workflowImportActionWith(modelID int, csrf string, withNote bool) g.Node {
 	id := workflowImportContainerID(modelID)
-	return h.Div(
+	children := []g.Node{
 		h.ID(id),
 		h.Class("flex flex-col gap-1"),
 		civButton("filled", "sm", []g.Node{
 			h.Type("button"),
+			h.Title(importEgressNote),
+			g.Attr("aria-label", "Import workflows. "+importEgressNote),
 			hx("post", fmt.Sprintf("/workflows/discover/%d/import", modelID)),
 			hx("vals", fmt.Sprintf(`{"csrf_token":%q}`, csrf)),
 			hx("target", "#"+id),
 			hx("swap", "innerHTML"),
 			hx("disabled-elt", "this"),
 		}, g.Text("Import workflow(s)")),
-		h.P(h.Class("text-xs text-slate-500"),
-			g.Text("Downloads the workflow zip from civitai.com using your token, then stores each workflow locally.")),
-	)
+	}
+	if withNote {
+		children = append(children, h.P(h.Class("text-xs text-slate-500"), g.Text(importEgressNote)))
+	}
+	return h.Div(children...)
 }
 
 // workflowImportResult renders the inline outcome that replaces the import button
