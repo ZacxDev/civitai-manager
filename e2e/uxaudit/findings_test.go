@@ -232,10 +232,11 @@ func TestA11yFindingsSkipsBlankRuleID(t *testing.T) {
 	}
 }
 
-// TestA11yFindingsCleanInputIsNotAnError asserts genuinely-clean/absent axe output
-// yields no findings AND no error — a clean page must stay pushable.
+// TestA11yFindingsCleanInputIsNotAnError asserts a genuinely CLEAN axe result yields
+// no findings AND no error — a clean page must stay pushable. (An EMPTY result is not
+// clean; see TestEmptyAxeResultIsAScanFailure.)
 func TestA11yFindingsCleanInputIsNotAnError(t *testing.T) {
-	for _, in := range []string{"", `{"violations":null}`, `{"violations":[]}`, `{}`} {
+	for _, in := range []string{`{"violations":null}`, `{"violations":[]}`, `{}`} {
 		got, err := A11yFindings([]byte(in))
 		if err != nil {
 			t.Errorf("input %q: unexpected error %v", in, err)
@@ -298,6 +299,54 @@ func TestAxeScanFailureIsNotClean(t *testing.T) {
 	// Unparseable axe JSON is likewise not "clean".
 	if _, err := A11yFindings([]byte("not json")); err == nil {
 		t.Error("unparseable axe JSON returned no error — it would read as a clean page")
+	}
+}
+
+// TestEmptyAxeResultIsAScanFailure asserts an EMPTY axe result is treated as a scan
+// failure, not as a clean page — the invariant enforced in the LIBRARY rather than at
+// the walk's call sites.
+//
+// There is no genuinely-scanned-but-empty result: axeRunScript is an IIFE whose success
+// path returns {"violations":[…]} and whose catch returns {"error":…,"violations":[]},
+// so it always yields a JSON string; and an Evaluate that never yields errors out of
+// chromedp.Run inside CaptureWith before AxeJSON is assigned. So empty means the scan
+// did not run, and pushing it as a 0-violation page would make every a11y rule look
+// resolved and then look new again on the next good run.
+//
+// Enforcing it in A11yFindings (not just in walk_test.go's guards) is what makes a
+// FUTURE non-test caller — e.g. a CI job calling BuildPayload directly — inherit the
+// guarantee instead of silently re-opening this hole.
+func TestEmptyAxeResultIsAScanFailure(t *testing.T) {
+	for _, in := range [][]byte{nil, {}, []byte("")} {
+		got, err := A11yFindings(in)
+		if err == nil {
+			t.Fatalf("A11yFindings(%q) returned no error — an unscanned page would read as CLEAN and corrupt the a11y baseline", in)
+		}
+		if len(got) != 0 {
+			t.Errorf("A11yFindings(%q) produced %d findings, want none", in, len(got))
+		}
+		var scanErr *ErrAxeScanFailed
+		if !errors.As(err, &scanErr) {
+			t.Errorf("A11yFindings(%q) error = %T, want *ErrAxeScanFailed", in, err)
+		}
+	}
+
+	// It must propagate through CaptureFindings and out of BuildPayload, so no caller
+	// (test harness or otherwise) can build a payload from an unscanned capture.
+	if _, err := CaptureFindings(ViewCapture{ScreenshotPNG: tinyPNG}); err == nil {
+		t.Error("CaptureFindings accepted a capture with NO axe result")
+	}
+	caps := []CapturedView{{
+		View:     View{Name: "unscanned"},
+		Viewport: Viewports[0],
+		Capture:  ViewCapture{ScreenshotPNG: tinyPNG}, // no AxeJSON at all
+	}}
+	_, _, err := BuildPayload("no-axe", caps)
+	if err == nil {
+		t.Fatal("BuildPayload accepted a capture with NO axe result — the walk could push it as a 0-violation page")
+	}
+	if !strings.Contains(err.Error(), "unscanned") {
+		t.Errorf("error %q does not identify the offending view", err)
 	}
 }
 

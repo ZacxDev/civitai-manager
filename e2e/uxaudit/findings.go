@@ -148,15 +148,27 @@ type axeNode struct {
 // serve as a stable gate key, and auditloop's legacy fallback would derive a
 // meaningless id from the JSON text.
 //
-// It returns an *ErrAxeScanFailed when the axe result reports a scan error, and an
-// error when the axe JSON is unparseable — in BOTH cases the page was not reliably
-// scanned, and returning "no findings" would let it read as CLEAN and poison the
-// a11y regression baseline. An EMPTY axeJSON is not treated as an error (there is
-// nothing to interpret); the walk asserts separately that every capture produced axe
-// output, so an absent scan still fails loudly there.
+// It returns an error — never "no findings" — for EVERY input that means the page was
+// not reliably scanned, because a page that reads as CLEAN when it was never scanned
+// poisons auditloop's a11y regression baseline (an empty rule set makes every rule
+// look resolved, then every rule look new on the next good run). Three such inputs:
+//
+//   - the axe result reports a scan error (*ErrAxeScanFailed);
+//   - the axe JSON is unparseable;
+//   - axeJSON is EMPTY (*ErrAxeScanFailed) — there is no such thing as a
+//     genuinely-scanned-but-empty result: axeRunScript (axe.go) is an IIFE whose
+//     success path returns {"violations":[…]} and whose catch returns
+//     {"error":…,"violations":[]}, so it ALWAYS yields a JSON string; and an Evaluate
+//     that never yields errors out of chromedp.Run inside CaptureWith before AxeJSON
+//     is assigned (capture.go only assigns it when non-empty). Empty therefore means
+//     the scan did not run — the same semantic class as an explicit error.
+//
+// This invariant lives HERE, in the library, rather than at the walk's call sites, so
+// every caller inherits it — including a future CI job that calls BuildPayload
+// directly and would not inherit a guard that only exists in the test harness.
 func A11yFindings(axeJSON []byte) ([]PushFinding, error) {
 	if len(axeJSON) == 0 {
-		return nil, nil
+		return nil, &ErrAxeScanFailed{Reason: "no axe result was captured for this view (the scan did not run)"}
 	}
 	var res axeResult
 	if err := json.Unmarshal(axeJSON, &res); err != nil {
