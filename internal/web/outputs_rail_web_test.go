@@ -335,6 +335,53 @@ func TestRailOverFetchesSoBatchesCannotUnderFillIt(t *testing.T) {
 	}
 }
 
+// TestRailStaysFullAfterOneMaxSizeBatch is the case the ×2 over-fetch got wrong.
+// railFetchLimit is tied to maxBatchCount, so the LARGEST batch the UI can queue
+// must still leave a FULL rail: one collapsed entry plus outputsRailLimit-1 solo
+// runs. Every number is derived from the constants, so raising maxBatchCount moves
+// the fixture with it instead of leaving a test that silently stops covering the
+// worst case.
+//
+// At railFetchLimit = outputsRailLimit*2 = 24 this rendered ONE entry badged ×24
+// — a badge contradicting the batch page it links to — and the shipped "16" quick
+// pick left 9 tiles. Both are regressions on EVERY page in the app, since the rail
+// is chrome.
+func TestRailStaysFullAfterOneMaxSizeBatch(t *testing.T) {
+	srv, root := newOutputsServer(t, "127.0.0.1:8787")
+	wf := seedWF(t, srv, "wf")
+	// Enough solo runs to fill the rail on their own, seeded FIRST so they are the
+	// older half and the batch sits newest (what the user sees right after clicking).
+	for i := 0; i < outputsRailLimit; i++ {
+		seedGen(t, srv, root, &wf, "solo"+strconv.Itoa(i), []byte("S"))
+	}
+	seedBatch(t, srv, root, "maxbatch", "preset", maxBatchCount, maxBatchCount)
+
+	rd := srv.rail(context.Background())
+	if len(rd.Groups) != outputsRailLimit {
+		t.Fatalf("after ONE batch of %d the rail shows %d entries, want a full %d — "+
+			"railFetchLimit (%d) must hold a max-size batch PLUS a full rail",
+			maxBatchCount, len(rd.Groups), outputsRailLimit, railFetchLimit)
+	}
+	if got := rd.Groups[0].Count; got != maxBatchCount {
+		t.Errorf("the batch entry reports ×%d but the batch has %d runs — the badge "+
+			"contradicts the batch page it links to", got, maxBatchCount)
+	}
+
+	shell := pageShell(get(t, srv, "/").Body.String())
+	if n := strings.Count(shell, `class="cm-rail-item"`); n != outputsRailLimit {
+		t.Errorf("rail rendered %d tiles, want a full %d", n, outputsRailLimit)
+	}
+	if !strings.Contains(shell, "×"+strconv.Itoa(maxBatchCount)) {
+		t.Errorf("missing the ×%d badge; a truncated count would under-report the batch", maxBatchCount)
+	}
+	// The shipped quick picks are the realistic way to reach this — 16 is one click.
+	for _, n := range batchQuickPicks {
+		if n > maxBatchCount {
+			t.Errorf("quick pick ×%d exceeds maxBatchCount %d", n, maxBatchCount)
+		}
+	}
+}
+
 // TestRailGroupingPreservesNewestFirstOrder — a batch takes the position of its
 // NEWEST member, so collapsing can never silently reorder the rail.
 func TestRailGroupingPreservesNewestFirstOrder(t *testing.T) {
@@ -390,8 +437,13 @@ func TestRailSingleItemBatchRendersAsOrdinaryTile(t *testing.T) {
 // store.recentGenerationsCap (50) — otherwise the store would silently clamp it
 // and the group clamp would start under-filling again for a reason invisible here.
 func TestRailStoreReadStaysBounded(t *testing.T) {
-	if railFetchLimit != outputsRailLimit*2 {
-		t.Fatalf("railFetchLimit = %d, want outputsRailLimit*2 = %d", railFetchLimit, outputsRailLimit*2)
+	// A real bound, not a design-lock: the window must be able to fill the rail at
+	// all, and must stay under the store's cap. Pinning it to one exact expression
+	// would just fail with "want outputsRailLimit*2" the next time the value is
+	// tuned, telling the reader nothing about boundedness.
+	if railFetchLimit < outputsRailLimit || railFetchLimit > 50 {
+		t.Fatalf("railFetchLimit = %d, want between outputsRailLimit (%d) and the "+
+			"store's recentGenerationsCap (50)", railFetchLimit, outputsRailLimit)
 	}
 
 	srv, root := newOutputsServer(t, "127.0.0.1:8787")

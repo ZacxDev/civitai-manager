@@ -21,12 +21,31 @@ const outputsRailLimit = 12
 // deliberately larger than outputsRailLimit: collapsing batches over exactly
 // outputsRailLimit rows would let a batch-heavy history UNDER-fill the rail (12
 // rows that all belong to one batch collapse to a single entry, leaving 11 slots
-// empty). So: fetch 2×, group, then clamp to outputsRailLimit GROUPS.
+// empty). So: over-fetch, group, then clamp to outputsRailLimit GROUPS.
 //
-// It stays a fixed, bounded read — 24 is a constant, and well under
+// 🔴 THE VALUE IS TIED TO maxBatchCount — do not "simplify" it to a round number.
+// One batch of size s inside the window leaves 1 + (window − s) entries, so the
+// window must hold a FULL-SIZE batch plus enough rows to still fill the rail:
+// outputsRailLimit + maxBatchCount − 1. At the old 2× (24) a single batch of 14+
+// under-filled the rail on EVERY page in the app until 14 newer runs aged past it
+// — and the shipped "16" quick pick (batchQuickPicks) put the user one click from
+// exactly that, dropping the rail from 12 tiles to 9. A batch of 25 was worse
+// still: one entry, badged ×24 while the batch page it linked to showed 25.
+// Writing it as the EXPRESSION means raising maxBatchCount cannot silently
+// re-break this.
+//
+// HONEST LIMIT: this repairs the SINGLE-batch worst case exactly, not the general
+// one. Two back-to-back 25-batches (50 rows) still collapse to 2 entries here, and
+// no fixed window can promise 12 groups — 12 batches of 25 is 300 rows, far past
+// store.recentGenerationsCap. The over-fetch is a heuristic bound, and the general
+// fix (a GROUP BY over the whole table) is precisely the unbounded per-render scan
+// that cap exists to forbid. 36 is not a magic number, it is "the worst single
+// batch, plus a full rail".
+//
+// It stays a fixed, bounded read — a constant, and still under
 // store.recentGenerationsCap (50), so ListRecentGenerations' clamp never silently
 // truncates it (asserted by TestRailStoreReadStaysBounded).
-const railFetchLimit = outputsRailLimit * 2
+const railFetchLimit = outputsRailLimit + maxBatchCount - 1
 
 // outputsRailSettingKey persists the rail's collapsed state, mirroring the
 // theme/NSFW settings idiom (a CSRF-protected POST → settings store → HX-Refresh).
@@ -76,10 +95,15 @@ type railData struct {
 // never appears on a tile that links to a single generation.
 //
 // Honest limit: Count counts only the rows inside the caller's fetch window. A
-// batch straddling that window's oldest edge therefore undercounts (its older
-// members were never read). It can only ever affect the LAST entry, the batch page
-// behind the link still shows the truth, and the alternative — a per-group COUNT
-// query — is exactly the N+1 this surface must not have.
+// batch straddling that window's oldest edge therefore undercounts — its older
+// members were never read — and the badge then contradicts the batch page it links
+// to. Structurally it can only hit the OLDEST entry the window reaches, but do not
+// read that as "only a minor one": when a single huge batch dominates the history
+// the oldest entry is also the FIRST and only entry, which is exactly how a
+// 25-item batch used to render a ×24 badge. railFetchLimit is sized to make that
+// case unreachable for one batch (see its doc); back-to-back max batches can still
+// reach it. The alternative — a per-group COUNT query — is exactly the N+1 this
+// surface must not have.
 func groupRailGenerations(gens []store.Generation, limit int) []railGroup {
 	groups := make([]railGroup, 0, len(gens))
 	seen := make(map[string]int, len(gens))
