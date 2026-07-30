@@ -21,9 +21,32 @@ import (
 const runModesContainerID = "run-modes"
 
 // runModesInclude is the hx-include selector every run control uses to carry the
-// current mode picks along with its own request. A page with no picker simply
-// matches nothing.
-const runModesInclude = "#" + runModesContainerID + " select"
+// current mode picks along with its own request.
+//
+// It names the STABLE CONTAINER, not "#run-modes select", and that distinction is
+// load-bearing (issue #28). The container is always rendered in band — empty for an
+// ordinary single-mode workflow — but the `select` inside it exists ONLY for a
+// multi-mode template. A descendant selector therefore matched NOTHING on every
+// ordinary workflow, and htmx logs a first-party console error for an hx-include
+// that resolves to zero elements ("The selector … returned no matches!", `we()`:
+// `if(r.length===0){O('The selector "'+n+'" on '+t+" returned no matches!")}`).
+//
+// Including the container is EXACTLY equivalent in what it submits. htmx processes
+// each included element and, when it is not a form, also walks its descendants
+// (`se(f(e).querySelectorAll(ot), …)` with `ot="input, textarea, select"`), so a
+// multi-mode picker's <select> is collected identically. The container itself
+// contributes no value: the collector's guard rejects a nameless element
+// (`tn()`: `if(t.name===""||t.name==null||…){return false}`), and a <div> is not a
+// form, so nothing extra rides along.
+//
+// NOTE this was only ever a CONSOLE error, never a behavioural one: a single-mode
+// workflow has no mode to submit, and the server refuses to parse one anyway —
+// parseModeChoices returns nil unless the workflow is WorkflowFormatUI AND
+// DetectModeSelectors surfaces a matching key, and comfy.ApplyModeSelection returns
+// the graph UNCHANGED for an empty selection. The submitted request is byte-identical
+// before and after this change; what changes is that the selector now always matches,
+// so htmx stops logging.
+const runModesInclude = "#" + runModesContainerID
 
 // runParamsContainerID is the STABLE container holding the "Parameters" panel. The
 // mode picker re-fetches it on change (a bypassed node exposes no editable inputs,

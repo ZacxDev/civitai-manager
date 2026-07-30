@@ -41,7 +41,10 @@ func TestBadOptionInstallActionRenders(t *testing.T) {
 		"/workflows/7/install-option-and-run", // the combined endpoint
 		// Pulls the other picks along — and, since multi-mode templates landed, the
 		// mode picker's selects too, so an install-and-run keeps the chosen pipeline.
-		`hx-include="closest form, #run-modes select"`,
+		// The mode half names the stable CONTAINER (issue #28): htmx walks an included
+		// non-form element's descendants, so the <select> still rides along, and the
+		// selector matches on an ordinary workflow instead of logging "no matches".
+		`hx-include="closest form, ` + runModesInclude + `"`,
 		"install_filename",                     // the install target in hx-vals
 		`<option value="bbox/face_yolov8m.pt"`, // the substitute dropdown still present
 		"Or substitute an installed file",      // model-file dropdown is optional
