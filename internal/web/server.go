@@ -594,6 +594,9 @@ func (s *Server) Handler() http.Handler {
 	// civitai.com + the local filesystem). Disabled/degrades to link-only unless
 	// comfy_model_path is a writable dir and the ComfyUI is local.
 	mux.HandleFunc("POST /workflows/{id}/download-and-run", s.handleWorkflowDownloadAndRun)
+	// The failure panel's ONE primary recovery action: install every missing model
+	// file, then run (all-or-nothing on resolution — see run_install_all.go).
+	mux.HandleFunc("POST /workflows/{id}/install-missing-and-run", s.handleWorkflowInstallMissingAndRun)
 	mux.HandleFunc("GET /workflows/{id}/run/comfy-status", s.handleWorkflowRunComfyStatus)
 	mux.HandleFunc("GET /workflows/{id}/run/status", s.handleWorkflowRunStatus)
 	mux.HandleFunc("GET /workflows/{id}/run/params", s.handleWorkflowRunParams)

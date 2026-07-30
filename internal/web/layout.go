@@ -341,21 +341,61 @@ func badgeColor(variant string) string {
 	}
 }
 
+// configDocsURL is this project's configuration reference. A state whose only
+// remedy is "edit your config" needs somewhere to send a user who does not know
+// where that file is or what the key does — the docs page answers both.
+const configDocsURL = "https://github.com/ZacxDev/civitai-manager/blob/main/docs/configuration.md"
+
+// configDocsLink is the small outline link to the configuration docs, used by the
+// config-gated empty states.
+func configDocsLink(label string) g.Node {
+	return h.A(
+		h.Href(configDocsURL),
+		h.Target("_blank"),
+		g.Attr("rel", "noopener noreferrer"),
+		dataAttr("civitai-ui", "button"),
+		dataAttr("variant", "outline"),
+		dataAttr("size", "sm"),
+		g.Text(label+" ↗"),
+	)
+}
+
 // alert renders a @civitai/components alert: role=alert + data-color, with an
 // alert-body wrapper and an optional bold title. color is info|success|warning|
 // error.
 func alert(color, title string, body ...g.Node) g.Node {
+	return alertIcon(color, "", title, body...)
+}
+
+// alertIcon is alert() with a leading GLYPH in the component's icon slot:
+// [data-civitai-ui='alert'] is a flex row (gap 10px, align flex-start) whose first
+// child sits beside [data-civitai-ui-alert-body], which is exactly that slot — so
+// this needs no new CSS.
+//
+// It exists so a failure state can be distinguished by SHAPE, not by color alone.
+// An alert's only other signal is its tint + border, which a reader with a
+// color-vision deficiency (or a monochrome / forced-colors rendering) cannot tell
+// apart from the info/warning variants. The glyph is aria-hidden: the alert already
+// carries role="alert" plus a text title that names the problem, so announcing
+// "warning sign" as well would be redundant noise for a screen-reader user.
+//
+// glyph "" is the plain alert (no icon slot emitted at all).
+func alertIcon(color, glyph, title string, body ...g.Node) g.Node {
 	inner := []g.Node{dataFlag("civitai-ui-alert-body")}
 	if title != "" {
 		inner = append(inner, h.Div(dataFlag("civitai-ui-alert-title"), g.Text(title)))
 	}
 	inner = append(inner, body...)
-	return h.Div(
+	attrs := []g.Node{
 		dataAttr("civitai-ui", "alert"),
 		dataAttr("color", color),
 		g.Attr("role", "alert"),
-		h.Div(inner...),
-	)
+	}
+	if glyph != "" {
+		attrs = append(attrs, h.Span(g.Attr("aria-hidden", "true"), g.Text(glyph)))
+	}
+	attrs = append(attrs, h.Div(inner...))
+	return h.Div(attrs...)
 }
 
 // textInput renders a @civitai/components text-input: a wrapper carrying the
