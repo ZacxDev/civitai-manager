@@ -50,6 +50,13 @@ type ViewCapture struct {
 	NetworkJSON   []byte // marshaled []networkEvent
 	BodyText      string // document.body.innerText at capture time (for content assertions)
 
+	// A11yDigestJSON is the bounded DOM/accessibility digest (a11y-digest.js output,
+	// see a11y.go) captured in the SAME pass as axe, off the settled post-prep DOM.
+	// auditloop feeds it to a deterministic gate that drops persona findings the DOM
+	// refutes. It is BEST-EFFORT: empty when the script failed or the page is bare,
+	// and BuildPayload attaches it only when non-empty (an empty digest 400s the push).
+	A11yDigestJSON []byte
+
 	AxeViolations     int
 	ConsoleFirstParty int
 	ConsoleThirdParty int
@@ -155,6 +162,26 @@ func (b *Browser) CaptureWith(pageURL string, vp Viewport, prep []chromedp.Actio
 	)
 
 	var out ViewCapture
+
+	// Bounded DOM/accessibility digest for auditloop's persona-evaluator grounding.
+	// Captured on the SAME settled, post-prep DOM axe just scanned, so the digest and
+	// the axe result describe the same tree. NON-FATAL by design (mirrors auditloop's
+	// own crawler): a digest failure must never fail the capture — the page simply
+	// carries no digest and auditloop degrades to screenshot-only for it.
+	tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
+		var raw string
+		if err := chromedp.Evaluate(a11yDigestSource, &raw).Do(ctx); err != nil {
+			return nil
+		}
+		// Over-cap ⇒ treat as absent. auditloop REJECTS an oversized digest, and a
+		// rejection fails the whole multi-page push, so dropping it here is the safe
+		// direction (lost grounding on one page beats a lost run).
+		if raw != "" && len(raw) <= MaxA11yDigestBytes {
+			out.A11yDigestJSON = []byte(raw)
+		}
+		return nil
+	}))
+
 	tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
 		b, err := page.CaptureScreenshot().
 			WithFormat(page.CaptureScreenshotFormatPng).

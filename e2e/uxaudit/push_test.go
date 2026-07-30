@@ -129,7 +129,7 @@ func TestValidateRejectsBadPayloads(t *testing.T) {
 
 // auditloopSchemaSource records where the harness's hand-mirrored push structs were
 // copied from. Bump the commit/date whenever you re-mirror auditloop's schema.
-const auditloopSchemaSource = "auditloop internal/plugin/schema.go @ 0da3004 (2026-07-24)"
+const auditloopSchemaSource = "auditloop internal/plugin/schema.go @ df153b0 (2026-07-29)"
 
 // expectedTags is the json tag set (per struct) that auditloop's server expects,
 // copied verbatim from auditloopSchemaSource. TestPushSchemaTagsMatchAuditloop
@@ -143,7 +143,7 @@ const auditloopSchemaSource = "auditloop internal/plugin/schema.go @ 0da3004 (20
 var expectedTags = map[string][]string{
 	"PushPayload": {"label", "environment", "pages"},
 	"PushPage": {
-		"url", "viewport", "screenshot", "axe", "network",
+		"url", "viewport", "screenshot", "axe", "network", "a11y_digest",
 		"axe_violations", "console_first_party", "console_third_party",
 		"network_first_party", "network_third_party", "findings",
 	},
@@ -241,6 +241,7 @@ func TestBuildPayloadMatchesGoldenSchema(t *testing.T) {
 			Screenshot:        "dashboard.desktop.png",
 			Axe:               "dashboard.desktop.axe.json",
 			Network:           "dashboard.desktop.network.json",
+			A11yDigest:        "dashboard.desktop.a11y.json",
 			AxeViolations:     2,
 			ConsoleFirstParty: 1,
 			ConsoleThirdParty: 0,
