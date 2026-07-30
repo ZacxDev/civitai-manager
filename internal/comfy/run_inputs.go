@@ -144,14 +144,19 @@ var seedControlValues = map[string]bool{
 const maxRunInputHops = 8
 
 // DetectRunInputs scans a UI-format ("Save") graph and returns the curated, editable
-// run inputs for its TOP-LEVEL nodes (prompts, KSampler settings, empty-latent
-// dimensions). Subgraph-interior nodes are NOT scanned — they live under
-// definitions.subgraphs[] (not the top-level nodes[]) and their ids are rewritten by
-// flattening, so they are out of scope. For the same reason an upstream walk STOPS at
-// a subgraph instance node (a top-level node whose type is a subgraph definition id):
-// conversion deletes that node, so an override aimed at it would silently no-op.
-// Parameters that live inside a subgraph are therefore not editable at all — a known
-// limit, and the honest one, since the alternative is a control that does nothing.
+// run inputs (prompts, KSampler settings, empty-latent dimensions) for its TOP-LEVEL
+// nodes AND for the interiors of the subgraph definitions those nodes instantiate —
+// see subgraphRunTargets for which interiors qualify and why the rest are refused.
+//
+// An interior input is addressed as "<instance id>:<interior id>" (subgraphKeySep),
+// the same id flattening gives the node in the submitted graph; ApplyUIWidgetOverrides
+// resolves that form back into definitions.subgraphs[].nodes[] so the edit lands
+// BEFORE conversion clones the interior.
+//
+// An upstream walk still STOPS at a subgraph INSTANCE node: conversion deletes that
+// node, and a value flowing OUT of a subgraph would have to be chased across the
+// namespace boundary. The interior is reached by scanning it directly (below), not by
+// walking through the instance.
 //
 // A curated input whose slot is link-connected is handled by its slot KIND:
 //
@@ -182,27 +187,198 @@ func DetectRunInputs(graph json.RawMessage, info ObjectInfo) []RunInput {
 	// per consumer would render N fields that all post the same key, and the override
 	// map would silently keep only the last one (dropping the field the user edited).
 	at := make(map[UIWidgetKey]int, len(g.Nodes))
+	add := func(ri RunInput) {
+		key := UIWidgetKey{NodeID: ri.NodeID, Widget: ri.WidgetIndex}
+		if pos, dup := at[key]; dup {
+			out[pos].Consumers++
+			return // first consumer in nodes[] order supplies the label — deterministic
+		}
+		ri.Consumers = 1
+		at[key] = len(out)
+		out = append(out, ri)
+	}
+
+	// Subgraph interiors are surfaced in the position of the INSTANCE node, so the
+	// panel's field order still follows nodes[] order.
+	byInstance := make(map[string]*subgraphDef)
+	for _, t := range subgraphRunTargets(&g) {
+		byInstance[t.instanceID] = t.def
+	}
+
 	for i := range g.Nodes {
 		n := &g.Nodes[i]
-		layout, ok := runInputLayouts[n.Type]
-		if !ok {
-			continue
-		}
 		if isInactiveMode(n.Mode) {
 			continue // bypassed/muted consumer — it will not run, so it is not editable
 		}
-		for _, ri := range detectNodeRunInputs(idx, n, layout, info) {
-			key := UIWidgetKey{NodeID: ri.NodeID, Widget: ri.WidgetIndex}
-			if pos, dup := at[key]; dup {
-				out[pos].Consumers++
-				continue // first consumer in nodes[] order supplies the label — deterministic
+		if layout, ok := runInputLayouts[n.Type]; ok {
+			for _, ri := range detectNodeRunInputs(idx, n, layout, info) {
+				add(ri)
 			}
-			ri.Consumers = 1
-			at[key] = len(out)
-			out = append(out, ri)
+			continue
+		}
+		instID := idToString(n.ID)
+		def, ok := byInstance[instID]
+		if !ok || def.ID != n.Type {
+			continue // not a subgraph instance we are willing to reach into
+		}
+		sub := newSubgraphRunIndex(def, idx.subgraphTypes)
+		for j := range def.Nodes {
+			m := &def.Nodes[j]
+			layout, ok := runInputLayouts[m.Type]
+			if !ok {
+				// NOT recursed into. A NESTED subgraph instance's type is a definition
+				// uuid, which is never a curated class name, so the scan stops here by
+				// construction — exactly one level deep, no recursion, and therefore no
+				// depth bound or cycle guard to get wrong. Parameters two levels down stay
+				// uneditable; that is the same honest limit the whole interior used to have.
+				continue
+			}
+			if isInactiveMode(m.Mode) {
+				continue // bypassed/muted interior node
+			}
+			for _, ri := range detectNodeRunInputs(sub, m, layout, info) {
+				add(scopeToInstance(ri, instID))
+			}
 		}
 	}
 	return out
+}
+
+// subgraphKeySep separates the SUBGRAPH INSTANCE id from the INTERIOR node id in a
+// RunInput.NodeID / UIWidgetKey.NodeID that addresses a node living inside a subgraph
+// definition — "93:10" is interior node 10 of the subgraph instantiated by top-level
+// node 93.
+//
+// Why this spelling:
+//
+//   - It is EXACTLY the id the converter's flattener already emits for that node
+//     (sgExpander.expand builds `prefix + ":" + interiorID`), so the address the run
+//     panel shows is the node id that appears in the submitted api graph.
+//   - Top-level node ids are plain integers, so a bare id can never contain the
+//     separator. A key WITHOUT it is a top-level key and resolves exactly as it always
+//     has — which is what makes every run preset and generations.params row written
+//     before this existed keep working untouched, with no migration.
+//   - It is a plain string, so it round-trips through the stored params JSON (where
+//     node_id is a string), the wp_node form field, and PresetEntry.NodeID with no
+//     schema change anywhere.
+const subgraphKeySep = ":"
+
+// subgraphRunTarget is one subgraph instance whose INTERIOR may be surfaced as
+// editable run inputs.
+type subgraphRunTarget struct {
+	instanceID string
+	def        *subgraphDef
+}
+
+// subgraphRunTargets returns, in top-level nodes[] order, the subgraph instances whose
+// interior may be exposed as editable run inputs AND written to by
+// ApplyUIWidgetOverrides. Both sides call THIS function, so the exposure rule and the
+// write rule cannot drift apart.
+//
+// Two refusals, both deliberate:
+//
+//  1. A definition instantiated MORE THAN ONCE anywhere — top level or inside another
+//     definition — is skipped entirely. There is no per-instance widgets_values: an
+//     override is written into the DEFINITION and flattening then clones the edited
+//     interior into EVERY instance, so a "seed" edit would move N independent
+//     pipelines together and a batch could never give them different values. Exposing
+//     nothing is the honest answer; a control that silently drives more than it names
+//     is the failure this refuses (same posture as the install-and-run substitution
+//     offer). No workflow in the dogfood library instantiates a definition twice, so
+//     live data cannot catch a regression here — TestSubgraphMultiInstanceNotExposed
+//     is the only guard.
+//  2. A BYPASSED/MUTED instance is skipped. ApplyModeSelection runs BEFORE detection
+//     and marks a switched-off pipeline's top-level nodes — a subgraph instance
+//     included — mode 4/2. Randomising a seed inside a pipeline that is not running is
+//     exactly the identical-batch near-miss the mode-applied-graph rule exists to
+//     prevent.
+func subgraphRunTargets(g *uiConvGraph) []subgraphRunTarget {
+	if len(g.Definitions.Subgraphs) == 0 {
+		return nil
+	}
+	defs := make(map[string]*subgraphDef, len(g.Definitions.Subgraphs))
+	for i := range g.Definitions.Subgraphs {
+		if d := &g.Definitions.Subgraphs[i]; d.ID != "" {
+			defs[d.ID] = d
+		}
+	}
+	// Count instantiations ANYWHERE: a definition used once at the top level and once
+	// inside another definition is still cloned twice by flattening.
+	count := make(map[string]int, len(defs))
+	for i := range g.Nodes {
+		if _, ok := defs[g.Nodes[i].Type]; ok {
+			count[g.Nodes[i].Type]++
+		}
+	}
+	for _, d := range defs {
+		for j := range d.Nodes {
+			if _, ok := defs[d.Nodes[j].Type]; ok {
+				count[d.Nodes[j].Type]++
+			}
+		}
+	}
+
+	var out []subgraphRunTarget
+	for i := range g.Nodes {
+		n := &g.Nodes[i]
+		def, ok := defs[n.Type]
+		if !ok || isInactiveMode(n.Mode) || count[n.Type] != 1 {
+			continue
+		}
+		instID := idToString(n.ID)
+		if instID == "" || strings.Contains(instID, subgraphKeySep) {
+			continue // an id already carrying the separator would make the key ambiguous
+		}
+		out = append(out, subgraphRunTarget{instanceID: instID, def: def})
+	}
+	return out
+}
+
+// scopeToInstance rewrites an interior RunInput's addresses into the instance
+// namespace ("<instance id>:<interior id>"). SourceVia is rewritten too, so the
+// resolution path the UI prints names ids that exist in the submitted graph rather
+// than bare interior ids that collide with unrelated top-level nodes.
+func scopeToInstance(ri RunInput, instID string) RunInput {
+	ri.NodeID = instID + subgraphKeySep + ri.NodeID
+	for i, v := range ri.SourceVia {
+		if strings.HasPrefix(v, "#") {
+			ri.SourceVia[i] = "#" + instID + subgraphKeySep + v[1:]
+		}
+	}
+	return ri
+}
+
+// newSubgraphRunIndex builds the by-id / by-link index for ONE subgraph definition's
+// interior, in that definition's own id namespace. Two things differ from the
+// top-level index:
+//
+//   - the boundary I/O nodes are EXCLUDED, exactly as sgExpander.expand excludes them:
+//     they are virtual, get no clone, and an override aimed at one would vanish. An
+//     upstream walk that reaches the boundary therefore dangles and surfaces nothing —
+//     the right answer, since such a value comes from OUTSIDE the subgraph and chasing
+//     it across the namespace boundary is not attempted here.
+//   - subgraphTypes carries every definition id (shared with the top-level index), so
+//     the walk still stops at a nested subgraph instance.
+func newSubgraphRunIndex(def *subgraphDef, subgraphTypes map[string]bool) *runGraphIndex {
+	idx := &runGraphIndex{
+		byID:          make(map[string]*uiConvNode, len(def.Nodes)),
+		linkByID:      make(map[int64]uiLink, len(def.Links)),
+		subgraphTypes: subgraphTypes,
+	}
+	inID, outID := idToString(def.InputNode.ID), idToString(def.OutputNode.ID)
+	for i := range def.Nodes {
+		id := idToString(def.Nodes[i].ID)
+		if id == "" || id == inID || id == outID {
+			continue
+		}
+		idx.byID[id] = &def.Nodes[i]
+	}
+	for _, raw := range def.Links {
+		if il, ok := parseSubgraphLink(raw); ok {
+			idx.linkByID[il.id] = uiLink{ID: il.id, OriginID: il.originID, OriginSlot: il.originSlot}
+		}
+	}
+	return idx
 }
 
 // runGraphIndex is the by-id node / by-id link lookup the upstream walk needs, built
@@ -214,8 +390,9 @@ type runGraphIndex struct {
 	// is one of these is a subgraph INSTANCE: conversion deletes it and replaces it
 	// with prefixed clones of the subgraph's interior nodes, so an override written to
 	// the instance's own widgets_values would silently vanish. Resolution therefore
-	// stops at such a node (see resolveUpstreamWidget) rather than surfacing a field
-	// whose edit would not reach ComfyUI.
+	// stops at such a node (see resolveUpstreamWidget). The interior itself IS reached
+	// — by scanning definitions.subgraphs[].nodes[] directly (see subgraphRunTargets),
+	// which writes to the definition, the only place an edit survives flattening.
 	subgraphTypes map[string]bool
 }
 
@@ -360,8 +537,10 @@ func (idx *runGraphIndex) resolveUpstreamWidget(start *uiConvNode, inputName str
 			// A subgraph INSTANCE: flattening deletes this node and emits prefixed
 			// clones of the subgraph interior, so an override written to the instance's
 			// widgets_values would never reach the submitted graph. Surface nothing
-			// rather than a control that silently does not apply. (Editing values inside
-			// a subgraph is a known limit — the interior nodes are not scanned either.)
+			// rather than a control that silently does not apply. (The interior is
+			// scanned directly instead — see subgraphRunTargets. Chasing a value that
+			// flows OUT of a subgraph would additionally have to cross the instance's
+			// output boundary into another id namespace; that is not attempted.)
 			return resolvedWidget{}, false
 		}
 		if visited[l.OriginID] {
