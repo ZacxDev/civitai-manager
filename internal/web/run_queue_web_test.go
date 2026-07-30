@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -387,6 +388,112 @@ func TestQueueNoSeedOfferIsASiblingOfTheStatusFragment(t *testing.T) {
 	if srv.runJobState().Running {
 		t.Error("the offer started something")
 	}
+}
+
+// ── the seed keys must come from the MODE-APPLIED graph ──────────────────────
+
+// queueModeSeedGraph is a two-pipeline template in the shape real packs use (an
+// ACTIVE rgthree Fast Groups Bypasser with toggleRestriction "max one" over two
+// purple groups), where EACH pipeline holds its own KSampler seed.
+//
+// The asymmetry is the point: pipeline A's sampler ships ACTIVE and pipeline B's
+// ships BYPASSED, so the RAW graph and the MODE-APPLIED graph expose DIFFERENT seed
+// nodes. DetectRunInputs never surfaces a bypassed node, so reading wf.Graph yields
+// node 10 while selecting MODE-B yields node 20.
+const queueModeSeedGraph = `{"nodes":[
+  {"id":1,"type":"Fast Groups Bypasser (rgthree)","mode":0,"pos":[-800,-800],"size":[200,80],
+   "title":"Workflows","properties":{"matchColors":"purple","matchTitle":"","toggleRestriction":"max one"}},
+  {"id":10,"type":"KSampler","mode":0,"pos":[50,80],"size":[200,100],
+   "widgets_values":[111,"randomize",20,8,"euler","normal",1]},
+  {"id":20,"type":"KSampler","mode":4,"pos":[650,80],"size":[200,100],
+   "widgets_values":[222,"randomize",20,8,"euler","normal",1]}],
+ "links":[],
+ "groups":[
+  {"title":"MODE-A","bounding":[0,0,500,400],"color":"#a1309b"},
+  {"title":"MODE-B","bounding":[600,0,500,400],"color":"#a1309b"}]}`
+
+// TestQueueSeedKeysComeFromTheModeAppliedGraph is the M37 gap: mutating
+// SeedWidgetKeys(modeAppliedGraph(wf, modes)) to SeedWidgetKeys(wf.Graph) was caught
+// by NOTHING, because no test used a multi-mode graph.
+//
+// It matters because template packs ship N pipelines with all but one bypassed
+// (repo CLAUDE.md, internal/comfy/modes.go). Reading the raw graph re-rolls a
+// BYPASSED pipeline's seed and leaves the SELECTED one fixed — so every item of the
+// batch submits the same graph and produces the same image N times, silently. That
+// is precisely the failure the seed code exists to prevent, and the no-seed offer
+// never fires because the raw graph does expose "a" seed.
+func TestQueueSeedKeysComeFromTheModeAppliedGraph(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, queueModeSeedGraph)
+
+	// Sanity-pin the fixture's asymmetry, so a change to DetectRunInputs that made
+	// the two graphs agree would surface here rather than silently defanging the
+	// mutation guard below.
+	rawKeys := comfy.SeedWidgetKeys([]byte(queueModeSeedGraph))
+	if len(rawKeys) != 1 || rawKeys[0].NodeID != "10" {
+		t.Fatalf("raw graph seed keys = %+v, want exactly node 10", rawKeys)
+	}
+	_, byTitle := modeKeys(t, queueModeSeedGraph)
+	modeB := byTitle["MODE-B"]
+	if modeB == "" {
+		t.Fatalf("fixture exposes no MODE-B: %+v", byTitle)
+	}
+	applied := comfy.SeedWidgetKeys(comfy.ApplyModeSelection(
+		[]byte(queueModeSeedGraph), map[string]string{modeKeySelector(t, queueModeSeedGraph): modeB}))
+	if len(applied) != 1 || applied[0].NodeID != "20" {
+		t.Fatalf("mode-applied seed keys = %+v, want exactly node 20", applied)
+	}
+
+	var mu sync.Mutex
+	var seen []map[comfy.UIWidgetKey]string
+	srv.runFn = func(_ context.Context, _ *store.Workflow, _ runUpdater, opts runOptions) (*runResult, error) {
+		mu.Lock()
+		seen = append(seen, opts.UIWidgetOverrides)
+		mu.Unlock()
+		return &runResult{PromptID: "p"}, nil
+	}
+
+	rec := postQueue(t, srv, id, url.Values{
+		"csrf_token": {srv.csrf}, batchCountField: {"3"}, "mode_key": {modeB},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "identical runs anyway") {
+		t.Fatalf("the mode-applied graph DOES expose a seed — the offer must not fire: %s",
+			rec.Body.String())
+	}
+	waitBatchDone(t, srv)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 3 {
+		t.Fatalf("items run = %d, want 3", len(seen))
+	}
+	selected := comfy.UIWidgetKey{NodeID: "20", Widget: 0}
+	bypassed := comfy.UIWidgetKey{NodeID: "10", Widget: 0}
+	values := map[string]bool{}
+	for i, ov := range seen {
+		v, ok := ov[selected]
+		if !ok || v == "" {
+			t.Errorf("item %d re-rolled no seed on the SELECTED pipeline (node 20): %+v", i+1, ov)
+			continue
+		}
+		if _, wrong := ov[bypassed]; wrong {
+			t.Errorf("item %d re-rolled the BYPASSED pipeline's seed (node 10): %+v", i+1, ov)
+		}
+		values[v] = true
+	}
+	if len(values) != 3 {
+		t.Errorf("3 items produced %d distinct seeds — the batch is not varying", len(values))
+	}
+}
+
+// modeKeySelector returns the graph's single mode SELECTOR key.
+func modeKeySelector(t *testing.T, graph string) string {
+	t.Helper()
+	sel, _ := modeKeys(t, graph)
+	return sel
 }
 
 // ── the refusal that replaced the silent no-op ───────────────────────────────

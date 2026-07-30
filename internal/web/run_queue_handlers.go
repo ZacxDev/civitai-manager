@@ -104,7 +104,9 @@ func (s *Server) handleWorkflowRunQueue(w http.ResponseWriter, r *http.Request) 
 	// mode-applied copy the allow-list above was derived from. Reading wf.Graph
 	// instead would, on a multi-mode template, randomise a BYPASSED pipeline's seed
 	// and miss the selected one — a silently identical N-item batch, i.e. exactly
-	// what the seed code exists to prevent.
+	// what the seed code exists to prevent. The no-seed offer does NOT cover this:
+	// the raw graph still exposes "a" seed, so nothing fires.
+	// TestQueueSeedKeysComeFromTheModeAppliedGraph is the mutation guard.
 	seedKeys := comfy.SeedWidgetKeys(modeAppliedGraph(wf, modes))
 	if len(seedKeys) == 0 && count > 1 && r.FormValue(batchConfirmNoSeedField) != "1" {
 		// A SIBLING above the status fragment, the way runNoticeLine already is. The
