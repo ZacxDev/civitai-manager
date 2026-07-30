@@ -284,7 +284,7 @@ func runPresetDriftBanner(v presetTabView) g.Node {
 	// or of the mode selection, so it is listed (and titled) separately. Folding it
 	// into the graph/mode drops is what let a single bad key render a banner blaming
 	// the workflow mode on a preset whose hash proves the graph never moved.
-	reset, unreadable := splitMalformedDrops(rec.Dropped)
+	reset, gone, unreadable := splitDrops(rec.Dropped)
 
 	lines := []g.Node{
 		h.P(h.Class("text-sm"), g.Text(strconv.Itoa(rec.Applied())+" of "+
@@ -294,6 +294,17 @@ func runPresetDriftBanner(v presetTabView) g.Node {
 		lines = append(lines, h.P(h.Class("text-sm"),
 			g.Text("Reset to the workflow's current values: "),
 			g.Group(namedDrops(reset)),
+		))
+	}
+	if len(gone) > 0 {
+		// A Gone drop has NO field below it — the parameter is not part of this
+		// workflow as the selected mode renders it, so there was nothing to reset it
+		// to. It is still stored, and it comes back when the parameter does.
+		lines = append(lines, h.P(h.Class("text-sm"),
+			g.Text("Not shown below — this workflow has no matching parameter right now, "+
+				"so these were neither applied nor reset: "),
+			g.Group(namedDrops(gone)),
+			g.Text(". They stay saved in this preset."),
 		))
 	}
 	if len(unreadable) > 0 {
@@ -342,8 +353,8 @@ func presetBannerTitle(rec comfy.PresetReconciliation) string {
 	if !rec.Exact {
 		return "This workflow's graph changed since this preset was saved."
 	}
-	_, unreadable := splitMalformedDrops(rec.Dropped)
-	other := len(rec.Dropped) - len(unreadable) + len(rec.DroppedModes)
+	reset, gone, unreadable := splitDrops(rec.Dropped)
+	other := len(reset) + len(gone) + len(rec.DroppedModes)
 	switch {
 	case len(unreadable) > 0 && other == 0:
 		return "Some of this preset's saved values could not be read and were skipped."
@@ -355,19 +366,31 @@ func presetBannerTitle(rec comfy.PresetReconciliation) string {
 	}
 }
 
-// splitMalformedDrops separates the drops that were RESET to the graph's current
-// value (the key resolved, the value did not survive) from the ones that could not
-// be read at all. They have different causes, different fixes, and therefore
-// different sentences.
-func splitMalformedDrops(drops []comfy.PresetDrop) (reset, unreadable []comfy.PresetDrop) {
+// splitDrops separates the three genuinely different things a drop can be. They
+// have different causes, different fixes, and therefore different sentences —
+// folding any two together produces a line that is false for one of them.
+//
+//   - RESET: the key resolved to a live input but the value was refused
+//     (retargeted / unverifiable), so ReconcileRunPreset emitted a Fields row holding
+//     the GRAPH's current value. "Reset to the workflow's current values" is exactly
+//     what happened.
+//   - GONE: the key matches no live input at all, so there is NO Fields row for it
+//     (comfy/run_presets.go's `gone` pass emits a drop and nothing else). Nothing was
+//     reset, and there is no control on screen to look at. Filing it under "reset"
+//     sent the user hunting for a field that is not rendered.
+//   - UNREADABLE: the stored key itself could not be decoded.
+func splitDrops(drops []comfy.PresetDrop) (reset, gone, unreadable []comfy.PresetDrop) {
 	for _, d := range drops {
-		if d.Reason == comfy.PresetDropMalformed {
+		switch d.Reason {
+		case comfy.PresetDropMalformed:
 			unreadable = append(unreadable, d)
-			continue
+		case comfy.PresetDropGone:
+			gone = append(gone, d)
+		default:
+			reset = append(reset, d)
 		}
-		reset = append(reset, d)
 	}
-	return reset, unreadable
+	return reset, gone, unreadable
 }
 
 // presetRoleSwapCaveat names the class of drift NO check in this codebase can

@@ -171,8 +171,20 @@ func TestFieldlessSaveNoLongerProducesTheEmptyPreset(t *testing.T) {
 	}
 	// The values survived, so the next open reports them as drops against the new
 	// graph instead of pretending the preset was always empty.
-	if !strings.Contains(body, asRendered(t, "Reset to the workflow's current values")) {
+	//
+	// The re-import RENUMBERED every node, so all ten stored keys match no live input
+	// at all: they are GONE drops, which produce no Fields row and were reset to
+	// nothing. This used to be asserted against the "Reset to the workflow's current
+	// values" line — the copy defect, not a weaker assertion: the requirement (every
+	// carried-through value is named to the user) is unchanged, only the sentence it
+	// is named under is now the accurate one.
+	if !strings.Contains(body, asRendered(t, "this workflow has no matching parameter right now")) {
 		t.Errorf("the carried-through values must be reconciled and named:\n%s", body)
+	}
+	for _, name := range []string{"Seed", "Prompt (POSITIVE)", "Batch size"} {
+		if !strings.Contains(body, "<strong>"+asRendered(t, name)+"</strong>") {
+			t.Errorf("the carried-through value %q was not named:\n%s", name, body)
+		}
 	}
 	got, _ := srv.store.GetRunPreset(context.Background(), pid)
 	if len(presetEntries(got.Params)) == 0 {
