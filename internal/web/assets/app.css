@@ -1303,6 +1303,13 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  * here (not a Tailwind utility) so no new class enters the purged output.css.
  */
 .cm-lift {
+  /*
+   * Unconditional, and deliberately WITHOUT a z-index: `position: relative` with
+   * `z-index: auto` creates NO stacking context and changes no paint order, so
+   * the card's containing block is identical in every state. Only the
+   * open-popover rule below adds the z-index. See the POPOVER ESCAPE block.
+   */
+  position: relative;
   transition: transform 0.15s ease, box-shadow 0.15s ease,
     border-color 0.15s ease;
 }
@@ -1321,6 +1328,64 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
     transform: none;
     box-shadow: none;
   }
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * .cm-lift POPOVER ESCAPE — an open popover needs the CARD raised, not itself.
+ * ---------------------------------------------------------------------------
+ * `.cm-lift:hover/:focus-within` sets a `transform`, and a transform other than
+ * `none` CREATES A STACKING CONTEXT (CSS Transforms 1 §3). Every popover in this
+ * app (.cm-updated-pop / .cm-vstatus-pop, `z-index: 50`) is a DESCENDANT of its
+ * trigger, so inside a lifted card that 50 is scoped to the card and buys
+ * nothing against anything outside it. Raising the popover further is futile.
+ *
+ * What actually paints over it: a transformed, non-positioned element paints as
+ * if it were `position: relative; z-index: 0` in its PARENT stacking context,
+ * while the FOLLOWING card's in-tile decoration (.cm-video-badge z-4,
+ * .cm-carousel-btn z-5, the NSFW reveal overlay z-10, the tile caption bar z-20)
+ * is absolutely positioned inside `.cm-carousel-wrap`, which is
+ * `position: relative; z-index: auto` — NOT a stacking context — so all of it
+ * ESCAPES into that same parent context at 4/5/10/20. 10 beats 0, which is why
+ * the next card's "reveal" button painted straight over the open "N resources"
+ * popover and left most of its chips unreadable (caught in a real browser on
+ * /library?tab=workflows, v0.1.81, by hit-testing the popover's own pixels).
+ *
+ * z-index 25 is the smallest value that clears every in-card decoration (max 20)
+ * while staying BELOW the sticky nav (30), the rail scrim/drawer (44/45) and the
+ * popover/lightbox tier (50) — a raised card can therefore never cover the app
+ * chrome. See the STACKING ORDER ledger in the APP SHELL section.
+ *
+ * SCOPED TO THE OPEN STATE, NEVER PERMANENT. A card raised at rest would overlap
+ * its neighbours during ordinary scrolling. The three open states mirror the
+ * popover's own display rules exactly: `:hover` and `:focus-within` (the no-JS
+ * fallback — and what a click or Tab triggers, since the triggers carry
+ * tabindex=0) PLUS `.cm-pop-open`, the class the shared hover controller in
+ * modelPageScript holds for a ~200ms grace period after the pointer leaves.
+ * Dropping `.cm-pop-open` would sink the card back mid-grace and flash the still
+ * visible popover under the next card.
+ *
+ * Keyed on the two WRAPPER classes, not on `.cm-res-trigger`, so EVERY popover
+ * reusing the shared mechanism is covered inside any `.cm-lift` — the
+ * referenced-resources one that exposed this, plus the version-status, the
+ * "Updated X ago" and the ComfyUI-reachability popovers if they are ever placed
+ * in a lift card (today they render outside one, so they are unaffected).
+ *
+ * :has() BASELINE AND GRACEFUL FAILURE: `:has()` is Baseline widely-available
+ * (Chrome/Edge 105, Safari 15.4, Firefox 121) and this UI is served over
+ * loopback to the user's own modern browser. An engine without it treats the
+ * whole selector list as invalid and drops THIS RULE ONLY, leaving the popover
+ * merely clipped behind the next card exactly as it is today — not broken. That
+ * is why this is a standalone block and must never be merged into a rule that
+ * has to keep applying.
+ */
+.cm-lift:has(.cm-updated:hover),
+.cm-lift:has(.cm-updated:focus-within),
+.cm-lift:has(.cm-updated.cm-pop-open),
+.cm-lift:has(.cm-vstatus:hover),
+.cm-lift:has(.cm-vstatus:focus-within),
+.cm-lift:has(.cm-vstatus.cm-pop-open) {
+  z-index: 25;
 }
 
 /*
@@ -1445,6 +1510,11 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  *    4  .cm-video-badge, 5 .cm-carousel-btn  - decoration inside a card
  *   10  in-tile reveal overlay (z-10/z-20)   - scoped to one tile
  *   20  .cm-rail (desktop column)            - page chrome, BELOW the nav
+ *   25  .cm-lift WITH AN OPEN POPOVER        - clears the NEXT card's escaping
+ *       in-tile decoration (max 20) and nothing else; transient (open state
+ *       only) and always below the nav, so it never covers app chrome. The
+ *       popover's own z-index cannot do this job — .cm-lift's hover transform
+ *       traps it in the card's stacking context. See the POPOVER ESCAPE block.
  *   30  .cm-nav (sticky header)              - above page content
  *   44  .cm-rail-scrim / 45 .cm-rail (mobile drawer) - above the nav, so the
  *       sticky header can never cover an open drawer
