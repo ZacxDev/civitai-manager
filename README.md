@@ -155,9 +155,16 @@ optional helper extension — installed from the UI, one ComfyUI restart to
 activate — makes that button open the workflow directly instead of just telling
 you where it landed.
 
-**Run on CivitAI Cloud** is there too, and is **off by default** (`comfy_cloud:
-true` to enable), because it sends the graph to CivitAI and spends Buzz. You get
-a cost estimate before committing.
+**Run on CivitAI Cloud** is there too, and is **off by default**, because it
+sends the graph to CivitAI and spends Buzz. You get a cost estimate before
+committing. Turn it on with the toggle on the workflow's own "Run on CivitAI
+Cloud" block, or pin it in your config with `comfy_cloud: true` — an explicit
+config value wins and the toggle then says so instead of pretending to work.
+
+Cloud runs sign in with the **same CivitAI token** the rest of the app uses:
+there is no second credential, and the UI never asks you to type one. If no token
+is configured the toggle is disabled and tells you where to set one
+(`CIVITAI_TOKEN`, `--token`, or `token:` in your config).
 
 ---
 
