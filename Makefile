@@ -38,15 +38,21 @@ integration-test-download:
 # + metadata.json to e2e/uxaudit/artifacts/ (gitignored). chromedp lives ONLY in this
 # nested e2e/uxaudit module — it is NOT in the shipped binary's module graph.
 #
-# Needs a Chromium binary (never downloaded): AUDITLOOP_CHROMIUM=$(command -v chromium)
-# or chromium on PATH. Opt-in push to auditloop (non-fatal) when configured:
-#   make ux-audit AUDITLOOP_CHROMIUM=$$(command -v chromium) \
+# Needs a Chromium binary (never downloaded). There is NO system chromium on this
+# host — but BRAVE is Chromium and works: it is what produced the real axe runs
+# behind the v0.1.79 contrast work.
+#   make ux-audit AUDITLOOP_CHROMIUM=/run/current-system/sw/bin/brave
+# (AUDITLOOP_CHROMIUM is read by e2e/uxaudit/chromium.go.) Opt-in push to auditloop
+# (non-fatal) when configured:
+#   make ux-audit AUDITLOOP_CHROMIUM=/run/current-system/sw/bin/brave \
 #     AUDITLOOP_PUSH_URL=https://auditloop.example \
 #     AUDITLOOP_PUSH_TOKENS='{"civitai-manager-funnel":"<token>"}'
-# GOPRIVATE is required: the harness pulls the private github.com/civitai/cli dep, so
-# without it `go test` hits a sum-db (proxy.golang.org / sum.golang.org) error. The
-# nested e2e/uxaudit module needs the go1.26 toolchain (see e2e/uxaudit/go.mod).
+#
+# GOPRIVATE is NOT required — github.com/civitai/cli is PUBLIC (see the note at the
+# top of CLAUDE.md). This comment used to claim it was mandatory and the recipe used
+# to set it; both were left over from the private-SDK era. A sum-db 500 here today is
+# a REAL failure to investigate, not something GOPRIVATE will paper over.
+# The nested e2e/uxaudit module needs the go1.26 toolchain (see e2e/uxaudit/go.mod).
 ux-audit:
 	cd e2e/uxaudit && UXAUDIT_WALK=1 UXAUDIT_OUT=$(CURDIR)/e2e/uxaudit/artifacts \
-	GOPRIVATE=github.com/civitai/* \
 	go test -run TestUXAuditWalk -count=1 -timeout 15m -v .
