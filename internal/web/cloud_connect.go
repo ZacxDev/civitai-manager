@@ -106,7 +106,20 @@ func cloudConnectFragment(v cloudConnectView, csrf string) g.Node {
 	case v.configured:
 		body = append(body, cloudConfigWinsNote(v.enabled))
 	case !v.hasToken:
-		body = append(body, cloudNoTokenNote(), cloudToggleButton(id, v.enabled, false, csrf))
+		// 🔴 usable = v.enabled, NOT false. The OFF transition is always available.
+		// Disabling the control outright left the one state that matters unreachable:
+		// remove the token from an install where cloud is ON (unset CIVITAI_TOKEN,
+		// drop `token:`, revoke it upstream) and comfy_cloud is still "1" in the DB,
+		// so cloudEnabled() reports ON — an egress-and-Buzz-spending feature whose
+		// ONLY control was greyed out. The stale "1" then persists, so configuring a
+		// token again silently re-enables cloud runs with no re-consent. The server
+		// already accepted enabled=0 here (it refuses only `on && !hasToken`), so the
+		// UI was MORE restrictive than the server in the unsafe direction.
+		//
+		// Enabling without a token stays refused in both halves: with cloud off there
+		// is nothing to turn off, so usable is false again and the server still
+		// rejects a forged enable.
+		body = append(body, cloudNoTokenNote(v.enabled), cloudToggleButton(id, v.enabled, v.enabled, csrf))
 	default:
 		body = append(body, cloudToggleButton(id, v.enabled, true, csrf))
 	}
@@ -131,10 +144,26 @@ func cloudTokenLine(v cloudConnectView) g.Node {
 	)
 }
 
-// cloudNoTokenNote explains the disabled toggle: no CivitAI token is configured,
-// and every place that can supply one. It never offers a field — this app does
+// cloudNoTokenNote explains the state where no CivitAI token is configured, and
+// names every place that can supply one. It never offers a field — this app does
 // not accept a secret over HTTP.
-func cloudNoTokenNote() g.Node {
+//
+// `on` is the STORED preference. When it is true the user is in the state worth
+// spelling out: cloud reads as on, no cloud run can actually authenticate, and
+// supplying a token later resumes cloud runs immediately — so the copy tells them
+// both that the preference is still set and that clearing it is the way to make
+// that not happen.
+func cloudNoTokenNote(on bool) g.Node {
+	if on {
+		return alert("warning", "No CivitAI token configured",
+			g.Text("Cloud run is still switched on in your saved preference, but this app has no "+
+				"CivitAI API token, so no cloud run can sign in. Turn it off below to clear that "+
+				"preference — otherwise supplying a token again resumes cloud runs straight away, "+
+				"without asking you first. A token comes from the CIVITAI_TOKEN environment "+
+				"variable, the --token flag, or `token:` in your config file (the official civitai "+
+				"CLI's token is picked up as a last resort), and takes effect after a restart. "+
+				"Tokens are never entered or stored here."))
+	}
 	return alert("warning", "No CivitAI token configured",
 		g.Text("Cloud runs sign in with your CivitAI API token, and this app has none. "+
 			"Set one, then restart the server: the CIVITAI_TOKEN environment variable, "+
@@ -160,8 +189,12 @@ func cloudConfigWinsNote(enabled bool) g.Node {
 // flagToggle: a light civitai button recolored through tokenVars, which sets BOTH
 // the fill token and its `-text` foreground (never a bare fill).
 //
-// When usable is false the control is genuinely disabled — the server refuses the
-// same transition, so the UI is not lying about what a click would do.
+// usable means "the server would ACCEPT the transition this button offers" — not
+// "the feature is fully configured". The two differ in exactly one place and it
+// matters: with cloud ON and no token the button offers OFF, which the server
+// accepts, so it must be live. Disabled is reserved for a click the server would
+// refuse, so the control never lies about what a click would do — in either
+// direction.
 func cloudToggleButton(id string, on, usable bool, csrf string) g.Node {
 	tok := "text-dimmed"
 	label := "Cloud run is off — turn on"

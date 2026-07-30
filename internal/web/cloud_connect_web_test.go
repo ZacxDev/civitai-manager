@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/civitai-manager/internal/config"
 	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
@@ -431,6 +432,123 @@ func TestCloudConnectRefusesEnableWithoutToken(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "no CivitAI token is configured") {
 		t.Errorf("refusal should say why:\n%s", rec.Body.String())
+	}
+}
+
+// TestCloudConnectTokenRemovedWhileOn is the regression pin for the state that
+// left an egress-and-Buzz-spending feature ON with no way to turn it off.
+//
+// Reachable in one step: turn cloud on, then remove the token (unset
+// CIVITAI_TOKEN, drop `token:`, revoke it upstream) and restart. The config key
+// is absent, the DB row still says "1", and cfg.Token is empty — so cloudEnabled()
+// is true while the ONLY control for it rendered `disabled`. Worse, the stored
+// "1" persists, so configuring a token again silently re-enables cloud runs with
+// no re-consent.
+//
+// The rule this pins: the OFF transition is ALWAYS available. The server already
+// accepted enabled=0 here (it only refuses `on && !hasToken`), so the UI was more
+// restrictive than the server in the unsafe direction.
+func TestCloudConnectTokenRemovedWhileOn(t *testing.T) {
+	srv, id := newConnectTestServer(t, "", nil)
+	if err := srv.store.SetSetting(comfyCloudSettingKey, "1"); err != nil {
+		t.Fatalf("seed setting: %v", err)
+	}
+
+	// The premise: cloud reads ON with no usable token.
+	if !srv.cloudEnabled() {
+		t.Fatal("fixture is wrong: cloud must be effectively ON for this test to mean anything")
+	}
+	if srv.cloudTokenConfigured() {
+		t.Fatal("fixture is wrong: there must be no token")
+	}
+
+	rec := get(t, srv, "/workflows/"+id+"/cloud/connect")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+
+	// The control must be LIVE and must offer OFF.
+	for _, want := range []string{
+		"Cloud run is on — turn off",
+		`hx-post="/workflows/` + id + `/cloud/connect"`,
+		`&#34;enabled&#34;:&#34;0&#34;`,
+		`aria-pressed="true"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the only control for an ON cloud feature must be usable; missing %q:\n%s", want, body)
+		}
+	}
+	for _, notWant := range []string{"disabled", `aria-disabled="true"`} {
+		if strings.Contains(body, notWant) {
+			t.Errorf("the toggle must not be %q while cloud is ON:\n%s", notWant, body)
+		}
+	}
+	// The copy must say the stored preference is still on despite there being no
+	// usable token — otherwise "Cloud run is on" reads as a working feature.
+	if !strings.Contains(body, "No CivitAI token configured") {
+		t.Errorf("the no-token explanation must still be shown:\n%s", body)
+	}
+	if !strings.Contains(body, "still switched on") {
+		t.Errorf("the copy must say the stored preference is still on:\n%s", body)
+	}
+
+	// The OFF transition the button offers is actually accepted by the server.
+	off := post(t, srv, "/workflows/"+id+"/cloud/connect", url.Values{"enabled": {"0"}}, true)
+	if off.Code != http.StatusOK {
+		t.Fatalf("turn off without a token: status = %d", off.Code)
+	}
+	if srv.cloudEnabled() {
+		t.Error("cloud must be OFF after the toggle was cleared")
+	}
+	if v, _, _ := srv.store.GetSetting(comfyCloudSettingKey); v != "0" {
+		t.Errorf("stored setting = %q, want \"0\" — the stale enable must not survive", v)
+	}
+
+	// And enabling without a token is STILL refused, from both halves: the control
+	// is disabled again (there is nothing to turn off any more) and a forged POST
+	// changes nothing.
+	offBody := off.Body.String()
+	if !strings.Contains(offBody, "disabled") {
+		t.Errorf("with cloud off and no token there is nothing to turn off, so the control must be disabled again:\n%s", offBody)
+	}
+	on := post(t, srv, "/workflows/"+id+"/cloud/connect", url.Values{"enabled": {"1"}}, true)
+	if on.Code != http.StatusOK {
+		t.Fatalf("refused enable: status = %d", on.Code)
+	}
+	if srv.cloudEnabled() {
+		t.Error("enabling cloud without a CivitAI token must still be refused")
+	}
+	if v, _, _ := srv.store.GetSetting(comfyCloudSettingKey); v != "0" {
+		t.Errorf("a refused enable changed the setting to %q", v)
+	}
+	if !strings.Contains(on.Body.String(), "no CivitAI token is configured") {
+		t.Errorf("the refusal should say why:\n%s", on.Body.String())
+	}
+}
+
+// TestCloudTokenLineRendersOnlyTheRedactedTail pins the BOUNDARY at the render
+// site itself: cloudTokenLine is the first place in this repo that writes any
+// part of a secret into an HTTP response body, and what it may write is the
+// last-four redaction and nothing else. The endpoint-level sweep
+// (TestCloudTokenNeverAppearsInRenderedHTML) covers the responses; this covers
+// the component, so a future edit to cloudTokenLine cannot widen the boundary
+// without failing here.
+func TestCloudTokenLineRendersOnlyTheRedactedTail(t *testing.T) {
+	got := renderString(t, cloudTokenLine(cloudConnectView{
+		hasToken:      true,
+		redactedToken: config.RedactToken(leakToken),
+	}))
+	if strings.Contains(got, leakToken) || strings.Contains(got, "DO-NOT-LEAK") {
+		t.Fatalf("the raw CivitAI token reached markup:\n%s", got)
+	}
+	if !strings.Contains(got, leakTokenRedacted) {
+		t.Fatalf("the redacted tail should be rendered (else this pin is vacuous):\n%s", got)
+	}
+	// No token means no tail at all.
+	none := renderString(t, cloudTokenLine(cloudConnectView{redactedToken: config.RedactToken("")}))
+	if !strings.Contains(none, "(none)") {
+		t.Fatalf("an unset token must render as (none):\n%s", none)
 	}
 }
 
