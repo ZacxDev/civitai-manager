@@ -155,28 +155,52 @@ func TestBatchPageUnknownIDIs404(t *testing.T) {
 }
 
 // TestBatchPageHostileIDsAre404NotError: {id} is untrusted URL path input. Every
-// shape below must 404 — never 500, never reach a query. The traversal id is
-// percent-escaped so ServeMux delivers it to the handler as ONE path value instead
-// of redirecting it away (which would prove nothing about the handler).
+// shape below must answer 404 — never 500, never a stack trace, never a rendered
+// page. The traversal id is percent-escaped so ServeMux delivers it to the handler
+// as ONE path value instead of redirecting it away (which would prove nothing
+// about the handler).
+//
+// ⚠ SCOPE, stated honestly because the obvious reading is wrong: the HTTP half of
+// this test does NOT prove the handler's store.ValidBatchID guard is what rejects
+// these. There are TWO independent guards on the same predicate — the handler's,
+// and ListGenerationsByBatch's own early return — and a hostile id that reached
+// the store would come back as zero rows and 404 anyway. Mutating ValidBatchID to
+// `return true` leaves the HTTP assertions GREEN. What they do pin is the
+// user-visible contract ("never a 500"), which is worth pinning on its own.
+//
+// The second half closes that gap the only way that is cheap here: asserting the
+// predicate directly. s.store is a concrete *store.Store, not an interface, so
+// there is no seam to spy on "was a query issued" without a refactor — and the
+// discriminating store-side coverage already exists at
+// internal/store/generation_batch_test.go. This keeps the mutation caught HERE
+// too, next to the ids it applies to.
 func TestBatchPageHostileIDsAre404NotError(t *testing.T) {
 	srv, root := newOutputsServer(t, "127.0.0.1:8787")
 	seedBatch(t, srv, root, "batch-real", "P", 1, 1)
 
-	for _, tc := range []struct{ name, path string }{
-		{"traversal", "/outputs/batch/%2E%2E%2F%2E%2E%2Fetc%2Fpasswd"},
-		{"over-64-chars", "/outputs/batch/" + strings.Repeat("a", 65)},
-		{"space", "/outputs/batch/batch%20real"},
-		{"quote", "/outputs/batch/batch%22real"},
-		{"sql-ish", "/outputs/batch/%27%20OR%201%3D1%20--"},
-		{"percent-encoded-nul", "/outputs/batch/batch%00real"},
+	for _, tc := range []struct{ name, path, id string }{
+		{"traversal", "/outputs/batch/%2E%2E%2F%2E%2E%2Fetc%2Fpasswd", "../../etc/passwd"},
+		{"over-64-chars", "/outputs/batch/" + strings.Repeat("a", 65), strings.Repeat("a", 65)},
+		{"space", "/outputs/batch/batch%20real", "batch real"},
+		{"quote", "/outputs/batch/batch%22real", `batch"real`},
+		{"sql-ish", "/outputs/batch/%27%20OR%201%3D1%20--", "' OR 1=1 --"},
+		{"percent-encoded-nul", "/outputs/batch/batch%00real", "batch\x00real"},
 	} {
-		rec := get(t, srv, tc.path)
-		if rec.Code != http.StatusNotFound {
+		if rec := get(t, srv, tc.path); rec.Code != http.StatusNotFound {
 			t.Errorf("%s: status = %d, want 404 (body: %q)", tc.name, rec.Code, rec.Body.String())
+		}
+		// The discriminating half: the validator itself must reject this shape.
+		if store.ValidBatchID(tc.id) {
+			t.Errorf("%s: store.ValidBatchID(%q) = true — the handler would bind a "+
+				"hostile id into a query", tc.name, tc.id)
 		}
 	}
 	// Exactly 64 chars is the boundary and is ACCEPTED as well-formed — it simply
-	// matches nothing, which is still a 404 but by the zero-rows path.
+	// matches nothing, which is still a 404 but by the zero-rows path. Asserting
+	// both halves keeps the bound pinned from each side.
+	if !store.ValidBatchID(strings.Repeat("a", 64)) {
+		t.Error("a 64-char id is exactly at the bound and must be accepted as well-formed")
+	}
 	if rec := get(t, srv, "/outputs/batch/"+strings.Repeat("a", 64)); rec.Code != http.StatusNotFound {
 		t.Errorf("64-char id status = %d, want 404", rec.Code)
 	}
