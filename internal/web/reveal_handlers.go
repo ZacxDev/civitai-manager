@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -176,11 +177,20 @@ func resolveRoots(roots []string) []string {
 		if strings.TrimSpace(root) == "" {
 			continue
 		}
-		if real, err := filepath.EvalSymlinks(root); err == nil {
-			out = append(out, real)
+		real, err := filepath.EvalSymlinks(root)
+		if err != nil || !isRealDir(real) {
+			continue
 		}
+		out = append(out, real)
 	}
 	return out
+}
+
+// isRealDir reports whether path exists and is a DIRECTORY. os.Stat follows
+// symlinks, so a link to a regular file is correctly not a directory.
+func isRealDir(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
 }
 
 // containedDirIn is containedDir against ALREADY-RESOLVED roots.
@@ -191,6 +201,18 @@ func containedDirIn(path string, realRoots []string) (string, bool) {
 	}
 	dir, err := filepath.EvalSymlinks(filepath.Dir(path))
 	if err != nil {
+		return "", false
+	}
+	// 🔴 The resolved leaf must actually BE a directory. EvalSymlinks succeeds on
+	// ANY existing path, so without this a local_files row of
+	// <root>/notadir/model.safetensors — where <root>/notadir is a REGULAR FILE —
+	// resolved to that file, passed containment, and was handed to the opener.
+	// xdg-open/open on a FILE launches that file's REGISTERED APPLICATION instead
+	// of a file browser, which is the only path in this design where the impact
+	// rises above "a file-manager window opened". Refusing here means the chip's
+	// folder button does not render AND a forged click is refused — the same
+	// behaviour an uncontained path already gets.
+	if !isRealDir(dir) {
 		return "", false
 	}
 	for _, realRoot := range realRoots {
@@ -249,6 +271,23 @@ func (s *Server) handleLibraryFileReveal(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		s.render(w, http.StatusOK, s.revealResult(id, "",
 			"That file is not inside one of your configured library folders, so it will not be opened.", "error"))
+		return
+	}
+
+	// TOCTOU narrowing, not elimination. containedDir already stat'd this path, but
+	// this is the LAST filesystem sample taken before the exec: everything between
+	// here and cmd.Start() (fileManagerArgv, openerCommand) is pure string work
+	// that touches no filesystem, so re-sampling here is the closest a portable Go
+	// program can get to "check at exec time". It still cannot be atomic — an
+	// fd-based open (openat/O_DIRECTORY + fexecve-style handoff) is what would make
+	// it so, and the stdlib exposes no portable equivalent. What remains is the
+	// window between this stat and the kernel resolving the path inside the opener
+	// process, during which a local attacker with write access to a library root
+	// could swap the leaf. That requires local write access to a directory the user
+	// configured as their own model library.
+	if !isRealDir(dir) {
+		s.render(w, http.StatusOK, s.revealResult(id, "",
+			"That folder is no longer a folder on disk, so it will not be opened.", "error"))
 		return
 	}
 

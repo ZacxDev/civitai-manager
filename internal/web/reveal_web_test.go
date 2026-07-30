@@ -450,6 +450,203 @@ func TestRevealContainmentUnit(t *testing.T) {
 	}
 }
 
+// TestRevealRefusesANonDirectoryLeaf is the regression pin for the "the resolved
+// containing folder must actually BE a folder" check.
+//
+// Why it matters more than an ordinary containment case: EvalSymlinks succeeds on
+// ANY existing path, so before the IsDir test a local_files row of
+// <root>/notadir/model.safetensors — where <root>/notadir is a REGULAR FILE —
+// resolved to <root>/notadir, passed containment, and was handed to
+// xdg-open/open. Handing a FILE to the platform opener launches that file's
+// REGISTERED APPLICATION rather than a file browser, which is the one path in
+// this design where the impact ceiling rises above "a file-manager window
+// opened". Every layer must refuse it: the containment predicate, the chip
+// renderer (no button), and the handler (no exec).
+func TestRevealRefusesANonDirectoryLeaf(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A REGULAR FILE standing exactly where a directory is expected.
+	notADir := filepath.Join(root, "notadir")
+	if err := os.WriteFile(notADir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	indexed := filepath.Join(notADir, "model.safetensors")
+
+	// The fixture is not vacuous: the leaf resolves (EvalSymlinks succeeds on a
+	// regular file) and is inside the root by name, so ONLY the IsDir test can
+	// refuse it.
+	resolved, err := filepath.EvalSymlinks(filepath.Dir(indexed))
+	if err != nil {
+		t.Fatalf("the fixture is wrong: the leaf must resolve, got %v", err)
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel, err := filepath.Rel(realRoot, resolved); err != nil || strings.HasPrefix(rel, "..") {
+		t.Fatalf("the fixture is wrong: %q is not inside %q", resolved, realRoot)
+	}
+
+	// (1) The containment predicate refuses it. Errorf, not Fatalf: the handler
+	// and render legs below are independent defences and must each be reported.
+	if dir, ok := containedDir(indexed, []string{root}); ok {
+		t.Errorf("containedDir accepted a REGULAR FILE as the containing folder (dir=%q)", dir)
+	}
+	if dir, ok := containedDirIn(indexed, []string{realRoot}); ok {
+		t.Errorf("containedDirIn accepted a REGULAR FILE as the containing folder (dir=%q)", dir)
+	}
+
+	// (2) The handler refuses it without ever building an argv.
+	srv, op := newRevealServer(t, root)
+	if err := srv.store.UpsertLocalFile(store.LocalFile{Path: indexed, SHA256: "bb", SizeBytes: 1}); err != nil {
+		t.Fatal(err)
+	}
+	lf, err := srv.store.GetLocalFileByPath(indexed)
+	if err != nil || lf == nil {
+		t.Fatalf("index %s: %v", indexed, err)
+	}
+	rec := post(t, srv, "/library/files/"+strconv.FormatInt(lf.ID, 10)+"/reveal", url.Values{}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reveal = %d", rec.Code)
+	}
+	if n := len(op.calls()); n != 0 {
+		t.Errorf("a non-directory leaf reached the opener %d times:\n%#v", n, op.calls())
+	}
+	// Nothing resembling the file's path may appear in an argv — there is no argv.
+	for _, call := range op.calls() {
+		for _, arg := range call {
+			if strings.Contains(arg, notADir) {
+				t.Errorf("a regular file was handed to the opener: %#v", call)
+			}
+		}
+	}
+
+	// (3) The chip does not OFFER the folder button for that file, so there is no
+	// control to click in the first place.
+	res := srv.workflowResolver()
+	chip := renderString(t, workflowResourceChip("model.safetensors", res))
+	if strings.Contains(chip, "/reveal") || strings.Contains(chip, "cm-res-open") {
+		t.Fatalf("a file whose containing 'folder' is a regular file must not offer the folder button:\n%s", chip)
+	}
+}
+
+// TestRevealIsRealDir pins the stat helper that backs the IsDir test, including
+// the symlink-to-a-file case (Stat follows symlinks, so a link to a regular file
+// is NOT a directory) and the symlink-to-a-directory case (which IS).
+func TestRevealIsRealDir(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "d")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(base, "f")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !isRealDir(dir) {
+		t.Fatal("a real directory must pass isRealDir")
+	}
+	if isRealDir(file) {
+		t.Fatal("a regular file must NOT pass isRealDir")
+	}
+	if isRealDir(filepath.Join(base, "missing")) {
+		t.Fatal("a missing path must NOT pass isRealDir")
+	}
+	if isRealDir("") {
+		t.Fatal("an empty path must NOT pass isRealDir")
+	}
+
+	linkToFile := filepath.Join(base, "link-to-file")
+	linkToDir := filepath.Join(base, "link-to-dir")
+	if err := os.Symlink(file, linkToFile); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(dir, linkToDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if isRealDir(linkToFile) {
+		t.Fatal("a symlink to a regular file must NOT pass isRealDir")
+	}
+	if !isRealDir(linkToDir) {
+		t.Fatal("a symlink to a directory must pass isRealDir")
+	}
+}
+
+// TestRevealRootsDropANonDirectoryRoot: a configured root that is not a directory
+// cannot contain anything, so it must never survive resolution.
+func TestRevealRootsDropANonDirectoryRoot(t *testing.T) {
+	base := t.TempDir()
+	dirRoot := filepath.Join(base, "dir-root")
+	if err := os.MkdirAll(dirRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fileRoot := filepath.Join(base, "file-root")
+	if err := os.WriteFile(fileRoot, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := resolveRoots([]string{dirRoot, fileRoot, filepath.Join(base, "missing")})
+	realDirRoot, err := filepath.EvalSymlinks(dirRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != realDirRoot {
+		t.Fatalf("resolveRoots = %#v, want exactly [%q]", got, realDirRoot)
+	}
+}
+
+// TestRevealRootsComposition pins WHERE the root set comes from, so the
+// security comment above revealRoots cannot drift from the code again. In
+// particular: the persisted scan directories ARE part of the root set, which
+// means the set is request-extensible through POST /library/scan-dirs/add.
+func TestRevealRootsComposition(t *testing.T) {
+	base := t.TempDir()
+	modelRoot := filepath.Join(base, "models")
+	comfy := filepath.Join(base, "comfy")
+	extra := filepath.Join(base, "extra")
+	scanDir := filepath.Join(base, "scanned")
+	for _, d := range []string{modelRoot, comfy, extra, scanDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv, _ := newRevealServer(t, modelRoot)
+	srv.cfg.ComfyModelPath = comfy
+	srv.cfg.LibraryPaths = []string{extra}
+
+	before := srv.revealRoots()
+	for _, want := range []string{modelRoot, comfy, extra} {
+		if !containsString(before, want) {
+			t.Fatalf("revealRoots is missing the configured root %q: %#v", want, before)
+		}
+	}
+	if containsString(before, scanDir) {
+		t.Fatalf("a scan dir appeared before it was added: %#v", before)
+	}
+
+	// The scan-dir add endpoint takes r.FormValue("path"), so this is the
+	// request-extensible leg the comment must disclose.
+	rec := post(t, srv, "/library/scan-dirs/add", url.Values{"path": {scanDir}}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("scan-dirs/add = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	after := srv.revealRoots()
+	if !containsString(after, scanDir) {
+		t.Fatalf("a scan dir added over HTTP must join the reveal root set: %#v", after)
+	}
+}
+
+func containsString(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
+}
+
 // TestRevealSymlinkEscapeIsNotVacuous proves the symlink case actually TESTS
 // something: it first demonstrates that the naive check-then-resolve
 // implementation (string containment on the UNRESOLVED path) would ACCEPT the
