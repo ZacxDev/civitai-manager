@@ -339,6 +339,51 @@ func TestDriftPathAlwaysStatesTheRoleSwapCaveat(t *testing.T) {
 	})
 }
 
+// TestDriftedSaveRoundTripOverHTTP walks the whole thing over the real mux, in the
+// order a user does it: open a drifted tab (GET /run/params), Save (POST), reopen.
+// The point is that the response bodies — the actual bytes htmx swaps into
+// #run-params — carry the caveat and keep offering the adoption after a save.
+func TestDriftedSaveRoundTripOverHTTP(t *testing.T) {
+	srv := newTestServer(t)
+	wf := seedPresetWorkflow(t, srv, "t2i", presetUIGraph)
+	pid := seedPreset(t, srv, wf, "Base", wf.GraphHash,
+		func(ri comfy.RunInput) string { return ri.Current })
+	replaceGraph(t, srv, wf.ID, presetUIGraphShifted)
+	wid := strconv.FormatInt(wf.ID, 10)
+	sid := strconv.FormatInt(pid, 10)
+
+	body := get(t, srv, "/workflows/"+wid+"/run/params?"+presetIDField+"="+sid).Body.String()
+	for _, want := range []string{"matched by input identity", "Adopt current graph"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("GET /run/params missing %q:\n%s", want, body)
+		}
+	}
+
+	code, saved := doPresetPost(t, srv,
+		"/workflows/"+wid+"/run/presets/"+sid+"/save", shiftedPresetForm(t, pid), true)
+	if code != http.StatusOK {
+		t.Fatalf("save = %d", code)
+	}
+	for _, want := range []string{"Adopt current graph", "matched by input identity"} {
+		if !strings.Contains(saved, want) {
+			t.Errorf("the save response must still offer/caveat (%q missing):\n%s", want, saved)
+		}
+	}
+
+	// Reopened: the saved values are back, still on the drift path, still uncertified.
+	reopened := get(t, srv, "/workflows/"+wid+"/run/params?"+presetIDField+"="+sid).Body.String()
+	if !strings.Contains(reopened, `value="3.5"`) {
+		t.Errorf("the saved CFG value did not survive the round trip:\n%s", reopened)
+	}
+	if !strings.Contains(reopened, "Adopt current graph") {
+		t.Error("a saved-but-not-adopted preset must keep offering the adoption")
+	}
+	got, _ := srv.store.GetRunPreset(context.Background(), pid)
+	if got.GraphHash != "" {
+		t.Errorf("graph_hash = %q after a non-adopt save, want blank", got.GraphHash)
+	}
+}
+
 // TestFreshPresetIsStampedWithTheGraphItWasSeededFrom: a brand-new tab's entries
 // come from the CURRENT graph, so stamping the current hash is truthful (this is a
 // create, not an adopt of someone else's drift).
