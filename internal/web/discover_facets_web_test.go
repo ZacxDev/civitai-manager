@@ -354,13 +354,17 @@ func TestMergeWorkflowResultsRebuildsRaw(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Landing page + caching
+// Entry page + caching
 // ---------------------------------------------------------------------------
 
-// TestLandingIssuesNoPerTileRequests is the caching requirement stated bluntly:
-// the browse-by entry page renders ~30 tiles and must cost exactly ONE upstream
-// request (the popular feed), not one per tile.
-func TestLandingIssuesNoPerTileRequests(t *testing.T) {
+// TestEntryPageIssuesNoPerFacetRequests is the caching requirement stated
+// bluntly: the entry page offers ~30 facets and must cost exactly ONE upstream
+// request (the popular feed), not one per facet.
+//
+// It also pins that the facet vocabulary is still fully reachable from the entry
+// page after the duplicate tile card was removed — every ecosystem and use case
+// is a chip with its own URL.
+func TestEntryPageIssuesNoPerFacetRequests(t *testing.T) {
 	reader := &recordingSearchReader{result: workflowResult(t)}
 	srv := newModelServer(t, reader)
 
@@ -370,19 +374,18 @@ func TestLandingIssuesNoPerTileRequests(t *testing.T) {
 		t.Fatalf("GET = %d", rec.Code)
 	}
 	if got := reader.callCount(); got != 1 {
-		t.Fatalf("landing page issued %d upstream requests, want exactly 1", got)
+		t.Fatalf("entry page issued %d upstream requests, want exactly 1", got)
 	}
 	body := rec.Body.String()
-	// Every curated tile is present without any of them having been fetched.
+	// Every curated facet is reachable without any of them having been fetched.
 	for _, want := range []string{
-		"Browse by ecosystem", "Browse by use case",
-		"Image models", "Video models",
+		"Ecosystem", "Use case",
 		">SDXL family<", ">Flux.1<", ">Wan Video<", ">Z-Image<",
 		">Inpainting<", ">Upscaling<", ">Video generation<",
 		"/workflows/discover?eco=sdxl", "/workflows/discover?use=inpaint",
 	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("landing page missing %q", want)
+			t.Errorf("entry page missing %q", want)
 		}
 	}
 }
@@ -769,9 +772,5 @@ func TestHXFacetFragmentHasChipsButNoChrome(t *testing.T) {
 	}
 	if !strings.Contains(body, "q=wan") {
 		t.Error("re-rendered chips must carry the query that was just searched")
-	}
-	// The landing grid belongs to the entry view only.
-	if strings.Contains(body, "Browse by ecosystem") {
-		t.Error("the landing grid must not render once a query/facet is active")
 	}
 }
