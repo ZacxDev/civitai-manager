@@ -100,7 +100,9 @@ func workflowResourceChip(res string, resolver workflowResolver) g.Node {
 
 	body := []g.Node{
 		h.Span(h.Class("cm-res-mark"), g.Attr("aria-hidden", "true"), g.Text(mark)),
-		h.Span(h.Class("cm-res-name"), g.Text(base)),
+		// break-all: a resource basename is an arbitrary, often long unbroken string
+		// with no guaranteed break opportunity (pinned by TestLongUntrustedStringsCanBreak).
+		h.Span(h.Class("cm-res-name break-all"), g.Text(base)),
 	}
 
 	// --- PR C2 SEAM ------------------------------------------------------------

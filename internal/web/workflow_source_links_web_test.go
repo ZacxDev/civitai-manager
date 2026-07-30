@@ -48,30 +48,35 @@ func TestWorkflowSourceLinksModelNoVersion(t *testing.T) {
 	}
 }
 
-// TestWorkflowSourceLinksScannedPath proves a scanned workflow shows its on-disk
-// source path (escaped).
+// TestWorkflowSourceLinksScannedPath proves a scanned workflow still shows its
+// on-disk source path (escaped). PR C1 moved the path out of the always-visible
+// provenance row and into the collapsed "Workflow metadata" disclosure — it is
+// still rendered, just not in the reader's face — so the assertion follows it.
 func TestWorkflowSourceLinksScannedPath(t *testing.T) {
 	wf := &store.Workflow{
 		ID: 2, Name: "scanned", Format: store.WorkflowFormatUI, Source: store.WorkflowSourceScanned,
 		SourcePath: "/home/u/ComfyUI/user/default/workflows/x.json",
 	}
-	got := renderString(t, workflowSourceLinks(wf, workflowResolver{}))
-	if !strings.Contains(got, "/home/u/ComfyUI/user/default/workflows/x.json") {
-		t.Errorf("scanned workflow should show its on-disk path:\n%s", got)
-	}
-	if !strings.Contains(got, "Scanned") {
+	if got := renderString(t, workflowSourceLinks(wf, workflowResolver{})); !strings.Contains(got, "Scanned") {
 		t.Errorf("missing Scanned source chip:\n%s", got)
+	}
+	reveal := renderString(t, workflowDetailsReveal(wf))
+	if !strings.Contains(reveal, "/home/u/ComfyUI/user/default/workflows/x.json") {
+		t.Errorf("scanned workflow should show its on-disk path in the metadata disclosure:\n%s", reveal)
+	}
+	if !strings.Contains(reveal, "On disk") {
+		t.Errorf("the on-disk path should be labelled:\n%s", reveal)
 	}
 }
 
 // TestWorkflowSourceLinksEscapesUntrusted proves an untrusted source path is
-// HTML-escaped (never raw markup).
+// HTML-escaped (never raw markup) wherever it is rendered.
 func TestWorkflowSourceLinksEscapesUntrusted(t *testing.T) {
 	wf := &store.Workflow{
 		ID: 3, Name: "x", Format: store.WorkflowFormatUI, Source: store.WorkflowSourceScanned,
 		SourcePath: `/x/<script>alert(1)</script>.json`,
 	}
-	got := renderString(t, workflowSourceLinks(wf, workflowResolver{}))
+	got := renderString(t, workflowDetailsReveal(wf))
 	if strings.Contains(got, "<script>alert(1)</script>") {
 		t.Errorf("source path must be escaped:\n%s", got)
 	}

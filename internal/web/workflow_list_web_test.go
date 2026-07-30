@@ -77,9 +77,12 @@ func TestWorkflowListLazyLoadsUncachedModel(t *testing.T) {
 	}
 }
 
-// TestWorkflowListResourcesDisclosure proves the resource list expands into a
-// <details> with per-file have ✓ / missing ✗ badges from the local-file check.
-func TestWorkflowListResourcesDisclosure(t *testing.T) {
+// TestWorkflowListResourcesPresence proves the list item still reports each
+// referenced resource and whether it is present locally. PR C1 replaced the inline
+// <details> list (which pushed every following card down when opened) with chips in
+// the shared hover/click popover — the popover mechanics themselves are pinned by
+// TestWorkflowListResourcesArePopoverChips.
+func TestWorkflowListResourcesPresence(t *testing.T) {
 	srv := newWorkflowServer(t)
 	ctx := context.Background()
 
@@ -99,20 +102,17 @@ func TestWorkflowListResourcesDisclosure(t *testing.T) {
 	}
 
 	body := workflowsTabBody(t, srv)
-	if !strings.Contains(body, "<details") || !strings.Contains(body, "<summary") {
-		t.Errorf("resources should render as a <details> disclosure:\n%s", body)
-	}
 	if !strings.Contains(body, "2 resources") {
-		t.Errorf("disclosure summary missing count")
+		t.Errorf("the popover trigger is missing the resource count:\n%s", body)
 	}
 	if !strings.Contains(body, "present.safetensors") || !strings.Contains(body, "absent.safetensors") {
 		t.Errorf("resource filenames missing")
 	}
-	if !strings.Contains(body, "have ✓") {
-		t.Errorf("present resource should show a have ✓ badge")
+	if !strings.Contains(body, `data-have="yes"`) {
+		t.Errorf("present resource should be marked as held locally")
 	}
-	if !strings.Contains(body, "missing ✗") {
-		t.Errorf("absent resource should show a missing ✗ badge")
+	if !strings.Contains(body, `data-have="no"`) {
+		t.Errorf("absent resource should be marked as missing")
 	}
 }
 

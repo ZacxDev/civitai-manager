@@ -928,7 +928,6 @@ func workflowDetailPage(wf *store.Workflow, csrf, theme, nsfwMode string, genera
 	body = append(body, card(
 		sectionTitle("Graph"),
 		workflowGraphSection([]byte(wf.Graph), wf.Format),
-		workflowGraphPanScript(),
 	))
 
 	// Details: the provenance row up front, everything else behind a disclosure.
@@ -939,16 +938,20 @@ func workflowDetailPage(wf *store.Workflow, csrf, theme, nsfwMode string, genera
 		workflowAttachReveal(wf, csrf),
 	))
 
-	// The shared lightbox overlay + page script (the same ones the model/library
-	// pages rely on) — offline/vendored only, no external asset. Appended ONCE and
-	// UNCONDITIONALLY, because modelPageScript also carries the shared popover hover
-	// controller this page now depends on (the ComfyUI reachability icon), and its
-	// Escape handler dereferences #cm-lightbox without a nil guard — so the overlay
-	// must exist wherever the script does. The carousel script is only needed when
-	// there are tiles to scroll.
-	body = append(body, lightboxOverlay(), modelPageScript())
+	// The shared full-size lightbox + carousel scripts the showcase tiles reuse
+	// (the same ones the model/library pages rely on). Appended ONCE, only when the
+	// showcase is present, so a tile can open the lightbox and prev/next can scroll —
+	// offline/vendored only, no external asset. They stay CONDITIONAL because
+	// modelPageScript's Escape handler dereferences #cm-lightbox without a nil guard,
+	// so the script must never ship without the overlay (and a page with no images
+	// should not carry a dangling overlay either).
+	//
+	// Consequence, stated rather than papered over: on a showcase-less detail page
+	// the shared popover hover CONTROLLER is absent, so this page's popovers (the
+	// ComfyUI reachability icon) open through the CSS :hover / :focus-within rules
+	// alone — same open/close behaviour, minus the 200 ms close grace.
 	if showcaseShown {
-		body = append(body, libraryCarouselScript())
+		body = append(body, lightboxOverlay(), modelPageScript(), libraryCarouselScript())
 	}
 
 	return page(name+" · Workflow", theme, csrf, nsfwMode, railOf(rail), body...)
@@ -963,7 +966,11 @@ func workflowGraphSection(graph []byte, format string) g.Node {
 			// The caption states plainly what this static render does and does not
 			// show, so the (expected) difference from the ComfyUI canvas does not read
 			// as "the preview is showing a different workflow".
-			return h.Div(svg, graphPreviewCaption())
+			//
+			// The click-to-drag pan script rides WITH the SVG, so it is emitted only
+			// where there IS a pannable canvas — the structured listing below is an
+			// ordinary document and must not advertise a gesture it does not support.
+			return h.Div(svg, graphPreviewCaption(), workflowGraphPanScript())
 		}
 	}
 	return workflowGraphStructured(graph, format)

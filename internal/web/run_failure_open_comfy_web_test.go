@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
+	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
 // openComfyAction is the exact markup the shared "Open in ComfyUI" control emits.
@@ -120,10 +121,12 @@ func TestRunFailureOmitsOpenInComfyUIForAPIGraphs(t *testing.T) {
 	}
 }
 
-// TestOpenInComfyFormIsSharedNotDuplicated pins that the detail-page card and the
+// TestOpenInComfyFormIsSharedNotDuplicated pins that the Generate section and the
 // failure report emit the SAME control from the SAME helper.
 func TestOpenInComfyFormIsSharedNotDuplicated(t *testing.T) {
-	card := renderString(t, workflowOpenComfyCard(9, "csrf-tok", comfyHelperView{}))
+	wf := &store.Workflow{ID: 9, Format: store.WorkflowFormatUI, Graph: "{}"}
+	card := renderString(t, generateSection(wf, runSnapshot{}, "csrf-tok", true, false, "blur",
+		implicitPresetView(wf, nil), true, comfyHelperView{}))
 	fail := renderString(t, runStatusFragment(runSnapshot{
 		Started: true, WorkflowID: 9, UIFormat: true, Phase: runPhaseFailed,
 		Message: "Preflight failed.",

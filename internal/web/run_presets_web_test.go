@@ -368,7 +368,8 @@ func TestTabStripOutsideRunStatus(t *testing.T) {
 	seedPreset(t, srv, wf, "Base", wf.GraphHash, func(ri comfy.RunInput) string { return ri.Current })
 	v := srv.buildPresetView(context.Background(), wf, 0, nil, true)
 
-	page := renderString(t, runPanel(wf, runSnapshot{}, "tok", true, false, "blur", v))
+	page := renderString(t, generateSection(wf, runSnapshot{}, "tok", true, false, "blur", v,
+		true, comfyHelperView{}))
 	params := strings.Index(page, `id="`+runParamsContainerID+`"`)
 	status := strings.Index(page, `id="`+runStatusContainerID+`"`)
 	tabs := strings.Index(page, `role="tablist"`)
