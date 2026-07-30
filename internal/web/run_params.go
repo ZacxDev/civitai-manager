@@ -46,10 +46,22 @@ func (s *Server) handleWorkflowRunWithParams(w http.ResponseWriter, r *http.Requ
 	// Parameters panel for a multi-mode template is rendered against the graph with
 	// that mode enabled, so its widget keys only make sense in that same graph.
 	modes := parseModeChoices(r.Form, wf)
-	s.startRun(wf, runOptions{
+	opts := runOptions{
 		ModeSelection:     modes,
 		UIWidgetOverrides: parseWidgetOverridesForModes(r.Form, wf, modes),
-	})
+	}
+	// Attribute the run to the preset tab it was started from (pure labeling —
+	// nothing about the run behaves differently). A preset id naming ANOTHER
+	// workflow's row is a 404, the same rule the preset CRUD endpoints follow;
+	// the implicit tab posts 0 and is simply unattributed.
+	if pid := formPresetID(r); pid > 0 {
+		p := s.presetOfWorkflow(w, r, wf, pid)
+		if p == nil {
+			return
+		}
+		opts.PresetID, opts.PresetName = p.ID, p.Name
+	}
+	s.startRun(wf, opts)
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 }
 
