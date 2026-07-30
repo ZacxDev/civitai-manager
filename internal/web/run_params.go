@@ -46,10 +46,22 @@ func (s *Server) handleWorkflowRunWithParams(w http.ResponseWriter, r *http.Requ
 	// Parameters panel for a multi-mode template is rendered against the graph with
 	// that mode enabled, so its widget keys only make sense in that same graph.
 	modes := parseModeChoices(r.Form, wf)
-	s.startRun(wf, runOptions{
+	opts := runOptions{
 		ModeSelection:     modes,
 		UIWidgetOverrides: parseWidgetOverridesForModes(r.Form, wf, modes),
-	})
+	}
+	// Attribute the run to the preset tab it was started from (pure labeling —
+	// nothing about the run behaves differently). A preset id naming ANOTHER
+	// workflow's row is a 404, the same rule the preset CRUD endpoints follow;
+	// the implicit tab posts 0 and is simply unattributed.
+	if pid := formPresetID(r); pid > 0 {
+		p := s.presetOfWorkflow(w, r, wf, pid)
+		if p == nil {
+			return
+		}
+		opts.PresetID, opts.PresetName = p.ID, p.Name
+	}
+	s.startRun(wf, opts)
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 }
 
@@ -127,11 +139,16 @@ func parseWidgetOverridesAgainst(form url.Values, graph []byte) map[comfy.UIWidg
 	return out
 }
 
-// runParametersPanel renders the collapsible "Parameters" section on the run-ready
-// card: pre-filled controls for the workflow's curated editable inputs and a "Run
-// with these parameters" submit that posts to /run-with-params (CSRF-carrying). It
-// returns nil when the graph exposes no editable inputs (an api-format graph, or a
-// UI graph with none of the curated nodes) so the panel is simply absent.
+// runParametersPanel renders the run "Parameters" panel for a workflow with NO
+// preset context: the IMPLICIT tab, seeded from the graph's current values.
+//
+// It is a thin wrapper over runPresetPanel — the SAME renderer production uses —
+// deliberately, so a test asserting this markup is asserting live markup. A second,
+// parallel renderer would be exactly the "green tests over a dead production path"
+// trap this repo keeps paying for.
+//
+// It returns nil when the graph exposes no editable inputs (an api-format graph, or
+// a UI graph with none of the curated nodes) so the panel is simply absent.
 //
 // Sampler/scheduler render as free-text inputs here: choices come from /object_info,
 // which the render path does not fetch (offline/no slow network in render), so they
@@ -139,41 +156,7 @@ func parseWidgetOverridesAgainst(form url.Values, graph []byte) map[comfy.UIWidg
 // incompatible-options flow. DetectRunInputs still accepts object_info elsewhere, so
 // object_info-backed selects can be added without changing the wiring.
 func runParametersPanel(wf *store.Workflow, csrf string) g.Node {
-	inputs := comfy.DetectRunInputs([]byte(wf.Graph), nil)
-	if len(inputs) == 0 {
-		return nil
-	}
-	id := strconv.FormatInt(wf.ID, 10)
-	fields := make([]g.Node, 0, len(inputs))
-	for i, ri := range inputs {
-		fields = append(fields, runParamField(i, ri))
-	}
-	form := h.Form(
-		hx("post", "/workflows/"+id+"/run-with-params"),
-		hx("target", "#"+runStatusContainerID),
-		hx("swap", "innerHTML"),
-		hx("disabled-elt", "find button[type='submit']"),
-		hx("include", runModesInclude),
-		h.Class("mt-3 space-y-3"),
-		h.Input(h.Type("hidden"), h.Name("csrf_token"), h.Value(csrf)),
-		g.Group(fields),
-		h.P(h.Class("text-xs text-slate-500"),
-			g.Text("These edits apply to THIS run only — the saved workflow is unchanged.")),
-		h.Div(h.Class("flex flex-wrap items-center gap-2 pt-1"),
-			civButton("filled", "sm", []g.Node{h.Type("submit")}, g.Text("Run with these parameters")),
-			// A native form reset restores every control to its pre-filled value.
-			civButton("subtle", "sm", []g.Node{h.Type("reset")}, g.Text("Reset")),
-		),
-	)
-	return h.Details(
-		// No cm-run-params marker: nothing in the run scripts (or anywhere else)
-		// selects it and it carries no rule — it was a pure no-op.
-		h.Class("mt-4"),
-		h.Summary(h.Class("cursor-pointer text-sm font-semibold text-slate-200 select-none"),
-			g.Text("Parameters")),
-		form,
-		runParamsScript(),
-	)
+	return runPresetPanel(wf, csrf, implicitPresetView(wf, nil))
 }
 
 // runParamField renders one Parameters control, preceded by the hidden wp_node /
@@ -187,6 +170,16 @@ func runParametersPanel(wf *store.Workflow, csrf string) g.Node {
 // checkbox) or several would shift the alignment — such a control must carry its key
 // in the value itself (or use indexed field names) rather than rely on this pairing.
 func runParamField(idx int, ri comfy.RunInput) g.Node {
+	return runParamFieldValue(idx, ri, ri.Current)
+}
+
+// runParamFieldValue is runParamField with the pre-filled value supplied, so a run
+// PRESET can show its saved value while every other property of the control (label,
+// kind, choices, origin note) still comes from the LIVE graph. Keeping the live
+// RunInput authoritative for everything except the value is what makes a
+// retargeted slot visible: the user sees the graph's current label beside the
+// value, not the label the preset remembered.
+func runParamFieldValue(idx int, ri comfy.RunInput, value string) g.Node {
 	fid := "cm-param-" + strconv.Itoa(idx)
 	hidden := []g.Node{
 		h.Input(h.Type("hidden"), h.Name("wp_node"), h.Value(ri.NodeID)),
@@ -198,19 +191,19 @@ func runParamField(idx int, ri comfy.RunInput) g.Node {
 	case comfy.RunInputText:
 		control = h.Textarea(
 			dataFlag("civitai-ui-control"), h.ID(fid), h.Name("wp_value"), h.Rows("3"),
-			g.Text(ri.Current),
+			g.Text(value),
 		)
 	case comfy.RunInputSelect:
 		if len(ri.Choices) > 0 {
-			control = paramSelect(fid, ri.Choices, ri.Current)
+			control = paramSelect(fid, ri.Choices, value)
 		} else {
 			control = h.Input(dataFlag("civitai-ui-control"), h.ID(fid),
-				h.Type("text"), h.Name("wp_value"), h.Value(ri.Current))
+				h.Type("text"), h.Name("wp_value"), h.Value(value))
 		}
 	case comfy.RunInputSeed:
 		control = h.Div(h.Class("flex items-center gap-2"),
 			h.Input(dataFlag("civitai-ui-control"), h.ID(fid), h.Type("number"),
-				h.Name("wp_value"), g.Attr("step", "1"), h.Value(ri.Current)),
+				h.Name("wp_value"), g.Attr("step", "1"), h.Value(value)),
 			civButton("outline", "sm", []g.Node{
 				h.Type("button"),
 				g.Attr("onclick", "cmRandomSeed('"+fid+"')"),
@@ -219,13 +212,13 @@ func runParamField(idx int, ri comfy.RunInput) g.Node {
 		)
 	case comfy.RunInputInt:
 		control = h.Input(dataFlag("civitai-ui-control"), h.ID(fid), h.Type("number"),
-			h.Name("wp_value"), g.Attr("step", "1"), h.Value(ri.Current))
+			h.Name("wp_value"), g.Attr("step", "1"), h.Value(value))
 	case comfy.RunInputFloat:
 		control = h.Input(dataFlag("civitai-ui-control"), h.ID(fid), h.Type("number"),
-			h.Name("wp_value"), g.Attr("step", "any"), h.Value(ri.Current))
+			h.Name("wp_value"), g.Attr("step", "any"), h.Value(value))
 	default:
 		control = h.Input(dataFlag("civitai-ui-control"), h.ID(fid), h.Type("text"),
-			h.Name("wp_value"), h.Value(ri.Current))
+			h.Name("wp_value"), h.Value(value))
 	}
 
 	return h.Div(

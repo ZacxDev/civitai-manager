@@ -85,24 +85,52 @@ func parseModeChoices(form url.Values, wf *store.Workflow) map[string]string {
 // re-fetches the Parameters panel, because which parameters exist depends on which
 // pipeline is enabled.
 func runModesPanel(wf *store.Workflow, csrf string) g.Node {
+	return runModesPanelWith(wf, csrf, nil, false)
+}
+
+// runModesPanelSelected is runModesPanel with the pre-selected pick OVERRIDDEN,
+// used when opening a run-preset tab: the preset's stored mode pre-selects the
+// picker, after which the picker is authoritative again.
+func runModesPanelSelected(wf *store.Workflow, csrf string, selected map[string]string) g.Node {
+	return runModesPanelWith(wf, csrf, selected, false)
+}
+
+// runModesPanelWith renders the picker with an optional pre-selection override and
+// an optional hx-swap-oob marker.
+//
+// oob=true makes this an OUT-OF-BAND swap of the whole #run-modes container so a
+// tab-open response can pre-select the preset's mode in the same round trip; it
+// returns nil for a workflow with no selectors, because swapping an empty
+// container over a picker that never existed is pure noise. In-band (oob=false)
+// it still returns the EMPTY stable container for an ordinary workflow, so the
+// hx-include selector stays uniform.
+func runModesPanelWith(wf *store.Workflow, csrf string, selected map[string]string, oob bool) g.Node {
 	sels := detectWorkflowModes(wf)
 	if len(sels) == 0 {
+		if oob {
+			return nil
+		}
 		return h.Div(h.ID(runModesContainerID))
 	}
 	id := strconv.FormatInt(wf.ID, 10)
 	blocks := make([]g.Node, 0, len(sels))
 	for i, sel := range sels {
-		blocks = append(blocks, runModeSelect(id, csrf, i, sel))
+		blocks = append(blocks, runModeSelect(id, csrf, i, sel, selected[sel.Key]))
 	}
-	return h.Div(
+	attrs := []g.Node{
 		h.ID(runModesContainerID),
 		h.Class("mt-3 rounded border border-slate-800 p-3 space-y-3"),
+	}
+	if oob {
+		attrs = append(attrs, hx("swap-oob", "true"))
+	}
+	return h.Div(append(attrs,
 		h.Div(h.Class("text-xs font-semibold text-slate-200"), g.Text("Workflow mode")),
 		h.P(h.Class("text-xs text-slate-400"),
 			g.Text(runModesBlurb(sels)),
 		),
 		g.Group(blocks),
-	)
+	)...)
 }
 
 // runModesBlurb explains the picker WITHOUT overclaiming. The 581 shape ships
@@ -131,9 +159,15 @@ func runModesBlurb(sels []comfy.ModeSelector) string {
 // runModeSelect renders one selector's <select>. The currently-live mode (if any) is
 // pre-selected; when the author shipped every mode off, the placeholder is selected
 // and the run proceeds exactly as it does today until the user picks.
-func runModeSelect(wfID, csrf string, idx int, sel comfy.ModeSelector) g.Node {
+// override, when non-empty, pre-selects that mode instead of the one the STORED
+// graph has enabled — the run-preset tab-open case. It is only ever a key the
+// caller already validated against DetectModeSelectors.
+func runModeSelect(wfID, csrf string, idx int, sel comfy.ModeSelector, override string) g.Node {
 	fid := "cm-mode-" + strconv.Itoa(idx)
 	current := sel.Selected()
+	if override != "" {
+		current = override
+	}
 	opts := make([]g.Node, 0, len(sel.Modes)+1)
 	if current == "" {
 		opts = append(opts, h.Option(h.Value(""), g.Attr("selected"),
@@ -163,7 +197,40 @@ func runModeSelect(wfID, csrf string, idx int, sel comfy.ModeSelector) g.Node {
 		hx("trigger", "change"),
 		hx("target", "#"+runParamsContainerID),
 		hx("swap", "innerHTML"),
-		hx("include", runModesInclude),
+		// Carry the ACTIVE preset id (and only that — the field values would make this
+		// GET's query string unbounded) so changing the mode re-renders the tab the
+		// user is on instead of snapping back to the first one.
+		hx("include", runModesInclude+", #"+presetIDInputID),
+		// Close the mode-change race at its source: until the re-rendered panel lands,
+		// the fields on screen belong to the PREVIOUS mode while this select already
+		// reads as the new one. A Save clicked in that window posts the new mode_key
+		// with the old mode's fields, none of which survive the mode-applied
+		// allow-list. The server merges rather than replaces (presetEntryWrite), so
+		// nothing is lost either way — this just keeps the user from meeting that path.
+		//
+		// The selector names the panel's buttons AND the panel container, and
+		// deliberately does NOT name this select. Both halves were read out of the
+		// vendored htmx.min.js rather than assumed:
+		//
+		//   - "this" is special-cased ONLY when it is the WHOLE attribute value
+		//     (`we()`: `if(n==="this")`). Inside a comma list it goes through the token
+		//     table in `p()` — closest / find / next / previous / document / window /
+		//     body / root / host — which has no "this", so it is emitted as a raw CSS
+		//     TYPE selector and matches nothing. It was inert here, and that is the only
+		//     reason this was safe: htmx's value collector SKIPS disabled controls
+		//     (`tn()`: `if(...||t.disabled||...)`), so a select that really got disabled
+		//     would drop out of every OTHER control's hx-include — a Run clicked in this
+		//     window would post with NO mode_key and convert an all-bypassed graph.
+		//     Making "this" resolve would create that hazard, so it is removed instead.
+		//   - A selector matching nothing makes htmx log 'The selector … returned no
+		//     matches!' and disable nothing. `#run-params button` alone matches nothing
+		//     exactly when a multi-mode template has no mode picked yet — the first use
+		//     of this picker. The stable #run-params container is therefore included so
+		//     there is always a match. `disabled` on a <div> is inert: it is not a form
+		//     control (the only rule in the bundle is `:disabled{cursor:default}`, a
+		//     pseudo-class no <div> matches), it does not disable descendants, and
+		//     htmx's collector only propagates disabledness through `fieldset[disabled]`.
+		hx("disabled-elt", "#"+runParamsContainerID+", #"+runParamsContainerID+" button"),
 	}
 	selAttrs = append(selAttrs, opts...)
 	_ = csrf // the picker itself changes no state; the GET carries no token
@@ -187,6 +254,13 @@ func detectWorkflowModes(wf *store.Workflow) []comfy.ModeSelector {
 // mode. GET (no state change, no CSRF), loopback-gated like the other run endpoints.
 // The mode choice arrives as ordinary query values and is filtered through
 // parseModeChoices, so it can only ever name a real mode of a real selector.
+//
+// This is the PICKER-CHANGED entry point, so the picker is authoritative and a
+// preset's stored mode is NOT preferred here (preferPresetModes=false) — otherwise
+// the preset would immediately undo the change the user just made. It carries the
+// active preset id so the tab survives the swap. Being a GET it changes nothing:
+// values typed since the last save are re-rendered from the stored preset, which
+// is unchanged from today (the panel was always re-fetched on a mode change).
 func (s *Server) handleWorkflowRunParams(w http.ResponseWriter, r *http.Request) {
 	if !s.gate(w) {
 		return
@@ -205,23 +279,17 @@ func (s *Server) handleWorkflowRunParams(w http.ResponseWriter, r *http.Request)
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	s.render(w, http.StatusOK, runParametersPanelForModes(wf, s.csrf, parseModeChoices(r.URL.Query(), wf)))
+	q := r.URL.Query()
+	activeID, _ := strconv.ParseInt(strings.TrimSpace(q.Get(presetIDField)), 10, 64)
+	view := s.buildPresetView(r.Context(), wf, activeID, parseModeChoices(q, wf), false)
+	s.render(w, http.StatusOK, runParamsBody(wf, s.csrf, view))
 }
 
-// runParametersPanelForModes renders the Parameters panel against the graph the run
-// would actually convert: the stored graph with the chosen mode applied. An empty
-// choice set is the plain stored graph, so ordinary workflows are unaffected.
-func runParametersPanelForModes(wf *store.Workflow, csrf string, choices map[string]string) g.Node {
-	view := wf
-	if len(choices) > 0 && wf.Format == store.WorkflowFormatUI {
-		cp := *wf
-		cp.Graph = string(comfy.ApplyModeSelection(json.RawMessage(wf.Graph), choices))
-		view = &cp
-	}
-	// runParametersPanel yields nil when the graph exposes nothing editable (an
-	// api graph, or a template before a mode is picked). This is a RESPONSE body, so
-	// it must be a real node — an empty div clears the container honestly.
-	if panel := runParametersPanel(view, csrf); panel != nil {
+// runParamsBody is the #run-params response body. It must be a REAL node — an
+// empty div clears the container honestly when the graph exposes nothing editable
+// (an api graph, or a template before a mode is picked).
+func runParamsBody(wf *store.Workflow, csrf string, v presetTabView) g.Node {
+	if panel := runPresetPanel(wf, csrf, v); panel != nil {
 		return panel
 	}
 	return h.Div()

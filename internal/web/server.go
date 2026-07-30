@@ -597,6 +597,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /workflows/{id}/run/comfy-status", s.handleWorkflowRunComfyStatus)
 	mux.HandleFunc("GET /workflows/{id}/run/status", s.handleWorkflowRunStatus)
 	mux.HandleFunc("GET /workflows/{id}/run/params", s.handleWorkflowRunParams)
+	// Run presets (the run panel's tabs). Every one is CSRF + loopback gated: they
+	// are the INPUT to a run, and the run panel itself renders nothing but a note
+	// off-loopback, so an ungated preset editor would edit a surface the caller
+	// cannot use. Tab switch is a POST (activate) because it must persist the
+	// outgoing tab's typed values in the same round trip.
+	mux.HandleFunc("POST /workflows/{id}/run/presets", s.handleWorkflowRunPresetCreate)
+	mux.HandleFunc("POST /workflows/{id}/run/presets/{pid}/activate", s.handleWorkflowRunPresetActivate)
+	mux.HandleFunc("POST /workflows/{id}/run/presets/{pid}/save", s.handleWorkflowRunPresetSave)
+	mux.HandleFunc("POST /workflows/{id}/run/presets/{pid}/delete", s.handleWorkflowRunPresetDelete)
 	mux.HandleFunc("POST /workflows/run/stop", s.handleWorkflowRunStop)
 	mux.HandleFunc("GET /workflows/run/view", s.handleWorkflowRunView)
 	// Missing-model resolution fragment (read-only GET, loopback-gated, TTL-cached).
