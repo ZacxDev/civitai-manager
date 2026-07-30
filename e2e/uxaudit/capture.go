@@ -55,6 +55,14 @@ type ViewCapture struct {
 	ConsoleThirdParty int
 	NetworkFirstParty int
 	NetworkThirdParty int
+
+	// Console / Network are the ORIGIN-CLASSIFIED event lists behind the roll-up
+	// counts above (each event's FirstPart is set). They are retained — not just
+	// counted — so BuildPayload can emit per-event push FINDINGS carrying the actual
+	// message text/status: a bare count tells you a first-party console error exists
+	// but not what it says, which is unactionable in the pushed report.
+	Console []consoleEvent
+	Network []networkEvent
 }
 
 // Browser is a headless Chromium driving a SINGLE shared tab (the auditloop
@@ -181,12 +189,16 @@ func (b *Browser) CaptureWith(pageURL string, vp Viewport, prep []chromedp.Actio
 	col.mu.Lock()
 	var netEvents []networkEvent
 	for _, ce := range col.console {
-		first := sameOrigin(pageURL, orDefault(ce.URL, pageURL))
-		if first {
+		// Stamp the classification ONTO the retained event (ce is a copy, so this
+		// assignment is what makes FirstPart meaningful downstream in BuildPayload —
+		// previously the verdict was computed for the count and then thrown away).
+		ce.FirstPart = sameOrigin(pageURL, orDefault(ce.URL, pageURL))
+		if ce.FirstPart {
 			out.ConsoleFirstParty++
 		} else {
 			out.ConsoleThirdParty++
 		}
+		out.Console = append(out.Console, ce)
 	}
 	for _, ne := range col.network {
 		ne.FirstPart = sameOrigin(pageURL, ne.URL)
@@ -197,6 +209,7 @@ func (b *Browser) CaptureWith(pageURL string, vp Viewport, prep []chromedp.Actio
 		}
 		netEvents = append(netEvents, ne)
 	}
+	out.Network = netEvents
 	col.mu.Unlock()
 	out.NetworkJSON, _ = json.Marshal(netEvents)
 
@@ -271,16 +284,44 @@ func (c *collector) handle(ev any) {
 	}
 }
 
+// consoleText renders a console.error(...) call's arguments as human-readable text.
+//
+// A CDP arg's Value is RAW JSON, so a string argument arrives QUOTED and
+// backslash-escaped (`"the selector \"#x\" matched nothing"`). Stripping only the
+// outer quotes leaves the inner `\"` escapes in the text — which used to be
+// invisible (the text was counted and discarded) but is now shipped verbatim as a
+// console FINDING detail, where the stray backslashes are user-visible noise. So
+// decode a JSON string properly and fall back to the raw JSON for non-string args
+// (numbers, objects), which are already their own readable representation.
 func consoleText(e *runtime.EventConsoleAPICalled) string {
 	parts := make([]string, 0, len(e.Args))
 	for _, a := range e.Args {
 		if a.Value != nil {
-			parts = append(parts, strings.Trim(string(a.Value), `"`))
+			parts = append(parts, decodeConsoleArg(a.Value))
 		} else if a.Description != "" {
 			parts = append(parts, a.Description)
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+// decodeConsoleArg turns one raw-JSON console argument into display text: a JSON
+// string is unquoted/unescaped; anything else (number, object, null) is returned as
+// its JSON form.
+//
+// It decodes into `any` rather than straight into a string on purpose: JSON `null`
+// unmarshals into a string WITHOUT error and leaves it "", which would silently drop
+// a console.error(null) argument instead of showing it.
+func decodeConsoleArg(raw []byte) string {
+	var v any
+	if json.Unmarshal(raw, &v) == nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	// Non-string (or undecodable) args are already readable as their JSON text, and
+	// echoing it avoids re-formatting numbers.
+	return string(raw)
 }
 
 func stackURL(st *runtime.StackTrace) string {

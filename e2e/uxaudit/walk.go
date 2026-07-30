@@ -198,6 +198,14 @@ func Walk(ctx context.Context, execPath, outDir, label string) (*WalkResult, err
 // and the origin-classified rollup counts. Environment is always "lab" (hermetic
 // localhost — auditloop keeps the numbers but suppresses the misleading perf
 // findings). The file form-name IS the filename, per the push contract.
+//
+// Each page also carries its normalized FINDINGS (see findings.go / CaptureFindings):
+// one a11y finding per violated axe rule with a structured detail whose top-level
+// "id" drives auditloop's P2 `new_a11y_rules` regression delta, plus one finding per
+// FIRST-PARTY console/network error carrying the actual message text. Without them
+// the pushed run reports "no accessibility issues" and the CI a11y gate is a no-op.
+// Third-party events stay counts-only, and no perf/layout findings are emitted
+// (auditloop derives those server-side).
 func BuildPayload(label string, caps []CapturedView) (PushPayload, map[string][]byte) {
 	files := map[string][]byte{}
 	pages := make([]PushPage, 0, len(caps))
@@ -215,6 +223,7 @@ func BuildPayload(label string, caps []CapturedView) (PushPayload, map[string][]
 			ConsoleThirdParty: cv.Capture.ConsoleThirdParty,
 			NetworkFirstParty: cv.Capture.NetworkFirstParty,
 			NetworkThirdParty: cv.Capture.NetworkThirdParty,
+			Findings:          CaptureFindings(cv.Capture),
 		}
 		if len(cv.Capture.AxeJSON) > 0 {
 			axe := base + ".axe.json"
