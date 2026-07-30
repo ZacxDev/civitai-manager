@@ -173,7 +173,11 @@ func TestRunControlsIncludeModePicks(t *testing.T) {
 			[]comfy.BadOption{{ClassType: "X", InputName: "y", Current: "z", Choices: []string{"a", "b"}}},
 			5, "tok", false)),
 	} {
-		if !strings.Contains(body, `#run-modes select`) {
+		// The selector names the stable CONTAINER, not "#run-modes select" — see
+		// runModesInclude and TestRunPanelHxIncludesAlwaysMatch (issue #28). htmx
+		// collects an included non-form element's descendants, so the picks still ride
+		// along, and the selector matches on an ordinary workflow too.
+		if !strings.Contains(body, `hx-include="`+runModesInclude+`"`) {
 			t.Errorf("%s does not hx-include the mode picks:\n%s", name, body)
 		}
 	}
