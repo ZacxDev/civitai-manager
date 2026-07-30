@@ -26,7 +26,8 @@ import (
 //     item would be byte-identical. That is offered, never performed: the first
 //     click returns the offer, and only a second click carrying confirm_no_seed=1
 //     proceeds — the same "offer, do not perform" shape as the substitute
-//     confirmation.
+//     confirmation. The offer is reached ONLY after the singleton check, and is
+//     rendered as a SIBLING above the status fragment — see the `respond` closure.
 //   - THE CLAMP. count is clamped server-side to [1, maxBatchCount] and the user is
 //     TOLD when the request was reduced, rather than the request being rejected.
 func (s *Server) handleWorkflowRunQueue(w http.ResponseWriter, r *http.Request) {
@@ -80,11 +81,37 @@ func (s *Server) handleWorkflowRunQueue(w http.ResponseWriter, r *http.Request) 
 
 	count, clamped := clampBatchCount(r.FormValue(batchCountField))
 
+	// EVERY response is a server-authored lead node ABOVE the status fragment, never
+	// instead of it: #run-status is swapped innerHTML, so a response that omits the
+	// fragment deletes the 1 s poller and the Stop control along with it.
+	respond := func(lead g.Node) {
+		s.render(w, http.StatusOK, g.Group([]g.Node{
+			lead,
+			runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()),
+		}))
+	}
+
+	// 🔴 THE SINGLETON IS CHECKED FIRST — before the no-seed offer. A batch is
+	// running, the user clicks Queue on a seedless workflow: the offer is not just
+	// the wrong answer to a request that would be REFUSED anyway, it would replace
+	// the live batch fragment with a static panel and the batch would look gone.
+	if ref := s.batchInFlight(); ref.Running {
+		respond(runNoticeLine(ref.notice(), false))
+		return
+	}
+
 	// The seed keys come from the graph the run will ACTUALLY convert — the same
-	// mode-applied copy the allow-list above was derived from.
+	// mode-applied copy the allow-list above was derived from. Reading wf.Graph
+	// instead would, on a multi-mode template, randomise a BYPASSED pipeline's seed
+	// and miss the selected one — a silently identical N-item batch, i.e. exactly
+	// what the seed code exists to prevent.
 	seedKeys := comfy.SeedWidgetKeys(modeAppliedGraph(wf, modes))
 	if len(seedKeys) == 0 && count > 1 && r.FormValue(batchConfirmNoSeedField) != "1" {
-		s.render(w, http.StatusOK, noSeedBatchOffer(wf.ID, s.csrf, count))
+		// A SIBLING above the status fragment, the way runNoticeLine already is. The
+		// check above has already ruled out a running batch; this closes the window
+		// between that check and here, and keeps a finished run's terminal panel
+		// (its images, its "Run again") from being wiped by a question.
+		respond(noSeedBatchOffer(wf.ID, s.csrf, count))
 		return
 	}
 
@@ -97,10 +124,7 @@ func (s *Server) handleWorkflowRunQueue(w http.ResponseWriter, r *http.Request) 
 	if started {
 		notice = queueStartNotice(count, clamped, len(seedKeys) == 0)
 	}
-	s.render(w, http.StatusOK, g.Group([]g.Node{
-		runNoticeLine(notice, started),
-		runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()),
-	}))
+	respond(runNoticeLine(notice, started))
 }
 
 // queueStartNotice is the server-authored line above a freshly started batch. It

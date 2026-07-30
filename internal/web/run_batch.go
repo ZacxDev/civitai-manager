@@ -122,6 +122,27 @@ func (r batchRefusal) notice() string {
 	return "A run is already in progress. Stop it before starting another."
 }
 
+// batchInFlight reports the batch currently holding the run singleton WITHOUT
+// starting anything. Its zero value means nothing is running.
+//
+// The queue handler needs this BEFORE it can decide to render the no-seed offer:
+// that offer goes into #run-status with hx-swap=innerHTML and carries neither a
+// poller nor a Stop control, so returning it while a batch is running would replace
+// the live fragment — killing the 1 s poll loop and the only "Stop batch" button,
+// which reads as "the batch vanished" — for a request startBatch was going to
+// REFUSE anyway.
+func (s *Server) batchInFlight() batchRefusal {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if s.runJob == nil || !s.runJob.running {
+		return batchRefusal{}
+	}
+	return batchRefusal{
+		Running: true, WorkflowID: s.runJob.workflowID,
+		Index: s.runJob.batchIndex, Total: s.runJob.batchTotal,
+	}
+}
+
 // batchPlan is the IMMUTABLE plan the batch goroutine executes. Everything mutable
 // lives on runJob under runMu; everything here is fixed before the goroutine starts
 // and never written again, so it is safe to read without the lock.

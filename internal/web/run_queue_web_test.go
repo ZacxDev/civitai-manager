@@ -305,6 +305,90 @@ func TestQueueSingleRunNeedsNoSeedConfirm(t *testing.T) {
 	waitBatchDone(t, srv)
 }
 
+// TestQueueBusyRefusesBeforeTheNoSeedOffer pins that the singleton is checked BEFORE
+// the offer. The trigger is real: a batch on a seedless workflow is running (it got
+// through with confirm_no_seed=1), the user clicks Queue again. Answering with the
+// offer — which is rendered ALONE into #run-status with hx-swap=innerHTML and carries
+// neither a poller nor a Stop control — killed the 1 s poll loop and the only "Stop
+// batch" button, so the running batch looked like it had vanished. The request was
+// going to be refused anyway.
+func TestQueueBusyRefusesBeforeTheNoSeedOffer(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, queueNoSeedGraph)
+	release := make(chan struct{})
+	var calls int32
+	srv.runFn = blockingRunFn(&calls, release)
+
+	if rec := postQueue(t, srv, id, url.Values{
+		"csrf_token": {srv.csrf}, batchCountField: {"3"}, batchConfirmNoSeedField: {"1"},
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("first queue status = %d", rec.Code)
+	}
+	waitCallCount(t, &calls, 1)
+
+	// The second click: seedless, count > 1, no confirm — the offer's exact trigger.
+	rec := postQueue(t, srv, id, url.Values{"csrf_token": {srv.csrf}, batchCountField: {"3"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "identical runs anyway") {
+		t.Errorf("the offer was rendered over a RUNNING batch: %s", body)
+	}
+	if !strings.Contains(body, "A batch is already running (1 of 3)") {
+		t.Errorf("the refusal is not reported: %s", body)
+	}
+	if !hasRunPoller(body) {
+		t.Errorf("the response dropped the poller — the batch stops updating: %s", body)
+	}
+	if !strings.Contains(body, "Stop batch") {
+		t.Errorf("the response dropped the only Stop control: %s", body)
+	}
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Errorf("runFn called %d times — the refused click started a run", n)
+	}
+
+	close(release)
+	waitBatchDone(t, srv)
+}
+
+// TestQueueNoSeedOfferIsASiblingOfTheStatusFragment pins the second half: the offer
+// is rendered ABOVE runStatusFragment, never instead of it. #run-status is swapped
+// innerHTML, so an offer returned alone deletes whatever the run region held — here
+// a stopped run's terminal panel and its "Run again" way forward. It also closes the
+// window between the singleton check and this branch.
+func TestQueueNoSeedOfferIsASiblingOfTheStatusFragment(t *testing.T) {
+	srv := newTestServer(t)
+	srv.comfyClientFn = func() comfyClient { return &fakeComfy{} }
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, queueNoSeedGraph)
+	release := make(chan struct{})
+	var calls int32
+	srv.runFn = blockingRunFn(&calls, release)
+
+	if rec := postQueue(t, srv, id, url.Values{
+		"csrf_token": {srv.csrf}, batchCountField: {"3"}, batchConfirmNoSeedField: {"1"},
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("first queue status = %d", rec.Code)
+	}
+	waitCallCount(t, &calls, 1)
+	srv.stopRun()
+	close(release)
+	waitBatchDone(t, srv)
+
+	rec := postQueue(t, srv, id, url.Values{"csrf_token": {srv.csrf}, batchCountField: {"3"}})
+	body := rec.Body.String()
+	if !strings.Contains(body, "Queue 3 identical runs anyway") {
+		t.Fatalf("the offer is missing: %s", body)
+	}
+	if !strings.Contains(body, "Run stopped.") {
+		t.Errorf("the offer REPLACED the run status region instead of sitting above "+
+			"it: %s", body)
+	}
+	if srv.runJobState().Running {
+		t.Error("the offer started something")
+	}
+}
+
 // ── the refusal that replaced the silent no-op ───────────────────────────────
 
 // TestSecondBatchRefusedWithMessage pins the fix for "I clicked Queue ×8 and
