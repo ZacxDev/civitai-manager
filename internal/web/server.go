@@ -212,6 +212,14 @@ type Server struct {
 	// write under comfy_model_path); tests inject a seam to drive the
 	// download-and-run goroutine without network or disk.
 	downloadFn func(ctx context.Context, pd pendingDownload, cb func(string)) error
+	// openerFn LAUNCHES the platform file manager for the "open containing folder"
+	// control. Nil (production) uses startFileManager, which execs the fixed
+	// per-GOOS opener with an argv (never a shell) under a context timeout and does
+	// not block on the child. Tests inject a seam so the executed argv can be
+	// asserted WITHOUT spawning anything — this is the only place in internal/web
+	// that runs a process, so the seam is deliberately narrow: it receives an argv
+	// the caller has already built and validated, and returns only a start error.
+	openerFn func(argv []string) error
 	// evictMu serializes output-gallery cap enforcement. Captures are NOT mutually
 	// exclusive — the run job clears `running` under runMu BEFORE the capture runs
 	// off the mutex — so two captures can enforce the cap concurrently. Without this
@@ -540,6 +548,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /library/scan-dirs/add", s.handleScanDirAdd)
 	mux.HandleFunc("POST /library/scan-dirs/remove", s.handleScanDirRemove)
 	mux.HandleFunc("POST /library/quarantine", s.handleQuarantine)
+	// Opens the containing folder of one indexed file in the platform file
+	// manager. The id is the ONLY thing the request supplies — see
+	// reveal_handlers.go for the loopback/CSRF/containment/allowlist gates.
+	mux.HandleFunc("POST /library/files/{id}/reveal", s.handleLibraryFileReveal)
 	mux.HandleFunc("GET /trash", s.handleTrash)
 	mux.HandleFunc("POST /trash/{id}/restore", s.handleRestore)
 

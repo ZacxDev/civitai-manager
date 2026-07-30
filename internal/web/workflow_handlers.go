@@ -295,6 +295,15 @@ func (s *Server) handleWorkflowGolden(w http.ResponseWriter, r *http.Request) {
 // this stays cheap. Never fetches civitai — the model name lazy-loads via
 // /models/{id}/title only for cards whose model is uncached.
 func (s *Server) workflowResolver() workflowResolver {
+	// The reveal capability and its library roots are resolved ONCE per resolver,
+	// not per chip: revealRoots reads the persisted scan-dir selection and
+	// resolveRoots stats every root. The endpoint re-derives both on each click, so
+	// this snapshot only decides whether the control is OFFERED.
+	openFolder := s.extraPathsAllowed()
+	var realRoots []string
+	if openFolder {
+		realRoots = resolveRoots(s.revealRoots())
+	}
 	return workflowResolver{
 		cachedModel: func(id int) (string, []byte, bool) {
 			ent, err := s.store.GetModelCache(id)
@@ -316,16 +325,29 @@ func (s *Server) workflowResolver() workflowResolver {
 			if err != nil || lf == nil {
 				return resourceInfo{}, false
 			}
-			info := resourceInfo{Path: lf.Path}
+			info := resourceInfo{Path: lf.Path, FileID: lf.ID}
+			if openFolder {
+				_, info.Contained = containedDirIn(lf.Path, realRoots)
+			}
 			if lf.ModelID != nil {
 				info.ModelID = *lf.ModelID
 			}
 			if lf.VersionID != nil {
 				info.VersionID = *lf.VersionID
 			}
+			// Recorded HuggingFace provenance, if any. This is a primary-key lookup
+			// in the LOCAL database keyed by the file's content hash — never a
+			// fetch, so the chip stays offline-renderable. A file with no recorded
+			// provenance simply gets none: there is no lookup, no guess, and no
+			// implication that a source is known.
+			if p, perr := s.store.HFProvenanceForFile(lf.SHA256); perr == nil && p != nil {
+				info.HF = p
+			}
 			return info, true
 		},
-		nsfwMode: s.nsfwMode(),
+		nsfwMode:   s.nsfwMode(),
+		csrf:       s.csrf,
+		openFolder: openFolder,
 	}
 }
 

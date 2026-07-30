@@ -1959,6 +1959,76 @@ a.cm-res-chip .cm-res-name {
 }
 
 /*
+ * A chip linking OFF-SITE to recorded HuggingFace provenance. It reads as a link
+ * like the CivitAI one but is visually distinguishable, because the two make
+ * different promises: the CivitAI chip navigates in-app, this one leaves for
+ * huggingface.co. A dashed border is the distinction — it needs no new colour
+ * token, so contrast_web_test.go's pinned pairs are untouched.
+ *
+ * NOTE: a chip has this variant ONLY when we downloaded the bytes ourselves and
+ * verified their sha256. There is deliberately no "maybe from HuggingFace" style,
+ * because there is no such row.
+ */
+.cm-res-chip[data-src="hf"] {
+  border-style: dashed;
+}
+
+/*
+ * .cm-res-item / .cm-res-open — the chip and its "open containing folder" button
+ * as one wrapping unit. The button is a SIBLING of the chip, never a child: the
+ * chip is an <a> whenever it links anywhere, and a button nested in an anchor is
+ * invalid HTML and unusable by keyboard/AT.
+ */
+.cm-res-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  max-width: 100%;
+}
+.cm-res-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.cm-res-open-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.15rem 0.3rem;
+  border: 1px solid var(--civitai-color-border);
+  border-radius: 0.3rem;
+  background: transparent;
+  color: var(--civitai-color-text-dimmed);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  cursor: pointer;
+}
+.cm-res-open-btn:hover {
+  border-color: var(--civitai-color-primary);
+  color: var(--civitai-color-text);
+}
+.cm-res-open-btn:focus-visible {
+  outline: 2px solid var(--civitai-color-primary);
+  outline-offset: 2px;
+}
+/*
+ * The in-place outcome line. It names WHERE the window opened, because the server
+ * execs the file manager on its OWN machine — a fact that is invisible, and
+ * actively confusing, when the UI is being driven from another device.
+ */
+.cm-res-open-msg {
+  font-size: 0.68rem;
+  overflow-wrap: anywhere;
+  color: var(--civitai-color-text-dimmed);
+}
+.cm-res-open-msg[data-state="ok"] {
+  color: var(--civitai-color-success-text);
+}
+.cm-res-open-msg[data-state="error"] {
+  color: var(--civitai-color-error-text);
+}
+
+/*
  * .cm-res-trigger / .cm-res-pop — the list item's "N resources" affordance. It
  * REUSES the existing popover mechanism (.cm-updated wrapper + .cm-updated-pop
  * child) so it inherits the shared hover controller in modelPageScript plus the

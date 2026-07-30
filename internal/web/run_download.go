@@ -87,6 +87,13 @@ type pendingDownload struct {
 	// SourceHF routes the fetch through the SSRF-hardened HuggingFace client instead
 	// of the civitai downloader.
 	SourceHF bool
+	// HFRepo/HFPath/HFRevision are the PROVENANCE triple for an HF source: the repo
+	// id, the path within it, and the concrete commit sha the URL is pinned to. They
+	// are recorded (against ExpectedSHA256) only AFTER the verified atomic rename
+	// succeeds — see recordHFProvenance. Empty for the civitai path.
+	HFRepo     string
+	HFPath     string
+	HFRevision string
 }
 
 // progressName is the name shown in every progress/status line for this download.
@@ -351,6 +358,12 @@ type installPlan struct {
 	ExpectedSHA256 string
 	// SourceHF routes the download through the hardened HuggingFace client.
 	SourceHF bool
+	// HFRepo/HFPath/HFRevision carry the HuggingFace provenance triple straight
+	// off the *hf.Match, so the download can record where the bytes came from
+	// without re-resolving (and therefore without any extra egress).
+	HFRepo     string
+	HFPath     string
+	HFRevision string
 }
 
 // substituted reports whether executing this plan would write bytes that are NOT the
@@ -436,6 +449,9 @@ func (s *Server) resolveInstallPlan(ctx context.Context, filename, typ string, c
 					DestPath:       dest,
 					ExpectedSHA256: m.SHA256,
 					SourceHF:       true,
+					HFRepo:         m.Repo,
+					HFPath:         m.Path,
+					HFRevision:     m.Revision,
 				}, resolveInstallOK
 			}
 		}
@@ -505,6 +521,9 @@ func planToPending(plan installPlan, maxBytes int64) pendingDownload {
 		ContentLengthHint: plan.ContentLengthHint,
 		ExpectedSHA256:    plan.ExpectedSHA256,
 		SourceHF:          plan.SourceHF,
+		HFRepo:            plan.HFRepo,
+		HFPath:            plan.HFPath,
+		HFRevision:        plan.HFRevision,
 	}
 }
 
@@ -888,13 +907,55 @@ func (s *Server) downloadModelFile(ctx context.Context, pd pendingDownload, cb f
 	// path has no hash to pin (empty → verification skipped, unchanged behavior).
 	_, err = comfy.WriteModelStreamVerified(pd.DestPath, pr, contentLen, pd.MaxBytes, pd.ExpectedSHA256)
 	if errors.Is(err, comfy.ErrDestExists) {
-		return nil // installed concurrently / already present — proceed to run
+		// Installed concurrently / already present — proceed to run, but record
+		// NOTHING: we did not write these bytes, so we cannot claim they are ours.
+		return nil
 	}
 	if err != nil {
 		return err
 	}
+	// The rename succeeded, which for an HF source means the streamed bytes already
+	// hashed to pd.ExpectedSHA256 (WriteModelStreamVerified verifies BEFORE the
+	// rename and removes the temp file on a mismatch). Only here is the provenance
+	// claim actually true.
+	s.recordHFProvenance(pd)
 	cb("Download complete — starting run…")
 	return nil
+}
+
+// recordHFProvenance persists "these bytes came from {repo}@{revision}/{path}"
+// for a completed HuggingFace install.
+//
+// It is called ONLY after WriteModelStreamVerified returns nil, i.e. after the
+// stream hashed to pd.ExpectedSHA256 and the atomic rename landed. hfInstallEligible
+// → hf.Match.AutoDownloadEligible requires a non-empty oid, so an HF plan ALWAYS
+// carries an expected sha256 and that verification is never skipped — the recorded
+// hash is proven against the bytes on disk, not asserted.
+//
+// It writes nothing for a civitai download, nothing when the triple is incomplete,
+// and nothing when the destination already existed (handled by the caller). It adds
+// ZERO egress: every value is already in hand from the resolve that produced the
+// download.
+//
+// Failure is logged and never propagated. The file is on disk and works; a missing
+// source link is cosmetic and must not turn a successful install into a failed one.
+func (s *Server) recordHFProvenance(pd pendingDownload) {
+	if !pd.SourceHF || s.store == nil {
+		return
+	}
+	if pd.ExpectedSHA256 == "" || pd.HFRepo == "" || pd.HFPath == "" || pd.HFRevision == "" {
+		return
+	}
+	if err := s.store.UpsertHFProvenance(store.HFProvenance{
+		SHA256:     pd.ExpectedSHA256,
+		Repo:       pd.HFRepo,
+		Path:       pd.HFPath,
+		Revision:   pd.HFRevision,
+		RecordedAt: time.Now().UTC(),
+	}); err != nil {
+		s.log.Warn("record huggingface provenance failed",
+			"file", pd.FileName, "repo", pd.HFRepo, "err", err)
+	}
 }
 
 // assertHTTPSDownloadURL is a cheap, app-level belt on every API-supplied download
