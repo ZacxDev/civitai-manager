@@ -257,10 +257,15 @@ func runPresetDriftBanner(v presetTabView) g.Node {
 	if !rec.NeedsBanner() {
 		if v.Drifted {
 			// Nothing was lost, but the preset is still not certified against the
-			// current graph. A quiet line, not the amber banner.
-			return h.P(h.Class("text-xs text-slate-400"),
-				g.Text("This preset was saved against an earlier version of this workflow. "+
-					"Every saved value still matches. Use \"Adopt current graph\" to stop showing this."))
+			// current graph. A quiet line, not the amber banner — and it MUST still
+			// carry the role-swap caveat: that hazard produces exactly zero drops, so
+			// this branch is the one where it is most likely to be doing damage.
+			return h.Div(h.Class("space-y-1"),
+				h.P(h.Class("text-xs text-slate-400"),
+					g.Text("This preset was saved against an earlier version of this workflow. "+
+						"Every saved value still matches. Use \"Adopt current graph\" to stop showing this.")),
+				presetRoleSwapCaveat(),
+			)
 		}
 		return nil
 	}
@@ -288,6 +293,11 @@ func runPresetDriftBanner(v presetTabView) g.Node {
 			g.Text(" — pick a mode above."),
 		))
 	}
+	if !rec.Exact {
+		// Only on the drift path: an EXACT hash proves the graph did not move, so
+		// nothing could have swapped roles under the stored keys.
+		lines = append(lines, presetRoleSwapCaveat())
+	}
 	lines = append(lines, h.P(h.Class("text-xs"),
 		g.Text("Model substitutions and option fixes are stored by NAME, not position, "+
 			"and were kept unchanged. \"Adopt current graph\" saves these values against "+
@@ -298,6 +308,27 @@ func runPresetDriftBanner(v presetTabView) g.Node {
 		title = "Some saved values no longer apply to the selected workflow mode."
 	}
 	return alert("warning", title, lines...)
+}
+
+// presetRoleSwapCaveat names the class of drift NO check in this codebase can
+// catch, and it is rendered on EVERY drift-path render — including the one where
+// nothing was dropped, which is precisely when the hazard is invisible.
+//
+// On the drift path values are matched by INPUT IDENTITY (kind, holder class,
+// consumer input name). That tuple proves what an input IS, never what it MEANS. If
+// the workflow is re-authored so two SAME-TYPE nodes trade ids or titles — the
+// classic being a POSITIVE and a NEGATIVE CLIPTextEncode swapping — both tuples
+// still match perfectly: zero drops, no banner content, and the positive prompt
+// pre-filled into the negative field. Detecting it needs link-graph analysis
+// DetectRunInputs does not do, so the honest mitigation is to SAY SO and point the
+// user at the labels rather than to imply a guarantee that does not exist.
+func presetRoleSwapCaveat() g.Node {
+	return h.P(h.Class("text-xs text-slate-400"),
+		g.Text("Saved values were matched by input identity (type and input name), not by "+
+			"position. If this workflow was re-authored so that two same-type nodes swapped "+
+			"roles — for example a POSITIVE and a NEGATIVE prompt node trading ids or titles "+
+			"— a saved value can be pre-filled into the WRONG field with nothing flagged. "+
+			"Check the label above each value before running."))
 }
 
 // namedDrops renders a comma-separated list of dropped names, each escaped, with

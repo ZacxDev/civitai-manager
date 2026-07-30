@@ -279,6 +279,66 @@ func TestForkInheritsTheHashOfTheEntriesItCopied(t *testing.T) {
 	}
 }
 
+// TestDriftPathAlwaysStatesTheRoleSwapCaveat: on the drift path values are matched
+// by input identity, which cannot tell a POSITIVE prompt node from a NEGATIVE one
+// that took over its id. That hazard produces ZERO drops, so the caveat must be
+// stated on EVERY drift render — including the "nothing was lost" quiet line, which
+// is exactly where it is invisible.
+func TestDriftPathAlwaysStatesTheRoleSwapCaveat(t *testing.T) {
+	const caveat = "matched by input identity"
+
+	t.Run("drift with nothing dropped", func(t *testing.T) {
+		srv := newTestServer(t)
+		wf := seedPresetWorkflow(t, srv, "t2i", presetUIGraph)
+		// Same graph, unprovable hash: every tuple matches, nothing is dropped.
+		id := seedPreset(t, srv, wf, "Base", "",
+			func(ri comfy.RunInput) string { return ri.Current })
+
+		v := srv.buildPresetView(context.Background(), wf, id, nil, true)
+		if v.Rec.Exact || v.Rec.NeedsBanner() {
+			t.Fatalf("fixture: want the drift path with no drops (exact=%v drops=%+v)",
+				v.Rec.Exact, v.Rec.Dropped)
+		}
+		got := renderString(t, runPresetPanel(wf, "tok", v))
+		if !strings.Contains(got, caveat) {
+			t.Errorf("the quiet drift line must carry the role-swap caveat:\n%s", got)
+		}
+		if !strings.Contains(got, "WRONG field") {
+			t.Errorf("the caveat must say what can go wrong:\n%s", got)
+		}
+	})
+
+	t.Run("drift with drops", func(t *testing.T) {
+		srv := newTestServer(t)
+		wf := seedPresetWorkflow(t, srv, "t2i", presetUIGraph)
+		id := seedPreset(t, srv, wf, "Base", wf.GraphHash,
+			func(ri comfy.RunInput) string { return "STORED" })
+		cur := replaceGraph(t, srv, wf.ID, presetUIGraphRetargeted)
+
+		v := srv.buildPresetView(context.Background(), cur, id, nil, true)
+		got := renderString(t, runPresetPanel(cur, "tok", v))
+		if !strings.Contains(got, `data-color="warning"`) {
+			t.Fatalf("fixture: expected the amber banner:\n%s", got)
+		}
+		if !strings.Contains(got, caveat) {
+			t.Errorf("the drift banner must carry the role-swap caveat:\n%s", got)
+		}
+	})
+
+	t.Run("exact path stays quiet", func(t *testing.T) {
+		srv := newTestServer(t)
+		wf := seedPresetWorkflow(t, srv, "t2i", presetUIGraph)
+		id := seedPreset(t, srv, wf, "Base", wf.GraphHash,
+			func(ri comfy.RunInput) string { return "STORED" })
+
+		v := srv.buildPresetView(context.Background(), wf, id, nil, true)
+		got := renderString(t, runPresetPanel(wf, "tok", v))
+		if strings.Contains(got, caveat) {
+			t.Errorf("an EXACT hash proves the graph did not move — no caveat:\n%s", got)
+		}
+	})
+}
+
 // TestFreshPresetIsStampedWithTheGraphItWasSeededFrom: a brand-new tab's entries
 // come from the CURRENT graph, so stamping the current hash is truthful (this is a
 // create, not an adopt of someone else's drift).
