@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"io/fs"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -331,6 +332,32 @@ func TestHFProvenanceURLs(t *testing.T) {
 			wantFile: "",
 			wantRepo: "",
 		},
+		{
+			// A "?" or "#" in a filename would otherwise truncate the URL into
+			// something that points at a different file; a quote/space would break
+			// out of the segment. Each slash-separated segment is escaped, so the
+			// separators survive and nothing else does.
+			name:     "hostile path characters are percent-escaped per segment",
+			p:        HFProvenance{Repo: `evil org/re"po`, Path: `sub dir/x?a=1#frag.safetensors`, Revision: "r1"},
+			wantFile: `https://huggingface.co/evil%20org/re%22po/blob/r1/sub%20dir/x%3Fa=1%23frag.safetensors`,
+			wantRepo: `https://huggingface.co/evil%20org/re%22po`,
+		},
+		{
+			// Traversal in a repo id survives as path segments, but the ORIGIN is a
+			// constant that is never derived from a row — so the worst a hostile repo
+			// id can do is address a different path on huggingface.co. The host
+			// assertion below is what pins that.
+			name:     "traversal segments stay inside the huggingface.co origin",
+			p:        HFProvenance{Repo: "../../evil.example.com", Path: "x", Revision: "r"},
+			wantFile: "https://huggingface.co/../../evil.example.com/blob/r/x",
+			wantRepo: "https://huggingface.co/../../evil.example.com",
+		},
+		{
+			name:     "an absolute-URL repo id cannot repoint the origin",
+			p:        HFProvenance{Repo: "https://evil.example.com/x", Path: "f", Revision: "r"},
+			wantFile: "https://huggingface.co/https://evil.example.com/x/blob/r/f",
+			wantRepo: "https://huggingface.co/https://evil.example.com/x",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -339,6 +366,20 @@ func TestHFProvenanceURLs(t *testing.T) {
 			}
 			if got := tc.p.RepoURL(); got != tc.wantRepo {
 				t.Fatalf("RepoURL() = %q, want %q", got, tc.wantRepo)
+			}
+			// Whatever a row contains, the ORIGIN must always be huggingface.co over
+			// https — the base is a constant, never anything read from the database.
+			for _, raw := range []string{tc.p.FileURL(), tc.p.RepoURL()} {
+				if raw == "" {
+					continue
+				}
+				u, err := url.Parse(raw)
+				if err != nil {
+					t.Fatalf("built an unparseable URL %q: %v", raw, err)
+				}
+				if u.Scheme != "https" || u.Host != "huggingface.co" {
+					t.Fatalf("URL %q resolved to %s://%s, want https://huggingface.co", raw, u.Scheme, u.Host)
+				}
 			}
 		})
 	}

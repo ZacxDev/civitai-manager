@@ -30,6 +30,16 @@ type workflowResolver struct {
 	// list-item showcase carousels so they honor it (carried on the resolver to
 	// avoid threading it through workflowList/Item/Card + the scan-terminal path).
 	nsfwMode string
+	// csrf is the server's CSRF token, needed by the resource chip's "open folder"
+	// POST. Carried here for the same reason nsfwMode is: the chip renderer is
+	// reached from four call sites (detail card, list popover, scan terminal,
+	// showcase) and threading a token through all of them would be noise.
+	csrf string
+	// openFolder reports whether the "open containing folder" control may be
+	// offered at all. It mirrors the endpoint's own loopback gate — the server
+	// execs a process on the machine running `serve`, so the affordance must not
+	// even appear on a non-loopback bind.
+	openFolder bool
 }
 
 // showcase returns the linked model's showcase gallery (from the LOCAL model_cache
@@ -914,12 +924,21 @@ func workflowDetailPage(wf *store.Workflow, csrf, theme, nsfwMode string, genera
 	}
 
 	// Referenced resources, as chips: have/missing at a glance, the absolute on-disk
-	// path on hover, and a source link for anything matched to a CivitAI model.
+	// path on hover, and a source link for anything matched to a CivitAI model or
+	// downloaded from HuggingFace by this app.
 	if len(wf.Resources) > 0 {
-		body = append(body, card(
+		kids := []g.Node{
 			sectionTitle("Referenced resources"),
 			workflowResourceChips(wf.Resources, resolver),
-		))
+		}
+		// The folder control execs a file manager on the SERVER. Say so once, here,
+		// rather than only in a tooltip — someone driving this UI from a phone or
+		// another desktop would otherwise click it and see nothing happen.
+		if resolver.openFolder {
+			kids = append(kids, h.P(h.Class("text-xs text-slate-400 mt-2"),
+				g.Text("The folder button opens a file-manager window on the computer running civitai-manager.")))
+		}
+		body = append(body, card(kids...))
 	}
 
 	// Graph card — a server-rendered SVG for UI-format graphs (litegraph

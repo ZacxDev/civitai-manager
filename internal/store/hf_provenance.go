@@ -1,9 +1,27 @@
 package store
 
 import (
+	"net/url"
 	"strings"
 	"time"
 )
+
+// hfURLBase is the public HuggingFace Hub origin. It is a CONSTANT, never
+// anything derived from a stored row, so a hostile repo/path can only ever move
+// within huggingface.co's path space — it can never repoint the origin.
+const hfURLBase = "https://huggingface.co"
+
+// escapeHFSegments percent-escapes each SLASH-SEPARATED segment of a repo id or
+// in-repo path, mirroring internal/hf's resolveURL discipline. Escaping the whole
+// string would eat the separators; not escaping it at all would let a "?" or "#"
+// in a filename truncate the URL into something that points elsewhere.
+func escapeHFSegments(p string) string {
+	segs := strings.Split(p, "/")
+	for i, s := range segs {
+		segs[i] = url.PathEscape(s)
+	}
+	return strings.Join(segs, "/")
+}
 
 // HFProvenance is one recorded statement that a file's BYTES came from a
 // HuggingFace repo: this app downloaded them from {Repo}@{Revision}/{Path} and
@@ -51,7 +69,8 @@ func (p HFProvenance) FileURL() string {
 	if repo == "" || rev == "" || rel == "" {
 		return ""
 	}
-	return "https://huggingface.co/" + repo + "/blob/" + rev + "/" + rel
+	return hfURLBase + "/" + escapeHFSegments(repo) + "/blob/" +
+		url.PathEscape(rev) + "/" + escapeHFSegments(rel)
 }
 
 // RepoURL is the repo's landing page — the degrade used when FileURL cannot be
@@ -61,7 +80,7 @@ func (p HFProvenance) RepoURL() string {
 	if repo == "" {
 		return ""
 	}
-	return "https://huggingface.co/" + repo
+	return hfURLBase + "/" + escapeHFSegments(repo)
 }
 
 // UpsertHFProvenance records (or refreshes) one provenance statement. Re-running
