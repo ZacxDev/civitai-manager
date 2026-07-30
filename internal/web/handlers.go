@@ -107,10 +107,18 @@ var searchSortOptions = []selectOption{
 	{"Newest", "Newest"},
 }
 
+// searchPeriodOptions is ordered narrowest → widest so the list reads as a time
+// scale. Every Value is a member of CivitAI's STRICT `period` enum — the API
+// answers 400 to anything else (probed live: Day/Week/Month/Year/AllTime → 200;
+// ThreeMonths/SixMonths/Quarter/"3 Months" → 400), so there is no 3- or 6-month
+// window to offer and faking one client-side would break pagination and make the
+// result counts lie.
 var searchPeriodOptions = []selectOption{
-	{"AllTime", "All time"},
-	{"Month", "This month"},
+	{"Day", "Today"},
 	{"Week", "This week"},
+	{"Month", "This month"},
+	{"Year", "This year"},
+	{"AllTime", "All time"},
 }
 
 // normalizeSearchSort validates a ?sort= value against the whitelist, defaulting
@@ -127,10 +135,15 @@ func normalizeSearchSort(v string) string {
 // defaulting to def (the empty-query popular feed defaults to "Month" to preserve
 // the cached "Popular this month" behavior; a keyword search defaults to
 // "AllTime", the least-restrictive window ≈ the prior no-period behavior).
+//
+// The whitelist IS searchPeriodOptions, so the dropdown and the set of values
+// that may reach civitai.com can never drift apart — an option the UI offers is
+// accepted, and nothing else is ever forwarded.
 func normalizeSearchPeriod(v, def string) string {
-	switch v {
-	case "AllTime", "Month", "Week":
-		return v
+	for _, o := range searchPeriodOptions {
+		if o.Value == v {
+			return v
+		}
 	}
 	return def
 }

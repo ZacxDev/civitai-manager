@@ -1635,26 +1635,12 @@ html {
 }
 
 /*
- * The landing grid: auto-fitting columns so the ~20 ecosystem and ~12 use-case
- * tiles reflow from one column on a phone to many on a wide desktop without a
- * ladder of viewport breakpoints (and without new Tailwind utilities).
+ * (.cm-facet-grid / .cm-facet-tile lived here. They styled the duplicate
+ * "Browse by ecosystem" / "Browse by use case" tile card on /workflows/discover,
+ * which was removed in favour of the chip row above — the two rendered the same
+ * vocabulary twice. No selector references them any more, so the rules are gone
+ * rather than left as dead CSS the purge cannot reach.)
  */
-.cm-facet-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
-  gap: 0.5rem;
-}
-.cm-facet-tile {
-  background: var(--civitai-color-surface-2);
-  border-color: var(--civitai-color-border);
-  text-decoration: none;
-  transition: background 120ms ease, border-color 120ms ease;
-}
-.cm-facet-tile:hover,
-.cm-facet-tile:focus-visible {
-  background: color-mix(in srgb, var(--civitai-color-primary) 16%, transparent);
-  border-color: var(--civitai-color-primary);
-}
 
 /*
  * ---------------------------------------------------------------------------

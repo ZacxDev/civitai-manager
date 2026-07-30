@@ -22,9 +22,6 @@ type workflowDiscoverView struct {
 	Mode    string // NSFW display mode
 	CSRF    string
 	Heading string // section heading above the grid ("" = none)
-	// Landing is true for the entry-point view (no query, no facet): the curated
-	// browse-by grid renders above the popular feed.
-	Landing bool
 	Res     *civitai.ModelSearchResult
 }
 
@@ -36,9 +33,9 @@ type workflowDiscoverView struct {
 // its own CSRF-protected POST endpoint).
 //
 // Egress: a keyword search and a facet browse both send a request to civitai.com.
-// The LANDING view (no query, no facet) issues NO per-tile requests at all — the
-// browse grid is the curated static table — and its popular feed comes from the
-// TTL cache, so idle loads of the entry page do not hit the network.
+// The ENTRY view (no query, no facet) issues NOTHING per facet — the chip row is
+// built from the curated static table — and its popular feed comes from the TTL
+// cache, so idle loads of the entry page do not hit the network.
 //
 // Request budget per render: 1 (no use case) or up to
 // civitai.MaxUseCaseTagQueries (a use case fans out over its tag synonyms
@@ -57,7 +54,6 @@ func (s *Server) handleDiscoverWorkflows(w http.ResponseWriter, r *http.Request)
 		Facets: normalizeWorkflowFacets(q0),
 	}
 	v.Period = normalizeSearchPeriod(q0.Get("period"), discoverDefaultPeriod(query))
-	v.Landing = query == "" && !v.Facets.any()
 
 	if query == "" {
 		// A BROWSE: the landing feed or a facet feed. Both go through the TTL
@@ -140,16 +136,16 @@ func facetHiddenInputs(f workflowFacets) g.Node {
 }
 
 // workflowDiscoverResults renders the swappable fragment: the facet chips, then
-// the landing browse-grid (entry point only), then the result grid or the
-// appropriate empty state. Cards reuse modelCardCore exactly as before, with the
-// import action and no subscribe/download control.
+// the result grid or the appropriate empty state. Cards reuse modelCardCore
+// exactly as before, with the import action and no subscribe/download control.
+//
+// The chip row is the ONLY browse-by-facet control — the duplicate card of facet
+// tiles that used to sit between it and the grid on the entry view is gone.
 func workflowDiscoverResults(v workflowDiscoverView) g.Node {
-	body := []g.Node{workflowFacetChips(v)}
-	if v.Landing {
-		body = append(body, workflowBrowseLanding(v))
-	}
-	body = append(body, workflowDiscoverGrid(v))
-	return g.Group(body)
+	return g.Group([]g.Node{
+		workflowFacetChips(v),
+		workflowDiscoverGrid(v),
+	})
 }
 
 // workflowDiscoverGrid is the result region alone: the card grid, or one of three

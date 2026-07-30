@@ -331,7 +331,11 @@ func workflowImportContainerID(modelID int) string {
 // workflowImportAction renders the "Import workflow(s)" affordance for a Workflows
 // model (used on both the discover cards and the model detail page). The button
 // POSTs the import endpoint (CSRF via hx-vals) and swaps its own container with
-// the result. A short note makes the civitai.com egress explicit.
+// the result.
+//
+// The button carries no explanatory paragraph of its own: it repeated, once per
+// card, what the Discover page's blurb already states about the civitai.com
+// egress, and on a grid of cards that note was pure noise.
 func workflowImportAction(modelID int, csrf string) g.Node {
 	id := workflowImportContainerID(modelID)
 	return h.Div(
@@ -345,8 +349,6 @@ func workflowImportAction(modelID int, csrf string) g.Node {
 			hx("swap", "innerHTML"),
 			hx("disabled-elt", "this"),
 		}, g.Text("Import workflow(s)")),
-		h.P(h.Class("text-xs text-slate-500"),
-			g.Text("Downloads the workflow zip from civitai.com using your token, then stores each workflow locally.")),
 	)
 }
 

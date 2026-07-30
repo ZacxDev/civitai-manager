@@ -1,117 +1,24 @@
 package web
 
 import (
-	"strconv"
-	"strings"
-
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	g "maragu.dev/gomponents"
 	h "maragu.dev/gomponents/html"
 )
 
-// This file renders the browse-by-facet UI on /workflows/discover: the curated
-// landing grid shown as the entry point, the URL-addressable facet chips, and the
-// guided empty state. The vocabulary always comes from internal/civitai's curated
-// table — nothing here hard-codes a base model or a tag.
-
-// ecosystemKindLabel names the landing-grid section a Kind renders under. Video
-// families stay SEPARATE ecosystems (a Wan 2.2 graph and an LTXV graph share
-// nothing operationally) but read as one group here.
-func ecosystemKindLabel(kind string) string {
-	switch kind {
-	case civitai.EcosystemKindImage:
-		return "Image models"
-	case civitai.EcosystemKindVideo:
-		return "Video models"
-	case civitai.EcosystemKindAudio:
-		return "Audio models"
-	default:
-		return "Other"
-	}
-}
-
-// ecosystemKindOrder is the landing-grid section order.
-var ecosystemKindOrder = []string{
-	civitai.EcosystemKindImage,
-	civitai.EcosystemKindVideo,
-	civitai.EcosystemKindAudio,
-	civitai.EcosystemKindOther,
-}
-
-// workflowBrowseLanding is the entry point shown for an empty query with no facet
-// selected: the curated ecosystem grid (grouped by kind) and the use-case grid.
+// This file renders the browse-by-facet UI on /workflows/discover: the
+// URL-addressable facet chips and the guided empty state. The vocabulary always
+// comes from internal/civitai's curated table — nothing here hard-codes a base
+// model or a tag.
 //
-// It issues ZERO upstream requests — every tile is a static table row linking to
-// its own facet URL. That is the whole point: a landing page that fetched a
-// preview feed per tile would fire ~30 requests at civitai.com on every render.
-func workflowBrowseLanding(v workflowDiscoverView) g.Node {
-	var sections []g.Node
-	sections = append(sections, h.H2(h.Class("text-sm font-semibold text-slate-200 mb-2"),
-		g.Text("Browse by ecosystem")))
-
-	byKind := map[string][]civitai.Ecosystem{}
-	for _, e := range civitai.Ecosystems() {
-		byKind[e.Kind] = append(byKind[e.Kind], e)
-	}
-	for _, kind := range ecosystemKindOrder {
-		es := byKind[kind]
-		if len(es) == 0 {
-			continue
-		}
-		tiles := make([]g.Node, 0, len(es))
-		for _, e := range es {
-			tiles = append(tiles, facetTile(
-				discoverFacetHref(v.Query, v.Sort, v.Period, v.Facets, "eco", e.Slug),
-				e.Label, baseModelHint(e)))
-		}
-		sections = append(sections,
-			h.H3(h.Class("text-xs uppercase tracking-wide text-slate-500 mt-3 mb-1"),
-				g.Text(ecosystemKindLabel(kind))),
-			h.Div(h.Class("cm-facet-grid"), g.Group(tiles)),
-		)
-	}
-
-	ucs := civitai.UseCases()
-	tiles := make([]g.Node, 0, len(ucs))
-	for _, u := range ucs {
-		tiles = append(tiles, facetTile(
-			discoverFacetHref(v.Query, v.Sort, v.Period, v.Facets, "use", u.Slug),
-			u.Label, strings.Join(u.QueryTags(), ", ")))
-	}
-	sections = append(sections,
-		h.H2(h.Class("text-sm font-semibold text-slate-200 mt-5 mb-2"), g.Text("Browse by use case")),
-		h.Div(h.Class("cm-facet-grid"), g.Group(tiles)),
-	)
-
-	return card(
-		g.Group(sections),
-		h.P(h.Class("text-xs text-slate-500 mt-3"),
-			g.Text("Use cases come from the workflow's CivitAI tags. Tags like \"tool\" and \"comfyui\" are on nearly every workflow, so they are ignored.")),
-	)
-}
-
-// baseModelHint is the tile's subtitle: the base models the family covers, so the
-// grouping is legible rather than a mystery label. Truncated for the wide families.
-func baseModelHint(e civitai.Ecosystem) string {
-	const max = 3
-	if len(e.BaseModels) <= max {
-		return strings.Join(e.BaseModels, ", ")
-	}
-	return strings.Join(e.BaseModels[:max], ", ") + ", +" +
-		strconv.Itoa(len(e.BaseModels)-max) + " more"
-}
-
-// facetTile is one clickable landing tile. It is a plain <a> (full navigation),
-// so the URL — and therefore the shareability of the resulting view — is always
-// correct without any htmx history juggling.
-func facetTile(href, label, hint string) g.Node {
-	return h.A(
-		h.Href(href),
-		h.Class("cm-facet-tile block rounded-md border p-2"),
-		h.Div(h.Class("truncate text-sm font-medium text-slate-200"), g.Text(label)),
-		g.If(hint != "", h.Div(h.Class("truncate text-xs text-slate-500"), h.Title(hint), g.Text(hint))),
-	)
-}
+// There used to be a SECOND rendering of the same two facet dimensions above the
+// chips: a card of ~30 clickable tiles ("Browse by ecosystem" / "Browse by use
+// case"), shown on the entry view only. It offered no navigation the chip row does
+// not, so the entry page listed every ecosystem and use case twice and pushed the
+// actual results below the fold. The chip row is the one that stayed: it is
+// present on EVERY view (not just the entry one), it shows the current selection,
+// and it re-renders inside the htmx results container so its hrefs cannot go
+// stale.
 
 // workflowFacetChips renders both facet dimensions as URL-addressable chips
 // alongside the existing sort/period controls. Each chip is a link to the same
@@ -231,10 +138,14 @@ func facetCTA(href, label string) g.Node {
 // reads badly and there is nothing to widen to.
 func periodPhrase(period string) string {
 	switch period {
-	case "Month":
-		return "this month"
+	case "Day":
+		return "today"
 	case "Week":
 		return "this week"
+	case "Month":
+		return "this month"
+	case "Year":
+		return "this year"
 	}
 	return ""
 }

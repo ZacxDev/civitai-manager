@@ -78,7 +78,7 @@ func fullPages(t *testing.T) map[string]string {
 		"workflow":   renderString(t, workflowDetailPage(wf, "{}", "csrf", "dark", NSFWBlur, nil, false, comfyHelperView{}, workflowResolver{})),
 		"discover-workflow": renderString(t, workflowDiscoverPage(workflowDiscoverView{
 			Res: searchRes, Mode: NSFWBlur, CSRF: "csrf",
-			Sort: "Most Downloaded", Period: "Month", Landing: true,
+			Sort: "Most Downloaded", Period: "Month",
 		}, "dark")),
 		"discover-apps": renderString(t, appsDiscoverPage(nil, "dark", NSFWBlur, "", "", "", "csrf")),
 	}
