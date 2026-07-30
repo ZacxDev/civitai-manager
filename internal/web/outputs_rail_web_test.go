@@ -543,25 +543,33 @@ func TestRailCollapseRejectsWithoutCSRF(t *testing.T) {
 	}
 }
 
-func TestWorkflowDetailNoLongerHasPerWorkflowOutputsCard(t *testing.T) {
+// TestWorkflowDetailStripAndGlobalRailCoexist replaces the former
+// TestWorkflowDetailNoLongerHasPerWorkflowOutputsCard.
+//
+// That test pinned a removal which has since been REVERSED on purpose: the global
+// rail is CROSS-workflow chrome ("what did I make recently") and never answered
+// "what has THIS workflow made", so it did not actually supersede the per-workflow
+// card. Both surfaces now render, and this pins that they coexist rather than one
+// having eaten the other.
+func TestWorkflowDetailStripAndGlobalRailCoexist(t *testing.T) {
 	srv, root := newOutputsServer(t, "127.0.0.1:8787")
 	wf := seedWF(t, srv, "wf")
 	seedGen(t, srv, root, &wf, "wf", []byte("X"))
 
 	body := get(t, srv, "/workflows/"+strconv.FormatInt(wf, 10)).Body.String()
 	main := pageMain(body)
-	if strings.Contains(main, "Recent outputs") {
-		t.Error("the per-workflow Recent outputs card must be GONE from the workflow detail body")
+	if !strings.Contains(main, "Recent outputs") {
+		t.Error("the workflow detail body must carry its own per-workflow Recent outputs strip")
 	}
-	if strings.Contains(main, "View all 1 →") {
-		t.Error("the per-workflow View-all link must be gone")
+	if !strings.Contains(main, "/outputs?workflow="+strconv.FormatInt(wf, 10)) {
+		t.Error("the strip must link to the workflow-filtered gallery")
 	}
-	if strings.Contains(main, "/outputs/img/") {
-		t.Error("no output thumbnails belong in the workflow detail body any more")
+	if !strings.Contains(main, "/outputs/img/") {
+		t.Error("the strip must render output thumbnails")
 	}
-	// …and the global rail took over.
+	// …and the GLOBAL rail is still there, in the shell, unchanged.
 	if !strings.Contains(pageShell(body), `id="cm-rail"`) {
-		t.Error("the global rail must supersede the removed card")
+		t.Error("the global rail must still render alongside the per-workflow strip")
 	}
 }
 

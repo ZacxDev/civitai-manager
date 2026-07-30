@@ -678,7 +678,54 @@ func generationActionsCard(gen *store.Generation, csrf string) g.Node {
 	)
 }
 
-// NOTE: the per-workflow "Recent outputs" card that used to live here was
-// REMOVED — the global recent-outputs rail (outputs_rail.go), rendered by the app
-// shell on every page, supersedes it. Per-workflow browsing is still one click
-// away at /outputs?workflow=<id> via the gallery's workflow filter.
+// workflowOutputsStripLimit is how many tiles the per-workflow "Recent outputs"
+// strip shows. Like the rail's limit it is deliberately small and FIXED: the strip
+// renders on every workflow detail view, so its store read must be a bounded query
+// (store.ListGenerations with a Limit, via the existing per-workflow filter) and
+// never a scan whose cost grows with the gallery.
+//
+// 8 fills two rows of the 4-column desktop grid; there is no pagination here on
+// purpose — "view all →" is the surface for that.
+const workflowOutputsStripLimit = 8
+
+// workflowOutputsStrip renders ONE workflow's most recent outputs as a compact
+// thumbnail strip, with a "view all" link into the filtered gallery. It returns nil
+// for a workflow with no captured outputs — a dead empty strip on every never-run
+// workflow would be pure noise.
+//
+// HISTORY (this reverses a removal, deliberately): a per-workflow "Recent outputs"
+// card used to live in this file and was deleted when the GLOBAL rail shipped. The
+// rail did not actually supersede it: the rail is CROSS-workflow chrome answering
+// "what did I make recently", while this answers "what has THIS workflow made" —
+// per-workflow provenance, right beside the controls that would make more. Both now
+// exist and they are not redundant.
+//
+// TILE RENDERER: it reuses generationTile (the gallery/batch tile), NOT railTile.
+// generationTile is self-contained — aspect-square, its own overlay anchor, its own
+// caption — and inherits nothing from its parent, so it drops into any grid.
+// railTile's .cm-rail-item/.cm-rail-thumb/.cm-rail-cap rules are defined only under
+// the .cm-rail column (and vary with its collapsed/drawer states), so lifting it into
+// the page body would import the rail's geometry along with it. Its markup contract
+// is pinned byte-for-byte by batch_gallery_web_test.go and is NOT touched here.
+//
+// Render-plain (no NSFW blur) like every outputs surface — the user's own local
+// generations carry no rating signal.
+func workflowOutputsStrip(workflowID int64, gens []store.Generation) g.Node {
+	if len(gens) == 0 {
+		return nil
+	}
+	href := "/outputs?workflow=" + strconv.FormatInt(workflowID, 10)
+	return card(
+		h.Div(h.Class("flex items-center justify-between gap-4"),
+			sectionTitle("Recent outputs"),
+			h.A(h.Href(href), h.Class("shrink-0 text-sm text-indigo-400 hover:text-indigo-300 mb-3"),
+				g.Text("View all →")),
+		),
+		// generationGrid, not a hand-rolled grid: .cm-masonry is the container
+		// .cm-masonry-item was written for (its margin-bottom + break-inside are the
+		// column layout's gutter), so reusing the pair keeps spacing identical to the
+		// gallery and introduces no new utility class into the purged build. The nil
+		// empty-state is unreachable — the len==0 early return above owns that case.
+		generationGrid(gens, nil),
+	)
+}
