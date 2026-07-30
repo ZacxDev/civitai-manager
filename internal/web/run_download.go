@@ -227,12 +227,26 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 
 	// Already installed at the resolved destination → skip the download, run.
 	if fileExists(plan.DestPath) {
-		s.startRunWithMessage(wf, runOptions{}, alreadyInstalledNote(filename))
+		// This branch sits AFTER resolveInstallPlan, i.e. after a live CivitAI round-trip
+		// this click already paid for. A drop by the one-run-at-a-time guard must therefore
+		// be REPORTED, not answered with the other job's panel (finding 9). The pre-resolution
+		// fast path above is left alone: it does no network work, so a dropped click there is
+		// a plain no-op.
+		if !s.startRunWithMessage(wf, runOptions{}, alreadyInstalledNote(filename)) {
+			s.renderRunActionDeclined(w, id, installMissingBusyReason)
+			return
+		}
 		s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 		return
 	}
 
-	s.startDownloadAndRun(wf, planToPending(plan, s.cfg.MaxFileSizeBytes), runOptions{})
+	// A click the one-run-at-a-time guard discards must SAY so: this handler already
+	// paid a CivitAI round-trip, and answering with the other job's panel makes the
+	// click look either dead or as if this install had started.
+	if !s.startDownloadAndRun(wf, planToPending(plan, s.cfg.MaxFileSizeBytes), runOptions{}) {
+		s.renderRunActionDeclined(w, id, installMissingBusyReason)
+		return
+	}
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, true, s.nsfwMode()))
 }
 
@@ -331,12 +345,24 @@ func (s *Server) handleWorkflowInstallOptionAndRun(w http.ResponseWriter, r *htt
 
 	// Already installed at the resolved destination → skip the download, run with fixes.
 	if fileExists(plan.DestPath) {
-		s.startRunWithMessage(wf, opts, alreadyInstalledNote(filename))
+		// This branch sits AFTER resolveInstallPlan, i.e. after a live CivitAI round-trip
+		// this click already paid for. A drop by the one-run-at-a-time guard must therefore
+		// be REPORTED, not answered with the other job's panel (finding 9). The pre-resolution
+		// fast path above is left alone: it does no network work, so a dropped click there is
+		// a plain no-op.
+		if !s.startRunWithMessage(wf, opts, alreadyInstalledNote(filename)) {
+			s.renderRunActionDeclined(w, id, installMissingBusyReason)
+			return
+		}
 		s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 		return
 	}
 
-	s.startDownloadAndRun(wf, planToPending(plan, s.cfg.MaxFileSizeBytes), opts)
+	// Same dropped-click honesty as handleWorkflowDownloadAndRun above.
+	if !s.startDownloadAndRun(wf, planToPending(plan, s.cfg.MaxFileSizeBytes), opts) {
+		s.renderRunActionDeclined(w, id, installMissingBusyReason)
+		return
+	}
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, true, s.nsfwMode()))
 }
 
@@ -468,7 +494,9 @@ func (s *Server) resolveInstallPlan(ctx context.Context, filename, typ string, c
 // renderResolveFallback from an action path with an empty reason.
 const (
 	// The flow itself is unavailable (comfy_model_path unset / non-writable, or a
-	// non-loopback ComfyUI we cannot install files for).
+	// non-loopback ComfyUI we cannot install files for). installMissingUnavailable
+	// (run_install_all.go) is the button-hint register of this SAME precondition — keep
+	// the two in sync if the precondition changes.
 	resolveReasonNotEligible = "Nothing was downloaded: installing automatically is not available here. Set comfy_model_path and point comfy_url at a local ComfyUI, or install this file yourself."
 	// Filename-only resolution found no single CivitAI file to install. Reached from
 	// the CTAs that legitimately carry no model id (the HuggingFace-fallback install
@@ -817,22 +845,51 @@ func (m modelWithVersions) pickFile(want string) (resolvedDownload, bool) {
 // carries the OTHER incompatible-options' picked fixes, applied to the ephemeral graph
 // after the file lands — so the whole section resolves in one action. The stored
 // workflow is never touched.
-func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opts runOptions) {
+func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opts runOptions) bool {
+	return s.startDownloadsAndRun(wf, []pendingDownload{pd}, opts, 0)
+}
+
+// startDownloadsAndRun is startDownloadAndRun for a BATCH: it installs every pd in
+// order, then runs the workflow once. It is the same job/settle machinery — the only
+// additions are the per-file progress prefix and the honest partial-failure error, so
+// the single-file path (len(pds) == 1) produces byte-identical messages to before.
+//
+// A mid-batch download failure ABORTS before the run: the error names how many files
+// did land, because those bytes are permanently on disk and a report that only said
+// "download failed" would hide that. The files that succeeded are kept (they are the
+// right files at the right destinations), so a retry only fetches what is left.
+//
+// alreadyPresent is how many of the caller's requested files were ALREADY on disk and
+// so are not in pds. It is threaded through purely so the status lines can say so: a
+// batch that silently drops the files it did not need to fetch reads as if the user
+// had asked for fewer files than they did.
+//
+// It reports whether the job actually STARTED. false means the one-run-at-a-time guard
+// discarded this call, and the caller must say so rather than render the other job's
+// panel as if this click had worked.
+func (s *Server) startDownloadsAndRun(wf *store.Workflow, pds []pendingDownload, opts runOptions, alreadyPresent int) bool {
+	if len(pds) == 0 {
+		return false
+	}
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	if s.runJob != nil && s.runJob.running {
-		return // one run at a time
+		return false // one run at a time
 	}
 
 	base := s.baseCtx
 	if base == nil {
 		base = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(base, runJobBudget)
+	// The runaway backstop has to cover N downloads AND the run. Reusing the
+	// single-file budget for a batch would cancel a legitimate multi-checkpoint
+	// install part-way through on a slow link — manufacturing exactly the
+	// partial-install state this flow works to avoid.
+	ctx, cancel := context.WithTimeout(base, batchJobBudget(len(pds)))
 	s.runSeq++
 	job := &runJob{
 		running: true, workflowID: wf.ID, seq: s.runSeq, phase: runPhaseDownloading,
-		message: "Preparing download of " + pd.progressName() + "…", startedAt: time.Now(), cancel: cancel,
+		message: downloadBatchOpeningMessage(pds, alreadyPresent), startedAt: time.Now(), cancel: cancel,
 		uiFormat: wf.Format == store.WorkflowFormatUI,
 	}
 	s.runJob = job
@@ -857,11 +914,14 @@ func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opt
 					err = fmt.Errorf("download-and-run panicked: %v", r)
 				}
 			}()
-			err = download(ctx, pd, func(msg string) {
-				up.setPhase(runPhaseDownloading, msg, 0)
-			})
-			if err != nil {
-				return
+			for i, pd := range pds {
+				idx := i
+				if derr := download(ctx, pd, func(msg string) {
+					up.setPhase(runPhaseDownloading, downloadStepMessage(idx, len(pds), alreadyPresent, msg), 0)
+				}); derr != nil {
+					err = downloadBatchError(idx, len(pds), alreadyPresent, derr)
+					return
+				}
 			}
 			res, err = run(ctx, wf, up, opts)
 		}()
@@ -874,6 +934,76 @@ func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opt
 		// is the one-run-at-a-time guard and is unrelated to this goroutine.)
 		s.settleAndCapture(job, wf, opts, res, err)
 	}()
+	return true
+}
+
+// downloadFileBudget is the runaway-backstop allowance added PER EXTRA FILE in a
+// batch install. Like runJobBudget it is not the normal termination path — a model
+// file is routinely multiple GB and a slow link legitimately takes a long time; this
+// only bounds a genuinely stuck batch so it cannot leak a goroutine forever.
+const downloadFileBudget = 30 * time.Minute
+
+// batchJobBudget sizes the runaway backstop for n downloads plus the run. n == 1
+// returns runJobBudget exactly, so the single-file path is unchanged. n is bounded by
+// maxBatchInstallFiles, so the budget is bounded too.
+func batchJobBudget(n int) time.Duration {
+	if n <= 1 {
+		return runJobBudget
+	}
+	return runJobBudget + time.Duration(n-1)*downloadFileBudget
+}
+
+// downloadBatchOpeningMessage is the job's first status line. A lone download with
+// nothing already present keeps its exact original wording; otherwise it names the
+// counts, the already-installed files (never silently dropped — the user asked about
+// those too) and the advertised total size, which is real data from the resolved
+// plans and is the last moment Stop is free.
+func downloadBatchOpeningMessage(pds []pendingDownload, alreadyPresent int) string {
+	if len(pds) == 1 && alreadyPresent == 0 {
+		return "Preparing download of " + pds[0].progressName() + "…"
+	}
+	var total int64
+	for _, pd := range pds {
+		if pd.ContentLengthHint > 0 {
+			total += pd.ContentLengthHint
+		}
+	}
+	// The total is the sum of the ADVERTISED sizes CivitAI reported for the resolved
+	// files (sizeKB), not bytes anyone has counted, so it is labelled as such — the
+	// whole point of showing a real number here is not to imply a measured one.
+	size := ""
+	if total > 0 {
+		size = " (about " + humanBytes(total) + " as listed on CivitAI)"
+	}
+	if alreadyPresent > 0 {
+		return fmt.Sprintf("%d model file%s %s already installed — preparing to install the remaining %d%s…",
+			alreadyPresent, plural(alreadyPresent), isAre(alreadyPresent), len(pds), size)
+	}
+	return fmt.Sprintf("Preparing to install %d model file%s%s…", len(pds), plural(len(pds)), size)
+}
+
+// downloadStepMessage prefixes a batch progress line with its position IN THE WHOLE
+// REQUESTED SET, so a multi-file install is legible ("(2/3) Downloading x… 41%") and
+// so files that were already on disk are still counted — with 1 of 2 already present
+// the single remaining download reads "(2/2)", not "(1/1)", which would quietly
+// misreport what the user asked for. Unprefixed only for a lone download with nothing
+// already present (unchanged behaviour).
+func downloadStepMessage(i, n, alreadyPresent int, msg string) string {
+	if n == 1 && alreadyPresent == 0 {
+		return msg
+	}
+	return fmt.Sprintf("(%d/%d) %s", alreadyPresent+i+1, alreadyPresent+n, msg)
+}
+
+// downloadBatchError reports a mid-batch failure HONESTLY: it names how many files are
+// installed (the ones this batch completed PLUS the ones that were already on disk —
+// all of them are present now, and those bytes are permanent) rather than presenting a
+// partial install as a plain download error.
+func downloadBatchError(i, n, alreadyPresent int, err error) error {
+	if n == 1 && alreadyPresent == 0 {
+		return err
+	}
+	return fmt.Errorf("installed %d of %d model files, then failed: %w", alreadyPresent+i, alreadyPresent+n, err)
 }
 
 // downloadModelFile fetches pd.URL and writes it atomically to pd.DestPath under

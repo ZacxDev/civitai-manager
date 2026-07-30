@@ -178,6 +178,37 @@ func baseName(refName string) string {
 	return path.Base(strings.ReplaceAll(strings.TrimSpace(refName), "\\", "/"))
 }
 
+// CuratedFamilyMatch reports whether refName looks auto-installable to the resolver
+// WITHOUT asking the network: either its basename belongs to one of the curated
+// filename families above, or it carries the detector `bbox/`/`segm/` prefix that
+// searchSubdir routes on. It is PURE and LOCAL — no network, no client — so a caller
+// can consult it while RENDERING.
+//
+// The prefix half matters: a non-curated detector ref (say `bbox/my_custom_det.pt`)
+// gets a real Subdir from searchSubdir and can therefore auto-install off a
+// recognized-org search hit. Testing only curatedLookup called those "may not be
+// found" when in fact they usually are — a false negative in exactly the direction
+// that makes a warning untrustworthy.
+//
+// LIMITATION (unavoidable here, and the reason this is a NECESSARY condition and not a
+// promise): true means "the resolver has a destination rule for this name", not "this
+// will install". Whether the repo still contains the file, whether it is gated, and
+// whether it passes AutoDownloadEligible are all NETWORK facts that only Resolve can
+// establish, so a true here can still end in a decline. Callers must treat it as
+// "worth attempting" and must not use it to promise success.
+func CuratedFamilyMatch(refName string) bool {
+	b := baseName(refName)
+	if b == "" || b == "." || b == ".." {
+		return false
+	}
+	if curatedLookup(b) != nil {
+		return true
+	}
+	// Mirrors searchSubdir's detector-prefix rule.
+	norm := strings.ToLower(strings.ReplaceAll(refName, "\\", "/"))
+	return strings.HasPrefix(norm, "bbox/") || strings.HasPrefix(norm, "segm/")
+}
+
 // curatedLookup returns the curated entry whose pattern matches basename, or nil.
 func curatedLookup(basename string) *curatedEntry {
 	for i := range curatedMap {

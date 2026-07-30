@@ -96,10 +96,28 @@ func cloudPanelFragment(v cloudPanelView, csrf string) g.Node {
 	id := strconv.FormatInt(v.wfID, 10)
 
 	if !v.enabled {
+		// A bare "enable comfy_cloud in your config" is a dead end for anyone who does
+		// not already know where that config file is or what the key does, so this state
+		// carries a real next step.
+		//
+		// The nearest next step is now the TOGGLE above, not the config file: cloud is
+		// switchable from the UI, and it needs no restart. The config route is kept as
+		// the secondary answer because an explicit `comfy_cloud:` value still WINS over
+		// the stored preference in both directions — so a reader who has one set needs
+		// to know that is why the toggle is read-only for them. The docs link survives
+		// from the config-only era: it is the thing that made this state actionable for
+		// someone who does not know where the file lives, and it is still the right
+		// answer for that reader.
 		return h.Div(
 			alert("info", "Cloud run is off",
-				g.Text("Turn cloud run on above (or set comfy_cloud in your config) to run "+
-					"workflows on CivitAI cloud.")),
+				h.P(h.Class("text-sm"),
+					g.Text("Running on CivitAI's cloud is opt-in. Turn it on with the "+
+						"toggle above — no restart needed. You can also set "),
+					h.Span(h.Class("font-mono"), g.Text("comfy_cloud: true")),
+					g.Text(" in your config file, which then takes precedence over the toggle."),
+				),
+				h.P(h.Class("mt-1"), configDocsLink("Where the config file lives")),
+			),
 		)
 	}
 	if !v.runnable {

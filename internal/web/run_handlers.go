@@ -190,19 +190,24 @@ func (s *Server) comfy() comfyClient {
 // (idempotent — a re-click while a run is in flight starts no second goroutine).
 // The run derives its context from the server base context (so shutdown cancels it)
 // with the runaway-backstop budget.
-func (s *Server) startRun(wf *store.Workflow, opts runOptions) {
-	s.startRunWithMessage(wf, opts, "Starting run…")
+func (s *Server) startRun(wf *store.Workflow, opts runOptions) bool {
+	return s.startRunWithMessage(wf, opts, "Starting run…")
 }
 
 // startRunWithMessage is startRun with the job's OPENING status line supplied, so a
 // caller that reached the run by a notable route (e.g. "the file was already installed,
 // nothing was downloaded") can say so instead of showing an indistinguishable
 // "Starting run…". msg is server-authored text, never reflected request input.
-func (s *Server) startRunWithMessage(wf *store.Workflow, opts runOptions, msg string) {
+//
+// It reports whether the job actually STARTED. false means the one-run-at-a-time
+// guard discarded this call — a caller that already did visible work for this click
+// (e.g. the batch install's N resolutions) must say so rather than answer with the
+// other job's panel.
+func (s *Server) startRunWithMessage(wf *store.Workflow, opts runOptions, msg string) bool {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	if s.runJob != nil && s.runJob.running {
-		return // one run at a time
+		return false // one run at a time
 	}
 
 	base := s.baseCtx
@@ -242,6 +247,7 @@ func (s *Server) startRunWithMessage(wf *store.Workflow, opts runOptions, msg st
 		}()
 		s.settleAndCapture(job, wf, opts, res, err)
 	}()
+	return true
 }
 
 // settleAndCapture is the shared tail of EVERY run path (startRun and
