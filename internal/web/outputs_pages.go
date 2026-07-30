@@ -35,20 +35,71 @@ func generationImgURL(imageID int64) string {
 	return "/outputs/img/" + strconv.FormatInt(imageID, 10)
 }
 
+// batchHref is the browse URL for one batch. It returns "" for a generation that
+// belongs to no batch, and ALSO for a batch id that would not survive
+// store.ValidBatchID — the same predicate the handler validates the incoming path
+// segment with, so a corrupted row can never emit a link the server would 404.
+func batchHref(batchID string) string {
+	if batchID == "" || !store.ValidBatchID(batchID) {
+		return ""
+	}
+	return "/outputs/batch/" + batchID
+}
+
+// generationBatchSegment renders the tile caption's "Batch i/N" segment, or nil
+// for a run that belongs to no batch.
+//
+// The link carries pointer-events-auto because the caption bar as a whole is
+// pointer-events-none (clicks fall through it to the tile's full-bleed overlay
+// anchor). This segment is the ONE part of the caption that must stay clickable,
+// and it wins because the caption is an absolutely positioned z-20 box — a
+// stacking context ABOVE the z-10 overlay anchor.
+//
+// Defensive: a half-populated row (batch_id set but index/total zero — all three
+// are written together, so this should be impossible) renders as PLAIN,
+// UNLINKED text rather than an honest-looking "Batch 0/0" pointing somewhere.
+//
+// NOTE: generationTile is shared by /outputs and the batch page itself, so on
+// /outputs/batch/{id} this link points at the page the user is already on. That
+// is deliberate and harmless — a self-link costs nothing and is cheaper than
+// threading a "current batch" flag through every tile caller. Do not "fix" it.
+func generationBatchSegment(gen store.Generation) g.Node {
+	if gen.BatchID == "" {
+		return nil
+	}
+	href := batchHref(gen.BatchID)
+	if href == "" || gen.BatchIndex <= 0 || gen.BatchTotal <= 0 {
+		return h.Span(h.Class("shrink-0 text-slate-400"), g.Text("Batch"))
+	}
+	text := "Batch " + strconv.Itoa(gen.BatchIndex) + "/" + strconv.Itoa(gen.BatchTotal)
+	return h.Span(h.Class("shrink-0"),
+		h.A(h.Href(href),
+			h.Class("pointer-events-auto text-indigo-400 hover:text-indigo-300"),
+			g.Text(text)))
+}
+
 // generationTile is the SHARED grid tile used by both the global gallery and the
-// per-workflow section: a masonry item showing the generation's first image as a
-// lazy thumbnail, linking to the detail page, captioned with the (escaped) label +
-// relative time + ×N badge. Outputs are the user's OWN local generations with no
-// rating signal, so they render PLAIN — no blur/reveal markup (a deliberate
-// render-plain surface; see OUTPUT-GALLERY-DESIGN.md).
+// per-batch page: a masonry item showing the generation's first image as a lazy
+// thumbnail, linking to the detail page, captioned with the (escaped) label +
+// optional "Batch i/N" + relative time + ×N badge. Outputs are the user's OWN
+// local generations with no rating signal, so they render PLAIN — no blur/reveal
+// markup (a deliberate render-plain surface; see OUTPUT-GALLERY-DESIGN.md).
+//
+// The tile is a <div> whose detail link is a full-bleed OVERLAY anchor rather
+// than an <a> wrapping the whole tile. That restructure is load-bearing: the
+// caption now carries its own batch link, and a nested <a> inside an <a> is
+// invalid HTML that browsers unnest — the inner link would never be clickable.
+// The overlay keeps the entire tile clickable exactly as before, so it needs an
+// explicit accessible name (it has no text content of its own).
 func generationTile(gen store.Generation) g.Node {
 	detailHref := "/outputs/" + strconv.FormatInt(gen.ID, 10)
+	label := generationLabel(gen)
 
 	var thumb g.Node
 	if gen.FirstImageID > 0 {
 		thumb = h.Img(
 			h.Src(generationImgURL(gen.FirstImageID)),
-			h.Alt(generationLabel(gen)),
+			h.Alt(label),
 			g.Attr("loading", "lazy"),
 			h.Class("absolute inset-0 h-full w-full object-cover"),
 		)
@@ -70,17 +121,23 @@ func generationTile(gen store.Generation) g.Node {
 	}
 	meta = append(meta, humanSince(gen.CreatedAt))
 
-	children := []g.Node{
+	return h.Div(
 		h.Class("cm-masonry-item group relative block aspect-square overflow-hidden rounded-md border border-slate-800 bg-slate-900"),
 		thumb,
-		// Caption overlay: label + meta. g.Text escapes the untrusted-ish name.
+		// Full-bleed detail link, UNDER the caption bar (z-10 vs z-20) so the
+		// caption's own batch link stays reachable. aria-label because it has no
+		// text content.
+		h.A(h.Href(detailHref), g.Attr("aria-label", label), h.Class("absolute inset-0 z-10")),
+		// Caption overlay: label + optional batch + meta. g.Text escapes the
+		// untrusted-ish name. The bar is pointer-events-none so it never steals a
+		// click from the overlay anchor above.
 		h.Div(
 			h.Class("pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-center justify-between gap-2 bg-slate-950/70 px-2 py-1 text-xs text-slate-200"),
-			h.Span(h.Class("truncate"), g.Text(generationLabel(gen))),
+			h.Span(h.Class("truncate"), g.Text(label)),
+			generationBatchSegment(gen),
 			h.Span(h.Class("shrink-0 text-slate-400"), g.Text(strings.Join(meta, " · "))),
 		),
-	}
-	return h.A(append([]g.Node{h.Href(detailHref)}, children...)...)
+	)
 }
 
 // generationGrid renders a masonry grid of tiles, or the guided empty state.
