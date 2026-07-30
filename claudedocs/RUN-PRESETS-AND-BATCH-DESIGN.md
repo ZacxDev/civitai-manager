@@ -672,10 +672,34 @@ Grouping, in ascending order of scope — pick the smallest that solves the nois
 
 - **Recent-outputs rail** (`outputs_rail.go`, `outputsRailLimit = 12`): an 8-item
   batch would otherwise consume 8 of 12 slots. **Collapse a batch to ONE tile**
-  showing the first image with a `×8` corner badge, linking to the batch view.
+  with a `×8` corner badge, linking to the batch view.
   The rail's store query stays a fixed bounded read — collapsing in the renderer
   over the rows already fetched would let a batch-heavy history under-fill the
-  rail, so **fetch `outputsRailLimit * 2` and clamp to 12 groups** instead.
+  rail, so **over-fetch and clamp to 12 groups** instead.
+
+  Two corrections to this bullet, both made while implementing it:
+
+  - **The tile shows the batch's NEWEST captured run, not its first.** The design
+    said "the first image"; the rail is ordered newest-first and a group takes the
+    position of its newest member, so the caption's relative time must describe the
+    row whose slot the entry occupies — a first-run representative would sit in the
+    newest member's slot captioned with the oldest member's age. The honest cost:
+    a first-run tile would keep one stable thumbnail while a batch runs, whereas
+    this one changes thumbnail per completed item. The consistency argument won.
+  - **The over-fetch is `outputsRailLimit + maxBatchCount - 1` (36), NOT `× 2`.**
+    `× 2` (24) was wrong once `maxBatchCount` is 25: one batch of size *s* in the
+    window leaves `1 + (window − s)` entries, so a **single batch of 14+ under-fills
+    the rail** — and `batchQuickPicks` ships a **16**, putting the user one click
+    from a 9-tile rail on every page until 14 newer runs age past it. A 25-batch was
+    worse: one entry badged `×24`, contradicting the 25-run page it links to.
+    Measured sweep (one batch + solo history): at 24 → sizes 14/16/20/24/25 give
+    11/9/5/1/1 entries; at 36 → 12 entries at every size 1..25.
+    It must stay written as the **expression**, so raising `maxBatchCount` cannot
+    silently re-break it. This fixes the single-batch worst case exactly, not the
+    general one — two back-to-back 25-batches still collapse to 2 entries, and no
+    fixed window can promise 12 groups (12 batches of 25 = 300 rows, far past
+    `recentGenerationsCap = 50`). The general fix would be a `GROUP BY` over the
+    whole table, i.e. precisely the unbounded per-render scan that cap forbids.
 - **`/outputs` grid** (`outputs_pages.go:87`): each tile gains a small
   "Batch 3/8 · «Hi-res 8-step»" caption. No structural change.
 - **New: `GET /outputs/batch/{batch_id}`** — the N generations of one batch in
