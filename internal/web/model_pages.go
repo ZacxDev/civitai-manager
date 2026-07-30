@@ -606,6 +606,7 @@ func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, ba
 		// them. Each returns nil when it has nothing, so neither can leave an empty
 		// heading behind.
 		workflowUsageCard(m.ID, v.UsedByWorkflows),
+		relatedWorkflowsCard(v),
 		g.If(strings.TrimSpace(v.Description) != "", modelDescriptionCard(v.Description)),
 		// Tags are a compact, de-emphasized inline chip row under the description
 		// (not a standalone "Tags" card).
