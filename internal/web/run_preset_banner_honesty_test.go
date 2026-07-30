@@ -205,14 +205,12 @@ func TestAdoptWithoutAWorkflowHashIsRefusedHonestly(t *testing.T) {
 	}
 
 	form := url.Values{
-		presetIDField:      {strconv.FormatInt(pid, 10)},
-		presetNameField:    {"Base"},
-		presetAdoptField:   {"1"},
-		"wp_node":          {"6"},
-		"wp_widget":        {"0"},
-		"wp_value":         {"kept text"},
-		modeChoiceField:    {""},
-		"unused_extra_key": {""},
+		presetIDField:    {strconv.FormatInt(pid, 10)},
+		presetNameField:  {"Base"},
+		presetAdoptField: {"1"},
+		"wp_node":        {"6"},
+		"wp_widget":      {"0"},
+		"wp_value":       {"kept text"},
 	}
 	code, body := doPresetPost(t, srv,
 		"/workflows/"+strconv.FormatInt(wf.ID, 10)+"/run/presets/"+
