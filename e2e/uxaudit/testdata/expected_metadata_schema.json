@@ -1,5 +1,5 @@
 {
-  "_comment": "GOLDEN wire-shape snapshot of the auditloop plugin-push `metadata` body that this harness emits. It exists to make DRIFT between the harness's hand-mirrored structs (e2e/uxaudit/push.go: PushPayload/PushPage/PushFinding) and auditloop's REAL schema fail a TEST, not a live push. The json KEYS below must match auditloop's server field names exactly (viewport values mobile|desktop; finding.type in a11y|console|network|perf|layout|other). Mirrored from auditloop internal/plugin/schema.go @ commit 0da3004 (2026-07-24). auditloop's PushPage additionally accepts OPTIONAL `perf` and `layout` measurement blocks (omitempty); this harness deliberately does NOT emit them, so they are absent here by design. When you re-mirror, bump this comment's commit/date and update push.go together.",
+  "_comment": "GOLDEN wire-shape snapshot of the auditloop plugin-push `metadata` body that this harness emits. It exists to make DRIFT between the harness's hand-mirrored structs (e2e/uxaudit/push.go: PushPayload/PushPage/PushFinding) and auditloop's REAL schema fail a TEST, not a live push. The json KEYS below must match auditloop's server field names exactly (viewport values mobile|desktop; finding.type in a11y|console|network|perf|layout|other). Mirrored from auditloop internal/plugin/schema.go @ commit df153b0 (2026-07-29). The OPTIONAL `a11y_digest` ref names this view's bounded DOM/accessibility digest part (a11y-digest.js output, vendored verbatim in e2e/uxaudit/a11y-digest.js); auditloop validates it strictly and REJECTS an all-empty digest, so the harness omits the ref entirely for a page whose digest carries no elements. auditloop's PushPage additionally accepts OPTIONAL `perf` and `layout` measurement blocks (omitempty); this harness deliberately does NOT emit them, so they are absent here by design. When you re-mirror, bump this comment's commit/date and update push.go together.",
   "label": "civitai-manager funnel",
   "environment": "lab",
   "pages": [
@@ -9,6 +9,7 @@
       "screenshot": "dashboard.desktop.png",
       "axe": "dashboard.desktop.axe.json",
       "network": "dashboard.desktop.network.json",
+      "a11y_digest": "dashboard.desktop.a11y.json",
       "axe_violations": 2,
       "console_first_party": 1,
       "console_third_party": 0,
