@@ -307,6 +307,24 @@ func (s *Server) workflowResolver() workflowResolver {
 			ok, _ := s.store.HasLocalFileNamed(basename)
 			return ok
 		},
+		// LocalFileByBasename refuses an AMBIGUOUS basename (several indexed files
+		// disagreeing on their civitai linkage) by returning no match — so a chip for
+		// such a file shows "present" without a path or a source link, which is the
+		// honest rendering. Never fetches civitai.
+		localResource: func(basename string) (resourceInfo, bool) {
+			lf, err := s.store.LocalFileByBasename(basename)
+			if err != nil || lf == nil {
+				return resourceInfo{}, false
+			}
+			info := resourceInfo{Path: lf.Path}
+			if lf.ModelID != nil {
+				info.ModelID = *lf.ModelID
+			}
+			if lf.VersionID != nil {
+				info.VersionID = *lf.VersionID
+			}
+			return info, true
+		},
 		nsfwMode: s.nsfwMode(),
 	}
 }

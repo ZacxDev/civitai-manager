@@ -22,6 +22,11 @@ type workflowResolver struct {
 	cachedModel func(id int) (name string, raw []byte, ok bool)
 	// haveFile reports whether a file with the given basename exists locally.
 	haveFile func(basename string) bool
+	// localResource resolves a referenced resource's basename to the matched local
+	// file's absolute path + civitai linkage (see resourceInfo). ok=false when the
+	// basename is unknown OR ambiguous — the chip then renders without a path and
+	// without a source link rather than guessing.
+	localResource func(basename string) (resourceInfo, bool)
 	// nsfwMode is the persisted NSFW display mode (hide|blur|show) threaded to the
 	// list-item showcase carousels so they honor it (carried on the resolver to
 	// avoid threading it through workflowList/Item/Card + the scan-terminal path).
