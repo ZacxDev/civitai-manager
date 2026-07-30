@@ -159,6 +159,13 @@ type runOptions struct {
 	// group's nodes so there is something to convert at all. Ephemeral like every other
 	// field here — the stored workflow is never rewritten.
 	ModeSelection map[string]string
+	// PresetID/PresetName attribute the run to the saved run preset ("tab") it was
+	// started from. They are pure ATTRIBUTION — nothing about the run behaves
+	// differently — and are snapshotted onto the captured generation so a deleted
+	// preset's outputs stay labeled (the same idiom as workflow_name). Zero/"" for a
+	// run that did not come from a preset.
+	PresetID   int64
+	PresetName string
 }
 
 // runUpdater lets runFn stream phase transitions into the job under the mutex.

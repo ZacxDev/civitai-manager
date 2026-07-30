@@ -34,6 +34,13 @@ type runParamsSnapshot struct {
 	Resources         []string                `json:"resources,omitempty"`
 	BaseModel         string                  `json:"base_model,omitempty"`
 	Format            string                  `json:"format,omitempty"`
+	// ModeSelection is the multi-mode template pick that was applied, keyed
+	// comfy.ModeSelector.Key → comfy.ModeGroup.Key (exactly runOptions.ModeSelection).
+	// Before it existed, "Re-run this" could not restore which pipeline a captured
+	// generation ran — the documented deferred gap. A ModeGroup.Key is
+	// "<selector node id>:<group index>", i.e. POSITIONAL in the group array, so it
+	// is gated by the same graph-hash check as the positional widget overrides.
+	ModeSelection map[string]string `json:"mode_selection,omitempty"`
 }
 
 type optionFixEntry struct {
@@ -61,6 +68,20 @@ type uiWidgetOverrideEntry struct {
 	NodeID string          `json:"node_id"`
 	Widget json.RawMessage `json:"widget"`
 	Value  string          `json:"value"`
+
+	// Kind/ClassType/InputName are the DRIFT TUPLE a run PRESET snapshots from the
+	// live comfy.RunInput at save time, so a preset opened against a changed graph
+	// can be reconciled STRUCTURALLY and not only by hash equality
+	// (comfy.ReconcileRunPreset). All omitempty: a generation capture does not write
+	// them, and an entry with no tuple is treated as "unverifiable" — dropped and
+	// named on drift, never silently trusted.
+	//
+	// Label is DISPLAY ONLY and deliberately not part of the match key: it is
+	// derived from untrusted author node titles and can change harmlessly.
+	Kind      string `json:"kind,omitempty"`
+	ClassType string `json:"class_type,omitempty"`
+	InputName string `json:"input_name,omitempty"`
+	Label     string `json:"label,omitempty"`
 }
 
 // widgetIndex parses the entry's widget slot index (a JSON number, or a quoted
@@ -135,6 +156,12 @@ func buildRunParamsSnapshot(wf *store.Workflow, opts runOptions) runParamsSnapsh
 		}
 		return a.OldValue < b.OldValue
 	})
+	if len(opts.ModeSelection) > 0 {
+		snap.ModeSelection = make(map[string]string, len(opts.ModeSelection))
+		for k, v := range opts.ModeSelection {
+			snap.ModeSelection[k] = v
+		}
+	}
 	if wf != nil {
 		snap.Resources = wf.Resources
 		snap.BaseModel = wf.BaseModel
@@ -183,6 +210,10 @@ func parseRunParams(params string) runParamsSnapshot {
 // treated as a mismatch (it cannot be proven equal). staleReason is non-empty when
 // positional overrides were withheld; the caller must surface it rather than re-run
 // with different parameters than the generation records.
+//
+// ModeSelection rides the SAME gate: a ModeGroup.Key is "<selector node id>:<group
+// index>" — positional in the group array — so restoring it across a graph change
+// could enable a different pipeline than the one that produced the images.
 func runOptionsFromParams(params, genGraphHash, curGraphHash string) (opts runOptions, staleReason string) {
 	snap := parseRunParams(params)
 	if len(snap.Substitute) > 0 {
@@ -203,13 +234,25 @@ func runOptionsFromParams(params, genGraphHash, curGraphHash string) (opts runOp
 			opts.WidgetOverrides[comfy.WidgetOverrideKey{NodeID: e.NodeID, InputName: e.InputName}] = e.Value
 		}
 	}
-	if len(snap.UIWidgetOverrides) > 0 {
+	// Both the UI widget overrides AND the mode selection are POSITIONAL, so they
+	// share ONE hash gate: a ModeGroup.Key is "<selector node id>:<group index>",
+	// an index into the group array, and crossing a graph change with it would
+	// enable a different pipeline than the generation records.
+	if len(snap.UIWidgetOverrides) > 0 || len(snap.ModeSelection) > 0 {
 		if genGraphHash == "" || curGraphHash == "" || genGraphHash != curGraphHash {
 			return opts, "this workflow's graph has changed since this generation was " +
 				"recorded, so its parameter edits can no longer be re-applied safely " +
 				"(they are stored by widget position). Open the workflow and run it " +
 				"from the Parameters panel instead."
 		}
+		if len(snap.ModeSelection) > 0 {
+			opts.ModeSelection = make(map[string]string, len(snap.ModeSelection))
+			for k, v := range snap.ModeSelection {
+				opts.ModeSelection[k] = v
+			}
+		}
+	}
+	if len(snap.UIWidgetOverrides) > 0 {
 		opts.UIWidgetOverrides = make(map[comfy.UIWidgetKey]string, len(snap.UIWidgetOverrides))
 		for _, e := range snap.UIWidgetOverrides {
 			widx, ok := e.widgetIndex()
@@ -300,7 +343,18 @@ func (s *Server) captureGeneration(wf *store.Workflow, opts runOptions, res *run
 		BaseModel:    wf.BaseModel,
 		GraphHash:    wf.GraphHash,
 		Params:       marshalRunParams(buildRunParamsSnapshot(wf, opts)),
+		PresetName:   opts.PresetName,
 		Status:       status,
+	}
+	// preset_id is a real FK (ON DELETE SET NULL). A preset deleted between the run
+	// starting and the capture landing would fail the insert — and losing the images
+	// over a label is not a trade worth making — so the id is attached only when the
+	// preset still exists; preset_name is a snapshot and always survives.
+	if opts.PresetID > 0 {
+		if _, err := s.store.GetRunPreset(ctx, opts.PresetID); err == nil {
+			pid := opts.PresetID
+			gen.PresetID = &pid
+		}
 	}
 	genID, err := s.store.InsertGeneration(ctx, gen, images)
 	if err != nil {
