@@ -447,6 +447,11 @@ func missingModelsPanel(models []comfy.MissingModel, resolved map[string]missing
 	}
 	return h.Div(h.Class("mt-2 space-y-2"),
 		h.Div(h.Class("text-xs font-semibold text-slate-200"), g.Text("Missing model files")),
+		// The per-file path is explicitly the SECONDARY one now: the panel above offers a
+		// single action for the whole set, and this line says what these rows are for so
+		// the two are not read as competing options.
+		h.P(h.Class("text-xs text-slate-400"),
+			g.Text("Or handle them one at a time — pick a CivitAI match, or swap in a model you already have.")),
 		g.Group(rows),
 	)
 }
@@ -460,13 +465,17 @@ func fixModelDialogID(idx int) string { return "fix-model-" + strconv.Itoa(idx) 
 // swap can never nuke an open popover.
 func fixModelRow(idx int, mm comfy.MissingModel, res missingResolution, libMeta map[string]store.LocalModelMeta, wfID int64, csrf string, dlEligible bool, mode string) g.Node {
 	dlgID := fixModelDialogID(idx)
-	fixBtn := civButton("filled", "sm", []g.Node{
+	// The label says what the click DOES. It used to read "Fix", which named neither
+	// the outcome nor the difference from the other "Fix" beside it — with two missing
+	// files the panel showed two identical buttons and no way to tell them apart or to
+	// know that pressing one opens a chooser rather than starting a download.
+	fixBtn := civButton("outline", "sm", []g.Node{
 		h.Type("button"),
 		// Inline open — no external script (offline invariant forbids EXTERNAL
 		// scripts/styles only). The dialog id is a constant, not user input.
 		g.Attr("onclick", "document.getElementById('"+dlgID+"').showModal()"),
-		g.Attr("aria-label", "Fix "+mm.Filename),
-	}, g.Text("Fix"))
+		g.Attr("aria-label", "Choose a model for "+mm.Filename),
+	}, g.Text("Choose a model…"))
 	row := h.Div(
 		h.Class("flex flex-wrap items-center justify-between gap-2 rounded border border-slate-800 p-2"),
 		h.Div(h.Class("font-mono text-xs text-slate-300 break-all"), g.Text(mm.Filename)),
@@ -485,7 +494,7 @@ func fixModelDialog(dlgID string, mm comfy.MissingModel, res missingResolution, 
 		card(
 			h.Div(h.Class("flex items-center justify-between gap-4 mb-3"),
 				h.H2(h.Class("text-lg font-semibold text-slate-100 break-all"),
-					g.Text("Fix "+mm.Filename)),
+					g.Text("Choose a model for "+mm.Filename)),
 				h.Form(h.Method("dialog"), h.Class("inline"),
 					civButton("subtle", "sm", []g.Node{h.Type("submit"),
 						g.Attr("aria-label", "Close")}, g.Text("✕"))),

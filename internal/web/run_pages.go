@@ -307,8 +307,23 @@ func runViewURL(promptID string, ref comfy.ImageRef) string {
 	return "/workflows/run/view?" + q.Encode()
 }
 
-// runFailure renders the failure report: the (escaped, untrusted) message plus any
-// preflight detail (missing nodes/models) or conversion warnings.
+// runFailure renders the failure report.
+//
+// INFORMATION HIERARCHY (this is the whole point of the ordering below, and four
+// independent persona walkthroughs flagged the previous one at both viewports):
+// a failed preflight is a RECOVERABLE state, so the report leads with a
+// plain-language summary of what is wrong, then ONE primary recovery action for the
+// whole failure, then the per-item secondary paths — and the raw engine text
+// (the technical preflight sentence, the conversion warnings) is SUBORDINATED into
+// a <details>. Previously the first thing rendered was the technical sentence
+// ("Preflight failed — this workflow references nodes or models that are not
+// installed"), immediately followed by raw filenames and two identically-labelled
+// "Fix" buttons with no indication of which to press.
+//
+// The missing-model FILENAMES stay visible (they are the concrete thing the user has
+// to recognise, they name the model to go and find, and hiding the per-item rows in
+// a collapsed <details> would also break each row's native <dialog>.showModal() —
+// a modal inside a closed <details> has no rendered ancestor box).
 func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mode string) g.Node {
 	// An empty-conversion abort is not a failure in the run sense — nothing was
 	// submitted. Render it as its own actionable report (the message is the
@@ -318,9 +333,19 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mode
 	}
 
 	var detail []g.Node
-	detail = append(detail, g.Text(snap.Message))
+	// Lead: what went wrong, in the user's terms. The raw engine message moves into
+	// the technical <details> at the bottom.
+	if lead := failureLead(snap); lead != "" {
+		detail = append(detail, h.P(h.Class("text-sm text-slate-300"), g.Text(lead)))
+	}
 
 	if snap.Preflight != nil {
+		// THE primary recovery action for the whole failure: install every missing
+		// model file, then re-run. It leads the actions because "which of these
+		// buttons do I press?" was the top reported confusion.
+		if len(snap.MissingModels) > 0 {
+			detail = append(detail, installAllMissingAction(snap.MissingModels, wfID, csrf, dlEligible))
+		}
 		if len(snap.Preflight.MissingNodes) > 0 {
 			// Attributed, actionable panel: which pack provides each missing class, a
 			// gated Install where ComfyUI-Manager can do it, and always a manual
@@ -344,10 +369,107 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mode
 			detail = append(detail, incompatibleOptionsSection(snap.Preflight.BadOptions, wfID, csrf, dlEligible))
 		}
 	}
-	if len(snap.Warnings) > 0 {
-		detail = append(detail, missingList("Conversion warnings", snap.Warnings))
+	if tech := failureTechnicalDetail(snap); tech != nil {
+		detail = append(detail, tech)
 	}
-	return alert("error", "Run failed", detail...)
+	// The glyph makes the failure state distinguishable by shape, not by tint alone.
+	return alertIcon("error", "⚠", failureTitle(snap), detail...)
+}
+
+// failureTitle is the failure alert's headline. It keeps the "Run failed" stem
+// (that is the state, and it is what every failure surface is identified by) and
+// appends the plain-language count of what is actually wrong, so the headline alone
+// answers "what do I have to do?" for the overwhelmingly common case.
+func failureTitle(snap runSnapshot) string {
+	nm, nn := failureMissingCounts(snap)
+	switch {
+	case nm > 0 && nn > 0:
+		return fmt.Sprintf("Run failed — %d model file%s and %d custom node%s are missing",
+			nm, plural(nm), nn, plural(nn))
+	case nm > 0:
+		return fmt.Sprintf("Run failed — %d model file%s missing", nm, plural(nm))
+	case nn > 0:
+		return fmt.Sprintf("Run failed — %d custom node%s missing", nn, plural(nn))
+	case snap.Preflight != nil && len(snap.Preflight.BadOptions) > 0:
+		return "Run failed — some saved settings no longer exist"
+	default:
+		return "Run failed"
+	}
+}
+
+// failureLead is the plain-language summary shown FIRST: what is wrong and what
+// fixes it, with no engine vocabulary ("preflight", "references", "graph"). It
+// returns "" when there is nothing to add beyond the raw message — which then
+// renders as the lead instead (see failureTechnicalDetail).
+func failureLead(snap runSnapshot) string {
+	nm, nn := failureMissingCounts(snap)
+	switch {
+	case nm > 0 && nn > 0:
+		return fmt.Sprintf("Nothing is broken — this workflow just needs %d model file%s and %d custom node%s "+
+			"that are not installed in ComfyUI yet. Add them and it should run.", nm, plural(nm), nn, plural(nn))
+	case nm > 0:
+		return fmt.Sprintf("Nothing is broken — this workflow just needs %d model file%s that %s not installed "+
+			"in ComfyUI yet. Install %s and it should run.",
+			nm, plural(nm), isAre(nm), itThem(nm))
+	case nn > 0:
+		return fmt.Sprintf("This workflow uses %d custom node%s that %s not installed in ComfyUI yet. "+
+			"Install %s and it should run.", nn, plural(nn), isAre(nn), itThem(nn))
+	case snap.Preflight != nil && len(snap.Preflight.BadOptions) > 0:
+		return "Some settings saved with this workflow no longer exist on your installed nodes. " +
+			"Pick a valid choice for each one below, then run."
+	default:
+		// No structured detail to summarise: the raw message IS the summary.
+		return snap.Message
+	}
+}
+
+// failureTechnicalDetail is the SUBORDINATED engine detail: the exact preflight
+// sentence and any conversion warnings, behind the app's progressive-disclosure
+// idiom (a native <details>, as used for the collapsed substitute tail and the
+// model description). It returns nil when the raw message was already promoted to
+// the lead, so nothing is ever shown twice.
+func failureTechnicalDetail(snap runSnapshot) g.Node {
+	nm, nn := failureMissingCounts(snap)
+	hasSummary := nm > 0 || nn > 0 || (snap.Preflight != nil && len(snap.Preflight.BadOptions) > 0)
+	var body []g.Node
+	if hasSummary && strings.TrimSpace(snap.Message) != "" {
+		body = append(body, h.P(h.Class("text-xs text-slate-400 break-all"), g.Text(snap.Message)))
+	}
+	if len(snap.Warnings) > 0 {
+		body = append(body, missingList("Conversion warnings", snap.Warnings))
+	}
+	if len(body) == 0 {
+		return nil
+	}
+	return h.Details(h.Class("mt-3"),
+		h.Summary(h.Class("cursor-pointer text-xs text-slate-400"), g.Text("Technical details")),
+		h.Div(h.Class("mt-1"), g.Group(body)),
+	)
+}
+
+// failureMissingCounts is the (missing models, missing nodes) pair the copy above
+// is built from. It counts the PREFLIGHT report (the authority) so the wording is
+// right even when the enriched per-model analysis is absent.
+func failureMissingCounts(snap runSnapshot) (models, nodes int) {
+	if snap.Preflight == nil {
+		return 0, 0
+	}
+	return len(snap.Preflight.MissingModels), len(snap.Preflight.MissingNodes)
+}
+
+// isAre / itThem keep the generated copy grammatical for n == 1.
+func isAre(n int) string {
+	if n == 1 {
+		return "is"
+	}
+	return "are"
+}
+
+func itThem(n int) string {
+	if n == 1 {
+		return "it"
+	}
+	return "them"
 }
 
 // incompatibleOptionsSection renders the "Incompatible options" section: a single

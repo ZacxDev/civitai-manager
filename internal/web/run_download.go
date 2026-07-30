@@ -799,6 +799,22 @@ func (m modelWithVersions) pickFile(want string) (resolvedDownload, bool) {
 // after the file lands — so the whole section resolves in one action. The stored
 // workflow is never touched.
 func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opts runOptions) {
+	s.startDownloadsAndRun(wf, []pendingDownload{pd}, opts)
+}
+
+// startDownloadsAndRun is startDownloadAndRun for a BATCH: it installs every pd in
+// order, then runs the workflow once. It is the same job/settle machinery — the only
+// additions are the per-file progress prefix and the honest partial-failure error, so
+// the single-file path (len(pds) == 1) produces byte-identical messages to before.
+//
+// A mid-batch download failure ABORTS before the run: the error names how many files
+// did land, because those bytes are permanently on disk and a report that only said
+// "download failed" would hide that. The files that succeeded are kept (they are the
+// right files at the right destinations), so a retry only fetches what is left.
+func (s *Server) startDownloadsAndRun(wf *store.Workflow, pds []pendingDownload, opts runOptions) {
+	if len(pds) == 0 {
+		return
+	}
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	if s.runJob != nil && s.runJob.running {
@@ -813,7 +829,7 @@ func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opt
 	s.runSeq++
 	job := &runJob{
 		running: true, workflowID: wf.ID, seq: s.runSeq, phase: runPhaseDownloading,
-		message: "Preparing download of " + pd.progressName() + "…", startedAt: time.Now(), cancel: cancel,
+		message: downloadBatchOpeningMessage(pds), startedAt: time.Now(), cancel: cancel,
 		uiFormat: wf.Format == store.WorkflowFormatUI,
 	}
 	s.runJob = job
@@ -838,11 +854,14 @@ func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opt
 					err = fmt.Errorf("download-and-run panicked: %v", r)
 				}
 			}()
-			err = download(ctx, pd, func(msg string) {
-				up.setPhase(runPhaseDownloading, msg, 0)
-			})
-			if err != nil {
-				return
+			for i, pd := range pds {
+				idx := i
+				if derr := download(ctx, pd, func(msg string) {
+					up.setPhase(runPhaseDownloading, downloadStepMessage(idx, len(pds), msg), 0)
+				}); derr != nil {
+					err = downloadBatchError(idx, len(pds), derr)
+					return
+				}
 			}
 			res, err = run(ctx, wf, up, opts)
 		}()
@@ -855,6 +874,36 @@ func (s *Server) startDownloadAndRun(wf *store.Workflow, pd pendingDownload, opt
 		// is the one-run-at-a-time guard and is unrelated to this goroutine.)
 		s.settleAndCapture(job, wf, opts, res, err)
 	}()
+}
+
+// downloadBatchOpeningMessage is the job's first status line. A single download keeps
+// its exact original wording; a batch names the count instead of one file, because
+// the first file is not what the user asked for — all of them are.
+func downloadBatchOpeningMessage(pds []pendingDownload) string {
+	if len(pds) == 1 {
+		return "Preparing download of " + pds[0].progressName() + "…"
+	}
+	return fmt.Sprintf("Preparing to install %d model files…", len(pds))
+}
+
+// downloadStepMessage prefixes a batch progress line with its position, so a
+// multi-gigabyte multi-file install is legible ("(2/3) Downloading x… 41%").
+// Unprefixed for a single download (unchanged behaviour).
+func downloadStepMessage(i, n int, msg string) string {
+	if n == 1 {
+		return msg
+	}
+	return fmt.Sprintf("(%d/%d) %s", i+1, n, msg)
+}
+
+// downloadBatchError reports a mid-batch failure HONESTLY: it names how many files
+// were installed before the failure (those bytes are on disk and permanent) rather
+// than presenting a partial install as a plain download error.
+func downloadBatchError(i, n int, err error) error {
+	if n == 1 {
+		return err
+	}
+	return fmt.Errorf("installed %d of %d model files, then failed: %w", i, n, err)
 }
 
 // downloadModelFile fetches pd.URL and writes it atomically to pd.DestPath under

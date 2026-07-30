@@ -71,9 +71,19 @@ func cloudPanelFragment(v cloudPanelView, csrf string) g.Node {
 	id := strconv.FormatInt(v.wfID, 10)
 
 	if !v.enabled {
+		// A bare "enable comfy_cloud in your config" is a dead end for anyone who does
+		// not already know where that config file is or what the key does, so the state
+		// carries a real next step: the exact line to add and a link to the docs page
+		// that says where the file lives.
 		return h.Div(
 			alert("info", "Cloud run is off",
-				g.Text("Enable comfy_cloud in your config to run workflows on CivitAI cloud.")),
+				h.P(h.Class("text-sm"),
+					g.Text("Running on CivitAI's cloud is opt-in. Add "),
+					h.Span(h.Class("font-mono"), g.Text("comfy_cloud: true")),
+					g.Text(" to your config file, then restart civitai-manager."),
+				),
+				h.P(h.Class("mt-1"), configDocsLink("Where the config file lives")),
+			),
 		)
 	}
 	if !v.runnable {
