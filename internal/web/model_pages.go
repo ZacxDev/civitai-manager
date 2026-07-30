@@ -530,6 +530,16 @@ func isoDatePrefix(s string) string {
 // deeplink to that version's detail page (/models/{id}?version={vid}); otherwise it
 // is plain text. The link stops click propagation so it navigates even though it
 // lives inside the JS-hover-controlled popover wrapper.
+//
+// ONE HOVER AFFORDANCE PER ELEMENT. An element that owns a custom popover must
+// NOT also carry `title=`: the browser renders its native tooltip ON TOP of the
+// popover after the OS hover delay, so the user gets two overlapping tooltips
+// saying the same thing. Every `.cm-updated` / `.cm-vstatus` trigger in this app
+// is therefore title-less, and each keeps an accessible name by other means — its
+// own visible text, or an aria-label where the trigger is an icon (role=img). A
+// `title=` is still RIGHT on an element with NO custom popover (a truncated path
+// cell, a rail tile, an icon-only button): the rule is about the collision, not
+// about title= being bad.
 func updatedPopBody(modelID, versionID int, absDate, versionName, versionDate string) g.Node {
 	rows := []g.Node{
 		h.Div(h.Class("cm-updated-title"), g.Text("Updated "+absDate)),
@@ -554,12 +564,14 @@ func updatedPopBody(modelID, versionID int, absDate, versionName, versionDate st
 
 // updatedHeaderStat renders the model header's "Updated: X ago" stat as a
 // hover/focus popover trigger (mirroring statInline's look) carrying updatedPopBody.
-// A plain title= tooltip is kept as a harmless fallback for AT / non-hover users.
+//
+// NO title= HERE — see the "one hover affordance per element" note on
+// updatedPopBody. The element's accessible name is its own visible text
+// ("Updated: X ago"); the absolute date lives in the popover.
 func updatedHeaderStat(modelID, versionID int, rel, absDate, versionName, versionDate string) g.Node {
 	return h.Div(
 		h.Class("cm-updated"),
 		g.Attr("tabindex", "0"),
-		h.Title("Updated "+absDate),
 		h.Span(h.Class("text-slate-500"), g.Text("Updated: ")),
 		h.Span(h.Class("font-medium text-slate-200"), g.Text(rel)),
 		updatedPopBody(modelID, versionID, absDate, versionName, versionDate),
@@ -567,12 +579,14 @@ func updatedHeaderStat(modelID, versionID int, rel, absDate, versionName, versio
 }
 
 // updatedCardLine renders a search card's "Updated X ago" line as a hover/focus
-// popover trigger carrying updatedPopBody, with a title= fallback.
+// popover trigger carrying updatedPopBody.
+//
+// NO title= HERE — see the "one hover affordance per element" note on
+// updatedPopBody. Accessible name = the visible "Updated X ago" text.
 func updatedCardLine(modelID, versionID int, rel, absDate, versionName, versionDate string) g.Node {
 	return h.Div(
 		h.Class("cm-updated text-xs text-slate-500"),
 		g.Attr("tabindex", "0"),
-		h.Title("Updated "+absDate),
 		h.Span(g.Text("Updated "+rel)),
 		updatedPopBody(modelID, versionID, absDate, versionName, versionDate),
 	)
@@ -976,9 +990,10 @@ func versionDatePopover(pub time.Time) g.Node {
 		h.Class("cm-updated cm-vdate"),
 		g.Attr("role", "img"),
 		// The date is also exposed as text for AT / non-hover users, since the icon
-		// itself carries no words.
+		// itself carries no words. role=img means aria-label IS the accessible name,
+		// so there is nothing left for a title= to contribute — and adding one would
+		// stack the NATIVE tooltip on top of this popover (see updatedPopBody).
 		g.Attr("aria-label", "Published "+rel),
-		h.Title("Published "+rel),
 		g.Raw(clockIconSVG),
 		h.Span(
 			h.Class("cm-updated-pop"),
