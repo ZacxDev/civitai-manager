@@ -222,7 +222,10 @@ func TestAdoptWithoutAWorkflowHashIsRefusedHonestly(t *testing.T) {
 	if strings.Contains(body, "adopted the current graph") {
 		t.Errorf("an adoption that stamped nothing must not claim it happened:\n%s", body)
 	}
-	if !strings.Contains(body, asRendered(t, presetNoAdoptHashNotice)) {
+	// seedPresetWorkflow stores no source_path, so this row is NOT re-scannable and
+	// the refusal must not tell its owner to re-scan it (see the copy test in
+	// run_preset_partial_capture_test.go).
+	if !strings.Contains(body, asRendered(t, presetNoAdoptHashNotice(false))) {
 		t.Errorf("the refusal must say what would fix it:\n%s", body)
 	}
 	got, _ := srv.store.GetRunPreset(context.Background(), pid)

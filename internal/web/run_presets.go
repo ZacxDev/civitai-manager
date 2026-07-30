@@ -88,9 +88,25 @@ const presetNoFieldsNotice = "None of the values this page sent are parameters o
 // (migration 0011) and has never been re-scanned carries none, so there is literally
 // nothing to stamp. Reporting "adopted" there left the preset permanently drifted
 // with a button the user could click forever.
-const presetNoAdoptHashNotice = "Saved. This workflow has no content hash yet — it " +
-	"has not been scanned since this app started recording them — so there is nothing " +
-	"to adopt. Re-scan the workflow, then use \"Adopt current graph\" again."
+//
+// The ADVICE has to match what the row can actually do. Only a row with a
+// source_path is re-scannable — that is the sole key UpsertWorkflowByPath (the one
+// path that refreshes graph_hash in place) accepts. A pre-0011 workflow that arrived
+// by paste, by PNG, or from civitai has none: telling its owner to "re-scan the
+// workflow" names an action that cannot be performed on it, so the button stays inert
+// and the advice explains nothing. Every INSERT path populates graph_hash today
+// (store.InsertWorkflow), so importing the file again does produce a hash-carrying
+// row — it is just a NEW row, which is the honest thing to say.
+func presetNoAdoptHashNotice(rescannable bool) string {
+	const head = "Saved. This workflow has no content hash yet — it has not been " +
+		"scanned since this app started recording them — so there is nothing to adopt. "
+	if rescannable {
+		return head + "Re-scan the workflow, then use \"Adopt current graph\" again."
+	}
+	return head + "This workflow was not scanned from a file on disk, so there is " +
+		"nothing to re-scan and this preset cannot be adopted. Import the workflow " +
+		"again to get a copy that records one."
+}
 
 // presetTabView is everything the panel renderer needs for ONE render.
 type presetTabView struct {
@@ -172,29 +188,21 @@ func presetModes(params string) map[string]string {
 	return parseRunParams(params).ModeSelection
 }
 
-// presetParamsWith rewrites a params blob's POSITIONAL families (the widget
+// presetParamsFrom rewrites a params blob's POSITIONAL families (the widget
 // entries and the mode selection) while preserving everything else verbatim.
 //
 // substitute / option_fixes are NAME-keyed and degrade safely downstream (an
 // unknown filename or input name is a no-op, and option fixes are re-validated
 // against live object_info inside realRun), so they are carried across a save
 // untouched and are never part of the drift report.
-func presetParamsWith(prev string, entries []comfy.PresetEntry, modes map[string]string) string {
+func presetParamsFrom(prev string, overrides []uiWidgetOverrideEntry, modes map[string]string) string {
 	snap := parseRunParams(prev)
-	snap.UIWidgetOverrides = make([]uiWidgetOverrideEntry, 0, len(entries))
-	for _, e := range entries {
-		snap.UIWidgetOverrides = append(snap.UIWidgetOverrides, uiWidgetOverrideEntry{
-			NodeID:    e.NodeID,
-			Widget:    json.RawMessage(strconv.Itoa(e.Widget)),
-			Value:     e.Value,
-			Kind:      string(e.Kind),
-			ClassType: e.ClassType,
-			InputName: e.InputName,
-			Label:     e.Label,
-		})
-	}
-	// Stable order so the stored blob is comparable between saves.
-	sort.Slice(snap.UIWidgetOverrides, func(i, j int) bool {
+	snap.UIWidgetOverrides = overrides
+	// Stable order so the stored blob is comparable between saves. SliceStable, not
+	// Slice: two entries on the same node whose slot index is undecodable compare
+	// equal (widgetIndex reports 0 for both), and an unstable sort would reorder
+	// them arbitrarily between otherwise identical writes.
+	sort.SliceStable(snap.UIWidgetOverrides, func(i, j int) bool {
 		a, b := snap.UIWidgetOverrides[i], snap.UIWidgetOverrides[j]
 		if a.NodeID != b.NodeID {
 			return a.NodeID < b.NodeID
@@ -217,6 +225,90 @@ func presetParamsWith(prev string, entries []comfy.PresetEntry, modes map[string
 		return b
 	}
 	return "{}"
+}
+
+// storableOverrides serializes captured entries into the stored blob's shape.
+func storableOverrides(entries []comfy.PresetEntry) []uiWidgetOverrideEntry {
+	out := make([]uiWidgetOverrideEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, uiWidgetOverrideEntry{
+			NodeID:    e.NodeID,
+			Widget:    json.RawMessage(strconv.Itoa(e.Widget)),
+			Value:     e.Value,
+			Kind:      string(e.Kind),
+			ClassType: e.ClassType,
+			InputName: e.InputName,
+			Label:     e.Label,
+		})
+	}
+	return out
+}
+
+// presetParamsWith REPLACES the stored entries with entries. It is the from-scratch
+// writer: creating a preset (prev is "") and the one write that may not carry
+// anything forward (see presetEntryWrite's certifying branch).
+func presetParamsWith(prev string, entries []comfy.PresetEntry, modes map[string]string) string {
+	return presetParamsFrom(prev, storableOverrides(entries), modes)
+}
+
+// presetParamsMerged MERGES entries over the stored ones: a captured key wins for
+// itself, every other stored key is carried forward untouched.
+//
+// This is the shape the storage model forces. A preset holds the FULL run-parameter
+// set (design decision 4), but a save can only ever capture WHAT IS ON SCREEN, and
+// which parameters are on screen depends on the selected workflow mode. Full-set
+// storage + partial-set capture + wholesale replacement is structural data loss:
+// saving while mode B is selected deleted every value belonging to mode A, and
+// because the preset was not drifted the write was stamped with the workflow's
+// CURRENT hash, so the next open took the EXACT fast path — no banner, no drop
+// list, nothing on screen saying the values were gone.
+//
+// Two rules make the merge honest:
+//
+//   - The capture WINS for its own key, including when its value is empty. Clearing
+//     a field posts that key with "" (a text input submits whether or not it holds
+//     text), so a clear is a capture and must not be undone by the carry-forward.
+//   - Carried-forward entries are NOT filtered against the live key set. Whether a
+//     stored key still resolves is reconciliation's job on READ
+//     (comfy.ReconcileRunPreset drops, retargets and NAMES), and filtering here
+//     would delete exactly the keys that are off-screen because of the current
+//     mode — the loss this function exists to stop.
+func presetParamsMerged(prev string, entries []comfy.PresetEntry, modes map[string]string) string {
+	captured := make(map[comfy.UIWidgetKey]bool, len(entries))
+	for _, e := range entries {
+		captured[comfy.UIWidgetKey{NodeID: e.NodeID, Widget: e.Widget}] = true
+	}
+	carried := make([]uiWidgetOverrideEntry, 0, len(parseRunParams(prev).UIWidgetOverrides))
+	for _, e := range parseRunParams(prev).UIWidgetOverrides {
+		if widx, ok := e.widgetIndex(); ok && e.NodeID != "" &&
+			captured[comfy.UIWidgetKey{NodeID: e.NodeID, Widget: widx}] {
+			continue // the capture is the newer truth for this key
+		}
+		// Kept VERBATIM — the undecodable slot value included. Re-serializing a
+		// malformed entry through an int would aim it at slot 0, which is the silent
+		// retarget the whole reconciler exists to prevent. It stays malformed here and
+		// stays dropped-and-NAMED on the next open.
+		carried = append(carried, e)
+	}
+	return presetParamsFrom(prev, append(carried, storableOverrides(entries)...), modes)
+}
+
+// presetUncapturedCount counts the stored entries this capture did NOT cover — the
+// values a REPLACING write would discard.
+func presetUncapturedCount(prev string, entries []comfy.PresetEntry) int {
+	captured := make(map[comfy.UIWidgetKey]bool, len(entries))
+	for _, e := range entries {
+		captured[comfy.UIWidgetKey{NodeID: e.NodeID, Widget: e.Widget}] = true
+	}
+	n := 0
+	for _, e := range parseRunParams(prev).UIWidgetOverrides {
+		widx, ok := e.widgetIndex()
+		if ok && e.NodeID != "" && captured[comfy.UIWidgetKey{NodeID: e.NodeID, Widget: widx}] {
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 // presetEntriesFromForm turns a posted preset form into storable entries.
@@ -342,11 +434,43 @@ func presetAdoptable(wf *store.Workflow) bool {
 // does. The write itself still happens — the tab label is not positional and a
 // rename must not be silently dropped — and the caller tells the user plainly
 // (presetNoFieldsNotice) rather than reporting a save that did not happen.
-func presetEntryWrite(p *store.RunPreset, wf *store.Workflow, entries []comfy.PresetEntry, modes map[string]string, adopt bool) (params, hash string) {
+//
+// A PARTIAL capture is the same failure one notch quieter, and on a real multi-mode
+// template it is the LIKELIER one: the capture is the INTERSECTION of the posted
+// keys and the live keys, so saving while mode B is selected captures mode B's
+// fields and, under wholesale replacement, deleted mode A's. That write was not
+// drifted, so it was stamped with the workflow's CURRENT hash and the next open took
+// the EXACT fast path — Applied=1, Dropped=0, no banner at all. Hence
+// presetParamsMerged: the capture wins for its own keys, everything else is carried.
+//
+// THE ONE WRITE THAT MAY NOT MERGE is the CERTIFYING one. The returned hash is a
+// claim about the stored entries — on the EXACT read path every entry it covers is
+// applied with NO per-entry tuple check — so it may only be stamped over entries
+// that were captured against the graph it names. Two cases, and only two:
+//
+//   - hash == "" → no claim is made; reconciliation re-checks every entry's tuple.
+//     Merging is free.
+//   - hash != "" AND presetHashMatch(p, wf) → the preset ALREADY carried this exact
+//     hash, so by induction the carried entries were captured against this very
+//     graph. Merging keeps the claim true.
+//   - hash != "" AND NOT presetHashMatch(p, wf) → an ADOPTION. The stamp is new, and
+//     it would newly certify carried entries captured against an OLDER graph.
+//     Carrying them here is how a stale positional key gets applied without a check
+//     — the retarget hazard. So an adoption certifies ONLY what this request
+//     captured, i.e. only what the user was looking at when they clicked (decision 7
+//     is exactly "I do not certify a param set against a graph I did not inspect").
+//     The discarded count is returned so the caller can SAY so; those same values
+//     were already named as drops in the banner the user adopted from.
+func presetEntryWrite(p *store.RunPreset, wf *store.Workflow, entries []comfy.PresetEntry, modes map[string]string, adopt bool) (params, hash string, discarded int) {
 	if len(entries) == 0 {
-		return p.Params, p.GraphHash
+		return p.Params, p.GraphHash, 0
 	}
-	return presetParamsWith(p.Params, entries, modes), presetWriteHash(p, wf, adopt)
+	hash = presetWriteHash(p, wf, adopt)
+	if hash != "" && !presetHashMatch(p, wf) {
+		return presetParamsWith(p.Params, entries, modes), hash,
+			presetUncapturedCount(p.Params, entries)
+	}
+	return presetParamsMerged(p.Params, entries, modes), hash, 0
 }
 
 // presetFormPostedFields distinguishes the two ways a capture can come back empty:
@@ -523,10 +647,10 @@ func (s *Server) persistOutgoing(w http.ResponseWriter, r *http.Request, wf *sto
 	}
 	modes := parseModeChoices(r.Form, wf)
 	entries := presetEntriesFromForm(r.Form, wf, modes)
-	// An empty capture carries the stored values through untouched (presetEntryWrite);
-	// the label is still written, so renaming a tab and then switching away from it
-	// does not lose the rename.
-	params, hash := presetEntryWrite(p, wf, entries, modes, false)
+	// A partial or empty capture carries the stored values through (presetEntryWrite
+	// merges); the label is still written, so renaming a tab and then switching away
+	// from it does not lose the rename. This path never adopts, so it never discards.
+	params, hash, _ := presetEntryWrite(p, wf, entries, modes, false)
 	if err := s.store.UpdateRunPreset(r.Context(), p.ID, presetNameOr(r, p.Name), params,
 		hash); err != nil {
 		s.log.Warn("run presets: persist outgoing failed", "preset", p.ID, "err", err)
@@ -701,6 +825,7 @@ func (s *Server) handleWorkflowRunPresetSave(w http.ResponseWriter, r *http.Requ
 		Captured:     len(entries) > 0,
 		PostedFields: presetFormPostedFields(r.Form),
 		Drifted:      !presetHashMatch(p, wf),
+		Rescannable:  wf.SourcePath != "",
 	}
 	out.AdoptAsked = out.Drifted && strings.TrimSpace(r.FormValue(presetAdoptField)) == "1"
 	// An adoption certifies the STORED entries against the CURRENT graph, so it needs
@@ -714,7 +839,8 @@ func (s *Server) handleWorkflowRunPresetSave(w http.ResponseWriter, r *http.Requ
 	// them is either the current one (adopt, or nothing had drifted) or blank. It is
 	// never the pre-edit hash: that would certify these values against a graph they
 	// were not captured from. A write that captured nothing changes neither.
-	params, hash := presetEntryWrite(p, wf, entries, modes, out.Adopted)
+	params, hash, discarded := presetEntryWrite(p, wf, entries, modes, out.Adopted)
+	out.Discarded = discarded
 	if err := s.store.UpdateRunPreset(r.Context(), p.ID, name, params, hash); err != nil {
 		s.renderError(w, "save run preset", err)
 		return
@@ -737,6 +863,12 @@ type presetSaveOutcome struct {
 	Adopted    bool
 	// Drifted is the pre-write verdict.
 	Drifted bool
+	// Discarded counts stored values an ADOPTION could not certify and therefore did
+	// not keep (presetEntryWrite's certifying branch). Zero on every other write.
+	Discarded int
+	// Rescannable is true when this workflow row came from a disk scan, so "re-scan
+	// it" is advice the user can actually act on.
+	Rescannable bool
 }
 
 // notice is the server-authored line the save response renders. Never reflected
@@ -746,6 +878,14 @@ func (o presetSaveOutcome) notice() string {
 	case !o.Captured && o.PostedFields:
 		// The out-of-date page. Says the values were kept, which is what the write did.
 		return presetNoFieldsNotice
+	case o.Adopted && o.Discarded > 0:
+		// An adoption certifies only what this request captured, so stored values with
+		// no field on screen were NOT carried into the new certificate. They were named
+		// as drops in the banner the user adopted from; saying it again here is the
+		// difference between "offered" and "performed".
+		return "Saved and adopted the current graph. " + presetDiscardedPhrase(o.Discarded) +
+			" no parameter of this workflow now matches could not be certified against " +
+			"it and were not kept."
 	case o.Adopted:
 		return "Saved and adopted the current graph."
 	case o.AdoptAsked && !o.Captured:
@@ -753,13 +893,21 @@ func (o presetSaveOutcome) notice() string {
 		return presetNoFieldsNotice
 	case o.AdoptAsked:
 		// Captured, but the workflow has no hash to stamp.
-		return presetNoAdoptHashNotice
+		return presetNoAdoptHashNotice(o.Rescannable)
 	case o.Drifted:
 		return "Saved. This preset still targets an earlier version of this " +
 			"workflow — use \"Adopt current graph\" to clear that."
 	default:
 		return "Saved."
 	}
+}
+
+// presetDiscardedPhrase is the count half of the adoption notice, server-authored.
+func presetDiscardedPhrase(n int) string {
+	if n == 1 {
+		return "1 saved value that"
+	}
+	return strconv.Itoa(n) + " saved values that"
 }
 
 // handleWorkflowRunPresetDelete removes a tab and activates its neighbour.
