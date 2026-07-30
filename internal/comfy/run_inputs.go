@@ -237,7 +237,7 @@ func DetectRunInputs(graph json.RawMessage, info ObjectInfo) []RunInput {
 				continue // bypassed/muted interior node
 			}
 			for _, ri := range detectNodeRunInputs(sub, m, layout, info) {
-				add(scopeToInstance(ri, instID))
+				add(scopeToInstance(ri, instID, def.Name))
 			}
 		}
 	}
@@ -287,11 +287,28 @@ type subgraphRunTarget struct {
 //     offer). No workflow in the dogfood library instantiates a definition twice, so
 //     live data cannot catch a regression here — TestSubgraphMultiInstanceNotExposed
 //     is the only guard.
-//  2. A BYPASSED/MUTED instance is skipped. ApplyModeSelection runs BEFORE detection
-//     and marks a switched-off pipeline's top-level nodes — a subgraph instance
-//     included — mode 4/2. Randomising a seed inside a pipeline that is not running is
-//     exactly the identical-batch near-miss the mode-applied-graph rule exists to
-//     prevent.
+//
+//  2. A BYPASSED/MUTED instance is skipped, because its interior state is AMBIGUOUS —
+//     NOT because the interior does not execute.
+//
+//     🔴 Do not restate this as "the pipeline is not running": measured, it IS.
+//     `flattenSubgraphs` expands every instance with no reference to the instance's
+//     own `mode` (convert_subgraph.go's loop over g.Nodes), and it runs BEFORE
+//     ConvertUIToAPI drops inactive nodes — and each clone carries the INTERIOR
+//     node's mode, not the instance's. Verified on the wf557 fixture: with top-level
+//     node 93 set to mode 4, flattening still emits all SEVEN interior clones at
+//     mode=0. So bypassing a subgraph instance does not currently bypass it in the
+//     submitted graph at all.
+//
+//     That is a PRE-EXISTING converter bug, out of scope here (it changes what runs,
+//     not what is editable) and it is not a regression from this code — nothing was
+//     exposed from a subgraph interior before either. Whoever fixes the converter's
+//     flatten/mode ordering should revisit this refusal: once a bypassed instance
+//     really is dropped, "not running" becomes the correct reason and this stays
+//     right for a better reason. Until then the honest justification is that the user
+//     has marked the instance off in the UI while its interior still executes, so
+//     surfacing its widgets as live, batch-randomised controls would be asserting a
+//     coherence the graph does not have.
 func subgraphRunTargets(g *uiConvGraph) []subgraphRunTarget {
 	if len(g.Definitions.Subgraphs) == 0 {
 		return nil
@@ -338,7 +355,22 @@ func subgraphRunTargets(g *uiConvGraph) []subgraphRunTarget {
 // namespace ("<instance id>:<interior id>"). SourceVia is rewritten too, so the
 // resolution path the UI prints names ids that exist in the submitted graph rather
 // than bare interior ids that collide with unrelated top-level nodes.
-func scopeToInstance(ri RunInput, instID string) RunInput {
+//
+// It also DISAMBIGUATES THE LABEL, which is a correctness-of-intent requirement, not
+// decoration. These graphs routinely hold two KSamplerAdvanced in one subgraph (a
+// high-noise/low-noise WAN pair), so without this the panel renders "CFG, Sampler,
+// Scheduler" twice with nothing to tell the stages apart and the user can silently
+// edit the wrong pass. Measured across the 70-workflow dogfood library: 60 label
+// collisions involve an interior input without the suffix, 0 with it.
+//
+// The suffix is the DEFINITION NAME plus the INTERIOR id ("· Sample #12"), not the
+// full scoped id ("· Sample #93:12"): both scored identically (0 collisions) on the
+// real library, so the shorter, more readable one wins. The interior id is the half
+// that actually varies between the samplers — the instance id is constant for every
+// field of one subgraph. An unnamed definition degrades to "· #12". Top-level labels
+// are left BYTE-IDENTICAL, so nothing that exists today moves.
+func scopeToInstance(ri RunInput, instID, defName string) RunInput {
+	ri.Label = subgraphInputLabel(ri.Label, defName, ri.NodeID)
 	ri.NodeID = instID + subgraphKeySep + ri.NodeID
 	for i, v := range ri.SourceVia {
 		if strings.HasPrefix(v, "#") {
@@ -346,6 +378,20 @@ func scopeToInstance(ri RunInput, instID string) RunInput {
 		}
 	}
 	return ri
+}
+
+// subgraphInputLabel appends the subgraph origin to an interior input's label:
+// "CFG · Sample #12", or "CFG · #12" when the definition carries no name.
+//
+// defName is AUTHOR TEXT and therefore untrusted — it is escaped at render like every
+// other label (gomponents' g.Text), the same treatment RunInput.Label already gets for
+// node titles. It is whitespace-trimmed here so a name of spaces degrades to the
+// nameless form instead of rendering "CFG ·  #12".
+func subgraphInputLabel(label, defName, interiorID string) string {
+	if name := strings.TrimSpace(defName); name != "" {
+		return label + " · " + name + " #" + interiorID
+	}
+	return label + " · #" + interiorID
 }
 
 // newSubgraphRunIndex builds the by-id / by-link index for ONE subgraph definition's

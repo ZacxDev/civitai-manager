@@ -284,8 +284,12 @@ const collidingIDGraph = `{
 // class with different seeds, so a key that leaks into the interior changes 222 and a
 // key that stops resolving leaves 111 alone.
 //
-// Mutation-verified: making splitUIWidgetOverrides route on the separator BEFORE
-// consulting the top-level id table (or dropping the top-level branch) fails this.
+// Mutation-verified two ways: dropping the instance scoping in DetectRunInputs
+// collapses the two keys into one ("seed keys = [{12 0}]"), and a writer that searches
+// every definition for a plain key leaks the edit into the interior ("interior seed =
+// 777"). The THIRD guard in splitUIWidgetOverrides — top-level ids winning over the
+// separator — needs a top-level id that literally contains ":" and is pinned
+// separately by TestSeparatorShapedTopLevelIDWinsOverThePath.
 func TestPlainNodeIDKeyStillTargetsTheTopLevelNode(t *testing.T) {
 	graph := json.RawMessage(collidingIDGraph)
 
@@ -355,7 +359,226 @@ func TestSubgraphKeyRoundTripsAsAPlainString(t *testing.T) {
 	}
 }
 
+// separatorShapedIDGraph gives a TOP-LEVEL node the id "90:12" — the exact string the
+// path scheme would compose for interior node 12 of the subgraph instantiated by node
+// 90, which this graph also contains.
+//
+// Node ids are integers in every graph ComfyUI itself writes, so this is unreachable
+// from the app's own data; it is reachable from a hand-edited or third-party graph, and
+// UI node ids are `json.RawMessage` precisely because their shape is not guaranteed.
+const separatorShapedIDGraph = `{
+  "nodes": [
+    {"id": "90:12", "type": "KSampler", "mode": 0,
+     "widgets_values": [111, "fixed", 20, 8, "euler", "normal", 1], "inputs": []},
+    {"id": 90, "type": "sg-one", "mode": 0, "inputs": []}
+  ],
+  "links": [],
+  "definitions": {"subgraphs": [
+    {"id": "sg-one", "name": "Once", "inputNode": {"id": -10}, "outputNode": {"id": -20},
+     "inputs": [], "outputs": [], "links": [],
+     "nodes": [
+       {"id": 12, "type": "KSampler", "mode": 0,
+        "widgets_values": [222, "fixed", 20, 8, "euler", "normal", 1], "inputs": []}
+     ]}
+  ]}
+}`
+
+// TestSeparatorShapedTopLevelIDWinsOverThePath pins the third backward-compatibility
+// guard: in splitUIWidgetOverrides a key that names an existing TOP-LEVEL node is
+// routed to the top level even when it also parses as a path.
+//
+// The two addresses genuinely collide here, and DetectRunInputs resolves that by
+// dedupe: nodes[] order puts the top-level node first, so ONE field is emitted, keyed
+// "90:12", pre-filled with the TOP-LEVEL value (111). What must hold is that the write
+// then lands where the panel said it would — on the node whose value the user is
+// looking at. Without the guard the field still SHOWS 111 while the edit silently goes
+// into the subgraph definition instead: a control that writes somewhere other than the
+// value it displays, which is the exact class of silent retarget this addressing exists
+// to prevent.
+//
+// Mutation-verified: deleting `topIDs[key.NodeID] ||` from splitUIWidgetOverrides fails
+// this test.
+func TestSeparatorShapedTopLevelIDWinsOverThePath(t *testing.T) {
+	graph := json.RawMessage(separatorShapedIDGraph)
+
+	// One field, keyed "90:12", showing the TOP-LEVEL node's value.
+	keys := SeedWidgetKeys(graph)
+	if len(keys) != 1 || keys[0] != (UIWidgetKey{NodeID: "90:12", Widget: 0}) {
+		t.Fatalf("seed keys = %+v, want exactly one {90:12 0} (the two addresses collide "+
+			"and dedupe to the top-level node)", keys)
+	}
+	seeds := SeedRunInputs(graph)
+	if seeds[0].Current != "111" {
+		t.Fatalf("the field pre-fills with %q, want the top-level 111 — the assertion "+
+			"below is about the write matching THIS displayed value", seeds[0].Current)
+	}
+
+	applied := ApplyUIWidgetOverrides(graph, map[UIWidgetKey]string{
+		{NodeID: "90:12", Widget: 0}: "777",
+	})
+	if v := scalarWidgetString(topLevelWidgets(t, applied)["90:12"][0]); v != "777" {
+		t.Errorf("top-level node \"90:12\" seed = %q, want 777 — the edit did not land on "+
+			"the node whose value the panel displayed", v)
+	}
+	if v := scalarWidgetString(interiorWidgets(t, applied, 0)["12"][0]); v != "222" {
+		t.Errorf("interior seed = %q, want the untouched 222 — the edit was silently "+
+			"retargeted into the subgraph definition", v)
+	}
+}
+
+// TestSubgraphInteriorLabelsAreDisambiguated pins the user-visible half. These graphs
+// carry TWO KSamplerAdvanced in one subgraph (a high-noise/low-noise WAN pair), so
+// without the subgraph suffix the panel renders "CFG / Sampler / Scheduler" twice with
+// nothing to tell the passes apart and an edit can silently hit the wrong stage.
+func TestSubgraphInteriorLabelsAreDisambiguated(t *testing.T) {
+	inputs := DetectRunInputs(loadWF557(t), nil)
+
+	// Every collision INVOLVING an interior input must be gone. Deliberately not
+	// "every label is unique": two untitled top-level CLIPTextEncode nodes both render
+	// "Prompt" in this fixture, which is PRE-EXISTING top-level ambiguity this change
+	// does not own and does not touch (measured across the 70-workflow library:
+	// interior-involving collisions 60 → 0; the 72 purely top-level ones are unmoved).
+	seen := map[string]string{}
+	for _, ri := range inputs {
+		prev, dup := seen[ri.Label]
+		seen[ri.Label] = ri.NodeID
+		if !dup {
+			continue
+		}
+		if strings.Contains(ri.NodeID, subgraphKeySep) || strings.Contains(prev, subgraphKeySep) {
+			t.Errorf("label %q is shared by %s and %s, at least one of them inside a "+
+				"subgraph — the user cannot tell which stage they are editing",
+				ri.Label, prev, ri.NodeID)
+		}
+	}
+
+	// The exact shape, so a reformat is a deliberate change and not a drift.
+	for _, want := range []struct{ nodeID, label string }{
+		{"93:12", "Noise seed · Sample #12"},
+		{"93:10", "Noise seed · Sample #10"},
+		{"93:12", "CFG · Sample #12"},
+		{"93:10", "CFG · Sample #10"},
+		{"93:141", "Steps · Sample #141"},
+	} {
+		found := false
+		for _, ri := range inputs {
+			if ri.NodeID == want.nodeID && ri.Label == want.label {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("no input %s labelled %q; got %v", want.nodeID, want.label, labelsOf(inputs))
+		}
+	}
+
+	// TOP-LEVEL labels must be byte-identical to before — the suffix is for interiors
+	// only, and nothing that exists today may move.
+	for _, ri := range inputs {
+		if !strings.Contains(ri.NodeID, subgraphKeySep) && strings.Contains(ri.Label, " · ") {
+			t.Errorf("top-level input %s gained a subgraph suffix: %q", ri.NodeID, ri.Label)
+		}
+	}
+
+	// An UNNAMED definition degrades to "· #<id>" rather than rendering a dangling dot.
+	unnamed := DetectRunInputs(json.RawMessage(strings.Replace(
+		collidingIDGraph, `"name": "Once", `, "", 1)), nil)
+	got := ""
+	for _, ri := range unnamed {
+		if ri.NodeID == "90:12" && ri.InputName == "cfg" {
+			got = ri.Label
+		}
+	}
+	if got != "CFG · #12" {
+		t.Errorf("unnamed-definition label = %q, want %q", got, "CFG · #12")
+	}
+}
+
+// TestSubgraphScopedIDsAreRealFlattenedNodes is the DRIFT GUARD for the addressing
+// scheme, and it is what makes the whole thing self-checking.
+//
+// subgraphKeySep here and the separator sgExpander.expand builds into a clone's id
+// (`prefix + ":" + interiorID`) are two INDEPENDENT literals in two files with nothing
+// tying them together. If either moves, every interior override silently addresses a
+// node that does not exist in the submitted graph — ApplyUIWidgetOverrides would still
+// write into the definition, but the field would no longer name the node the run
+// actually executes, and the connection between the panel and the api graph is lost.
+//
+// So: run the REAL flattener over the real fixture and require every scoped
+// RunInput.NodeID to name a node it emitted. (The same check over the whole 70-workflow
+// library passed 129/129 scoped ids.)
+//
+// Mutation-verified: changing subgraphKeySep to "/" fails this.
+func TestSubgraphScopedIDsAreRealFlattenedNodes(t *testing.T) {
+	graph := loadWF557(t)
+	var g uiConvGraph
+	if err := json.Unmarshal(graph, &g); err != nil {
+		t.Fatal(err)
+	}
+	links := map[int64]uiLink{}
+	for _, raw := range g.Links {
+		if l, ok := parseLink(raw); ok {
+			links[l.ID] = l
+		}
+	}
+	nodes, _, _, _, err := flattenSubgraphs(&g, links)
+	if err != nil {
+		t.Fatalf("flatten: %v", err)
+	}
+	flat := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		flat[idToString(n.ID)] = true
+	}
+
+	scoped := 0
+	for _, ri := range DetectRunInputs(graph, nil) {
+		if !strings.Contains(ri.NodeID, subgraphKeySep) {
+			continue
+		}
+		scoped++
+		if !flat[ri.NodeID] {
+			t.Errorf("run input %q (%s.%s) names no node in the flattened graph — the "+
+				"detector's separator and the converter's have drifted apart",
+				ri.NodeID, ri.ClassType, ri.InputName)
+		}
+	}
+	if scoped == 0 {
+		t.Fatal("no scoped ids in the fixture — this guard would pass vacuously")
+	}
+	if !t.Failed() {
+		t.Logf("%d scoped ids, all present in the flattened graph", scoped)
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+func labelsOf(inputs []RunInput) []string {
+	out := make([]string, 0, len(inputs))
+	for _, ri := range inputs {
+		out = append(out, ri.Label)
+	}
+	return out
+}
+
+// topLevelWidgets indexes a graph's TOP-LEVEL nodes by id → widgets_values. It keys on
+// idToString (not the raw JSON) so a STRING node id resolves the same way the
+// production code resolves it.
+func topLevelWidgets(t *testing.T, graph json.RawMessage) map[string][]json.RawMessage {
+	t.Helper()
+	var g struct {
+		Nodes []struct {
+			ID            json.RawMessage   `json:"id"`
+			WidgetsValues []json.RawMessage `json:"widgets_values"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(graph, &g); err != nil {
+		t.Fatalf("decode graph: %v", err)
+	}
+	out := make(map[string][]json.RawMessage, len(g.Nodes))
+	for _, n := range g.Nodes {
+		out[idToString(n.ID)] = n.WidgetsValues
+	}
+	return out
+}
 
 // interiorWidgets indexes definitions.subgraphs[i]'s interior nodes by id →
 // widgets_values.
