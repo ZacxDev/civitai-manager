@@ -201,6 +201,17 @@ func runModeSelect(wfID, csrf string, idx int, sel comfy.ModeSelector, override 
 		// GET's query string unbounded) so changing the mode re-renders the tab the
 		// user is on instead of snapping back to the first one.
 		hx("include", runModesInclude+", #"+presetIDInputID),
+		// Close the mode-change race at its source: until the re-rendered panel lands,
+		// the fields on screen belong to the PREVIOUS mode while this select already
+		// reads as the new one. A Save clicked in that window posts the new mode_key
+		// with the old mode's fields, none of which survive the mode-applied
+		// allow-list. The server carries the stored values through unharmed
+		// (presetEntryWrite) — this keeps the user from meeting that path at all.
+		// htmx collects a request's input values BEFORE disabling anything, so this
+		// select's own mode_key still travels; "this" is included so the selector
+		// always matches something (an empty panel has no buttons, and htmx logs a
+		// console error for a selector that matches nothing).
+		hx("disabled-elt", "this, #"+runParamsContainerID+" button"),
 	}
 	selAttrs = append(selAttrs, opts...)
 	_ = csrf // the picker itself changes no state; the GET carries no token

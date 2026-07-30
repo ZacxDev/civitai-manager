@@ -71,6 +71,27 @@ const (
 // row; an unbounded label is a layout weapon, and the name is untrusted user text.
 const maxPresetNameLen = 80
 
+// presetNoFieldsNotice is what a write that captured NOTHING reports. It is
+// server-authored text; nothing from the request is reflected into it.
+//
+// Saying "Saved." there would be the lie the whole carry-through rule exists to
+// prevent: the values on the user's screen were NOT stored (they name parameters
+// this workflow no longer has), and the ones that ARE stored are not the ones being
+// displayed. The user needs to know both, and what to do about it.
+const presetNoFieldsNotice = "None of the values this page sent are parameters of " +
+	"this workflow as it is now, so your previously saved values were kept unchanged. " +
+	"This page is out of date — the workflow changed underneath it, or the workflow-mode " +
+	"picker had not finished re-rendering. Reopen this tab to edit the current parameters."
+
+// presetNoAdoptHashNotice explains a refused adoption. "Adopt current graph" stamps
+// workflows.graph_hash into the preset; a workflow row that predates content hashes
+// (migration 0011) and has never been re-scanned carries none, so there is literally
+// nothing to stamp. Reporting "adopted" there left the preset permanently drifted
+// with a button the user could click forever.
+const presetNoAdoptHashNotice = "Saved. This workflow has no content hash yet — it " +
+	"has not been scanned since this app started recording them — so there is nothing " +
+	"to adopt. Re-scan the workflow, then use \"Adopt current graph\" again."
+
 // presetTabView is everything the panel renderer needs for ONE render.
 type presetTabView struct {
 	// Presets is the workflow's saved presets in tab order.
@@ -270,10 +291,71 @@ func presetHashMatch(p *store.RunPreset, wf *store.Workflow) bool {
 // graph" button and the un-certified state all survive a save; only the false
 // certificate goes away.
 func presetWriteHash(p *store.RunPreset, wf *store.Workflow, adopt bool) string {
+	if !presetAdoptable(wf) {
+		// Nothing to stamp. Falling through would "store the current hash" and store
+		// a blank — the same value, but arrived at by accident. See presetAdoptable:
+		// the caller owes the user a different SENTENCE in this case, not a different
+		// hash.
+		return ""
+	}
 	if adopt || presetHashMatch(p, wf) {
 		return wf.GraphHash
 	}
 	return ""
+}
+
+// presetAdoptable reports whether "Adopt current graph" can do anything at all.
+//
+// Adoption stamps workflows.graph_hash into the preset. graph_hash arrived in
+// migration 0011 and is written by the import/scan path, so a workflow row that has
+// never been re-scanned since carries a BLANK one — and blank can never be proven
+// equal (presetHashMatch), so stamping it leaves the preset permanently drifted with
+// an "Adopt current graph" button that does nothing, forever, while the response
+// says it adopted. The honest answer is to refuse and say what would fix it.
+func presetAdoptable(wf *store.Workflow) bool {
+	return wf.GraphHash != ""
+}
+
+// presetEntryWrite decides the (params, graph_hash) pair ONE entry-replacing write
+// stores. Every such write goes through it, so save and persistOutgoing cannot
+// drift apart on the rule that matters most here.
+//
+// EMPTY ENTRIES ARE NOT AN EMPTY PARAMETER SET. presetEntriesFromForm returns nil
+// when NO posted triple survived the allow-list, and that is a statement about the
+// REQUEST, never about the user's intent: no control in this panel can produce it
+// deliberately (a text input submits whether or not it holds text). It happens when
+// a page posts against a graph it was not rendered from —
+//
+//   - a STALE TAB: the workflow was re-imported or re-scanned underneath it, so every
+//     key the page holds names a node that no longer exists;
+//   - the MODE RACE: the picker's asynchronous re-render of #run-params has not
+//     landed, so Save posts the NEW mode_key with the PREVIOUS mode's fields, and the
+//     allow-list (derived from the mode-applied graph) rejects all of them.
+//
+// Replacing the stored entries there destroyed every saved value — and because
+// presetWriteHash returns the workflow's hash whenever the preset is NOT drifted, the
+// empty result was stamped with a VALID CURRENT hash: the next open took the exact
+// fast path and reported no drift, no drops, nothing. Silent total data loss.
+//
+// So an empty capture carries the stored positional families through UNTOUCHED,
+// hash included: the entries did not change, so the hash that described them still
+// does. The write itself still happens — the tab label is not positional and a
+// rename must not be silently dropped — and the caller tells the user plainly
+// (presetNoFieldsNotice) rather than reporting a save that did not happen.
+func presetEntryWrite(p *store.RunPreset, wf *store.Workflow, entries []comfy.PresetEntry, modes map[string]string, adopt bool) (params, hash string) {
+	if len(entries) == 0 {
+		return p.Params, p.GraphHash
+	}
+	return presetParamsWith(p.Params, entries, modes), presetWriteHash(p, wf, adopt)
+}
+
+// presetFormPostedFields distinguishes the two ways a capture can come back empty:
+// a form that carried parameter controls whose keys no longer resolve (the
+// out-of-date page) from one that carried none at all (a rename, or a panel with
+// nothing editable). They deserve different sentences — telling a user who just
+// renamed a tab that their page is out of date is its own small lie.
+func presetFormPostedFields(form url.Values) bool {
+	return len(form["wp_node"]) > 0
 }
 
 // ── view assembly ────────────────────────────────────────────────────────────
@@ -441,14 +523,12 @@ func (s *Server) persistOutgoing(w http.ResponseWriter, r *http.Request, wf *sto
 	}
 	modes := parseModeChoices(r.Form, wf)
 	entries := presetEntriesFromForm(r.Form, wf, modes)
-	if entries == nil {
-		// Nothing editable was posted (a collapsed panel, an api graph). Do not blank
-		// out a stored value set on the strength of an empty form.
-		return true
-	}
-	params := presetParamsWith(p.Params, entries, modes)
+	// An empty capture carries the stored values through untouched (presetEntryWrite);
+	// the label is still written, so renaming a tab and then switching away from it
+	// does not lose the rename.
+	params, hash := presetEntryWrite(p, wf, entries, modes, false)
 	if err := s.store.UpdateRunPreset(r.Context(), p.ID, presetNameOr(r, p.Name), params,
-		presetWriteHash(p, wf, false)); err != nil {
+		hash); err != nil {
 		s.log.Warn("run presets: persist outgoing failed", "preset", p.ID, "err", err)
 	}
 	return true
@@ -615,29 +695,71 @@ func (s *Server) handleWorkflowRunPresetSave(w http.ResponseWriter, r *http.Requ
 
 	modes := parseModeChoices(r.Form, wf)
 	entries := presetEntriesFromForm(r.Form, wf, modes)
-	params := presetParamsWith(p.Params, entries, modes)
 	name := presetNameOr(r, p.Name)
 
-	drifted := !presetHashMatch(p, wf)
-	adopt := drifted && strings.TrimSpace(r.FormValue(presetAdoptField)) == "1"
+	out := presetSaveOutcome{
+		Captured:     len(entries) > 0,
+		PostedFields: presetFormPostedFields(r.Form),
+		Drifted:      !presetHashMatch(p, wf),
+	}
+	out.AdoptAsked = out.Drifted && strings.TrimSpace(r.FormValue(presetAdoptField)) == "1"
+	// An adoption certifies the STORED entries against the CURRENT graph, so it needs
+	// both halves to be real: entries this request actually captured from that graph
+	// (an out-of-date page is showing a different one — certifying from it is exactly
+	// the "certify a param set against a graph I did not inspect" hazard decision 7
+	// exists to prevent), and a hash to stamp.
+	out.Adopted = out.AdoptAsked && out.Captured && presetAdoptable(wf)
 
 	// The values just captured belong to the CURRENT graph, so the hash written with
 	// them is either the current one (adopt, or nothing had drifted) or blank. It is
 	// never the pre-edit hash: that would certify these values against a graph they
-	// were not captured from.
-	notice := "Saved."
-	if adopt {
-		notice = "Saved and adopted the current graph."
-	} else if drifted {
-		notice = "Saved. This preset still targets an earlier version of this " +
-			"workflow — use \"Adopt current graph\" to clear that."
-	}
-	err := s.store.UpdateRunPreset(r.Context(), p.ID, name, params, presetWriteHash(p, wf, adopt))
-	if err != nil {
+	// were not captured from. A write that captured nothing changes neither.
+	params, hash := presetEntryWrite(p, wf, entries, modes, out.Adopted)
+	if err := s.store.UpdateRunPreset(r.Context(), p.ID, name, params, hash); err != nil {
 		s.renderError(w, "save run preset", err)
 		return
 	}
-	s.renderPresetPanel(w, r, wf, p.ID, notice)
+	s.renderPresetPanel(w, r, wf, p.ID, out.notice())
+}
+
+// presetSaveOutcome is what a save actually DID, which is the only thing its notice
+// is allowed to describe. Keeping the four facts apart is deliberate: every honesty
+// defect this file has shipped was a notice that described the click instead of the
+// write ("Saved." over a wipe, "adopted the current graph" over a blank hash).
+type presetSaveOutcome struct {
+	// Captured is true when at least one posted value survived the allow-list and was
+	// therefore written into the preset.
+	Captured bool
+	// PostedFields is true when the request carried parameter controls at all.
+	PostedFields bool
+	// AdoptAsked / Adopted: what the user clicked, and what happened.
+	AdoptAsked bool
+	Adopted    bool
+	// Drifted is the pre-write verdict.
+	Drifted bool
+}
+
+// notice is the server-authored line the save response renders. Never reflected
+// request input.
+func (o presetSaveOutcome) notice() string {
+	switch {
+	case !o.Captured && o.PostedFields:
+		// The out-of-date page. Says the values were kept, which is what the write did.
+		return presetNoFieldsNotice
+	case o.Adopted:
+		return "Saved and adopted the current graph."
+	case o.AdoptAsked && !o.Captured:
+		// Refused for the same reason as above; that sentence already covers it.
+		return presetNoFieldsNotice
+	case o.AdoptAsked:
+		// Captured, but the workflow has no hash to stamp.
+		return presetNoAdoptHashNotice
+	case o.Drifted:
+		return "Saved. This preset still targets an earlier version of this " +
+			"workflow — use \"Adopt current graph\" to clear that."
+	default:
+		return "Saved."
+	}
 }
 
 // handleWorkflowRunPresetDelete removes a tab and activates its neighbour.
