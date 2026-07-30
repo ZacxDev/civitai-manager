@@ -447,17 +447,39 @@ func TestReconcileIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestReconcileIgnoresMalformedEntry: an entry with no node id must never be
-// defaulted onto some node's slot 0.
-func TestReconcileIgnoresMalformedEntry(t *testing.T) {
-	entries := []PresetEntry{{NodeID: "", Widget: 0, Value: "evil", Kind: RunInputSeed}}
+// TestReconcileDropsAndNamesMalformedEntry: an entry with no usable positional key
+// must never be defaulted onto some node's slot 0 — AND must never vanish without a
+// word. "Dropped, defaulted, and named" is the rule for every other drop; a value
+// the user believes is saved is exactly the one they must be told about.
+func TestReconcileDropsAndNamesMalformedEntry(t *testing.T) {
+	entries := []PresetEntry{
+		{NodeID: "", Widget: 0, Value: "evil", Kind: RunInputSeed},
+		{NodeID: "3", Malformed: true, Value: "unparsable widget", Label: "Steps"},
+	}
 	rec := ReconcileRunPreset(json.RawMessage(presetGraph), nil, nil, entries, true)
 	for _, f := range rec.Fields {
 		if f.FromPreset {
 			t.Errorf("malformed entry applied to %q", f.Input.Label)
 		}
+		if f.Value == "evil" || f.Value == "unparsable widget" {
+			t.Errorf("malformed value leaked into field %q", f.Input.Label)
+		}
 	}
-	if len(rec.Dropped) != 0 {
-		t.Errorf("a malformed entry is discarded silently at parse, got drops %+v", rec.Dropped)
+	if len(rec.Dropped) != 2 {
+		t.Fatalf("both malformed entries must be NAMED, got drops %+v", rec.Dropped)
+	}
+	for _, d := range rec.Dropped {
+		if d.Reason != PresetDropMalformed {
+			t.Errorf("drop reason = %q, want %q", d.Reason, PresetDropMalformed)
+		}
+		if d.Name == "" {
+			t.Error("a drop with an empty name is not a named drop")
+		}
+	}
+	if rec.Dropped[0].Name != "a saved value" || rec.Dropped[1].Name != "Steps" {
+		t.Errorf("drop names = %q, %q", rec.Dropped[0].Name, rec.Dropped[1].Name)
+	}
+	if !rec.NeedsBanner() {
+		t.Error("a dropped value must raise the banner even on an exact hash")
 	}
 }

@@ -116,25 +116,32 @@ func presetLabel(p store.RunPreset, idx int) string {
 // ── params codec ─────────────────────────────────────────────────────────────
 
 // presetEntries decodes a preset's stored params blob into reconciler entries.
-// Malformed entries (no node id, non-integer widget index) are dropped rather
-// than defaulted onto slot 0 — the same rule runOptionsFromParams follows.
+//
+// A malformed entry (no node id, non-integer widget index) is NEVER defaulted onto
+// slot 0 — but it is not silently swallowed here either. It is marked Malformed and
+// handed to the reconciler, which drops it AND NAMES it, because "dropped,
+// defaulted, and named" is the rule for every other drop and a value the user
+// believes is saved must not vanish without a word. Dropping it in this decoder is
+// what made it the one unnamed drop in the whole surface.
 func presetEntries(params string) []comfy.PresetEntry {
 	snap := parseRunParams(params)
 	out := make([]comfy.PresetEntry, 0, len(snap.UIWidgetOverrides))
 	for _, e := range snap.UIWidgetOverrides {
-		widx, ok := e.widgetIndex()
-		if !ok || e.NodeID == "" {
-			continue
-		}
-		out = append(out, comfy.PresetEntry{
+		entry := comfy.PresetEntry{
 			NodeID:    e.NodeID,
-			Widget:    widx,
 			Value:     e.Value,
 			Kind:      comfy.RunInputKind(e.Kind),
 			ClassType: e.ClassType,
 			InputName: e.InputName,
 			Label:     e.Label,
-		})
+		}
+		widx, ok := e.widgetIndex()
+		if !ok || e.NodeID == "" {
+			entry.Malformed = true
+		} else {
+			entry.Widget = widx
+		}
+		out = append(out, entry)
 	}
 	return out
 }

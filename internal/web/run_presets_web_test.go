@@ -235,6 +235,53 @@ func TestDriftBannerNamesEveryDroppedField(t *testing.T) {
 	}
 }
 
+// TestMalformedStoredEntryIsDroppedAndNamed: a stored entry whose positional key
+// cannot be decoded (blank node id, non-integer widget slot) must be dropped AND
+// NAMED. Discarding it in the decoder, before the reconciler ever saw it, made it
+// the one drop in this surface the user was never told about.
+func TestMalformedStoredEntryIsDroppedAndNamed(t *testing.T) {
+	srv := newTestServer(t)
+	wf := seedPresetWorkflow(t, srv, "t2i", presetUIGraph)
+
+	// A hand-written blob: one good entry, one with a non-integer widget slot, one
+	// with no node id at all. This is what a pre-0014 / corrupted row looks like.
+	params := `{"ui_widget_overrides":[
+	  {"node_id":"6","widget":0,"value":"GOOD","kind":"text","class_type":"CLIPTextEncode","input_name":"text","label":"Prompt (POSITIVE)"},
+	  {"node_id":"3","widget":"not-a-number","value":"BROKEN WIDGET","label":"Steps"},
+	  {"node_id":"","widget":0,"value":"BROKEN NODE"}
+	]}`
+	id, err := srv.store.CreateRunPreset(context.Background(), store.RunPreset{
+		WorkflowID: wf.ID, Name: "Base", Position: -1, GraphHash: wf.GraphHash, Params: params,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v := srv.buildPresetView(context.Background(), wf, id, nil, true)
+	if len(v.Rec.Dropped) != 2 {
+		t.Fatalf("dropped = %+v, want the two malformed entries named", v.Rec.Dropped)
+	}
+	for _, d := range v.Rec.Dropped {
+		if d.Reason != comfy.PresetDropMalformed {
+			t.Errorf("drop reason = %q, want malformed", d.Reason)
+		}
+	}
+	got := renderString(t, runPresetPanel(wf, "tok", v))
+	for _, want := range []string{`data-color="warning"`, "Steps", "a saved value"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("banner must name the malformed entry (%q missing):\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{"BROKEN WIDGET", "BROKEN NODE"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("a malformed value reached a field: %q", bad)
+		}
+	}
+	if !strings.Contains(got, "GOOD") {
+		t.Error("the well-formed entry must still apply")
+	}
+}
+
 // TestUntrustedPresetNameEscaped: a stored XSS payload in a tab label renders
 // escaped everywhere it appears.
 func TestUntrustedPresetNameEscaped(t *testing.T) {

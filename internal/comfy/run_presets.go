@@ -36,12 +36,27 @@ import (
 // produce a wrong-LOOKING form; it cannot produce a submission outside the
 // curated editable set.
 //
-// KNOWN LIMIT, stated honestly: if node 3 stays CLIPTextEncode.text but the graph
-// is rewired so node 3 now feeds the NEGATIVE conditioning, the tuple still
-// matches and no widget-key check can detect it. The mitigation is that the live
-// Label is rendered beside every field, so the user sees "Prompt (NEGATIVE)"
-// pre-filled with their positive text. That is visibility, not a guarantee;
-// detecting it needs link-graph analysis DetectRunInputs does not do.
+// KNOWN LIMIT — the tuple-unverifiable class, stated honestly: the tuple proves
+// what an input IS (kind, holder class, consumer input name), never what it MEANS.
+// Two shapes defeat it, and the second needs no rewiring at all:
+//
+//   - REWIRE: node 3 stays CLIPTextEncode.text but is re-linked to the NEGATIVE
+//     conditioning.
+//   - ROLE SWAP (the common real case): the graph is re-authored so that two
+//     SAME-TYPE nodes trade ids or titles — captured node 3 = "POSITIVE" and node
+//     5 = "NEGATIVE" become node 3 = "NEGATIVE" and node 5 = "POSITIVE". Both
+//     tuples still match perfectly, so there are ZERO drops and, by itself,
+//     nothing for the banner to name: the positive prompt silently pre-fills the
+//     negative slot.
+//
+// No widget-key check can detect either — the tuple is identical by construction.
+// The mitigations are both VISIBILITY, not guarantees: the live Label is rendered
+// beside every field (so the user sees "Prompt (NEGATIVE)" holding their positive
+// text), and the drift banner states the hazard in words whenever reconciliation
+// takes the drift path, including when nothing was dropped. Detecting it properly
+// needs link-graph analysis DetectRunInputs does not do — do not fake it with a
+// title heuristic; titles are untrusted author text this file already refuses to
+// match on.
 
 // PresetEntry is ONE stored parameter value in a saved run preset.
 //
@@ -64,6 +79,13 @@ type PresetEntry struct {
 	ClassType string
 	InputName string
 	Label     string
+
+	// Malformed marks a STORED entry whose positional key could not be decoded (a
+	// blank node id, a non-integer widget slot). The decoder must NOT silently skip
+	// such an entry: it is a value the user believes is saved, so it is carried in
+	// here, dropped, and NAMED like every other drop. Aiming it at slot 0 instead
+	// would be the silent corruption this whole file exists to prevent.
+	Malformed bool
 }
 
 // PresetEntryFor snapshots one live RunInput plus a value into a storable entry,
@@ -102,6 +124,11 @@ func (e PresetEntry) displayName() string {
 	if e.InputName != "" {
 		return e.InputName
 	}
+	if e.NodeID == "" {
+		// A malformed entry can carry nothing at all. "a saved value" is still a
+		// name — an empty <strong></strong> in the banner would read as a bug.
+		return "a saved value"
+	}
 	return "#" + e.NodeID + " widget " + strconv.Itoa(e.Widget)
 }
 
@@ -119,6 +146,9 @@ const (
 	// PresetDropUnverifiable — the key exists but the entry carries no drift tuple
 	// (written before the tuple was recorded), so it cannot be checked.
 	PresetDropUnverifiable PresetDropReason = "unverifiable"
+	// PresetDropMalformed — the stored entry carried no usable positional key
+	// (blank node id / non-integer widget slot), so it could not even be looked up.
+	PresetDropMalformed PresetDropReason = "malformed"
 	// PresetDropModeUnknown — a stored mode key the graph no longer surfaces.
 	PresetDropModeUnknown PresetDropReason = "mode-unknown"
 	// PresetDropModeDrifted — a stored mode key withheld because the graph hash
@@ -259,9 +289,14 @@ func ReconcileRunPreset(graph json.RawMessage, effModes map[string]string, modeD
 	live := DetectRunInputs(modeGraph, nil)
 
 	stored := make(map[UIWidgetKey]PresetEntry, len(entries))
+	var malformed []PresetEntry
 	for _, e := range entries {
-		if e.NodeID == "" {
-			continue // malformed — never default it onto some node's slot 0
+		if e.Malformed || e.NodeID == "" {
+			// Never default it onto some node's slot 0 — and never swallow it either.
+			// A stored value the user cannot see and cannot fix is exactly the
+			// "dropped, defaulted, AND named" rule this reconciler owes them.
+			malformed = append(malformed, e)
+			continue
 		}
 		stored[UIWidgetKey{NodeID: e.NodeID, Widget: e.Widget}] = e
 	}
@@ -323,6 +358,12 @@ func ReconcileRunPreset(graph json.RawMessage, effModes map[string]string, modeD
 	})
 	for _, e := range gone {
 		rec.Dropped = append(rec.Dropped, PresetDrop{Name: e.displayName(), Reason: PresetDropGone})
+	}
+	// Undecodable entries last, in stored order (the blob is written sorted, so this
+	// is deterministic). Reported on the EXACT path too: a hash proves the graph did
+	// not move, it cannot repair a key that was never readable.
+	for _, e := range malformed {
+		rec.Dropped = append(rec.Dropped, PresetDrop{Name: e.displayName(), Reason: PresetDropMalformed})
 	}
 	return rec
 }
