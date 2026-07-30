@@ -160,12 +160,26 @@ func Walk(ctx context.Context, execPath, outDir, label string) (*WalkResult, err
 		}
 	}
 
-	payload, files, err := BuildPayload(label, caps)
-	if err != nil {
+	payload, files, buildErr := BuildPayload(label, caps)
+
+	// Persist the artifacts BEFORE acting on buildErr. BuildPayload returns a complete
+	// file map even when it fails, so a fail-loud walk (e.g. one errored axe scan out
+	// of 14 views) still leaves every screenshot/axe/network artifact — including the
+	// errored page's axe.json — browsable in outDir for diagnosis. Writing them is not
+	// a push and cannot corrupt anything downstream.
+	if err := writeArtifacts(outDir, files); err != nil {
+		if buildErr != nil {
+			// Report the root cause, not the write that failed after it.
+			return nil, fmt.Errorf("build payload: %w", buildErr)
+		}
+		return nil, err
+	}
+	if buildErr != nil {
 		// An axe scan failure is FATAL: a page that was never scanned must not be
 		// pushed as clean (it would corrupt the a11y regression baseline).
-		return nil, fmt.Errorf("build payload: %w", err)
+		return nil, fmt.Errorf("build payload: %w", buildErr)
 	}
+
 	metaJSON, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return nil, err
@@ -177,12 +191,6 @@ func Walk(ctx context.Context, execPath, outDir, label string) (*WalkResult, err
 		return nil, fmt.Errorf("built payload exceeds push size caps: %w", err)
 	}
 
-	// Persist artifacts + metadata so `make ux-audit` leaves a browsable output dir.
-	for name, data := range files {
-		if err := os.WriteFile(filepath.Join(outDir, name), data, 0o644); err != nil {
-			return nil, fmt.Errorf("write artifact %s: %w", name, err)
-		}
-	}
 	if err := os.WriteFile(filepath.Join(outDir, "metadata.json"), metaJSON, 0o644); err != nil {
 		return nil, fmt.Errorf("write metadata.json: %w", err)
 	}
@@ -214,18 +222,21 @@ func Walk(ctx context.Context, execPath, outDir, label string) (*WalkResult, err
 // It returns an error when a capture's axe scan FAILED (axe threw, so the page was
 // never scanned): pushing that page as "clean" would empty auditloop's a11y rule set
 // for the run and flip the regression delta on the next good run.
+// On error the returned file map is still COMPLETE (every capture's artifacts),
+// because the artifact pass runs BEFORE any finding is computed. That lets Walk
+// persist the artifacts of the good views — including the ERRORED page's axe.json,
+// the one file you need to diagnose the failure — and only then fail. Building
+// artifacts first is also why the payload is returned zero-valued on error: it is
+// deliberately unusable, so no caller can push a partially-mapped run.
 func BuildPayload(label string, caps []CapturedView) (PushPayload, map[string][]byte, error) {
 	files := map[string][]byte{}
 	pages := make([]PushPage, 0, len(caps))
+
+	// Pass 1 — artifacts + page refs. Independent of findings, so it always completes.
 	for _, cv := range caps {
 		base := cv.View.Name + "." + cv.Viewport.Name
 		shot := base + ".png"
 		files[shot] = cv.Capture.ScreenshotPNG
-
-		findings, err := CaptureFindings(cv.Capture)
-		if err != nil {
-			return PushPayload{}, nil, fmt.Errorf("%s (%s): %w", cv.View.Name, cv.Viewport.Name, err)
-		}
 
 		pg := PushPage{
 			URL:               cv.View.Name + "@" + cv.Viewport.Name,
@@ -236,7 +247,6 @@ func BuildPayload(label string, caps []CapturedView) (PushPayload, map[string][]
 			ConsoleThirdParty: cv.Capture.ConsoleThirdParty,
 			NetworkFirstParty: cv.Capture.NetworkFirstParty,
 			NetworkThirdParty: cv.Capture.NetworkThirdParty,
-			Findings:          findings,
 		}
 		if len(cv.Capture.AxeJSON) > 0 {
 			axe := base + ".axe.json"
@@ -250,7 +260,28 @@ func BuildPayload(label string, caps []CapturedView) (PushPayload, map[string][]
 		}
 		pages = append(pages, pg)
 	}
+
+	// Pass 2 — findings. An axe scan failure aborts here, with `files` intact.
+	for i, cv := range caps {
+		findings, err := CaptureFindings(cv.Capture)
+		if err != nil {
+			return PushPayload{}, files, fmt.Errorf("%s (%s): %w", cv.View.Name, cv.Viewport.Name, err)
+		}
+		pages[i].Findings = findings
+	}
+
 	return PushPayload{Label: label, Environment: EnvLab, Pages: pages}, files, nil
+}
+
+// writeArtifacts persists every built artifact into outDir so `make ux-audit` leaves a
+// browsable output dir. It is called even on a BuildPayload failure (see Walk).
+func writeArtifacts(outDir string, files map[string][]byte) error {
+	for name, data := range files {
+		if err := os.WriteFile(filepath.Join(outDir, name), data, 0o644); err != nil {
+			return fmt.Errorf("write artifact %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // setOf returns the key set of a file map (the "provided" set Validate expects).

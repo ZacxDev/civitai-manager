@@ -301,6 +301,50 @@ func TestAxeScanFailureIsNotClean(t *testing.T) {
 	}
 }
 
+// TestBuildPayloadKeepsArtifactsOnScanFailure asserts fail-loud stays DIAGNOSABLE: when
+// one view's axe scan fails, BuildPayload still returns the COMPLETE file map (every
+// view's screenshot/axe/network, including the errored page's axe.json) so Walk can
+// persist them before failing. Otherwise a single errored scan out of 14 views leaves an
+// empty output dir and nothing to debug with.
+func TestBuildPayloadKeepsArtifactsOnScanFailure(t *testing.T) {
+	good := ViewCapture{
+		ScreenshotPNG: tinyPNG,
+		AxeJSON:       []byte(realisticAxeJSON),
+		NetworkJSON:   []byte(`[]`),
+	}
+	bad := ViewCapture{
+		ScreenshotPNG: tinyPNG,
+		AxeJSON:       []byte(`{"error":"boom","violations":[]}`),
+		NetworkJSON:   []byte(`[]`),
+	}
+	caps := []CapturedView{
+		{View: View{Name: "dashboard"}, Viewport: Viewports[1], Capture: good},
+		{View: View{Name: "broken"}, Viewport: Viewports[1], Capture: bad},
+	}
+
+	payload, files, err := BuildPayload("diagnosable", caps)
+	if err == nil {
+		t.Fatal("expected the scan failure to abort BuildPayload")
+	}
+	// The payload must be unusable so nothing can push a partially-mapped run.
+	if len(payload.Pages) != 0 {
+		t.Errorf("payload should be zero-valued on error, got %d pages", len(payload.Pages))
+	}
+	// ...but the artifacts must all be there.
+	for _, want := range []string{
+		"dashboard.desktop.png", "dashboard.desktop.axe.json", "dashboard.desktop.network.json",
+		"broken.desktop.png", "broken.desktop.axe.json", "broken.desktop.network.json",
+	} {
+		if len(files[want]) == 0 {
+			t.Errorf("artifact %q missing from the file map — a fail-loud walk would leave nothing to diagnose", want)
+		}
+	}
+	// The errored page's axe.json is the key diagnostic: it must carry the error.
+	if !strings.Contains(string(files["broken.desktop.axe.json"]), "boom") {
+		t.Error("the errored page's axe.json did not survive with its error message")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // console / network findings + the third-party rule.
 // ---------------------------------------------------------------------------

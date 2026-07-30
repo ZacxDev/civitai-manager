@@ -67,7 +67,14 @@ func TestUXAuditWalk(t *testing.T) {
 			t.Errorf("%s/%s: screenshot is not a PNG", cv.View.Name, cv.Viewport.Name)
 		}
 		if len(cv.Capture.AxeJSON) == 0 {
-			t.Errorf("%s/%s: no axe JSON", cv.View.Name, cv.Viewport.Name)
+			// FATAL, not Errorf: an empty axe capture is the ONE path where a page with
+			// no a11y data reaches the payload as a 0-violation page (A11yFindings
+			// deliberately treats empty input as "nothing to interpret" rather than a
+			// scan failure). Pushing it would report every rule as resolved and flip the
+			// next run's regression delta — exactly what fail-loud exists to prevent. An
+			// Errorf here would record the failure and STILL fall through to the push
+			// below, so this must abort.
+			t.Fatalf("%s/%s: no axe JSON — refusing to continue (a 0-violation page would corrupt the a11y baseline)", cv.View.Name, cv.Viewport.Name)
 		} else {
 			var probe struct {
 				Violations []json.RawMessage `json:"violations"`
@@ -116,6 +123,15 @@ func TestUXAuditWalk(t *testing.T) {
 	// metadata.json must have been written to the output dir.
 	if _, err := os.Stat(outDir + "/metadata.json"); err != nil {
 		t.Errorf("metadata.json not written: %v", err)
+	}
+
+	// NEVER push a run whose assertions failed (belt-and-braces with the t.Fatalf
+	// above). Any failed capture assertion means the payload may misrepresent the app —
+	// most dangerously as CLEAN — and a pushed run becomes auditloop's regression
+	// BASELINE for this target, so a bad push poisons every future comparison, not just
+	// this report. A local failure is cheap; a corrupt baseline is not.
+	if t.Failed() {
+		t.Fatalf("assertions failed — refusing to push a possibly-misrepresentative run (%d artifacts left in %s for inspection)", len(res.Files), outDir)
 	}
 
 	// Opt-in push (non-fatal): only when configured; a failure is LOGGED, never fatal.

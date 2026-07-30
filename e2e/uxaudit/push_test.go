@@ -477,6 +477,58 @@ func TestPushConfigOptInGate(t *testing.T) {
 	}
 }
 
+// TestMaybePushCountsMetadataInSizeCheck is the CALL-SITE regression test for the
+// metadata-size fix. TestValidateFilesCountsMetadata proves the function counts
+// metadata; this proves the caller actually FEEDS it the real metadata bytes —
+// mutating the call to `ValidateFiles(nil, files)` otherwise leaves the suite green,
+// silently re-introducing the under-reported body the fix removed.
+//
+// It builds a WalkResult whose FILES are small but whose METADATA alone busts the
+// total, points it at an httptest server, and asserts MaybePush refuses BEFORE
+// POSTing (the server must never be hit).
+func TestMaybePushCountsMetadataInSizeCheck(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"run_id":"r","url":"u"}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("AUDITLOOP_PUSH_URL", srv.URL)
+	t.Setenv("AUDITLOOP_PUSH_TOKEN", "tok")
+	t.Setenv("AUDITLOOP_PUSH_TOKENS", "")
+
+	res := &WalkResult{
+		Payload:  PushPayload{Environment: EnvLab},
+		Files:    map[string][]byte{"a.png": tinyPNG}, // tiny: files alone are fine
+		Metadata: make([]byte, MaxTotalBytes+1),       // metadata alone busts the total
+	}
+	url, attempted, err := MaybePush(context.Background(), res)
+	if !attempted {
+		t.Fatal("expected an attempt (push env is configured)")
+	}
+	if err == nil {
+		t.Fatal("MaybePush ignored the metadata size — the caller is not passing res.Metadata to ValidateFiles")
+	}
+	if url != "" {
+		t.Errorf("url = %q, want empty on refusal", url)
+	}
+	if hits != 0 {
+		t.Errorf("server was hit %d times — MaybePush must refuse BEFORE POSTing", hits)
+	}
+
+	// Sanity/attribution: the SAME files with small metadata must reach the server, so
+	// the refusal above is provably about the metadata size and not the files or env.
+	res.Metadata = []byte(`{"pages":[]}`)
+	if _, _, err := MaybePush(context.Background(), res); err != nil {
+		t.Fatalf("small metadata should push, got %v", err)
+	}
+	if hits != 1 {
+		t.Errorf("server hits = %d, want 1", hits)
+	}
+}
+
 // TestMaybePushNoopWhenUnconfigured asserts MaybePush is a silent no-op (never POSTs)
 // with no env — the non-fatal opt-in contract.
 func TestMaybePushNoopWhenUnconfigured(t *testing.T) {

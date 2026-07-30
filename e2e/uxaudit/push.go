@@ -120,8 +120,14 @@ const (
 // by that much, so the self-check could pass a body the server would 413.
 func (p *PushPayload) ValidateFiles(metaJSON []byte, files map[string][]byte) error {
 	total := int64(len(metaJSON))
+	// NOTE the per-part cap is a SELF-IMPOSED sanity bound for the metadata part, not a
+	// server limit: auditloop applies MaxFileBytes to uploaded FILE parts, while the
+	// `metadata` VALUE part is bounded instead by ParseMultipartForm's 16 MiB plus Go's
+	// ~10 MiB non-file reserve (≈26 MiB), under the 64 MiB body total. Being stricter
+	// than the server is safe (a realistic walk's metadata is orders of magnitude
+	// smaller), so the message must not misattribute the limit to auditloop.
 	if total > MaxFileBytes {
-		return fmt.Errorf("metadata part is %d bytes, over the %d-byte (16 MiB) per-part cap", total, MaxFileBytes)
+		return fmt.Errorf("metadata part is %d bytes, over this harness's self-imposed %d-byte (16 MiB) metadata bound (auditloop itself allows ~26 MiB of non-file parts)", total, MaxFileBytes)
 	}
 	for name, data := range files {
 		n := int64(len(data))
