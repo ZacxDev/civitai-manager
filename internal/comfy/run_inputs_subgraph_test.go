@@ -10,10 +10,17 @@ import (
 
 // ── the real graph ───────────────────────────────────────────────────────────
 
-// loadWF557 is workflow 557 "seduce" from the dogfood library, verbatim. It is one of
-// the 13 library workflows that exposed NO seed at all before subgraph reach existed:
-// its ONLY samplers are two plain KSamplerAdvanced nodes living inside a subgraph
-// definition ("Sample", instantiated exactly once, by top-level node 93).
+// loadWF557 is a real WAN 2.2 i2v graph from the dogfood library: one of the 13
+// workflows that exposed NO seed at all before subgraph reach existed. Its ONLY
+// samplers are two plain KSamplerAdvanced nodes living inside a subgraph definition
+// ("Sample", instantiated exactly once, by top-level node 93) — which is precisely
+// the shape this file exists to cover, and why a hand-built graph would not do.
+//
+// The GRAPH STRUCTURE is verbatim; two user-content strings were replaced with
+// neutral placeholders (the CLIPTextEncode prompt and a scratch input filename)
+// because this repo is PUBLIC and the source workflow is personal. Nothing here
+// asserts on either string, so the substitution costs the fixture nothing — keep it
+// that way if you refresh the fixture.
 func loadWF557(t *testing.T) json.RawMessage {
 	t.Helper()
 	b, err := os.ReadFile("testdata/wf557_subgraph_samplers.json")
