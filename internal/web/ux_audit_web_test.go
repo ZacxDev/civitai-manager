@@ -286,6 +286,50 @@ func TestFocusVisibleRingExists(t *testing.T) {
 	}
 }
 
+// TestTileFocusRingIsDrawnInward pins the SIGN of .cm-tile-link's outline-offset.
+//
+// The gallery tile's detail link is `absolute inset-0` inside a tile carrying
+// overflow-hidden, so its border box IS the clip boundary: the shared ring above
+// (outline-offset: +2px plus an outward box-shadow) is drawn entirely inside the
+// clipped region and NOTHING paints. Only a NEGATIVE offset puts it back on
+// screen. Verified A/B in headless Brave — with +2px the anchor is focused,
+// :focus-visible matches, the outline computes, and the screenshot shows no ring.
+//
+// This test exists because that failure mode is INVISIBLE to the normal gate: CSS
+// is not compiled, a positive value merely restates the inherited offset, and
+// nothing errors. The rule shipped once as an inert `outline-offset: 2px` sitting
+// under a comment that argued at length for a negative one — build, vet, test and
+// gofmt were all green. Assert the sign, not the exact value, so the ring can be
+// re-tuned without churning this test.
+func TestTileFocusRingIsDrawnInward(t *testing.T) {
+	css := appCSS(t)
+
+	const sel = ".cm-tile-link:focus-visible"
+	i := strings.Index(css, sel)
+	if i < 0 {
+		t.Fatalf("app.css has no %s rule — the gallery tile's overlay anchor would "+
+			"inherit the app-wide OUTWARD ring, which its overflow-hidden clips away "+
+			"entirely (WCAG 2.4.7)", sel)
+	}
+	block := css[i:]
+	if j := strings.Index(block, "}"); j >= 0 {
+		block = block[:j]
+	}
+
+	const decl = "outline-offset:"
+	k := strings.Index(block, decl)
+	if k < 0 {
+		t.Fatalf("%s must set outline-offset; block was:\n%s", sel, block)
+	}
+	value := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(block[k+len(decl):]), ";"))
+	if !strings.HasPrefix(value, "-") {
+		t.Errorf("%s has outline-offset: %s — a non-negative offset is INERT here. The "+
+			"anchor is absolute inset-0 inside an overflow-hidden tile, so an outward "+
+			"ring lands in the clipped region and the tile shows NO keyboard focus at "+
+			"all. It must be negative.", sel, value)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // F3 / F11 — 390px overflow
 // ---------------------------------------------------------------------------
@@ -327,6 +371,14 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 				Resources: []string{long}},
 			"csrf", "dark", NSFWBlur, false, comfyHelperView{}, workflowResolver{})),
 		"run preflight missing list": renderString(t, missingList("Missing", []string{long})),
+		// The batch page's h1 prints an untrusted label (a preset name is clamped to
+		// 80 bytes; a WORKFLOW name is not) at text-2xl in a flex row.
+		// pageMain scopes to <main>: the document <title> also carries the label but
+		// lays out nothing.
+		"batch page header": pageMain(renderString(t, batchGalleryPage(
+			[]store.Generation{{ID: 1, WorkflowID: &wfID, WorkflowName: long, PromptID: "p",
+				BatchID: "b", BatchIndex: 1, BatchTotal: 2}},
+			"csrf", "dark", NSFWBlur))),
 		"structured graph listing": renderString(t, workflowGraphSection(
 			[]byte(`{"nodes":[{"id":1,"type":"`+long+`","inputs":[{"name":"`+long+`"}]}]}`),
 			store.WorkflowFormatAPI)),
@@ -334,12 +386,32 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 	for name, html := range cases {
 		// Every element that prints the long string must be able to break it.
 		for _, chunk := range strings.Split(html, "<") {
-			if !strings.Contains(chunk, long) {
+			// Only TEXT CONTENT can widen a box. The same string inside an ATTRIBUTE
+			// (aria-label on the tile's overlay anchor, a title tooltip) lays out
+			// nothing, and flagging it is a false positive. A chunk is
+			// "tag attrs>text", so the text starts after the first '>'.
+			gt := strings.Index(chunk, ">")
+			if gt < 0 || !strings.Contains(chunk[gt:], long) {
 				continue
 			}
-			if !strings.Contains(chunk, "break-all") && !strings.Contains(chunk, "title=") {
-				t.Errorf("%s: an element printing an unbreakable %d-char string has no break-all:\n  <%s",
-					name, len(long), chunk)
+			// `truncate` is the third valid mechanism, but ONLY paired with min-w-0,
+			// and the pairing is what keeps this checker honest rather than being
+			// redundant. truncate sets overflow:hidden, and a flex ITEM's
+			// min-width:auto only applies while overflow is VISIBLE — so a direct
+			// flex item does collapse to 0 and clip. But on a DESCENDANT of a flex
+			// item that lacks min-w-0, truncate's white-space:nowrap makes the
+			// ancestor's min-content width the whole string and the row blows out —
+			// strictly worse than not truncating. This scan sees one element's class
+			// string and cannot tell those two apart, so accepting bare `truncate`
+			// would silently exempt the broken nesting (a delta audit demonstrated
+			// exactly that: `<div class=flex><div class=flex-1><span class=truncate>`
+			// went unflagged here while the pre-truncate checker caught it).
+			// Requiring min-w-0 alongside costs one redundant class on the direct-item
+			// case and closes the hole. Do NOT relax this back to bare `truncate`.
+			truncates := strings.Contains(chunk, "truncate") && strings.Contains(chunk, "min-w-0")
+			if !strings.Contains(chunk, "break-all") && !strings.Contains(chunk, "title=") && !truncates {
+				t.Errorf("%s: an element printing an unbreakable %d-char string can neither "+
+					"break nor truncate:\n  <%s", name, len(long), chunk)
 			}
 		}
 	}
