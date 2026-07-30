@@ -284,11 +284,10 @@ func (s *Server) handleWorkflowRunSubstitute(w http.ResponseWriter, r *http.Requ
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	s.startRun(wf, runOptions{
+	s.renderRunStatus(w, id, s.startRunNotice(wf, runOptions{
 		Substitute:    map[string]string{filename: substitute},
 		ModeSelection: parseModeChoices(r.Form, wf),
-	})
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
+	}))
 }
 
 // handleWorkflowRunWithOptions starts an EPHEMERAL run of the workflow with chosen
@@ -323,11 +322,10 @@ func (s *Server) handleWorkflowRunWithOptions(w http.ResponseWriter, r *http.Req
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	s.startRun(wf, runOptions{
+	s.renderRunStatus(w, id, s.startRunNotice(wf, runOptions{
 		OptionFixes:   parseOptionFixes(r.Form),
 		ModeSelection: parseModeChoices(r.Form, wf),
-	})
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
+	}))
 }
 
 // parseOptionFixes reads the parallel opt_input / opt_old / opt_new form arrays (one

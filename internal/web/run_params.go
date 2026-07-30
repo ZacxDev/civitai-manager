@@ -61,8 +61,7 @@ func (s *Server) handleWorkflowRunWithParams(w http.ResponseWriter, r *http.Requ
 		}
 		opts.PresetID, opts.PresetName = p.ID, p.Name
 	}
-	s.startRun(wf, opts)
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
+	s.renderRunStatus(w, id, s.startRunNotice(wf, opts))
 }
 
 // parseWidgetOverrides reads the parallel wp_node / wp_widget / wp_value form arrays

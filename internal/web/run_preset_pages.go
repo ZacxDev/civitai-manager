@@ -237,7 +237,7 @@ func runPresetActions(wfID, csrf string, v presetTabView) g.Node {
 	base := "/workflows/" + wfID + "/run/presets"
 	if activeID == 0 {
 		actions = append(actions, presetPost(base, "", "outline", "Save as preset"))
-		return h.Div(h.Class("flex flex-wrap items-center gap-2 pt-1"), g.Group(actions))
+		return runPresetActionsRow(wfID, csrf, actions)
 	}
 
 	id := strconv.FormatInt(activeID, 10)
@@ -249,7 +249,18 @@ func runPresetActions(wfID, csrf string, v presetTabView) g.Node {
 			"outline", "Adopt current graph"))
 	}
 	actions = append(actions, presetPost(base+"/"+id+"/delete", "", "subtle", "Delete preset"))
-	return h.Div(h.Class("flex flex-wrap items-center gap-2 pt-1"), g.Group(actions))
+	return runPresetActionsRow(wfID, csrf, actions)
+}
+
+// runPresetActionsRow lays out the preset actions and, BELOW them, the Queue ×N
+// control. Queue is a separate row on purpose: it is the one action here that can
+// consume the GPU for hours and multiply output eviction, so it does not sit in a
+// line of same-weight buttons where it can be hit by muscle memory for "Run".
+func runPresetActionsRow(wfID, csrf string, actions []g.Node) g.Node {
+	return h.Div(
+		h.Div(h.Class("flex flex-wrap items-center gap-2 pt-1"), g.Group(actions)),
+		runQueueControl(wfID, csrf),
+	)
 }
 
 // runPresetDriftBanner names EVERY value the reconciler refused to apply and every

@@ -12,6 +12,7 @@ import (
 
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
 	"github.com/ZacxDev/civitai-manager/internal/store"
+	g "maragu.dev/gomponents"
 )
 
 // runJobBudget is a RUNAWAY BACKSTOP for a workflow run (not the normal
@@ -231,6 +232,31 @@ func (s *Server) comfy() comfyClient {
 // with the runaway-backstop budget.
 func (s *Server) startRun(wf *store.Workflow, opts runOptions) bool {
 	return s.startRunWithMessage(wf, opts, "Starting run…")
+}
+
+// startRunNotice starts a single run and returns the line to render ABOVE the status
+// fragment: "" when it started, and the refusal otherwise.
+//
+// Every fragment-returning run handler goes through it. They all used to discard the
+// refusal and re-render the OTHER run's status, so a click while something was in
+// flight looked like nothing happened at all — tolerable for a re-click, actively
+// confusing for "I clicked Queue ×8".
+func (s *Server) startRunNotice(wf *store.Workflow, opts runOptions) string {
+	started, ref := s.startBatch(wf, opts, batchSpec{Count: 1, Message: "Starting run…"})
+	if started {
+		return ""
+	}
+	return ref.notice()
+}
+
+// renderRunStatus writes the refusal line (if any) plus the run-status fragment.
+// The line is a SIBLING above #run-status's content, never a wrapper: the poller
+// still swaps this whole body into the stable #run-status container.
+func (s *Server) renderRunStatus(w http.ResponseWriter, wfID int64, notice string) {
+	s.render(w, http.StatusOK, g.Group([]g.Node{
+		runNoticeLine(notice, false),
+		runStatusFragment(s.runJobState(), wfID, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()),
+	}))
 }
 
 // startRunWithMessage is startRun with the job's OPENING status line supplied, so a
@@ -714,8 +740,7 @@ func (s *Server) handleWorkflowRun(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	s.startRun(wf, runOptions{ModeSelection: parseModeChoices(r.Form, wf)})
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
+	s.renderRunStatus(w, id, s.startRunNotice(wf, runOptions{ModeSelection: parseModeChoices(r.Form, wf)}))
 }
 
 // comfyStatusTimeout bounds the reachability probe so a dead/hung ComfyUI can

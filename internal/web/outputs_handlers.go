@@ -235,7 +235,14 @@ func (s *Server) handleGenerationRerun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, stale, http.StatusConflict)
 		return
 	}
-	s.startRun(wf, opts)
+	// A refusal must not redirect as if it worked. This path answers with markup
+	// nowhere — it 303s — so the only honest answer is the same 409 shape the stale
+	// check above already uses, rather than sending the user to a panel showing a
+	// DIFFERENT run and letting them conclude their re-run started.
+	if started, ref := s.startBatch(wf, opts, batchSpec{Count: 1, Message: "Starting run…"}); !started {
+		http.Error(w, ref.notice(), http.StatusConflict)
+		return
+	}
 
 	// Send the user to the workflow's run panel (which polls the live run status).
 	http.Redirect(w, r, "/workflows/"+strconv.FormatInt(*gen.WorkflowID, 10), http.StatusSeeOther)
