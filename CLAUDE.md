@@ -35,7 +35,16 @@ something GOPRIVATE will paper over.
 1. **Bump `version` in `flake.nix`** and commit it. It is a hard-coded string
    feeding the same `-X main.version` ldflag GoReleaser uses; forget it and Nix
    users get a binary reporting the PREVIOUS release.
-2. Tag a semver on `main`: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+2. **`git fetch` and push `main` FIRST, then tag.** `git push origin main && git tag vX.Y.Z && git push origin vX.Y.Z`, and verify `git rev-parse vX.Y.Z origin/main` yields ONE sha.
+   🔴 **A tag push does NOT fast-forward-check.** If someone pushed to `main`
+   while you were working, `git push origin main` is rejected but
+   `git push origin vX.Y.Z` still SUCCEEDS — tagging a commit that is missing
+   their work, and GoReleaser starts building it. That happened on v0.1.80.
+   Recovery (only clean because nothing had published yet): `gh run cancel <id>`,
+   wait for `cancelled`, confirm `gh release view vX.Y.Z` is "not found",
+   `git push origin :refs/tags/vX.Y.Z` + `git tag -d`, merge `origin/main`,
+   re-gate, then push-then-tag in the right order. Once artifacts are public a
+   tag is effectively immutable — bump the patch instead.
 3. `.github/workflows/release.yml` runs **GoReleaser** (`goreleaser-action@v7`,
    `release --clean`). Builds are **`CGO_ENABLED=0`** (pure-Go SQLite driver
    cross-compiles cleanly) across **6 targets** — `{linux, darwin, windows}` ×
