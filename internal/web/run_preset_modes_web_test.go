@@ -266,3 +266,47 @@ func TestRunWithForeignPresetIDRejected(t *testing.T) {
 		t.Errorf("a rejected request started %d runs", started)
 	}
 }
+
+// TestActivateResponseCarriesOOBPicker proves the out-of-band picker swap reaches
+// the WIRE, not just the renderer: htmx 2 applies a top-level hx-swap-oob element
+// found alongside the targeted fragment, which is what keeps the rendered graph
+// and the runnable graph in agreement after a tab switch.
+func TestActivateResponseCarriesOOBPicker(t *testing.T) {
+	srv := newTestServer(t)
+	wf := seedPresetWorkflow(t, srv, "tmpl", presetModeUIGraph)
+	selKey, modeA, modeB := presetModeKeys(t, wf.Graph)
+	a := seedModePreset(t, srv, wf, "Image", wf.GraphHash, selKey, modeA, "A-VAL")
+	b := seedModePreset(t, srv, wf, "Video", wf.GraphHash, selKey, modeB, "B-VAL")
+
+	code, body := doPresetPost(t, srv,
+		"/workflows/"+strconv.FormatInt(wf.ID, 10)+"/run/presets/"+strconv.FormatInt(b, 10)+"/activate",
+		url.Values{presetIDField: {strconv.FormatInt(a, 10)}}, true)
+	if code != 200 {
+		t.Fatalf("activate = %d", code)
+	}
+	if !strings.Contains(body, `hx-swap-oob="true"`) {
+		t.Fatalf("no OOB picker swap in the activate response:\n%s", body)
+	}
+	if !strings.Contains(body, `value="`+modeB+`" selected`) {
+		t.Errorf("the OOB picker does not pre-select the preset's mode %q:\n%s", modeB, body)
+	}
+	if !strings.Contains(body, "B-VAL") {
+		t.Errorf("the activated tab's values are missing:\n%s", body)
+	}
+}
+
+// TestOrdinaryWorkflowEmitsNoOOB: a workflow with no mode selectors must never
+// carry an OOB swap — swapping an empty container over a picker that never
+// existed is pure noise.
+func TestOrdinaryWorkflowEmitsNoOOB(t *testing.T) {
+	srv := newTestServer(t)
+	wf := seedPresetWorkflow(t, srv, "t2i", presetUIGraph)
+	id := seedPreset(t, srv, wf, "Base", wf.GraphHash, func(ri comfy.RunInput) string { return ri.Current })
+
+	_, body := doPresetPost(t, srv,
+		"/workflows/"+strconv.FormatInt(wf.ID, 10)+"/run/presets/"+strconv.FormatInt(id, 10)+"/activate",
+		url.Values{presetIDField: {strconv.FormatInt(id, 10)}}, true)
+	if strings.Contains(body, "hx-swap-oob") {
+		t.Errorf("unexpected OOB swap for an ordinary workflow:\n%s", body)
+	}
+}
