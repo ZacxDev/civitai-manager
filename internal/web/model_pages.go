@@ -1126,8 +1126,11 @@ func versionMetadataReveal(v modelDetailView, ver *civitai.ModelVersionDetail) g
 		rows = append(rows, detailRow("Base model", badge(ver.BaseModel, "blue")))
 	}
 	if v.PublishedAt != "" {
+		// The raw civitai value is a full ISO timestamp ("2023-07-29T20:50:47.173Z").
+		// Show just the date — the tab popover already carries the relative age, and a
+		// millisecond-precision stamp is noise in a metadata row.
 		rows = append(rows, detailRow("Published",
-			h.Span(h.Class("text-sm text-slate-300"), g.Text(v.PublishedAt))))
+			h.Span(h.Class("text-sm text-slate-300"), g.Text(isoDatePrefix(v.PublishedAt)))))
 	}
 	if len(ver.TrainedWords) > 0 {
 		rows = append(rows, detailRow("Trigger words", triggerWordChips(ver.TrainedWords)))

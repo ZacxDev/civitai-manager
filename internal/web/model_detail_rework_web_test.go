@@ -370,7 +370,8 @@ func downloadCardView(files []civitai.ModelVersionFile) modelDetailView {
 			Files:        files,
 		},
 		SelectedVersionID: 11,
-		PublishedAt:       "2026-01-15",
+		// A full civitai ISO stamp — the card must show only its date part.
+		PublishedAt: "2026-01-15T20:50:47.173Z",
 	}
 }
 
@@ -390,7 +391,7 @@ func TestDownloadCardCollapsedByDefault(t *testing.T) {
 		"Version metadata",      // its label
 		"cm-meta-chevron",       // the rotating affordance
 		"mytoken",               // metadata content is present, just collapsed
-		"2026-01-15",            // ditto
+		">2026-01-15<",          // the ISO stamp is shown as its date only
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("download card missing %q:\n%s", want, out)
