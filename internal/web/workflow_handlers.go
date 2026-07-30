@@ -51,7 +51,8 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sectionNodes := []g.Node{
-		runPanel(wf, s.runJobState(), s.csrf, s.extraPathsAllowed(), s.comfyDownloadEligible(), s.nsfwMode()),
+		runPanel(wf, s.runJobState(), s.csrf, s.extraPathsAllowed(), s.comfyDownloadEligible(),
+			s.nsfwMode(), s.buildPresetView(r.Context(), wf, 0, nil, true)),
 		cloudEntryCard(wf.ID),
 	}
 	// NOTE: there is no per-workflow "Recent outputs" card here any more — the

@@ -187,6 +187,16 @@ func runParametersPanel(wf *store.Workflow, csrf string) g.Node {
 // checkbox) or several would shift the alignment — such a control must carry its key
 // in the value itself (or use indexed field names) rather than rely on this pairing.
 func runParamField(idx int, ri comfy.RunInput) g.Node {
+	return runParamFieldValue(idx, ri, ri.Current)
+}
+
+// runParamFieldValue is runParamField with the pre-filled value supplied, so a run
+// PRESET can show its saved value while every other property of the control (label,
+// kind, choices, origin note) still comes from the LIVE graph. Keeping the live
+// RunInput authoritative for everything except the value is what makes a
+// retargeted slot visible: the user sees the graph's current label beside the
+// value, not the label the preset remembered.
+func runParamFieldValue(idx int, ri comfy.RunInput, value string) g.Node {
 	fid := "cm-param-" + strconv.Itoa(idx)
 	hidden := []g.Node{
 		h.Input(h.Type("hidden"), h.Name("wp_node"), h.Value(ri.NodeID)),
@@ -198,19 +208,19 @@ func runParamField(idx int, ri comfy.RunInput) g.Node {
 	case comfy.RunInputText:
 		control = h.Textarea(
 			dataFlag("civitai-ui-control"), h.ID(fid), h.Name("wp_value"), h.Rows("3"),
-			g.Text(ri.Current),
+			g.Text(value),
 		)
 	case comfy.RunInputSelect:
 		if len(ri.Choices) > 0 {
-			control = paramSelect(fid, ri.Choices, ri.Current)
+			control = paramSelect(fid, ri.Choices, value)
 		} else {
 			control = h.Input(dataFlag("civitai-ui-control"), h.ID(fid),
-				h.Type("text"), h.Name("wp_value"), h.Value(ri.Current))
+				h.Type("text"), h.Name("wp_value"), h.Value(value))
 		}
 	case comfy.RunInputSeed:
 		control = h.Div(h.Class("flex items-center gap-2"),
 			h.Input(dataFlag("civitai-ui-control"), h.ID(fid), h.Type("number"),
-				h.Name("wp_value"), g.Attr("step", "1"), h.Value(ri.Current)),
+				h.Name("wp_value"), g.Attr("step", "1"), h.Value(value)),
 			civButton("outline", "sm", []g.Node{
 				h.Type("button"),
 				g.Attr("onclick", "cmRandomSeed('"+fid+"')"),
@@ -219,13 +229,13 @@ func runParamField(idx int, ri comfy.RunInput) g.Node {
 		)
 	case comfy.RunInputInt:
 		control = h.Input(dataFlag("civitai-ui-control"), h.ID(fid), h.Type("number"),
-			h.Name("wp_value"), g.Attr("step", "1"), h.Value(ri.Current))
+			h.Name("wp_value"), g.Attr("step", "1"), h.Value(value))
 	case comfy.RunInputFloat:
 		control = h.Input(dataFlag("civitai-ui-control"), h.ID(fid), h.Type("number"),
-			h.Name("wp_value"), g.Attr("step", "any"), h.Value(ri.Current))
+			h.Name("wp_value"), g.Attr("step", "any"), h.Value(value))
 	default:
 		control = h.Input(dataFlag("civitai-ui-control"), h.ID(fid), h.Type("text"),
-			h.Name("wp_value"), h.Value(ri.Current))
+			h.Name("wp_value"), h.Value(value))
 	}
 
 	return h.Div(

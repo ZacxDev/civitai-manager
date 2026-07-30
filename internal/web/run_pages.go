@@ -28,7 +28,7 @@ const runComfyStatusID = "run-comfy-status"
 // server and renders a green/red pill plus an enabled/disabled Run button + a
 // Recheck. The actual run job drives the separate stable #run-status container
 // (unchanged). When bound off-loopback the run endpoints are gated → a note.
-func runPanel(wf *store.Workflow, snap runSnapshot, csrf string, extraAllowed, dlEligible bool, mode string) g.Node {
+func runPanel(wf *store.Workflow, snap runSnapshot, csrf string, extraAllowed, dlEligible bool, mode string, presets presetTabView) g.Node {
 	id := strconv.FormatInt(wf.ID, 10)
 	if !extraAllowed {
 		return card(
@@ -52,13 +52,17 @@ func runPanel(wf *store.Workflow, snap runSnapshot, csrf string, extraAllowed, d
 	}
 	// Multi-mode template picker (empty container for an ordinary workflow). It sits
 	// ABOVE Parameters because the choice determines which parameters exist.
-	body = append(body, runModesPanel(wf, csrf))
+	// The mode picker is PRE-SELECTED from the active preset's stored mode (rule 2
+	// in run_presets.go): the panel below is reconciled against that same mode, so
+	// what the page shows and what a run would convert never diverge. Once rendered
+	// the picker is authoritative — changing it re-fetches the panel.
+	body = append(body, runModesPanelSelected(wf, csrf, presets.ModesOOB))
 	// Editable "Parameters" panel (prompts / KSampler settings / latent dimensions),
 	// detected from the graph and applied as per-run overrides. Empty when the graph
 	// exposes none of the curated inputs (e.g. an api-format graph with no widgets, or
 	// a multi-mode template before a mode is picked). The container is STABLE so the
 	// mode picker can swap its innerHTML.
-	body = append(body, h.Div(h.ID(runParamsContainerID), runParametersPanel(wf, csrf)))
+	body = append(body, h.Div(h.ID(runParamsContainerID), runPresetPanel(wf, csrf, presets)))
 	// Run job status container (unchanged): poller drives running → terminal.
 	body = append(body, h.Div(h.ID(runStatusContainerID), runStatusFragment(snap, wf.ID, csrf, dlEligible, mode)))
 	return card(body...)
