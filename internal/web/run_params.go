@@ -223,6 +223,10 @@ func runParamFieldValue(idx int, ri comfy.RunInput, value string) g.Node {
 
 	return h.Div(
 		dataAttr("civitai-ui", "text-input"),
+		// Size/shape the field by its KIND (see runParamKindClass): a seed, a step
+		// count and a multi-line prompt are three different-sized values and should not
+		// be three identical boxes.
+		h.Class(runParamKindClass(ri.Kind)),
 		h.Label(dataFlag("civitai-ui-label"), h.For(fid), g.Text(ri.Label)),
 		g.Group(hidden),
 		control,
@@ -231,6 +235,36 @@ func runParamFieldValue(idx int, ri comfy.RunInput, value string) g.Node {
 		// node the label names, and that indirection is otherwise invisible.
 		g.If(ri.Resolved, h.P(h.Class("text-xs text-slate-500"), g.Text(runParamOrigin(ri)))),
 	)
+}
+
+// runParamKindClass maps a RunInput's KIND to the field wrapper's layout classes.
+//
+// The signal is comfy.RunInput.Kind — never the label — because the label is
+// derived from the graph author's node titles and is not a reliable indicator of
+// what a value looks like. The sizing itself lives in .cm-param-* in app.css: a
+// prompt takes a full-width multi-line box, an enum a two-track select, a seed a
+// wide number field, a step/CFG/denoise count a narrow one.
+//
+// 🔴 PRESENTATION ONLY. parseWidgetOverrides pairs the parallel
+// wp_node/wp_widget/wp_value arrays BY DOM POSITION, so these classes may change
+// which grid track a field OCCUPIES but must never change the order in which the
+// fields are emitted. CSS grid auto-placement follows source order, so the submitted
+// form is byte-identical to before.
+func runParamKindClass(kind comfy.RunInputKind) string {
+	switch kind {
+	case comfy.RunInputText:
+		return "cm-param cm-param-text"
+	case comfy.RunInputSelect:
+		return "cm-param cm-param-select"
+	case comfy.RunInputSeed:
+		return "cm-param cm-param-seed"
+	case comfy.RunInputInt:
+		return "cm-param cm-param-int"
+	case comfy.RunInputFloat:
+		return "cm-param cm-param-float"
+	default:
+		return "cm-param cm-param-other"
+	}
 }
 
 // runParamOrigin describes where an edit will actually land: the holding node, the

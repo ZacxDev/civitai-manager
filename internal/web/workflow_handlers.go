@@ -1,7 +1,6 @@
 package web
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
 	"github.com/ZacxDev/civitai-manager/internal/store"
-	g "maragu.dev/gomponents"
 )
 
 // maxWorkflowUpload bounds a PNG upload's total request body. ComfyUI metadata
@@ -50,19 +48,21 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	sectionNodes := []g.Node{
-		runPanel(wf, s.runJobState(), s.csrf, s.extraPathsAllowed(), s.comfyDownloadEligible(),
-			s.nsfwMode(), s.buildPresetView(r.Context(), wf, 0, nil, true)),
-		cloudEntryCard(wf.ID),
-	}
 	// NOTE: there is no per-workflow "Recent outputs" card here any more — the
 	// GLOBAL recent-outputs rail (rendered by the app shell on every page)
 	// supersedes it. Per-workflow browsing lives at /outputs?workflow=<id>.
-	runSection := g.Group(sectionNodes)
+	//
+	// generateSection is the ONE run surface: the local-ComfyUI CTA, the "Open in
+	// ComfyUI" editor hand-off, the parameters/preset panel, the run status, and the
+	// CivitAI-cloud sub-block. comfyHelperState is stat-only — no network probe ever
+	// runs on this render path.
 	comfyConfigured := strings.TrimSpace(s.cfg.ComfyURL) != ""
-	s.render(w, http.StatusOK, workflowDetailPage(wf, prettyJSON(wf.Graph),
-		s.csrf, s.currentTheme(), s.nsfwMode(), runSection, comfyConfigured,
-		s.comfyHelperState(), s.workflowResolver(),
+	generate := generateSection(wf, s.runJobState(), s.csrf, s.extraPathsAllowed(),
+		s.comfyDownloadEligible(), s.nsfwMode(),
+		s.buildPresetView(r.Context(), wf, 0, nil, true),
+		comfyConfigured, s.comfyHelperState())
+	s.render(w, http.StatusOK, workflowDetailPage(wf,
+		s.csrf, s.currentTheme(), s.nsfwMode(), generate, s.workflowResolver(),
 		s.rail(r.Context())))
 }
 
@@ -384,15 +384,11 @@ func (s *Server) redirectWorkflowDetail(w http.ResponseWriter, r *http.Request, 
 	http.Redirect(w, r, "/workflows/"+strconv.Itoa(id), http.StatusSeeOther)
 }
 
-// prettyJSON indents a stored graph for display, falling back to the raw string
-// when it does not re-parse (it is stored untrusted; never assume it re-indents).
-func prettyJSON(raw string) string {
-	var buf bytes.Buffer
-	if err := json.Indent(&buf, []byte(raw), "", "  "); err != nil {
-		return raw
-	}
-	return buf.String()
-}
+// (prettyJSON lived here. It indented the stored graph for the detail page's "View
+// raw JSON" disclosure, which PR C1 removed: it dumped a pretty-printed copy of a
+// file the user already has, was the largest element on the page, and told nobody
+// anything the graph preview does not. Deleted rather than kept as an unreachable
+// helper.)
 
 // parseOptionalInt parses a trimmed integer, returning (nil, nil) for a blank
 // value so a blank attach field detaches rather than erroring.

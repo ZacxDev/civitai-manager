@@ -18,13 +18,29 @@ const (
 	cloudStatusContainerID   = "cloud-status"
 )
 
-// cloudEntryCard is the detail-page card that lazy-loads the cloud-run panel into
-// a stable container. It sits next to the local Run panel. The loaded fragment
-// itself handles the enabled/disabled (comfy_cloud) and API-format cases.
-func cloudEntryCard(wfID int64) g.Node {
+// cloudGenerateBlock is the "Run on CivitAI Cloud" sub-block of the detail page's
+// ONE Generate section (generateSection in run_pages.go). It used to be a card of
+// its own sitting beside the local Run card, which made the two read as competing
+// features rather than as "run it here" vs "run it there".
+//
+// It lazy-loads the cloud-run panel into the SAME stable container as before
+// (#cloud-panel, same endpoint, same swap) — only the surrounding chrome moved. The
+// loaded fragment itself handles the enabled/disabled (comfy_cloud) and API-format
+// cases.
+func cloudGenerateBlock(wfID int64) g.Node {
 	id := strconv.FormatInt(wfID, 10)
-	return card(
-		sectionTitle("Run on CivitAI Cloud"),
+	return h.Div(
+		h.Class("cm-gen-sep"),
+		h.H3(h.Class("text-sm font-semibold text-slate-200 mb-2"), g.Text("Run on CivitAI Cloud")),
+		// --- PR C2 SEAM --------------------------------------------------------
+		// The CivitAI-cloud CONNECT form (the toggle + credential entry that turns
+		// comfy_cloud on from the UI) goes HERE, directly above the panel container
+		// and inside this same block. It is deliberately NOT built in C1: it would
+		// be a new secret-write path over HTTP, and where the token lands (config
+		// file vs DB) is an open decision recorded in claudedocs/SESSION-HANDOFF.md.
+		// Nothing below needs to change to accommodate it — the panel is a lazily
+		// loaded fragment and re-renders itself after a successful connect.
+		// -----------------------------------------------------------------------
 		h.Div(h.ID(cloudPanelContainerID),
 			hx("get", "/workflows/"+id+"/cloud"),
 			hx("trigger", "load"),

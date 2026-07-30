@@ -173,7 +173,12 @@ func runPresetForm(wfID, csrf string, v presetTabView) g.Node {
 		body = append(body, n)
 	}
 	body = append(body, runPresetNameField(activeID, v))
-	body = append(body, g.Group(fields))
+	// The parameter controls live in a responsive grid so each field can be sized to
+	// the length of its value (see runParamKindClass / .cm-param-* in app.css).
+	// ⚠ Grid auto-placement preserves DOM order, and DOM order is what pairs the
+	// parallel wp_node/wp_widget/wp_value arrays in parseWidgetOverrides — so this
+	// wrapper must never reorder `fields`.
+	body = append(body, h.Div(h.Class("cm-param-grid"), g.Group(fields)))
 	body = append(body,
 		h.P(h.Class("text-xs text-slate-500"),
 			g.Text("These edits apply to THIS run only — the saved workflow is unchanged. "+
