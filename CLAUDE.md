@@ -2,7 +2,7 @@
 
 Conventions for working ON this repo. End-user docs live in `README.md`; this
 file is for contributors and agents. Module: `github.com/ZacxDev/civitai-manager`
-(Go 1.25). Current release line: v0.1.x (latest **v0.1.51**).
+(Go 1.25). Current release line: v0.1.x (latest **v0.1.82**).
 
 ## The `civitai/cli` dependency — GOPRIVATE is NO LONGER required
 
@@ -139,7 +139,8 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   card (stats-as-SVG-icons, "Updated" bottom-left).
 - **`internal/store`** — SQLite via **`modernc.org/sqlite`** (pure Go, **no
   cgo**). Schema is embedded, **ordered** migrations (`migrations/*.sql`, via
-  `go:embed`, applied in filename order). Subscriptions, queue, events,
+  `go:embed`, applied in filename order; **latest is `0015`** —
+  `0014_run_presets`, `0015_hf_provenance`). Subscriptions, queue, events,
   local-files, quarantine, model-cache, settings.
 - **`internal/civitai`** — thin wrapper over the `pkg/civitai` SDK + path helpers.
   **Data gotcha:** a model's `modelVersions[]` is ordered by the creator's `index`
@@ -165,6 +166,21 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
     return "no results", it returns everything, so the UI renders a filter that is
     lying. **Only ever forward whitelisted tags**, and cover a multi-tag concept
     with **one request per tag, merged + deduped by model id**.
+  - **`period` is a STRICT ENUM: `Day | Week | Month | Year | AllTime`** — and it
+    is the one filter that fails LOUDLY. Anything else (`ThreeMonths`,
+    `SixMonths`, `Quarter`, …) returns **HTTP 400** (re-probed live 2026-07-30:
+    those three 400, the five valid values 200). So **"last 3 months" is not
+    implementable as a param**, and synthesising it client-side would break cursor
+    pagination and make result counts lie — don't offer it.
+    Related trap: **the period filter is applied as a POST-FILTER over an already
+    paged keyword result set**, so `query=…` combined with a narrow period returns
+    an under-filled or entirely empty page *while `metadata.nextCursor` keeps
+    advancing*. Measured on `types=Workflows&query=upscale&limit=5`: `Day` and
+    `Week` → `items: []`, `Month` → 1 item, `AllTime` → a full page — all four
+    advertising a next page. The filter looks broken when combined with a search
+    term; it is pre-existing upstream behaviour and hits the long-shipped
+    `Week`/`Month` options identically. Don't "fix" it locally and don't read an
+    empty first page as "no results".
   - `tag` matching is **case-insensitive** (`inpaint` == `Inpaint` == `INPAINT`),
     but **synonyms are NOT unified**: `detailer`, `adetailer`, `facedetailer` and
     `face detailer` each return a DIFFERENT result set.
@@ -248,6 +264,59 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   `.cm-*` class to `internal/web/assets/app.css` (theme-aware via `--civitai-*`); it's
   served as-is and survives the purge (hence `.cm-blur`, `.cm-masonry`,
   `.cm-updated-pop`, `.cm-vstatus-pop`, `.cm-video-badge`, …).
+- **Every intent token is SPLIT: `<intent>` is the FILL, `<intent>-text` is the
+  FOREGROUND — any text or icon colour MUST use `-text`.** v0.1.79 added
+  `--civitai-color-<intent>-text` beside each `--civitai-color-<intent>`. The base
+  token keeps its shipped value and does fills/tints (white
+  `--civitai-color-primary-fg` sits on it); the `-text` token carries an
+  AA-contrast foreground. Reaching for the base token to colour text or an icon
+  **reintroduces exactly the WCAG failures that release fixed**.
+  *Why the split was unavoidable:* on the dark theme the two roles are
+  **mathematically unsatisfiable by one value** — text on the `#1A1B1E` body needs
+  relative luminance ≥ 0.227, while white text ON that same colour needs ≤ 0.181.
+  No overlap, so no single primary can pass AA in both roles. (On light the `-text`
+  tokens are deliberate `var()` ALIASES of their base — the plumbing is
+  theme-agnostic and reads `-text` everywhere, and aliasing means they can never
+  drift.)
+  **`internal/web/contrast_web_test.go` is the gate and it parses the REAL shipped
+  CSS** (not a copy of the values), resolves each token per theme, reproduces the
+  `color-mix()` tints and pins every pair's ratio. It carries **25 accepted
+  light-theme debt entries** — brand fidelity was chosen over AA for the light
+  brand blue (white on `#228BE6` = **3.53:1**). The debt is *asserted*, not
+  skipped: the test fails if a debt pair starts **passing** (stale entry — delete
+  it and take the win) **or** if its ratio **moves** at all (tolerance 0.005). The
+  dark theme carries no debt entries — every dark pair must pass. **Never weaken
+  this checker**; when you add a coloured pair, add it to the table.
+- **`.cm-lift` creates a STACKING CONTEXT — a popover inside a card can never
+  out-`z-index` its way out.** This is a latent trap for **every** popover rendered
+  inside a card, not just the one that exposed it. `.cm-lift:hover/:focus-within`
+  sets `transform: translateY(-2px)`, and any `transform` other than `none` creates
+  a stacking context, so the popover's own `z-index: 50` is scoped to the card and
+  buys nothing outside it. Meanwhile `.cm-carousel-wrap` is `position: relative;
+  z-index: auto` — **not** a stacking context — so the NEXT card's absolutely
+  positioned descendants escape into the shared parent context at their own
+  z-values (video badge 4, carousel button 5, NSFW-reveal overlay 10, tile caption
+  bar 20) and paint over the transformed card, which behaves as `z-index: 0` there.
+  The fix raises the **CARD**, not the popover, to **`z-index: 25`**. Three things
+  are load-bearing:
+  - **25 is a ceiling, not a floor — do NOT raise it.** It is the smallest value
+    clearing all in-card decoration (max 20) while staying below the sticky nav
+    (30), the rail scrim/drawer (44/45) and the popover/lightbox tier (50). A
+    larger value (60, say) would paint a hovered CARD over the app chrome. The
+    full budget is documented in the STACKING ORDER ledger in `app.css`'s APP
+    SHELL block — keep it in sync.
+  - **`position: relative` on the base `.cm-lift` is load-bearing** — `z-index`
+    has no effect on a `position: static` box. It is intentionally left at
+    `z-index: auto` there (no stacking context at rest); only the open-state rule
+    adds the z-index, because a permanently raised card would overlap its
+    neighbours during ordinary scrolling.
+  - **The selector must include `.cm-pop-open`**, alongside `:hover` and
+    `:focus-within`. The shared hover controller in `modelPageScript` holds that
+    class for a ~200 ms grace period after the pointer leaves; without it the card
+    sinks mid-grace and the still-visible popover flashes back under the next card.
+  Reduced-motion users never saw this bug at all — the same block sets
+  `transform: none`, so no stacking context is created. That is why it survived so
+  long and why it can only be caught in a real browser (v0.1.82).
 - **NSFW mode is TWO-STATE in production: `blur ⇄ show`.** The toggle cycles only
   those two (`layout.go` `nsfwToggle`), and `normalizeNSFWMode` **migrates any
   stored `hide` → `blur`**. Every caller passes the normalized mode, so the
@@ -301,8 +370,17 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   (GOPRIVATE is no longer needed — see the dependency note above.)
 - **`gofmt -l` IS part of the gate — `go vet` does NOT check formatting.** Three
   subagent-written files landed unformatted and passed build+vet+test+`-race`
-  cleanly (v0.1.78). Nothing in the standard gate catches it, so run
-  `gofmt -l ./internal/ ./cmd/` explicitly and expect empty output.
+  cleanly (v0.1.78). Nothing in the standard gate catches it, so run it explicitly
+  and expect empty output:
+  ```sh
+  gofmt -l ./internal/ ./e2e/ ./*.go
+  ```
+  **There is NO `./cmd/` in this repo** — `main.go` is at the root. An earlier
+  version of this line said `gofmt -l ./internal/ ./cmd/`, which exits 2 with
+  `stat ./cmd/: no such file or directory`; an agent hit that for real and worked
+  around it. `./e2e/` must be named explicitly because `e2e/uxaudit` is a **nested
+  module** (`e2e/uxaudit/go.mod`) — a root-module `go test ./...` / `go vet ./...`
+  does not reach it either.
 - **Agent self-reports about SIDE EFFECTS are unreliable — verify with
   `git status --porcelain` yourself.** A research subagent reported "no files were
   written to your repo" while it had left a fetched upstream `CHANGELOG` in the repo
@@ -331,9 +409,62 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   built binary against it), not only synthetic-body tests. This session had THREE
   such catches: `types` plural, app `id` ULID, `modelVersions[]` ordering — all green
   in tests, all broken against reality.
-- **Verify htmx/interaction changes at the HTTP level — real browsers are
-  unavailable here** (MCP Playwright is broken on this NixOS host AND system
-  chromium is NOT installed, so `executablePath` doesn't work either). What works:
+- **A REAL BROWSER IS AVAILABLE — use it for anything visual.** (This bullet used
+  to claim the opposite; that claim is dead. MCP Playwright is still broken on this
+  NixOS host and there is still no `chromium` on PATH, but neither of those is the
+  whole story any more.)
+  - **The `browser` skill drives the user's LIVE Brave** via the local
+    browser-bridge: `browser --instance <key> open <url>` → `activate` →
+    `screenshot` / `eval`. **`activate` is not optional** — a freshly `open`ed tab
+    is backgrounded and Chrome throttles it, so a heavy page may never paint and
+    you screenshot a blank. **`--instance` is required**: two profiles (`work`,
+    `personal`) are normally connected and the bridge refuses to guess. Always
+    `open` your OWN tab and `close` it when done — never drive the tab the user is
+    working in.
+  - **Brave also works as the axe harness's Chromium**:
+    `AUDITLOOP_CHROMIUM=/run/current-system/sw/bin/brave make ux-audit` (the
+    resolver in `e2e/uxaudit/chromium.go` honours `AUDITLOOP_CHROMIUM` /
+    `CHROMIUM_PATH` / `UXAUDIT_CHROMIUM` before PATH). That is how the real axe
+    numbers behind the v0.1.79 contrast work were obtained on both themes —
+    recorded at the time as **0 violations on dark, 66 on light** (the light
+    figure being the accepted brand-fidelity debt, see the `-text` invariant).
+  - **So: HTTP-level reproduction stays the fast default for a SERVER-SIDE effect**
+    (does this POST return the right fragment?), **but a visual or interaction
+    change SHOULD be browser-verified.** Concrete cost of not doing it: **v0.1.82
+    was a pure rendering bug that passed every server-side test** — roughly 30 UI
+    changes across four surfaces had been markup-verified, and one of them was
+    visually broken anyway (an open popover painted under the next card). Markup
+    assertions cannot see paint order.
+  - **Honest caveat: it is the user's real, logged-in session**, not a scratch VM.
+    Don't navigate tabs that may hold their work, restore their focus if you steal
+    it, and say in your report that you drove their live browser.
+- **Diagnosing a VISUAL bug in the live browser — hit-test, don't guess.** The
+  sequence that found v0.1.82, in order:
+  1. `browser --instance <k> open <url>` → `activate` → `screenshot` — and
+     **actually LOOK at the image**. An exit code of 0 is not a rendered page.
+  2. **Hit-test rather than theorise.** Take the suspect element's
+     `getBoundingClientRect()` and call `document.elementFromPoint(x, y)` at
+     several points inside it, reporting for each whether the hit node is
+     `contains()`-inside the element you expected. That NAMES the covering
+     element instead of guessing — here it returned the *next card's* NSFW-reveal
+     `<button>`, which no amount of reading the popover's own CSS would have
+     suggested.
+  3. **Walk the ancestors for the first stacking-context creator** — `transform`,
+     `filter`, `opacity < 1`, `isolation`, `will-change`, `contain`, or
+     `position` + a non-`auto` `z-index`. The culprit is almost never the element
+     you are staring at.
+  4. **Inject a probe `<style>` and re-hit-test to PROVE the fix BEFORE writing
+     any code**, then remove the probe. A probe that clears the overlap can still
+     be wrong in the other direction — check the UPPER bound too (see the
+     `.cm-lift` stacking invariant: the first candidate value would have painted
+     the card over the sticky nav).
+
+  ⚠ **`eval` evaluates ONE EXPRESSION, not a script.** A multi-statement body
+  returns **`null` with no error**, which reads exactly like a broken bridge and
+  sends you debugging the wrong thing. Wrap it: `(function(){ … })()`.
+- **Verify htmx/interaction changes at the HTTP level** — the fast, non-intrusive
+  default for a server-side effect (pair it with the browser check above for
+  anything visual). What works:
   a button's `hx-vals`/form IS the exact request it issues, so `curl` that request
   against the running dogfood binary and assert the returned fragment — this
   reproduces the click's server-side effect without a browser. For
@@ -391,4 +522,18 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   by a *different* toggler keeps its stored mode. Handles both bypassed (mode 4)
   and muted (mode 2).
 - **Parallel subagents on this repo:** pass `isolation: "worktree"` so their edits
-  can't collide in the shared working tree.
+  can't collide in the shared working tree. **But worktree isolation snapshots HEAD
+  at DISPATCH time, not the commit your brief names.** An agent this session was
+  handed a base that predated a just-merged PR and had to re-branch by hand. So:
+  state the intended base commit explicitly in the brief, AND have the agent verify
+  it before writing anything —
+  `git merge-base --is-ancestor <base> HEAD` (exit 0 = the base is in this
+  worktree's history; non-zero = re-branch from it first).
+- **A stale `Makefile` comment still claims GOPRIVATE is required.** The `ux-audit`
+  target's comment block says "GOPRIVATE is required: the harness pulls the private
+  github.com/civitai/cli dep" and the recipe still sets
+  `GOPRIVATE=github.com/civitai/*`. **That dep is public** (see the top of this
+  file) — the comment is wrong, the env var is merely harmless. Don't let it
+  re-convince you that GOPRIVATE matters. That block also doesn't mention that
+  Brave satisfies its Chromium requirement:
+  `AUDITLOOP_CHROMIUM=/run/current-system/sw/bin/brave`.
