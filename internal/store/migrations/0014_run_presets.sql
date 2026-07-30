@@ -22,10 +22,14 @@
 --   graph_hash  — SNAPSHOT of workflows.graph_hash AT SAVE TIME. This is THE
 --                 reconciliation key: equal ⇒ the stored positional keys still
 --                 mean what they meant. Blank is treated as "cannot prove equal",
---                 exactly like runOptionsFromParams. It is re-stamped ONLY on an
---                 explicit "adopt current graph" save, never silently on a
---                 successful read — silent re-stamping would erase the evidence
---                 of drift for the next open.
+--                 exactly like runOptionsFromParams. It is re-stamped with a
+--                 REAL hash ONLY on an explicit "adopt current graph" save (never
+--                 silently on a successful read — that would erase the evidence of
+--                 drift for the next open); any OTHER write that replaces the
+--                 stored entries while drifted BLANKS it, because the new entries
+--                 were captured against the current graph and the old hash no
+--                 longer describes them. A write that captures nothing changes
+--                 neither the entries nor this column.
 --   params      — JSON runParamsSnapshot. NOT NULL, defaults to '{}' so a
 --                 corrupt/absent blob degrades to "no stored values" rather than
 --                 an error, mirroring parseRunParams.
