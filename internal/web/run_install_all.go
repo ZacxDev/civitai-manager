@@ -12,6 +12,7 @@ import (
 	h "maragu.dev/gomponents/html"
 
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
+	"github.com/ZacxDev/civitai-manager/internal/hf"
 	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
@@ -35,58 +36,73 @@ const maxBatchInstallFiles = 12
 // tooltip/hint. Keep the two in sync if the precondition itself changes.
 const installMissingUnavailable = "Installing automatically needs comfy_model_path set and comfy_url pointing at a ComfyUI on this machine."
 
-// installMissingNoRoute is why a particular missing file can never be part of a batch
-// install: nothing in the graph said which KIND of model it is, so there is no
-// ComfyUI subfolder to write it into.
-const installMissingNoRoute = "civitai-manager cannot tell which ComfyUI folder they belong in, so it cannot install them automatically."
+// installMissingUncertain is the ADVISORY for files whose model type could not be
+// inferred from the graph AND whose filename does not match a curated HuggingFace
+// family. Those two together are the only render-time signals available, and neither
+// is decisive: the HuggingFace search fallback can still auto-install a
+// recognized-org match, so such a file is UNCERTAIN, never "impossible".
+//
+// An earlier revision of this file wrongly treated an uninferrable CivitAI type as
+// proof the batch was doomed and EXCLUDED those files. That was false — the
+// resolveInstallPlan path the batch handler calls falls back to HuggingFace whenever
+// no model was explicitly chosen, and that fallback needs no CivitAI type at all
+// (a `bbox/face_yolov9c.pt` detector installs cleanly through the curated map). The
+// exclusion silently removed real capability and told the user something untrue, so
+// these files stay IN the batch and this string only warns.
+const installMissingUncertain = "civitai-manager could not tell from the workflow which kind of model these are, so they may not be found automatically."
 
 // installMissingBusyReason explains a click the one-run-at-a-time guard dropped.
 const installMissingBusyReason = "Nothing was downloaded: another run or download is already in progress. Wait for it to finish (or Stop it), then try again."
 
-// batchInstallPlan is the RENDER-TIME triage of a run's missing model files: which
-// ones a one-click batch install could actually deliver, and which ones it provably
-// could not.
+// batchInstallPlan is the RENDER-TIME triage of a run's missing model files: the set a
+// one-click batch install will attempt, plus the subset whose success is genuinely
+// uncertain from what is knowable without a network call.
 //
-// This exists because the CTA must not be offered ENABLED in a state where it can
-// only fail. A missing reference whose CivitAI type could not be inferred (an
-// unrecognised loader input → comfy.InferCivitaiType returns "") has no destination
-// subfolder, so resolveInstallPlan skips the CivitAI branch entirely and the batch is
-// doomed before the first request. Offering "Install 3 missing model files and run"
-// and then declining after three round-trips is exactly the promise-more-than-you-
-// deliver failure this panel was rewritten to remove.
+// The ONLY render-time facts available are (a) whether the file's inferred CivitAI type
+// routes to a ComfyUI subfolder, and (b) whether its basename matches a curated
+// HuggingFace family (a pure local table). NEITHER IS DECISIVE, so nothing is EXCLUDED
+// on the strength of them: resolveInstallPlan falls back to HuggingFace whenever no
+// model was explicitly chosen — the exact call the batch handler makes — and that path
+// needs no CivitAI type at all, so the search fallback can still auto-install a
+// recognized-org match. The handler's honest all-or-nothing decline, which names every
+// file it could not match, is what keeps the CTA truthful.
 type batchInstallPlan struct {
-	// Installable are the files whose type routes to a known ComfyUI subfolder, so a
-	// resolve+install attempt is meaningful. ONLY these ride in the form.
+	// Installable is every DISTINCT missing file the batch will attempt (capped). All
+	// of them ride in the form.
 	Installable []comfy.MissingModel
-	// Unroutable are the files a batch install can never place. They keep their
-	// per-file "Choose a model…" path, which can still reach a HuggingFace match or a
-	// library substitute — neither of those needs an inferred CivitAI type.
-	Unroutable []comfy.MissingModel
-	// Overflow is how many installable files maxBatchInstallFiles left for a second
-	// click.
+	// Uncertain is the subset with neither a routable CivitAI type nor a curated
+	// HuggingFace family match: worth attempting, but flagged so the CTA does not imply
+	// confidence it does not have.
+	Uncertain []comfy.MissingModel
+	// Overflow is how many distinct files maxBatchInstallFiles left for a second click.
 	Overflow int
 	// Available reports whether the batch CTA can be offered ENABLED at all.
 	Available bool
 }
 
-// planBatchInstall triages the missing set for the render layer. dlEligible is the
-// server-level precondition (comfy_model_path + a local ComfyUI); routability is the
-// per-file one. Duplicate references (the same file used by two loaders) collapse to
-// one entry — the batch would otherwise resolve, count and report it twice.
+// planBatchInstall triages the missing set for the render layer. dlEligible is the ONE
+// decisive precondition (comfy_model_path + a local ComfyUI); everything else here is
+// advisory.
+//
+// Duplicate references collapse — but only when they are the SAME INSTALL. The key is
+// (basename, destination subfolder), NOT the basename alone: `SDXL/model.safetensors`
+// as a Checkpoint and `flux/model.safetensors` as a LORA share a basename, yet
+// SafeModelDest routes them to checkpoints/ and loras/ respectively. They are two
+// files, and collapsing them would under-count the batch ("Install 1 …" for two
+// missing files) and quietly leave the run still broken.
 func planBatchInstall(models []comfy.MissingModel, dlEligible bool) batchInstallPlan {
 	var p batchInstallPlan
 	seen := map[string]bool{}
 	for _, mm := range models {
-		key := strings.ToLower(path.Base(strings.ReplaceAll(mm.Filename, "\\", "/")))
-		if key == "" || seen[key] {
+		key, ok := installDedupeKey(mm.Filename, mm.CivitaiType)
+		if !ok || seen[key] {
 			continue
 		}
 		seen[key] = true
-		if comfyTypeRoutable(mm.CivitaiType) {
-			p.Installable = append(p.Installable, mm)
-			continue
+		p.Installable = append(p.Installable, mm)
+		if !comfyTypeRoutable(mm.CivitaiType) && !hf.CuratedFamilyMatch(mm.Filename) {
+			p.Uncertain = append(p.Uncertain, mm)
 		}
-		p.Unroutable = append(p.Unroutable, mm)
 	}
 	if n := len(p.Installable); n > maxBatchInstallFiles {
 		p.Overflow = n - maxBatchInstallFiles
@@ -94,6 +110,25 @@ func planBatchInstall(models []comfy.MissingModel, dlEligible bool) batchInstall
 	}
 	p.Available = dlEligible && len(p.Installable) > 0
 	return p
+}
+
+// installDedupeKey identifies ONE install: the reference's basename plus the destination
+// it would be written to. Two references with the same basename but different
+// destinations are different files (see planBatchInstall). An empty/dot basename is not
+// installable at all (ok=false).
+//
+// When the type does not map to a subfolder the raw lowercased type stands in, so two
+// same-named files with different un-mappable types stay distinct rather than merging.
+func installDedupeKey(filename, civitaiType string) (string, bool) {
+	base := strings.ToLower(path.Base(strings.ReplaceAll(strings.TrimSpace(filename), "\\", "/")))
+	if base == "" || base == "." || base == ".." {
+		return "", false
+	}
+	dest, ok := comfy.TypeSubdir(civitaiType)
+	if !ok {
+		dest = strings.ToLower(strings.TrimSpace(civitaiType))
+	}
+	return base + "\x1f" + dest, true
 }
 
 // installAllMissingAction is THE primary recovery action for a run blocked by
@@ -107,22 +142,22 @@ func planBatchInstall(models []comfy.MissingModel, dlEligible bool) batchInstall
 // opt_input/opt_old arrays. runModesInclude comes along so a multi-mode template
 // still runs the pipeline the user picked.
 //
-// Every state that CANNOT deliver renders a DISABLED control plus the reason (never a
-// hidden control — the rule installAndRunButton follows), and a batch that covers only
-// SOME of the missing files says so in both the label and a note.
+// A state that cannot deliver renders a DISABLED control plus the reason (never a
+// hidden control — the rule installAndRunButton follows), and a batch capped short of
+// the full set says so in both the label and a note.
 //
-// total is the number of DISTINCT missing model files, so a partial batch can say
-// "Install 2 of 3".
+// total is the number of DISTINCT missing model files, so a capped batch can say
+// "Install 12 of 15".
 func installAllMissingAction(p batchInstallPlan, total int, wfID int64, csrf string) g.Node {
 	if total == 0 {
 		return nil
 	}
 	n := len(p.Installable)
 	if !p.Available {
+		// dlEligible is the ACTIONABLE blocker (a config line the user can add), so it
+		// wins whenever it applies; "nothing to install" is only reachable with an empty
+		// set and is a defensive fallback.
 		reason := installMissingUnavailable
-		if n == 0 && len(p.Unroutable) > 0 {
-			reason = installMissingNoRoute
-		}
 		return h.Div(h.Class("mt-3 space-y-1"),
 			civButton("filled", "md", []g.Node{
 				h.Type("button"), h.Disabled(),
@@ -144,10 +179,14 @@ func installAllMissingAction(p batchInstallPlan, total int, wfID int64, csrf str
 		)
 	}
 	var notes []g.Node
-	if len(p.Unroutable) > 0 {
+	if len(p.Uncertain) > 0 {
+		// ADVISORY, not exclusion: these files are still attempted (the HuggingFace
+		// fallback may well place them). If they cannot be matched, the handler declines
+		// the whole batch and names them, so this note prepares the user for that outcome
+		// without claiming it.
 		notes = append(notes, h.P(h.Class("text-xs text-slate-400"),
-			g.Text(fmt.Sprintf("%d of them cannot be installed in one click — %s Use the per-file option for %s.",
-				len(p.Unroutable), installMissingNoRoute, unroutableNames(p.Unroutable)))))
+			g.Text(fmt.Sprintf("%s If %s cannot be found, nothing is downloaded and you are told which: %s.",
+				installMissingUncertain, itThem(len(p.Uncertain)), missingBasenames(p.Uncertain)))))
 	}
 	if p.Overflow > 0 {
 		notes = append(notes, h.P(h.Class("text-xs text-slate-400"),
@@ -182,9 +221,9 @@ const batchInstallHint = "Finds each file on CivitAI and downloads it into your 
 	"If any of them cannot be matched, nothing is downloaded at all. If a download fails part-way, the files " +
 	"that already finished stay on disk, the run does not start, and you are told how many landed."
 
-// unroutableNames lists the un-installable files for the note above. They are
-// graph-derived (untrusted) and escaped by the renderer.
-func unroutableNames(models []comfy.MissingModel) string {
+// missingBasenames lists the files for the advisory note above. They are graph-derived
+// (untrusted) and escaped by the renderer.
+func missingBasenames(models []comfy.MissingModel) string {
 	names := make([]string, 0, len(models))
 	for _, mm := range models {
 		names = append(names, path.Base(strings.ReplaceAll(mm.Filename, "\\", "/")))
@@ -269,7 +308,7 @@ func (s *Server) handleWorkflowInstallMissingAndRun(w http.ResponseWriter, r *ht
 
 	// Not eligible → write nothing, and say so where the user is looking.
 	if !s.comfyDownloadEligible() {
-		s.renderInstallMissingDeclined(w, id, installMissingUnavailable)
+		s.renderRunActionDeclined(w, id, installMissingUnavailable)
 		return
 	}
 
@@ -279,13 +318,15 @@ func (s *Server) handleWorkflowInstallMissingAndRun(w http.ResponseWriter, r *ht
 	seen := map[string]bool{}
 	for i, raw := range names {
 		name := strings.TrimSpace(raw)
-		// De-duplicate: the same file referenced by two loaders must be fetched once.
-		key := strings.ToLower(path.Base(strings.ReplaceAll(name, "\\", "/")))
-		if key == "" || seen[key] {
+		typ := civitaiTypeParam(types[i])
+		// De-duplicate the same file referenced by two loaders — keyed on (basename,
+		// destination) so two DIFFERENT files that merely share a basename are not merged
+		// into one install (see installDedupeKey / planBatchInstall).
+		key, keyOK := installDedupeKey(name, typ)
+		if !keyOK || seen[key] {
 			continue
 		}
 		seen[key] = true
-		typ := civitaiTypeParam(types[i])
 		// Fast path: the destination already holds this file → nothing to fetch.
 		if subdir, ok := comfy.TypeSubdir(typ); ok {
 			if dest, derr := comfy.SafeModelDest(s.cfg.ComfyModelPath, subdir, name); derr == nil && fileExists(dest) {
@@ -306,7 +347,7 @@ func (s *Server) handleWorkflowInstallMissingAndRun(w http.ResponseWriter, r *ht
 	}
 
 	if len(unresolved) > 0 {
-		s.renderInstallMissingDeclined(w, id, installMissingUnresolvedReason(len(seen), unresolved))
+		s.renderRunActionDeclined(w, id, installMissingUnresolvedReason(len(seen), unresolved))
 		return
 	}
 	if len(plans) == 0 {
@@ -316,7 +357,7 @@ func (s *Server) handleWorkflowInstallMissingAndRun(w http.ResponseWriter, r *ht
 		if !s.startRunWithMessage(wf, opts, fmt.Sprintf(
 			"All %d model file%s %s already installed — nothing was downloaded. Starting run…",
 			present, plural(present), isAre(present))) {
-			s.renderInstallMissingDeclined(w, id, installMissingBusyReason)
+			s.renderRunActionDeclined(w, id, installMissingBusyReason)
 			return
 		}
 		s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
@@ -327,7 +368,7 @@ func (s *Server) handleWorkflowInstallMissingAndRun(w http.ResponseWriter, r *ht
 	// job's panel and the click looks either dead or, worse, like it started this
 	// install.
 	if !s.startDownloadsAndRun(wf, plans, opts, present) {
-		s.renderInstallMissingDeclined(w, id, installMissingBusyReason)
+		s.renderRunActionDeclined(w, id, installMissingBusyReason)
 		return
 	}
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, true, s.nsfwMode()))
@@ -343,14 +384,16 @@ func installMissingUnresolvedReason(total int, unresolved []string) string {
 		len(unresolved), total, plural(total), strings.Join(unresolved, ", "))
 }
 
-// renderInstallMissingDeclined answers a batch install that wrote NOTHING: the
-// reason, followed by the run panel the user was already looking at.
+// renderRunActionDeclined answers a run-starting action that did NOTHING: the reason,
+// followed by the run panel the user was already looking at. Shared by the batch
+// install and by the single-file install buttons whose click the one-run-at-a-time
+// guard discarded.
 //
 // Re-rendering the panel underneath matters — this response replaces the whole
 // #run-status container, so a bare alert would delete the very per-file controls the
 // reason tells the user to use. The snapshot is the SAME settled run (this path never
 // starts one), so its data-run-seq is preserved too.
-func (s *Server) renderInstallMissingDeclined(w http.ResponseWriter, wfID int64, reason string) {
+func (s *Server) renderRunActionDeclined(w http.ResponseWriter, wfID int64, reason string) {
 	s.render(w, http.StatusOK, g.Group([]g.Node{
 		alertIcon("warning", "⚠", "Nothing was downloaded", h.P(h.Class("text-sm"), g.Text(reason))),
 		runStatusFragment(s.runJobState(), wfID, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()),

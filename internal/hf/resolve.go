@@ -178,6 +178,23 @@ func baseName(refName string) string {
 	return path.Base(strings.ReplaceAll(strings.TrimSpace(refName), "\\", "/"))
 }
 
+// CuratedFamilyMatch reports whether refName's basename belongs to one of the curated
+// filename families above. It is PURE and LOCAL — no network, no client — so a caller
+// can consult it while RENDERING, before deciding whether an automatic install is
+// plausible for a reference whose CivitAI type could not be inferred.
+//
+// It is a NECESSARY-condition test, not a promise: a curated family match still has to
+// be confirmed against the repo (the file may have been renamed or removed, or be
+// gated), which only Resolve can do. A caller must therefore treat true as "worth
+// attempting" and never as "will succeed".
+func CuratedFamilyMatch(refName string) bool {
+	b := baseName(refName)
+	if b == "" || b == "." || b == ".." {
+		return false
+	}
+	return curatedLookup(b) != nil
+}
+
 // curatedLookup returns the curated entry whose pattern matches basename, or nil.
 func curatedLookup(basename string) *curatedEntry {
 	for i := range curatedMap {

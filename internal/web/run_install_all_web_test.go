@@ -185,11 +185,15 @@ func TestRunFailurePrimaryActionDisabledWhenIneligible(t *testing.T) {
 	}
 }
 
-// TestBatchInstallExcludesUnroutableFiles: a reference whose CivitAI type could not be
-// inferred has no destination subfolder, so a batch install can only ever fail on it.
-// It must be EXCLUDED from the batch (and named), never silently included so the user
-// pays N round-trips for a guaranteed decline.
-func TestBatchInstallExcludesUnroutableFiles(t *testing.T) {
+// TestBatchInstallKeepsUninferrableTypesAndFlagsThem is the REGRESSION GUARD for a
+// real capability loss an earlier revision introduced.
+//
+// A reference whose CivitAI type could not be inferred was EXCLUDED from the batch on
+// the theory that it was doomed. It is not: resolveInstallPlan falls back to
+// HuggingFace when no model was chosen — the exact call the batch handler makes — and
+// that path needs no CivitAI type. So such a file must stay IN the batch, be counted in
+// the label, and only be FLAGGED as uncertain.
+func TestBatchInstallKeepsUninferrableTypesAndFlagsThem(t *testing.T) {
 	snap := twoMissingSnapshot()
 	snap.Preflight = &comfy.PreflightReport{MissingModels: []string{
 		"routable-MISSING.safetensors", "mystery-MISSING.bin"}}
@@ -199,38 +203,115 @@ func TestBatchInstallExcludesUnroutableFiles(t *testing.T) {
 	}
 	body := renderString(t, runStatusFragment(snap, 7, "tok", true, NSFWBlur))
 
-	if !strings.Contains(body, "Install 1 of 2 missing model files and run") {
-		t.Errorf("partial batch must say so in the label:\n%s", body)
+	// Both files are attempted, and the label counts both.
+	if !strings.Contains(body, "Install 2 missing model files and run") {
+		t.Errorf("an uninferrable-type file must still be counted in the batch:\n%s", body)
 	}
-	if !strings.Contains(body, `value="routable-MISSING.safetensors"`) {
-		t.Errorf("the routable file must ride in the form:\n%s", body)
-	}
-	if strings.Contains(body, `name="missing_filename" value="mystery-MISSING.bin"`) {
-		t.Errorf("an unroutable file must NOT be submitted to the batch:\n%s", body)
-	}
-	for _, want := range []string{"cannot be installed in one click", "mystery-MISSING.bin"} {
+	for _, want := range []string{
+		`name="missing_filename" value="routable-MISSING.safetensors"`,
+		`name="missing_filename" value="mystery-MISSING.bin"`,
+	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("the excluded file must be named (%q):\n%s", want, body)
+			t.Errorf("batch must submit %q — excluding it removes real capability:\n%s", want, body)
 		}
+	}
+	// It is FLAGGED, not excluded, and the note does not claim it cannot be installed.
+	if !strings.Contains(body, "could not tell from the workflow which kind of model these are") {
+		t.Errorf("an uncertain file must be flagged:\n%s", body)
+	}
+	if !strings.Contains(body, "mystery-MISSING.bin") {
+		t.Errorf("the uncertain file must be named:\n%s", body)
+	}
+	if strings.Contains(body, "cannot be installed in one click") ||
+		strings.Contains(body, "cannot tell which ComfyUI folder") {
+		t.Errorf("the false \"cannot be installed\" claim is back:\n%s", body)
+	}
+	// The lead keeps its promise, because the CTA really can act.
+	if !strings.Contains(body, "Nothing is broken") {
+		t.Errorf("an available CTA must keep the reassuring lead:\n%s", body)
 	}
 }
 
-// TestBatchInstallDisabledWhenNothingIsRoutable: when NO file can be routed, the CTA
-// is disabled with the real reason and the lead drops its promise.
-func TestBatchInstallDisabledWhenNothingIsRoutable(t *testing.T) {
+// TestBatchInstallCuratedHFFamilyIsNotFlagged: a curated HuggingFace family (the
+// flagship adetailer/ultralytics detectors) has no inferrable CivitAI type yet installs
+// reliably, so it must be in the batch AND not flagged as uncertain.
+func TestBatchInstallCuratedHFFamilyIsNotFlagged(t *testing.T) {
+	detector := comfy.MissingModel{Filename: "bbox/face_yolov9c.pt", Query: "face yolov9c", CivitaiType: ""}
+	if comfyTypeRoutable(detector.CivitaiType) {
+		t.Fatal("fixture invalid: the detector should have no routable CivitAI type")
+	}
+	p := planBatchInstall([]comfy.MissingModel{detector}, true)
+	if len(p.Installable) != 1 || !p.Available {
+		t.Fatalf("curated HF family must be installable: %+v", p)
+	}
+	if len(p.Uncertain) != 0 {
+		t.Errorf("a curated HF family match must NOT be flagged uncertain: %+v", p.Uncertain)
+	}
+	body := renderString(t, installAllMissingAction(p, 1, 7, "tok"))
+	if !strings.Contains(body, `value="bbox/face_yolov9c.pt"`) {
+		t.Errorf("the detector must ride in the batch:\n%s", body)
+	}
+	if strings.Contains(body, "could not tell from the workflow") {
+		t.Errorf("no uncertainty advisory belongs on a curated family:\n%s", body)
+	}
+}
+
+// TestInstallMissingAndRunInstallsViaHFFallback proves the capability the exclusion had
+// silently removed, end to end: a file with NO inferrable CivitAI type, whose CivitAI
+// search misses, is installed by the batch through the HuggingFace curated path.
+func TestInstallMissingAndRunInstallsViaHFFallback(t *testing.T) {
+	body := []byte("YOLO-DETECTOR-WEIGHTS")
+	fake := &fakeHFClient{match: curatedMatch(body), ok: true, body: body}
+	srv, comfyModels := newHFServer(t, fake)
+	rr := &runRecorder{}
+	srv.runFn = rr.fn()
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI,
+		`{"42":{"class_type":"UltralyticsDetectorProvider","inputs":{"model_name":"bbox/face_yolov9c.pt"}}}`)
+
+	form := url.Values{}
+	form.Add("missing_filename", "bbox/face_yolov9c.pt")
+	form.Add("missing_type", "") // exactly what InferCivitaiType yields here
+	rec := post(t, srv, "/workflows/"+wfID+"/install-missing-and-run", form, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("batch install of an HF-only file = %d (%s)", rec.Code, rec.Body.String())
+	}
+	pollRunUntilDone(t, srv, wfID)
+
+	dest := filepath.Join(comfyModels, "ultralytics", "bbox", "face_yolov9c.pt")
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("batch did not install the HF-resolved file at %s: %v", dest, err)
+	}
+	if string(got) != string(body) {
+		t.Errorf("installed content = %q", got)
+	}
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+	if rr.calls != 1 {
+		t.Errorf("runFn called %d times, want 1", rr.calls)
+	}
+}
+
+// TestBatchInstallDisabledOnlyWhenServerCannotInstall: the ONE decisive precondition is
+// dlEligible, and its reason is the actionable one (a config line), never the softer
+// per-file uncertainty.
+func TestBatchInstallDisabledOnlyWhenServerCannotInstall(t *testing.T) {
 	snap := twoMissingSnapshot()
 	snap.Preflight = &comfy.PreflightReport{MissingModels: []string{"mystery-MISSING.bin"}}
 	snap.MissingModels = []comfy.MissingModel{{Filename: "mystery-MISSING.bin", Query: "m", CivitaiType: ""}}
-	body := renderString(t, runStatusFragment(snap, 7, "tok", true, NSFWBlur))
 
+	// Eligible: an uncertain file alone does NOT disable the CTA.
+	if body := renderString(t, runStatusFragment(snap, 7, "tok", true, NSFWBlur)); !strings.Contains(
+		body, "/workflows/7/install-missing-and-run") {
+		t.Errorf("uncertainty alone must not disable the batch:\n%s", body)
+	}
+	// Ineligible: disabled, and the reason names the config blocker the user can fix.
+	body := renderString(t, runStatusFragment(snap, 7, "tok", false, NSFWBlur))
 	if strings.Contains(body, "install-missing-and-run") {
-		t.Errorf("a doomed batch must not be offered as a POST:\n%s", body)
+		t.Errorf("an ineligible server must not offer the POST:\n%s", body)
 	}
-	if !strings.Contains(body, "cannot tell which ComfyUI folder") {
-		t.Errorf("disabled CTA must give the routing reason:\n%s", body)
-	}
-	if strings.Contains(body, "Nothing is broken") {
-		t.Errorf("lead must not promise a one-click install here:\n%s", body)
+	if !strings.Contains(body, "comfy_model_path") {
+		t.Errorf("the disabled reason must be the actionable eligibility one:\n%s", body)
 	}
 }
 
@@ -263,6 +344,66 @@ func TestPlanBatchInstallDeDupesAndCaps(t *testing.T) {
 	body := renderString(t, installAllMissingAction(p, len(many), 7, "tok"))
 	if !strings.Contains(body, "left for a second click") {
 		t.Errorf("the capped-out remainder must be disclosed:\n%s", body)
+	}
+}
+
+// TestPlanBatchInstallKeepsDistinctFilesSharingABasename is the REGRESSION GUARD for a
+// basename-only de-dupe key. `SDXL/model.safetensors` as a Checkpoint and
+// `flux/model.safetensors` as a LORA share a basename, but SafeModelDest routes them to
+// checkpoints/ and loras/ — they are TWO installs. Collapsing them under-counted the
+// batch ("Install 1 …" while the run still needed 2) and left the run broken with no
+// explanation, which is the promise-vs-reality defect this panel exists to remove.
+func TestPlanBatchInstallKeepsDistinctFilesSharingABasename(t *testing.T) {
+	models := []comfy.MissingModel{
+		{Filename: "SDXL/model.safetensors", CivitaiType: "Checkpoint"},
+		{Filename: "flux/model.safetensors", CivitaiType: "LORA"},
+	}
+	p := planBatchInstall(models, true)
+	if len(p.Installable) != 2 {
+		t.Fatalf("same basename + different destination = two installs, got %d: %+v",
+			len(p.Installable), p.Installable)
+	}
+	body := renderString(t, installAllMissingAction(p, 2, 7, "tok"))
+	if !strings.Contains(body, "Install 2 missing model files and run") {
+		t.Errorf("label must count both files:\n%s", body)
+	}
+
+	// A genuine duplicate (same basename AND same destination) still collapses, including
+	// across LORA/LoCon/LyCORIS which all map to loras/.
+	same := []comfy.MissingModel{
+		{Filename: "a/x.safetensors", CivitaiType: "LORA"},
+		{Filename: "b/x.safetensors", CivitaiType: "LoCon"},
+	}
+	if got := len(planBatchInstall(same, true).Installable); got != 1 {
+		t.Errorf("same basename + same destination must collapse, got %d", got)
+	}
+	// And two same-named files with different UN-mappable types stay distinct.
+	odd := []comfy.MissingModel{
+		{Filename: "x.bin", CivitaiType: ""},
+		{Filename: "x.bin", CivitaiType: "SomethingUnmapped"},
+	}
+	if got := len(planBatchInstall(odd, true).Installable); got != 2 {
+		t.Errorf("distinct un-mappable types must not merge, got %d", got)
+	}
+}
+
+// TestInstallDedupeKeyDistinguishesDestinations pins the key directly.
+func TestInstallDedupeKeyDistinguishesDestinations(t *testing.T) {
+	ckpt, ok1 := installDedupeKey("SDXL/model.safetensors", "Checkpoint")
+	lora, ok2 := installDedupeKey("flux/model.safetensors", "LORA")
+	if !ok1 || !ok2 {
+		t.Fatal("both references are installable")
+	}
+	if ckpt == lora {
+		t.Errorf("keys must differ by destination: %q == %q", ckpt, lora)
+	}
+	a, _ := installDedupeKey("a/x.safetensors", "LORA")
+	b, _ := installDedupeKey("b/X.SAFETENSORS", "LoCon") // loras/ for both, case-insensitive
+	if a != b {
+		t.Errorf("same basename + same destination must share a key: %q != %q", a, b)
+	}
+	if _, ok := installDedupeKey("  ", "Checkpoint"); ok {
+		t.Error("an empty basename is not installable")
 	}
 }
 
@@ -865,5 +1006,54 @@ func TestCloudOffGivesARealNextStep(t *testing.T) {
 		if strings.Contains(body, forbidden) {
 			t.Errorf("cloud-off state must not carry upsell copy (%q):\n%s", forbidden, body)
 		}
+	}
+}
+
+// TestSingleFileInstallDroppedClickIsReported covers the SIBLING buttons directly below
+// the batch CTA: "Install and run" (download-and-run) and the bad-option
+// "Install <file>" (install-option-and-run). Both pay a CivitAI round-trip and were
+// then silently discarded by the one-run-at-a-time guard, rendering the OTHER job's
+// panel — finding 9's exact defect on the buttons next to the fixed one.
+func TestSingleFileInstallDroppedClickIsReported(t *testing.T) {
+	for name, tc := range map[string]struct {
+		path string
+		form url.Values
+	}{
+		"download-and-run": {"/download-and-run", url.Values{
+			"filename": {"alpha-MISSING.safetensors"}, "type": {"Checkpoint"}}},
+		"install-option-and-run": {"/install-option-and-run", url.Values{
+			"install_filename": {"alpha-MISSING.safetensors"}, "install_type": {"Checkpoint"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, dl, _ := newBatchInstallServer(t,
+				map[string]string{"alpha-MISSING.safetensors": "https://dl.example/alpha"}, nil)
+			rr := &runRecorder{}
+			release := rr.hold() // park the first run so it stays "running"
+			defer release()
+			srv.runFn = rr.fn()
+			wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, twoMissingGraph)
+
+			if rec := post(t, srv, "/workflows/"+wfID+"/run", nil, true); rec.Code != http.StatusOK {
+				t.Fatalf("first run = %d", rec.Code)
+			}
+			if snap := srv.runJobState(); !snap.Running {
+				t.Fatalf("expected an in-flight run to contend with, got %+v", snap)
+			}
+			seqBefore := srv.runJobState().Seq
+
+			rec := post(t, srv, "/workflows/"+wfID+tc.path, tc.form, true)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("contended %s = %d", name, rec.Code)
+			}
+			if !strings.Contains(rec.Body.String(), "another run or download is already in progress") {
+				t.Errorf("%s dropped the click silently:\n%s", name, rec.Body.String())
+			}
+			if got := srv.runJobState().Seq; got != seqBefore {
+				t.Errorf("%s must not start a second job (seq %d → %d)", name, seqBefore, got)
+			}
+			release()
+			pollRunUntilDone(t, srv, wfID)
+			_ = dl
+		})
 	}
 }

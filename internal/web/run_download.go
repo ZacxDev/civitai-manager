@@ -225,7 +225,13 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	s.startDownloadAndRun(wf, planToPending(plan, s.cfg.MaxFileSizeBytes), runOptions{})
+	// A click the one-run-at-a-time guard discards must SAY so: this handler already
+	// paid a CivitAI round-trip, and answering with the other job's panel makes the
+	// click look either dead or as if this install had started.
+	if !s.startDownloadAndRun(wf, planToPending(plan, s.cfg.MaxFileSizeBytes), runOptions{}) {
+		s.renderRunActionDeclined(w, id, installMissingBusyReason)
+		return
+	}
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, true, s.nsfwMode()))
 }
 
@@ -329,7 +335,11 @@ func (s *Server) handleWorkflowInstallOptionAndRun(w http.ResponseWriter, r *htt
 		return
 	}
 
-	s.startDownloadAndRun(wf, planToPending(plan, s.cfg.MaxFileSizeBytes), opts)
+	// Same dropped-click honesty as handleWorkflowDownloadAndRun above.
+	if !s.startDownloadAndRun(wf, planToPending(plan, s.cfg.MaxFileSizeBytes), opts) {
+		s.renderRunActionDeclined(w, id, installMissingBusyReason)
+		return
+	}
 	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, true, s.nsfwMode()))
 }
 
@@ -452,7 +462,9 @@ func (s *Server) resolveInstallPlan(ctx context.Context, filename, typ string, c
 // renderResolveFallback from an action path with an empty reason.
 const (
 	// The flow itself is unavailable (comfy_model_path unset / non-writable, or a
-	// non-loopback ComfyUI we cannot install files for).
+	// non-loopback ComfyUI we cannot install files for). installMissingUnavailable
+	// (run_install_all.go) is the button-hint register of this SAME precondition — keep
+	// the two in sync if the precondition changes.
 	resolveReasonNotEligible = "Nothing was downloaded: installing automatically is not available here. Set comfy_model_path and point comfy_url at a local ComfyUI, or install this file yourself."
 	// Filename-only resolution found no single CivitAI file to install. Reached from
 	// the CTAs that legitimately carry no model id (the HuggingFace-fallback install
@@ -921,9 +933,12 @@ func downloadBatchOpeningMessage(pds []pendingDownload, alreadyPresent int) stri
 			total += pd.ContentLengthHint
 		}
 	}
+	// The total is the sum of the ADVERTISED sizes CivitAI reported for the resolved
+	// files (sizeKB), not bytes anyone has counted, so it is labelled as such — the
+	// whole point of showing a real number here is not to imply a measured one.
 	size := ""
 	if total > 0 {
-		size = " (about " + humanBytes(total) + ")"
+		size = " (about " + humanBytes(total) + " as listed on CivitAI)"
 	}
 	if alreadyPresent > 0 {
 		return fmt.Sprintf("%d model file%s %s already installed — preparing to install the remaining %d%s…",

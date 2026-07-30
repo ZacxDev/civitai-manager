@@ -349,7 +349,7 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mode
 		// buttons do I press?" was the top reported confusion.
 		if len(snap.MissingModels) > 0 {
 			detail = append(detail, installAllMissingAction(batch,
-				len(batch.Installable)+len(batch.Unroutable)+batch.Overflow, wfID, csrf))
+				len(batch.Installable)+batch.Overflow, wfID, csrf))
 		}
 		if len(snap.Preflight.MissingNodes) > 0 {
 			// Attributed, actionable panel: which pack provides each missing class, a
