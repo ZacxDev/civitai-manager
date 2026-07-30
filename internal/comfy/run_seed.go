@@ -79,18 +79,10 @@ func SeedWidgetKeys(graph json.RawMessage) []UIWidgetKey {
 	return out
 }
 
-// RandomSeedOverrides returns a NEW random value for every seed key of graph, ready
-// to be merged over a run's existing widget overrides. It returns nil when the graph
-// exposes no seed, so a caller merging the result cannot accidentally believe it
-// randomised something.
-func RandomSeedOverrides(graph json.RawMessage) map[UIWidgetKey]string {
-	keys := SeedWidgetKeys(graph)
-	if len(keys) == 0 {
-		return nil
-	}
-	out := make(map[UIWidgetKey]string, len(keys))
-	for _, k := range keys {
-		out[k] = NewSeed()
-	}
-	return out
-}
+// ⚠ There is deliberately NO RandomSeedOverrides(graph) helper here. It existed and
+// had ZERO non-test callers: production composes the same thing out of the two
+// primitives above — internal/web's withFreshSeeds walks the SeedWidgetKeys the
+// caller already resolved (from the MODE-APPLIED graph, which a graph-taking helper
+// would quietly invite you to skip) and stamps a comfy.NewSeed() on each, copying
+// the override map rather than mutating the batch's shared one. Keeping a second
+// spelling of that around only offered a way to get it wrong.

@@ -77,9 +77,9 @@ func TestSeedOverrideActuallyReachesTheGraph(t *testing.T) {
 		t.Fatalf("want one seed input, got %d", len(before))
 	}
 
-	overrides := RandomSeedOverrides(graph)
+	overrides := freshSeedOverrides(graph)
 	if len(overrides) != 1 {
-		t.Fatalf("RandomSeedOverrides = %+v, want one entry", overrides)
+		t.Fatalf("freshSeedOverrides = %+v, want one entry", overrides)
 	}
 	applied := ApplyUIWidgetOverrides(graph, overrides)
 
@@ -133,22 +133,39 @@ func TestRandomSeedsDifferPerItem(t *testing.T) {
 	}
 }
 
-// TestRandomSeedOverridesEmptyWithoutSeed pins that a graph exposing no seed yields
-// NIL, not an empty-but-non-nil map: the caller decides between "offer the identical
+// TestSeedWidgetKeysEmptyWithoutSeed pins that a graph exposing no seed yields NIL,
+// not an empty-but-non-nil slice: the caller decides between "offer the identical
 // batch confirmation" and "randomise", and it must not be able to read a no-op as a
-// success.
-func TestRandomSeedOverridesEmptyWithoutSeed(t *testing.T) {
+// success. The derived override map is nil for the same input, for the same reason.
+func TestSeedWidgetKeysEmptyWithoutSeed(t *testing.T) {
 	// An api-format graph exposes no run inputs at all.
 	const apiGraph = `{"1":{"class_type":"KSampler","inputs":{"seed":1}}}`
 	if got := SeedWidgetKeys(json.RawMessage(apiGraph)); got != nil {
 		t.Errorf("SeedWidgetKeys(api graph) = %+v, want nil", got)
 	}
-	if got := RandomSeedOverrides(json.RawMessage(apiGraph)); got != nil {
-		t.Errorf("RandomSeedOverrides(api graph) = %+v, want nil", got)
+	if got := freshSeedOverrides(json.RawMessage(apiGraph)); got != nil {
+		t.Errorf("freshSeedOverrides(api graph) = %+v, want nil", got)
 	}
 	if got := SeedWidgetKeys(json.RawMessage(`not json`)); got != nil {
 		t.Errorf("SeedWidgetKeys(garbage) = %+v, want nil", got)
 	}
+}
+
+// freshSeedOverrides is the composition PRODUCTION performs — internal/web's
+// withFreshSeeds stamping comfy.NewSeed() on every SeedWidgetKeys entry — expressed
+// once for the tests below. It lives HERE, not in run_seed.go, because it has no
+// production caller: web already holds the keys it resolved from the mode-applied
+// graph and never wants a graph-taking shortcut past that.
+func freshSeedOverrides(graph json.RawMessage) map[UIWidgetKey]string {
+	keys := SeedWidgetKeys(graph)
+	if len(keys) == 0 {
+		return nil
+	}
+	out := make(map[UIWidgetKey]string, len(keys))
+	for _, k := range keys {
+		out[k] = NewSeed()
+	}
+	return out
 }
 
 // TestBatchSeedSelectionRespectsControlSlotAlignment re-pins the widget-index alignment
