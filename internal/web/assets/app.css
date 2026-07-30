@@ -631,6 +631,81 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 .cm-version-tabs[hidden] {
   display: none;
 }
+
+/*
+ * "N older" version disclosure (.cm-vmore*) — see versionTabsOlder /
+ * splitVersionTabs in model_pages.go. Only the newest versionTabVisibleN versions
+ * (plus the SELECTED one, always) render as plain tabs; everything else folds in
+ * here. /models/4384 ships 31 versions and used to render a seven-row tab wall.
+ *
+ * A plain <details> — it opens on click AND on Enter/Space, exposes an expanded
+ * state to AT, and needs no JS, exactly like .cm-meta-reveal. Colours reuse the
+ * SAME token pair as .cm-version-tab (text-dimmed at rest → text on hover/open),
+ * so no new coloured pair enters contrast_web_test.go's table and both data-theme
+ * paths are already covered.
+ *
+ * LAYOUT: the <details> is the LAST flex item of the .cm-version-tabs row, so the
+ * summary sits inline at the end of the strip like one more tab. When OPEN it
+ * takes `flex-basis: 100%` and drops to its own full-width line, where the folded
+ * tabs wrap as their own row instead of being squeezed into a narrow column.
+ *
+ * NO `transform` on the OPEN body — deliberately (same reason .cm-vgroup's
+ * fade-in is opacity-only): a transform establishes a containing block AND a
+ * stacking context, which would re-anchor and then TRAP the date popovers of
+ * every tab inside this disclosure. See the .cm-lift POPOVER ESCAPE block for
+ * what that costs.
+ */
+.cm-vmore {
+  flex: 0 0 auto;
+  align-self: center;
+}
+.cm-vmore[open] {
+  flex: 1 1 100%;
+}
+.cm-vmore-sum {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  white-space: nowrap;
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  color: var(--civitai-color-text-dimmed);
+  cursor: pointer;
+  list-style: none;
+  transition: color 0.18s ease, background-color 0.18s ease;
+}
+/* The native marker is replaced by the .cm-vmore-chevron span. */
+.cm-vmore-sum::-webkit-details-marker {
+  display: none;
+}
+.cm-vmore-sum:hover,
+.cm-vmore-sum:focus-visible,
+.cm-vmore[open] > .cm-vmore-sum {
+  color: var(--civitai-color-text);
+  background: var(--civitai-color-surface);
+}
+.cm-vmore-chevron {
+  display: inline-block;
+  font-size: 0.95rem;
+  line-height: 1;
+  transition: transform 0.18s ease;
+}
+.cm-vmore[open] > .cm-vmore-sum .cm-vmore-chevron {
+  transform: rotate(90deg);
+}
+.cm-vmore-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-vmore-sum,
+  .cm-vmore-chevron {
+    transition: none;
+  }
+}
 .cm-version-tab {
   position: relative;
   flex: 0 0 auto;
