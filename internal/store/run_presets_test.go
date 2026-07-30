@@ -111,8 +111,12 @@ func TestRunPresetCRUD(t *testing.T) {
 		t.Errorf("params = %q", list[0].Params)
 	}
 
-	// Update writes name+params and must NOT move graph_hash.
-	if err := st.UpdateRunPreset(ctx, a, "Renamed", `{"y":2}`); err != nil {
+	// Update writes name + params + graph_hash TOGETHER: params and the hash that
+	// describes the graph they were captured against are one indivisible write, so a
+	// caller cannot replace the values while leaving a hash naming an older graph.
+	// A blank hash is a first-class value ("cannot be proven equal" — the fail-safe
+	// a non-adopt write stores when the preset had drifted).
+	if err := st.UpdateRunPreset(ctx, a, "Renamed", `{"y":2}`, ""); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	got, err := st.GetRunPreset(ctx, a)
@@ -122,12 +126,12 @@ func TestRunPresetCRUD(t *testing.T) {
 	if got.Name != "Renamed" || got.Params != `{"y":2}` {
 		t.Errorf("after update: %+v", got)
 	}
-	if got.GraphHash != "h1" {
-		t.Errorf("UpdateRunPreset re-stamped graph_hash to %q — it must never move it", got.GraphHash)
+	if got.GraphHash != "" {
+		t.Errorf("graph_hash = %q, want the blank the caller asked for", got.GraphHash)
 	}
 
-	// Adopt is the ONLY path that moves graph_hash.
-	if err := st.AdoptRunPresetGraph(ctx, a, "Renamed", `{"y":2}`, "h2"); err != nil {
+	// The same call stamps a real hash — that is what an explicit adopt does.
+	if err := st.UpdateRunPreset(ctx, a, "Renamed", `{"y":2}`, "h2"); err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
 	got, _ = st.GetRunPreset(ctx, a)
@@ -144,7 +148,7 @@ func TestRunPresetCRUD(t *testing.T) {
 	if err := st.DeleteRunPreset(ctx, a); !errors.Is(err, ErrNotFound) {
 		t.Errorf("double delete: err = %v, want ErrNotFound", err)
 	}
-	if err := st.UpdateRunPreset(ctx, a, "x", "{}"); !errors.Is(err, ErrNotFound) {
+	if err := st.UpdateRunPreset(ctx, a, "x", "{}", "h1"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("update missing: err = %v, want ErrNotFound", err)
 	}
 }

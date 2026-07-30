@@ -22,12 +22,12 @@ var ErrPresetCapReached = errors.New("this workflow already has the maximum numb
 
 // RunPreset is one saved run-parameter set for a workflow — the run panel's tab.
 //
-// GraphHash is a SNAPSHOT of the owning workflow's graph_hash taken when the
-// preset was last explicitly adopted. Params is keyed POSITIONALLY ((node id,
-// widgets_values index) + "<selector node id>:<group index>" mode keys), so the
-// hash is the proof that those positions still mean what they meant; a blank hash
-// on either side can never be proven equal and is treated as drift. See
-// comfy.ReconcileRunPreset.
+// GraphHash names the graph Params was CAPTURED AGAINST — never a different one.
+// Params is keyed POSITIONALLY ((node id, widgets_values index) + "<selector node
+// id>:<group index>" mode keys), so the hash is the proof that those positions
+// still mean what they meant; a blank hash on either side can never be proven equal
+// and is treated as drift. See comfy.ReconcileRunPreset and the invariant note on
+// UpdateRunPreset.
 type RunPreset struct {
 	ID         int64
 	WorkflowID int64
@@ -159,32 +159,25 @@ func (s *Store) GetRunPreset(ctx context.Context, id int64) (*RunPreset, error) 
 	return &p, nil
 }
 
-// UpdateRunPreset writes a preset's name and params, bumping updated_at.
+// UpdateRunPreset writes a preset's name, params AND graph_hash together, bumping
+// updated_at. It is the ONE entry-replacing writer, and params + graph_hash are
+// deliberately a SINGLE argument list rather than two functions.
 //
-// graph_hash is NOT touched here: re-stamping it is an explicit, separate act
-// ("adopt the current graph"), because a silent re-stamp would erase the evidence
-// of drift for the next open. Use AdoptRunPresetGraph for that.
-func (s *Store) UpdateRunPreset(ctx context.Context, id int64, name, params string) error {
-	if params == "" {
-		params = "{}"
-	}
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE run_presets SET name = ?, params = ?, updated_at = ? WHERE id = ?`,
-		name, params, nowRFC3339(), id)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-// AdoptRunPresetGraph writes name + params AND re-stamps graph_hash: the explicit
-// "these values are what I want against the graph as it is now" action. It is the
-// ONLY path that moves graph_hash after creation.
-func (s *Store) AdoptRunPresetGraph(ctx context.Context, id int64, name, params, graphHash string) error {
+// 🔴 THE INVARIANT THIS SIGNATURE ENFORCES: graph_hash must always describe the
+// graph the stored params were captured against.
+//
+// The earlier split (UpdateRunPreset never touching graph_hash, AdoptRunPresetGraph
+// re-stamping it) made the opposite easy: replacing the params wholesale with values
+// captured from the CURRENT graph while leaving a hash naming an OLDER one. That is
+// not a stale label — GraphHash is a canonicalized CONTENT hash, so if the workflow
+// ever returns to the earlier graph (a revert, a re-import, a rescan) the hash
+// matches EXACTLY, comfy.ReconcileRunPreset takes the exact path, and every stored
+// value is applied by position with no per-entry tuple check. A false certificate.
+//
+// Callers therefore have to name the hash on every write. The two truthful answers
+// are the hash of the graph the values came from, or "" — which can never be proven
+// equal and so forces the tuple-checked drift path. Never a third graph's hash.
+func (s *Store) UpdateRunPreset(ctx context.Context, id int64, name, params, graphHash string) error {
 	if params == "" {
 		params = "{}"
 	}

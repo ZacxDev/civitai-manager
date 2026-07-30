@@ -250,6 +250,32 @@ func presetHashMatch(p *store.RunPreset, wf *store.Workflow) bool {
 	return p.GraphHash != "" && wf.GraphHash != "" && p.GraphHash == wf.GraphHash
 }
 
+// presetWriteHash is the graph_hash every entry-REPLACING write must store.
+//
+// Entries always come from the CURRENT graph (parseWidgetOverridesForModes allows
+// only live keys and PresetEntryFor snapshots the tuple off the live RunInput), so
+// there are exactly two truthful answers — and leaving the old hash in place is
+// neither of them:
+//
+//   - The hash already matches, or this is an explicit ADOPT → store the current
+//     hash. Truthful, and it keeps the ordinary edit loop on the exact fast path
+//     instead of manufacturing permanent drift out of every save.
+//   - Otherwise (the preset is drifted and the user did NOT adopt) → store "".
+//     Blank can never be proven equal, so reconciliation always takes the per-entry
+//     tuple-checked drift path. Fail-safe: matching entries still apply, mismatched
+//     ones are dropped and named, and a false EXACT is impossible.
+//
+// Blanking rather than stamping is what keeps RESOLVED decision 7 intact: plain
+// Save must not silently adopt the current graph. The banner, the "Adopt current
+// graph" button and the un-certified state all survive a save; only the false
+// certificate goes away.
+func presetWriteHash(p *store.RunPreset, wf *store.Workflow, adopt bool) string {
+	if adopt || presetHashMatch(p, wf) {
+		return wf.GraphHash
+	}
+	return ""
+}
+
 // ── view assembly ────────────────────────────────────────────────────────────
 
 // buildPresetView loads a workflow's presets, picks the active tab, and reconciles
@@ -395,7 +421,12 @@ func pathPresetID(r *http.Request) (int64, bool) {
 
 // persistOutgoing saves the POSTED field values into the tab they were typed in
 // (the form's preset_id), so switching tabs, forking, or deleting never discards
-// an unrun draft. It NEVER re-stamps graph_hash — that is adopt's job alone.
+// an unrun draft.
+//
+// It never ADOPTS: on a drifted preset it stores a BLANK graph_hash, because the
+// entries it just wrote were captured against the current graph and the stored hash
+// named an older one. Leaving that hash would be a false certificate (see
+// presetWriteHash); re-stamping it would be a silent adoption behind a tab click.
 //
 // It returns false only when it has already written a response (a cross-workflow
 // preset id). A blank/0 preset_id is the implicit tab: nothing to save.
@@ -416,7 +447,8 @@ func (s *Server) persistOutgoing(w http.ResponseWriter, r *http.Request, wf *sto
 		return true
 	}
 	params := presetParamsWith(p.Params, entries, modes)
-	if err := s.store.UpdateRunPreset(r.Context(), p.ID, presetNameOr(r, p.Name), params); err != nil {
+	if err := s.store.UpdateRunPreset(r.Context(), p.ID, presetNameOr(r, p.Name), params,
+		presetWriteHash(p, wf, false)); err != nil {
 		s.log.Warn("run presets: persist outgoing failed", "preset", p.ID, "err", err)
 	}
 	return true
@@ -589,19 +621,18 @@ func (s *Server) handleWorkflowRunPresetSave(w http.ResponseWriter, r *http.Requ
 	drifted := !presetHashMatch(p, wf)
 	adopt := drifted && strings.TrimSpace(r.FormValue(presetAdoptField)) == "1"
 
-	var err error
+	// The values just captured belong to the CURRENT graph, so the hash written with
+	// them is either the current one (adopt, or nothing had drifted) or blank. It is
+	// never the pre-edit hash: that would certify these values against a graph they
+	// were not captured from.
 	notice := "Saved."
-	switch {
-	case adopt:
-		err = s.store.AdoptRunPresetGraph(r.Context(), p.ID, name, params, wf.GraphHash)
+	if adopt {
 		notice = "Saved and adopted the current graph."
-	default:
-		err = s.store.UpdateRunPreset(r.Context(), p.ID, name, params)
-		if drifted {
-			notice = "Saved. This preset still targets an earlier version of this " +
-				"workflow — use \"Adopt current graph\" to clear that."
-		}
+	} else if drifted {
+		notice = "Saved. This preset still targets an earlier version of this " +
+			"workflow — use \"Adopt current graph\" to clear that."
 	}
+	err := s.store.UpdateRunPreset(r.Context(), p.ID, name, params, presetWriteHash(p, wf, adopt))
 	if err != nil {
 		s.renderError(w, "save run preset", err)
 		return

@@ -40,6 +40,64 @@ const presetUIGraphRetargeted = `{
   "links": []
 }`
 
+// presetUIGraphShifted is the SAME node ids and the SAME node types as
+// presetUIGraph, but node 3's KSampler carries no control_after_generate slot, so
+// every widget index after the seed shifts down by one:
+//
+//	presetUIGraph   {3,0}=seed {3,2}=steps {3,3}=cfg {3,4}=sampler {3,5}=scheduler
+//	shifted         {3,0}=seed {3,1}=steps {3,2}=cfg {3,3}=sampler {3,4}=scheduler
+//
+// Nothing about the node identities changed — only the layout. That is what makes
+// values captured against one graph land on a DIFFERENT parameter in the other,
+// with every tuple check still available to catch it.
+const presetUIGraphShifted = `{
+  "nodes": [
+    {"id": 6, "type": "CLIPTextEncode", "title": "POSITIVE",
+     "widgets_values": ["a scenic mountain"], "inputs": []},
+    {"id": 3, "type": "KSampler",
+     "widgets_values": [1234, 20, 8.0, "euler", "normal", 1.0], "inputs": []},
+    {"id": 5, "type": "EmptyLatentImage", "widgets_values": [1024, 768, 2], "inputs": []}
+  ],
+  "links": []
+}`
+
+// replaceGraph swaps a workflow's graph IN PLACE, exactly the way a rescan does
+// (store.UpsertWorkflowByPath), and returns the reloaded row.
+func replaceGraph(t *testing.T, srv *Server, wfID int64, graph string) *store.Workflow {
+	t.Helper()
+	if _, err := srv.store.DB().Exec(`UPDATE workflows SET graph = ?, graph_hash = ? WHERE id = ?`,
+		graph, store.GraphHash(graph), wfID); err != nil {
+		t.Fatalf("replace graph: %v", err)
+	}
+	got, err := srv.store.GetWorkflow(context.Background(), wfID)
+	if err != nil {
+		t.Fatalf("get workflow: %v", err)
+	}
+	return got
+}
+
+// widgetOf returns the widget index of the live input named input on node.
+func widgetOf(t *testing.T, graph, node, input string) string {
+	t.Helper()
+	for _, ri := range comfy.DetectRunInputs(json.RawMessage(graph), nil) {
+		if ri.NodeID == node && ri.InputName == input {
+			return strconv.Itoa(ri.WidgetIndex)
+		}
+	}
+	t.Fatalf("fixture: %s.%s is not a live input", node, input)
+	return ""
+}
+
+// fieldValue returns the pre-filled value of the reconciled field for input.
+func fieldValue(rec comfy.PresetReconciliation, node, input string) (string, bool) {
+	for _, f := range rec.Fields {
+		if f.Input.NodeID == node && f.Input.InputName == input {
+			return f.Value, f.FromPreset
+		}
+	}
+	return "", false
+}
+
 // seedWorkflow stores a UI workflow and returns it (with graph_hash populated by
 // the insert path).
 func seedPresetWorkflow(t *testing.T, srv *Server, name, graph string) *store.Workflow {
@@ -440,7 +498,14 @@ func TestForkRefusedAtCap(t *testing.T) {
 
 // TestPresetSaveWithoutAdoptDoesNotRestampHash is decision 7: clicking Save means
 // "save my text", not "I certify this parameter set against a graph I did not
-// inspect". Only an explicit adopt_graph=1 moves graph_hash.
+// inspect". Only an explicit adopt_graph=1 stamps the current graph's hash.
+//
+// It does NOT mean the pre-edit hash survives: Save replaces the stored entries
+// with values captured against the CURRENT graph, so keeping a hash naming the
+// earlier one would certify these values against a graph they never came from. A
+// non-adopt save therefore blanks it — the drift banner, the un-certified state and
+// the "Adopt current graph" offer all survive, which is everything decision 7 asks
+// for.
 func TestPresetSaveWithoutAdoptDoesNotRestampHash(t *testing.T) {
 	srv := newTestServer(t)
 	wf := seedPresetWorkflow(t, srv, "t2i", presetUIGraph)
@@ -459,8 +524,12 @@ func TestPresetSaveWithoutAdoptDoesNotRestampHash(t *testing.T) {
 		t.Fatalf("save = %d", code)
 	}
 	got, _ := srv.store.GetRunPreset(context.Background(), id)
-	if got.GraphHash != "STALEHASH" {
-		t.Fatalf("plain Save re-stamped graph_hash to %q — it must never do that", got.GraphHash)
+	if got.GraphHash == wf.GraphHash {
+		t.Fatalf("plain Save adopted the current graph (%q) — it must never do that", got.GraphHash)
+	}
+	if got.GraphHash != "" {
+		t.Fatalf("graph_hash = %q, want blank: the stored entries were re-captured "+
+			"against the current graph, so the old hash no longer describes them", got.GraphHash)
 	}
 	if !strings.Contains(got.Params, "kept text") {
 		t.Errorf("Save must still persist the text: %s", got.Params)
