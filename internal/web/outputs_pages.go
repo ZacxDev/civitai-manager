@@ -402,17 +402,22 @@ func generationDetailPage(gen *store.Generation, images []store.GenerationImage,
 // exactly the wrong thing to do: a rescan replaces a workflow's graph in place, so
 // the text shown would be the CURRENT prompt attributed to a PAST image, with nothing
 // on screen admitting the difference.
+//
+// Both this and promptNoneDetectedNote are deliberately written WITHOUT an
+// apostrophe, so a test can assert the shipped constant directly: g.Text escapes
+// `'` to `&#39;`, and a test comparing against the Go string would silently never
+// match — a guard that cannot fail.
 const promptNotRecordedNote = "Not recorded for this run. Prompts are captured with " +
 	"the run, and this generation predates that. Reading it from the workflow now " +
-	"would show the workflow's prompt TODAY, which is not necessarily the one this " +
-	"image was made with."
+	"would show that workflow as it is TODAY, which is not necessarily what made " +
+	"this image."
 
 // promptNoneDetectedNote is the OTHER empty case: capture ran and found no prompt
 // input at all (an api-format workflow has no widgets_values to read, and a UI graph
 // may simply carry no CLIPTextEncode-family node). Distinct wording matters — "we
 // looked and there is none" is a different fact from "we never looked".
-const promptNoneDetectedNote = "No prompt input was detected in this workflow's " +
-	"graph, so there is no prompt text to show for this run."
+const promptNoneDetectedNote = "No prompt input was detected in the graph this run " +
+	"submitted, so there is no prompt text to show."
 
 // generationProvenanceCard answers "what made this image": the source workflow, the
 // prompt that ran, and the models it referenced.
