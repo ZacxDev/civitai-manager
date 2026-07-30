@@ -182,9 +182,11 @@ func runNoticeLine(notice string, ok bool) g.Node {
 // noSeedBatchOffer is the OFFER shown when a batch would produce N identical runs.
 //
 // A hard block would be wrong — a workflow can carry randomness we cannot see (a
-// custom sampler outside the curated layouts, or a seed inside a subgraph, which
-// DetectRunInputs deliberately does not scan) — but a silent 8× identical batch is
-// worse. So: offer, do not perform. Only the second click, carrying
+// custom sampler outside the curated layouts; or a seed inside a subgraph whose
+// interior DetectRunInputs refuses to expose, i.e. a definition instantiated more
+// than once, or a bypassed/muted instance — see comfy.subgraphRunTargets. Ordinary
+// single-instance subgraph interiors ARE scanned) — but a silent 8× identical batch
+// is worse. So: offer, do not perform. Only the second click, carrying
 // confirm_no_seed=1, starts anything.
 //
 // ⚠ Deliberately NOT claimed here: that ComfyUI would return cached outputs for an
