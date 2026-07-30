@@ -603,6 +603,34 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   border-bottom: 1px solid var(--civitai-color-border);
   padding-bottom: 0.125rem;
 }
+/*
+ * 🔴 `display: flex` above DEFEATS the HTML `hidden` attribute, so this rule is
+ * LOAD-BEARING — do not delete it as redundant with the attribute.
+ *
+ * The UA sheet's `[hidden] { display: none }` and the `.cm-version-tabs` rule
+ * above have the SAME specificity (0-1-0), and an AUTHOR declaration beats a UA
+ * one at equal specificity — so every `hidden` .cm-vgroup panel kept rendering
+ * as a flex container. Two shipped bugs came out of that, both live-caught in a
+ * real browser on /models/4384 (31 versions, 2 base models):
+ *
+ *   1. The base-model pills FILTERED NOTHING — every group's tabs rendered at
+ *      once, which is the exact overload the pills exist to prevent.
+ *   2. Worse, and invisible: an un-hidden panel has a TRANSPARENT background, so
+ *      it painted nothing yet still won HIT-TESTING over the bottom band of an
+ *      open version-date popover that overlapped it. `elementFromPoint` inside
+ *      the popover's own pixels returned `DIV.cm-version-tabs.cm-vgroup`, so the
+ *      pointer "fell through" the popover, the shared hover controller in
+ *      modelPageScript saw no `.cm-updated` under the cursor, and the popover
+ *      closed while the user was visually still on it. It reads as a z-index bug
+ *      and is not one — no z-index change fixes it, and raising the popover
+ *      above 50 would only have broken the STACKING ORDER budget for nothing.
+ *
+ * Specificity 0-2-0 (class + attribute) is what makes it win; no !important is
+ * needed, and none should be added.
+ */
+.cm-version-tabs[hidden] {
+  display: none;
+}
 .cm-version-tab {
   position: relative;
   flex: 0 0 auto;
@@ -1568,6 +1596,16 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  *       #cm-lightbox overlay                 - above everything else
  * The sticky nav therefore sits above page content but BELOW every popover, the
  * lightbox, and the rail drawer.
+ *
+ * NOTHING IS MISSING FROM THIS LEDGER — and "a popover is covered" is NOT
+ * automatically a z-index problem. The version-date popover on /models/{id} was
+ * reported as painting too low; hit-testing it in a real browser named the
+ * culprit as a `hidden` .cm-vgroup panel that was still `display: flex` (see the
+ * .cm-version-tabs[hidden] block). A transparent element steals hit-testing
+ * without painting anything, so the symptom looks identical to a low z-index.
+ * Diagnose with elementFromPoint + an ancestor stacking-context walk BEFORE
+ * adding a value here; every number above is a ceiling that something else
+ * depends on.
  *
  * --cm-nav-h is the single source of truth for the header height: the rail's
  * desktop top offset and the anchor scroll-margin both derive from it.
