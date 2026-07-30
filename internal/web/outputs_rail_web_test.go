@@ -147,8 +147,8 @@ func TestRailHonorsNSFWModes(t *testing.T) {
 	imgURL := "/outputs/img/"
 
 	rd := srv.rail(context.Background())
-	if len(rd.Gens) != 1 {
-		t.Fatalf("fixture: rail has %d generations, want 1", len(rd.Gens))
+	if len(rd.Groups) != 1 {
+		t.Fatalf("fixture: rail has %d entries, want 1", len(rd.Groups))
 	}
 
 	t.Run("hide OMITS the rail server-side", func(t *testing.T) {
@@ -205,8 +205,8 @@ func TestRailIsBoundedToLimit(t *testing.T) {
 		seedGen(t, srv, root, &wf, "wf"+strconv.Itoa(i), []byte("X"))
 	}
 	rd := srv.rail(context.Background())
-	if len(rd.Gens) != outputsRailLimit {
-		t.Fatalf("rail loaded %d generations, want the bounded %d", len(rd.Gens), outputsRailLimit)
+	if len(rd.Groups) != outputsRailLimit {
+		t.Fatalf("rail loaded %d entries, want the bounded %d", len(rd.Groups), outputsRailLimit)
 	}
 	shell := pageShell(get(t, srv, "/").Body.String())
 	if n := strings.Count(shell, `class="cm-rail-item"`); n != outputsRailLimit {
@@ -353,8 +353,8 @@ func TestRailNeverBreaksAPageOnStoreError(t *testing.T) {
 		t.Fatalf("close store: %v", err)
 	}
 	rd := srv.rail(context.Background())
-	if len(rd.Gens) != 0 {
-		t.Errorf("a failed rail query must degrade to no rail, got %d rows", len(rd.Gens))
+	if len(rd.Groups) != 0 {
+		t.Errorf("a failed rail query must degrade to no rail, got %d entries", len(rd.Groups))
 	}
 	if rd.visible(NSFWBlur) {
 		t.Error("a degraded rail must not be visible")

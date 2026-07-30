@@ -13,15 +13,24 @@ import (
 )
 
 // rail loads the per-request state of the global "Recent outputs" sidebar: ONE
-// bounded newest-first query (outputsRailLimit rows) plus the persisted collapse
+// bounded newest-first query (railFetchLimit rows) plus the persisted collapse
 // flag. It runs on every full-page render, so it must stay cheap and must NEVER
 // fail a page: a store error degrades to the zero value, which renders no rail.
+//
+// The rows are then collapsed into at most outputsRailLimit GROUPS (one per batch)
+// in memory — no second query, no per-group lookup. Over-fetching is what keeps
+// the rail full: see railFetchLimit for why grouping over exactly outputsRailLimit
+// rows would under-fill it.
 func (s *Server) rail(ctx context.Context) railData {
-	gens, err := s.store.ListRecentGenerations(ctx, outputsRailLimit)
-	if err != nil || len(gens) == 0 {
+	gens, err := s.store.ListRecentGenerations(ctx, railFetchLimit)
+	if err != nil {
 		return railData{}
 	}
-	return railData{Gens: gens, Collapsed: s.railCollapsed()}
+	groups := groupRailGenerations(gens, outputsRailLimit)
+	if len(groups) == 0 {
+		return railData{}
+	}
+	return railData{Groups: groups, Collapsed: s.railCollapsed()}
 }
 
 // railCollapsed reads the persisted rail collapse state (default expanded).
