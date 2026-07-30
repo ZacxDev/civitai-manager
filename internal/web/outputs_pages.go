@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -535,13 +536,32 @@ func generationResourcesBlock(snap runParamsSnapshot, resolver workflowResolver)
 			g.Text("One or more models were substituted for this run — the chips show what "+
 				"actually ran; the swap is listed under Model substitutions below.")))
 	}
-	if resolver.openFolder {
-		// Same statement the workflow detail page makes: the folder control execs a
-		// file manager on the SERVER, which is meaningless from another device.
+	// Same statement the workflow detail page makes: the folder control execs a file
+	// manager on the SERVER, which is meaningless when the UI is driven from another
+	// device. It is gated on a chip ACTUALLY carrying the control, not merely on the
+	// loopback bind — a generation whose resources are all missing from the library
+	// gets no folder button at all, and explaining a control that is not on screen
+	// reads as a bug (caught in a real browser, where the note sat under two chips
+	// that had no button).
+	if resolver.openFolder && anyResourceRevealable(resources, resolver) {
 		kids = append(kids, h.P(h.Class("text-xs text-slate-400 mt-2"),
 			g.Text("The folder button opens a file-manager window on the computer running civitai-manager.")))
 	}
 	return h.Div(kids...)
+}
+
+// anyResourceRevealable reports whether at least ONE of these resources resolves to
+// a concrete, contained local file — i.e. whether any chip will actually render the
+// "open containing folder" control. It asks the SAME predicate the chip does
+// (resourceInfo.revealable), so the explanation and the button can never disagree.
+func anyResourceRevealable(resources []string, resolver workflowResolver) bool {
+	for _, res := range resources {
+		info, _ := resolver.resource(filepath.Base(strings.ReplaceAll(res, "\\", "/")))
+		if info.revealable() {
+			return true
+		}
+	}
+	return false
 }
 
 // effectiveResources maps the workflow's referenced-resource snapshot through the

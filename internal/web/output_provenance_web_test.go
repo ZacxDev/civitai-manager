@@ -215,6 +215,37 @@ func TestOutputProvenanceResourcesFollowSubstitutions(t *testing.T) {
 	}
 }
 
+// TestOutputProvenanceFolderNoteFollowsTheActualButton pins a wart caught in a real
+// browser: the "the folder button opens a window on the server" line was keyed on the
+// loopback bind alone, so it sat under two chips that had no folder button at all —
+// explaining a control that is not on screen. It is now keyed on a chip ACTUALLY
+// carrying one.
+func TestOutputProvenanceFolderNoteFollowsTheActualButton(t *testing.T) {
+	const note = "The folder button opens a file-manager window"
+	gen := &store.Generation{ID: 5, WorkflowName: "wf",
+		Params: `{"prompts_captured":true,"resources":["a.safetensors"]}`}
+
+	// Loopback bind, but the resource resolves to nothing → no button, so no note.
+	unresolved := workflowResolver{openFolder: true, csrf: "c",
+		localResource: func(string) (resourceInfo, bool) { return resourceInfo{}, false }}
+	if html := renderString(t, generationProvenanceCard(gen, unresolved)); strings.Contains(html, note) {
+		t.Errorf("the note must not explain a button that is not rendered:\n%s", html)
+	}
+
+	// A concrete, contained local file → the button IS rendered, so the note belongs.
+	resolved := workflowResolver{openFolder: true, csrf: "c",
+		localResource: func(string) (resourceInfo, bool) {
+			return resourceInfo{Path: "/models/a.safetensors", FileID: 9, Contained: true}, true
+		}}
+	html := renderString(t, generationProvenanceCard(gen, resolved))
+	if !strings.Contains(html, "cm-res-open-btn") {
+		t.Fatalf("a revealable file must render the folder control (test is vacuous otherwise):\n%s", html)
+	}
+	if !strings.Contains(html, note) {
+		t.Errorf("a rendered folder button must be explained:\n%s", html)
+	}
+}
+
 // TestGenerationDetailPageCarriesProvenance is the HTTP-level check: the card is
 // wired into the real page, below the media.
 func TestGenerationDetailPageCarriesProvenance(t *testing.T) {
