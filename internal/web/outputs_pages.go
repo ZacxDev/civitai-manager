@@ -137,7 +137,10 @@ func generationTile(gen store.Generation) g.Node {
 		// click from the overlay anchor above.
 		h.Div(
 			h.Class("pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-center justify-between gap-2 bg-slate-950/70 px-2 py-1 text-xs text-slate-200"),
-			h.Span(h.Class("truncate"), g.Text(label)),
+			// min-w-0 is redundant HERE (truncate's overflow:hidden already collapses
+			// this direct flex item's automatic minimum size) but it is required by
+			// TestLongUntrustedStringsCanBreak — see the pairing rationale there.
+			h.Span(h.Class("min-w-0 truncate"), g.Text(label)),
 			generationBatchSegment(gen),
 			h.Span(h.Class("shrink-0 text-slate-400"), g.Text(strings.Join(meta, " · "))),
 		),
@@ -248,8 +251,14 @@ func batchCountLine(captured, total int) string {
 // The fix is copy, not filtering: naming the card as one run's parameters is
 // accurate and costs no new card variant. It degrades for a one-run batch (nothing
 // to contrast against) and for a row missing its batch index/total.
+//
+// The trailing clause must not shrink to "…except the seed" — a delta audit caught
+// that phrasing still being FALSE. The seed is not the only per-run field on show:
+// Prompt id is one ComfyUI submission, and Captured/Status/Images describe this run
+// alone, so at least two displayed values ALWAYS differ between runs. Name them.
 func batchParamsNote(first store.Generation) string {
-	const shared = " — every run shares these except the seed."
+	const shared = " — the other runs used the same settings with different seeds. " +
+		"Prompt id, capture time, status and image count are this run's alone."
 	if first.BatchIndex > 0 && first.BatchTotal > 1 {
 		return fmt.Sprintf("Parameters of run %d of %d%s", first.BatchIndex, first.BatchTotal, shared)
 	}

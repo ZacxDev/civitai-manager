@@ -394,12 +394,22 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 			if gt < 0 || !strings.Contains(chunk[gt:], long) {
 				continue
 			}
-			// `truncate` is the third valid mechanism: it sets overflow:hidden, and a
-			// flex item's min-width:auto only applies while overflow is VISIBLE — so
-			// the item collapses to 0 and clips with an ellipsis instead of pushing
-			// the row wide. (The batch page's tile captions use it.)
-			if !strings.Contains(chunk, "break-all") && !strings.Contains(chunk, "title=") &&
-				!strings.Contains(chunk, "truncate") {
+			// `truncate` is the third valid mechanism, but ONLY paired with min-w-0,
+			// and the pairing is what keeps this checker honest rather than being
+			// redundant. truncate sets overflow:hidden, and a flex ITEM's
+			// min-width:auto only applies while overflow is VISIBLE — so a direct
+			// flex item does collapse to 0 and clip. But on a DESCENDANT of a flex
+			// item that lacks min-w-0, truncate's white-space:nowrap makes the
+			// ancestor's min-content width the whole string and the row blows out —
+			// strictly worse than not truncating. This scan sees one element's class
+			// string and cannot tell those two apart, so accepting bare `truncate`
+			// would silently exempt the broken nesting (a delta audit demonstrated
+			// exactly that: `<div class=flex><div class=flex-1><span class=truncate>`
+			// went unflagged here while the pre-truncate checker caught it).
+			// Requiring min-w-0 alongside costs one redundant class on the direct-item
+			// case and closes the hole. Do NOT relax this back to bare `truncate`.
+			truncates := strings.Contains(chunk, "truncate") && strings.Contains(chunk, "min-w-0")
+			if !strings.Contains(chunk, "break-all") && !strings.Contains(chunk, "title=") && !truncates {
 				t.Errorf("%s: an element printing an unbreakable %d-char string can neither "+
 					"break nor truncate:\n  <%s", name, len(long), chunk)
 			}

@@ -82,6 +82,17 @@ func TestBatchPageRendersEveryRunAndParamsOnce(t *testing.T) {
 		t.Error("the params note must not claim every run shares the parameters shown — " +
 			"the seed printed under Parameter edits belongs to run 1 alone")
 	}
+	// The seed is NOT the only per-run field on display: generationParamsCard also
+	// prints Prompt id (one ComfyUI submission), Captured, Status and Images, so a
+	// clause reading "…except the seed" is still false. A delta audit caught exactly
+	// that regression after the first fix, so pin the honest wording: the note must
+	// name the other per-run fields, not just the seed.
+	for _, want := range []string{"different seeds", "Prompt id, capture time, status and image count"} {
+		if !strings.Contains(main, want) {
+			t.Errorf("the params note must name every per-run field, not just the seed; "+
+				"missing %q in:\n%s", want, main)
+		}
+	}
 	// Header uses the preset name snapshot; back link present.
 	if !strings.Contains(main, "Hi-res 8-step") {
 		t.Error("batch header should use the snapshotted preset name")
