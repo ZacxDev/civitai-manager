@@ -221,8 +221,40 @@ func runParamFieldValue(idx int, ri comfy.RunInput, value string) g.Node {
 			h.Name("wp_value"), h.Value(value))
 	}
 
+	// Size/shape the field by its KIND — never by its label, which comes from the
+	// graph author's node titles and says nothing about how long the value is. A
+	// seed, a step count and a multi-line prompt are three different-sized values and
+	// must not be three identical boxes; the sizing itself lives in .cm-param-* in
+	// app.css.
+	//
+	// 🔴 PRESENTATION ONLY. parseWidgetOverrides pairs the parallel
+	// wp_node/wp_widget/wp_value arrays BY DOM POSITION, so a class may change which
+	// grid track a field OCCUPIES but must never change the order fields are emitted
+	// in. CSS grid auto-placement follows source order, so the submitted form is
+	// byte-identical to before.
+	//
+	// The classes are assembled from LITERALS into a local (rather than returned by a
+	// helper) so the class-coverage guard in class_coverage_web_test.go can still
+	// resolve them — a helper call is a blind spot it cannot see through.
+	kindClass := "cm-param"
+	switch ri.Kind {
+	case comfy.RunInputText:
+		kindClass += " cm-param-text"
+	case comfy.RunInputSelect:
+		kindClass += " cm-param-select"
+	case comfy.RunInputSeed:
+		kindClass += " cm-param-seed"
+	case comfy.RunInputInt:
+		kindClass += " cm-param-int"
+	case comfy.RunInputFloat:
+		kindClass += " cm-param-float"
+	default:
+		kindClass += " cm-param-other"
+	}
+
 	return h.Div(
 		dataAttr("civitai-ui", "text-input"),
+		h.Class(kindClass),
 		h.Label(dataFlag("civitai-ui-label"), h.For(fid), g.Text(ri.Label)),
 		g.Group(hidden),
 		control,

@@ -661,35 +661,25 @@ func (s *Server) renderComfyExtResult(w http.ResponseWriter, ok bool, msg string
 	))
 }
 
-// workflowOpenComfyCard is the "Open in ComfyUI" affordance on the workflow detail
-// page — SEPARATE from the "Run on ComfyUI" panel.
-//
-// The control is a real <form method="post" target="_blank">, NOT an htmx button.
-// That is deliberate: a form submit opens the new tab synchronously from the click
-// itself, so the browser never treats it as a popup, and the handler can redirect
-// that tab straight into ComfyUI. An htmx POST could only respond with markup —
-// which is how this ended up rendering "we saved it, now click this OTHER link"
-// instead of just opening the workflow.
-//
-// The card does NO helper probing: detection is a network round-trip and must not
-// run on every page render. It happens once per click (cached for extProbeTTL).
-// The helper-management disclosure below it reads on-disk state only.
-func workflowOpenComfyCard(id int64, csrf string, hv comfyHelperView) g.Node {
-	ids := strconv.FormatInt(id, 10)
-	return card(
-		sectionTitle("Open in ComfyUI"),
-		h.P(h.Class("text-sm text-slate-400 mb-3"),
-			g.Text("Save this workflow into your ComfyUI editor (under the “"+openComfyDir+"” folder) and open it there.")),
-		openInComfyForm(ids, csrf, "outline", "md"),
-		comfyHelperDisclosure(hv),
-	)
-}
+// (workflowOpenComfyCard lived here — the standalone "Open in ComfyUI" CARD on the
+// workflow detail page. PR C1 merged it into the ONE "Generate" section
+// (generateSection in run_pages.go), where the same openInComfyForm control is the
+// SECONDARY action beside the primary "Generate" CTA, and comfyHelperDisclosure is
+// rendered directly by that section. The card is gone; the control and every rule
+// governing it are unchanged.)
 
-// openInComfyForm is THE "Open in ComfyUI" control, shared by the detail-page card
-// and by the run-failure report. It is a real <form method="post" target="_blank">
-// for the reason spelled out on workflowOpenComfyCard — the tab must open
-// synchronously from the click so the handler can 303 it into ComfyUI — so callers
-// must NOT re-implement it as an htmx button.
+// openInComfyForm is THE "Open in ComfyUI" control, shared by the Generate section
+// and by the run-failure report.
+//
+// 🔴 It is a real <form method="post" target="_blank">, NOT an htmx button. A form
+// submit opens the new tab SYNCHRONOUSLY from the click itself, so the browser
+// never treats it as a popup and the handler can 303 that tab straight into
+// <comfy_url>/?cm_open=<path>. An htmx POST could only respond with markup — which
+// is how this once shipped as "we saved it, now click this OTHER link" instead of
+// just opening the workflow. Callers must NOT re-implement it as an htmx button.
+//
+// It does NO helper probing: detection is a network round-trip and must not run on
+// every page render. It happens once per click (cached for extProbeTTL).
 //
 // It carries a CSRF token like every other POST here, and it deliberately does no
 // probing: whether the helper is usable is decided once per click, inside the

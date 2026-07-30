@@ -189,8 +189,9 @@ func TestGraphSectionPicksSVGForUI(t *testing.T) {
 }
 
 // TestWorkflowDetailRendersSVGNotRawJSON asserts the detail page renders the graph
-// as an SVG (UI format) rather than a raw-JSON <pre>, keeping raw JSON behind a
-// disclosure.
+// as an SVG (UI format), and that the raw-JSON dump is GONE — PR C1 removed the
+// "View raw JSON" disclosure entirely (it re-printed a file the user already has
+// and was the largest element on the page).
 func TestWorkflowDetailRendersSVGNotRawJSON(t *testing.T) {
 	srv := newWorkflowServer(t)
 	id := seedWorkflow(t, srv, store.WorkflowFormatUI, twoNodeUIGraph)
@@ -203,8 +204,8 @@ func TestWorkflowDetailRendersSVGNotRawJSON(t *testing.T) {
 	if !strings.Contains(body, "<svg") {
 		t.Errorf("UI workflow detail should render an SVG graph")
 	}
-	if !strings.Contains(body, "View raw JSON") {
-		t.Errorf("raw JSON should remain available behind a disclosure")
+	if strings.Contains(body, "View raw JSON") {
+		t.Errorf("the raw-JSON disclosure must be gone from the detail page")
 	}
 }
 

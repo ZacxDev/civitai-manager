@@ -23,33 +23,70 @@ const runStatusContainerID = "run-status"
 // innerHTML is swapped, never the node itself (same streaming invariant).
 const runComfyStatusID = "run-comfy-status"
 
-// runPanel is the detail-page "Run" section. The Run control is gated behind a
-// ComfyUI reachability check: a lazy-loaded (#run-comfy-status) fragment pings the
-// server and renders a green/red pill plus an enabled/disabled Run button + a
-// Recheck. The actual run job drives the separate stable #run-status container
-// (unchanged). When bound off-loopback the run endpoints are gated → a note.
-func runPanel(wf *store.Workflow, snap runSnapshot, csrf string, extraAllowed, dlEligible bool, mode string, presets presetTabView) g.Node {
+// runGenerateSectionID is the id of the ONE "Generate" section, and the fragment
+// the library list item's primary Run CTA deep-links to
+// (/workflows/<id>#cm-generate). The scroll + the CTA pulse are both native CSS
+// `:target` behaviour — see .cm-generate / .cm-generate-cta in app.css.
+const runGenerateSectionID = "cm-generate"
+
+// generateSection is the detail page's ONE place a workflow is executed.
+//
+// It replaced three sibling cards — "Open in ComfyUI", "Run", and "Run on CivitAI
+// Cloud" — that each looked like an independent feature, so "how do I run this?"
+// had three plausible answers stacked vertically. Now there is a single section
+// with an explicit hierarchy: the PRIMARY CTA is "Generate" (submit to the local
+// ComfyUI), "Open in ComfyUI" is the secondary action beside it, and the cloud run
+// is a separated sub-block below.
+//
+// 🔴 "Open in ComfyUI" is a real <form method="post" target="_blank">, NOT an htmx
+// button, and it is rendered HERE (outside the lazily-loaded #run-comfy-status
+// fragment) so it exists from the first paint. The form submit opens the new tab
+// synchronously from the click, which is what lets the handler 303 that tab into
+// <comfy_url>/?cm_open=<path>. An htmx POST can only answer with markup — which is
+// how this once shipped as "we saved it, now click this OTHER link". See
+// openInComfyForm / workflow_open_comfy.go before touching it.
+//
+// STRUCTURAL INVARIANT: #run-params and #run-status stay SIBLINGS at the same
+// level, exactly as before. The 1 s run poller swaps #run-status's innerHTML, so it
+// structurally cannot clobber a half-typed prompt in the preset tabs that live in
+// #run-params. Do not collapse or reparent them.
+func generateSection(wf *store.Workflow, snap runSnapshot, csrf string, extraAllowed, dlEligible bool,
+	mode string, presets presetTabView, comfyConfigured bool, helper comfyHelperView) g.Node {
 	id := strconv.FormatInt(wf.ID, 10)
+	sectionAttrs := []g.Node{h.ID(runGenerateSectionID), h.Class("cm-generate")}
 	if !extraAllowed {
-		return card(
-			sectionTitle("Run"),
+		return card(append(sectionAttrs,
+			sectionTitle("Generate"),
 			alert("warning", "",
 				g.Text("Local run is disabled when the server is bound to a non-loopback address.")),
-		)
+		)...)
 	}
-	body := []g.Node{
-		sectionTitle("Run"),
-		h.P(h.Class("text-xs text-slate-500 mb-3"),
-			g.Text("Submits this workflow to your local ComfyUI ("+comfyDisplayURL(wf)+"). "+
-				"UI-format graphs are converted to API format first; missing nodes or models are reported before submitting.")),
-		// Reachability region: lazy-loads the pill + (enabled/disabled) Run button.
-		h.Div(h.ID(runComfyStatusID),
+	// The editor hand-off applies only to a UI-format graph with somewhere to reach:
+	// an API graph does not load into the ComfyUI editor.
+	editable := comfyConfigured && wf.Format == store.WorkflowFormatUI
+
+	// The actions row: the reachability icon + primary Generate (both inside the
+	// lazily-loaded, Recheck-refreshable #run-comfy-status), then the secondary
+	// "Open in ComfyUI" form as a SIBLING so it never depends on that probe.
+	actions := []g.Node{
+		h.Div(h.ID(runComfyStatusID), h.Class("cm-gen-row"),
 			hx("get", "/workflows/"+id+"/run/comfy-status"),
 			hx("trigger", "load"),
 			hx("swap", "innerHTML"),
 			h.Span(h.Class("text-sm text-slate-400"), g.Text("Checking ComfyUI…")),
 		),
 	}
+	if editable {
+		actions = append(actions, openInComfyForm(id, csrf, "outline", "md"))
+	}
+
+	body := append(sectionAttrs,
+		sectionTitle("Generate"),
+		h.P(h.Class("text-xs text-slate-500 mb-3"),
+			g.Text("Runs this workflow on your local ComfyUI ("+comfyDisplayURL(wf)+"). "+
+				"UI-format graphs are converted to API format first; missing nodes or models are reported before submitting.")),
+		h.Div(h.Class("cm-gen-row"), g.Group(actions)),
+	)
 	// Multi-mode template picker (empty container for an ordinary workflow). It sits
 	// ABOVE Parameters because the choice determines which parameters exist.
 	// The mode picker is PRE-SELECTED from the active preset's stored mode (rule 2
@@ -65,6 +102,14 @@ func runPanel(wf *store.Workflow, snap runSnapshot, csrf string, extraAllowed, d
 	body = append(body, h.Div(h.ID(runParamsContainerID), runPresetPanel(wf, csrf, presets)))
 	// Run job status container (unchanged): poller drives running → terminal.
 	body = append(body, h.Div(h.ID(runStatusContainerID), runStatusFragment(snap, wf.ID, csrf, dlEligible, mode)))
+	// The cloud run, as a separated sub-block of the SAME section.
+	body = append(body, cloudGenerateBlock(wf.ID))
+	// Helper install/remove stays a collapsed "advanced" disclosure and is never
+	// surfaced in a per-click result (an inline "Remove helper" button beside the
+	// success text got clicked by a user who did not know it disabled the feature).
+	if editable {
+		body = append(body, comfyHelperDisclosure(helper))
+	}
 	return card(body...)
 }
 
@@ -76,37 +121,90 @@ type comfyStatusView struct {
 	comfyURL   string // configured comfy_url (escaped)
 }
 
-// runComfyStatusFragment renders the reachability pill + Run/Recheck controls into
-// #run-comfy-status. Reachable → green pill + enabled Run; unreachable → red pill +
-// disabled Run (with a tooltip) + Recheck; unconfigured → a neutral note. Every
-// untrusted string (version, comfy_url) goes through g.Text via badge/text.
+// runComfyStatusFragment renders the reachability INDICATOR + the primary Generate
+// control into #run-comfy-status. Reachable → a green ✓ icon + enabled Generate;
+// unreachable → a red ✕ icon + disabled Generate (with a tooltip) + an icon-only
+// Recheck; unconfigured → a neutral icon + a short note. Every untrusted string
+// (version, comfy_url) goes through g.Text.
+//
+// The wordy green/red PILL became a small icon in PR C1: the sentence "No ComfyUI
+// reachable at http://127.0.0.1:8188" is the widest element in the row and pushed
+// the actual CTA off to the side. The words did not disappear — they moved into the
+// icon's popover, its title=, and its aria-label, so nothing is colour-only.
 func runComfyStatusFragment(wfID int64, csrf string, v comfyStatusView) g.Node {
 	id := strconv.FormatInt(wfID, 10)
 	if !v.configured {
-		return h.Div(h.Class("text-sm text-slate-400"),
-			g.Text("Local ComfyUI is not configured. Set comfy_url to enable running workflows."))
+		return g.Group([]g.Node{
+			comfyStatusIcon(v),
+			h.Span(h.Class("text-sm text-slate-400"),
+				g.Text("Local ComfyUI is not configured. Set comfy_url to enable running workflows.")),
+		})
 	}
 	if v.reachable {
-		label := "ComfyUI reachable"
-		if v.version != "" {
-			label += " · v" + v.version
-		}
-		return h.Div(h.Class("flex flex-wrap items-center gap-3"),
-			badge(label, "green"),
+		return g.Group([]g.Node{
+			comfyStatusIcon(v),
 			runButtonEnabled(id, csrf),
-			recheckButton(id),
-		)
+		})
 	}
-	return h.Div(h.Class("flex flex-wrap items-center gap-3"),
-		badge("No ComfyUI reachable at "+v.comfyURL, "red"),
+	return g.Group([]g.Node{
+		comfyStatusIcon(v),
 		runButtonDisabled("ComfyUI is not reachable — start it (or fix comfy_url), then Recheck."),
 		recheckButton(id),
+	})
+}
+
+// comfyStatusLines returns the icon glyph, the state key (.cm-status-ico
+// [data-state]) and the popover's headline + detail for a reachability state. It is
+// one function so the icon, its title=, its aria-label and its popover can never
+// disagree about what the connection is doing.
+func comfyStatusLines(v comfyStatusView) (glyph, state, headline, detail string) {
+	switch {
+	case !v.configured:
+		return "○", "off", "Local ComfyUI is not configured",
+			"Set comfy_url to enable running workflows."
+	case v.reachable:
+		headline = "ComfyUI reachable"
+		if v.version != "" {
+			headline += " · v" + v.version
+		}
+		return "✓", "ok", headline, "Runs are submitted to your local ComfyUI."
+	default:
+		return "✕", "down", "No ComfyUI reachable at " + v.comfyURL,
+			"Start ComfyUI (or fix comfy_url), then use Recheck."
+	}
+}
+
+// comfyStatusIcon renders the compact reachability indicator: a coloured glyph plus
+// a hover/click popover carrying the full state.
+//
+// It reuses the page's EXISTING popover mechanism rather than adding a second one —
+// `.cm-updated` wrapper + `.cm-updated-pop` child is what the shared hover
+// controller in modelPageScript delegates on — and carries tabindex=0 so a click or
+// a Tab opens it through :focus-within. The glyph colours come from the `-text`
+// half of the intent tokens (never the bare fill), and the state is ALSO in the
+// aria-label, so it is never conveyed by colour alone.
+func comfyStatusIcon(v comfyStatusView) g.Node {
+	glyph, state, headline, detail := comfyStatusLines(v)
+	return h.Span(
+		h.Class("cm-updated"),
+		g.Attr("tabindex", "0"),
+		g.Attr("role", "img"),
+		g.Attr("aria-label", headline+". "+detail),
+		h.Title(headline),
+		h.Span(h.Class("cm-status-ico"), dataAttr("state", state),
+			g.Attr("aria-hidden", "true"), g.Text(glyph)),
+		h.Span(h.Class("cm-updated-pop"), g.Attr("role", "tooltip"),
+			h.Div(h.Class("cm-updated-title"), g.Text(headline)),
+			h.Div(h.Class("cm-updated-date"), g.Text(detail)),
+		),
 	)
 }
 
-// runButtonEnabled is the live Run control: posts to /run and swaps #run-status.
+// runButtonEnabled is the live PRIMARY control: posts to /run and swaps #run-status.
+// .cm-generate-cta is the hook the section's `:target` deep-link highlight pulses.
 func runButtonEnabled(id, csrf string) g.Node {
 	return civButton("filled", "md", []g.Node{
+		h.Class("cm-generate-cta"),
 		h.Type("button"),
 		hx("post", "/workflows/"+id+"/run"),
 		hx("target", "#"+runStatusContainerID),
@@ -114,27 +212,33 @@ func runButtonEnabled(id, csrf string) g.Node {
 		hx("disabled-elt", "this"),
 		hx("include", runModesInclude),
 		csrfInline(csrf),
-	}, g.Text("Run on ComfyUI"))
+	}, g.Text("Generate"))
 }
 
-// runButtonDisabled is the inert Run control shown when ComfyUI is unreachable; the
-// tooltip explains why.
+// runButtonDisabled is the inert primary control shown when ComfyUI is unreachable;
+// the tooltip explains why.
 func runButtonDisabled(reason string) g.Node {
 	return civButton("filled", "md", []g.Node{
+		h.Class("cm-generate-cta"),
 		h.Type("button"),
 		h.Disabled(),
 		g.Attr("title", reason),
-	}, g.Text("Run on ComfyUI"))
+	}, g.Text("Generate"))
 }
 
-// recheckButton re-fetches the reachability fragment into #run-comfy-status.
+// recheckButton re-fetches the reachability fragment into #run-comfy-status. It is
+// an ICON button (↻): it only ever appears next to the "not reachable" icon, which
+// already carries the explanation, so a word-wide button beside it was pure noise.
+// The word "Recheck" stays in the title + aria-label for AT and for hover.
 func recheckButton(id string) g.Node {
 	return civButton("outline", "sm", []g.Node{
 		h.Type("button"),
+		g.Attr("title", "Recheck the ComfyUI connection"),
+		g.Attr("aria-label", "Recheck the ComfyUI connection"),
 		hx("get", "/workflows/"+id+"/run/comfy-status"),
 		hx("target", "#"+runComfyStatusID),
 		hx("swap", "innerHTML"),
-	}, g.Text("Recheck"))
+	}, h.Span(g.Attr("aria-hidden", "true"), g.Text("↻")))
 }
 
 // comfyDisplayURL is a tiny indirection so the panel copy can name the server; the

@@ -693,14 +693,31 @@ func showcaseCard(modelID int, images []galleryImage, mode string) g.Node {
 			h.Class("mb-2 flex flex-wrap items-center justify-between gap-2"),
 			h.H2(h.Class("text-sm font-semibold text-slate-300"), g.Text("Showcase images")),
 		),
-		// Detail-only enlargement: the .cm-showcase-lg wrapper makes the carousel
-		// items taller (~22rem, see app.css) WITHOUT touching the shared
-		// .cm-carousel-item height used by search/library cards, and the tiles
-		// request the larger detailThumbnailWidth rendition so they stay crisp.
-		h.Div(
-			h.Class("cm-showcase-lg"),
-			modelCardCarouselW(modelID, images, mode, detailThumbnailWidth),
-		),
+		showcaseCarousel(modelID, images, mode),
+	)
+}
+
+// showcaseCardUntitled is showcaseCard WITHOUT the "Showcase images" caption, for a
+// surface where the label is redundant chrome: the workflow detail page shows these
+// images directly under the workflow's own <h1> and has no other pictures on the
+// page, so naming them added a heading and told the reader nothing.
+//
+// It shares the carousel with showcaseCard (one renderer, two headings) so the two
+// surfaces cannot drift in sizing, NSFW handling or lightbox wiring.
+func showcaseCardUntitled(modelID int, images []galleryImage, mode string) g.Node {
+	return card(showcaseCarousel(modelID, images, mode))
+}
+
+// showcaseCarousel is the shared body of both showcase cards.
+//
+// Detail-only enlargement: the .cm-showcase-lg wrapper makes the carousel items
+// taller (~22rem, see app.css) WITHOUT touching the shared .cm-carousel-item height
+// used by search/library cards, and the tiles request the larger
+// detailThumbnailWidth rendition so they stay crisp.
+func showcaseCarousel(modelID int, images []galleryImage, mode string) g.Node {
+	return h.Div(
+		h.Class("cm-showcase-lg"),
+		modelCardCarouselW(modelID, images, mode, detailThumbnailWidth),
 	)
 }
 

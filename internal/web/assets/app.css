@@ -1886,3 +1886,252 @@ html {
 .cm-browse-controls {
   margin-top: 1rem;
 }
+
+/*
+ * ---------------------------------------------------------------------------
+ * PR C1 — workflow list item + workflow detail rework
+ * ---------------------------------------------------------------------------
+ * Everything below is hand-written custom CSS (not Tailwind utilities), so it
+ * survives the purged output.css build and is theme-aware by construction: every
+ * colour resolves from a --civitai-* token, and every TEXT/ICON colour uses the
+ * `-text` half of the v0.1.79 contrast split (never the bare fill token).
+ */
+
+/*
+ * .cm-res-* — referenced-resource CHIPS (workflowResourceChip in
+ * workflow_resources.go). Used in two places with the SAME markup: inline on the
+ * workflow detail page's "Referenced resources" card, and inside the list item's
+ * hover/click popover.
+ *
+ * The chip sits on the card surface with a hairline border rather than a filled
+ * pill, so its label keeps the card's own text pair (no new token pair enters
+ * contrast_web_test.go's table). The have/missing mark is the ONLY coloured text
+ * and uses the `-text` intent tokens, which the table already pins on surface.
+ */
+.cm-res-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.cm-res-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--civitai-color-border);
+  border-radius: 9999px;
+  background: transparent;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  text-decoration: none;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+/* A chip that LINKS somewhere (a CivitAI-matched local file) reads as a link. */
+a.cm-res-chip:hover,
+a.cm-res-chip:focus-visible {
+  border-color: var(--civitai-color-primary);
+  background: var(--civitai-color-surface-2);
+}
+.cm-res-mark {
+  flex: 0 0 auto;
+  font-size: 0.7rem;
+  line-height: 1;
+}
+.cm-res-chip[data-have="yes"] .cm-res-mark {
+  color: var(--civitai-color-success-text);
+}
+.cm-res-chip[data-have="no"] .cm-res-mark {
+  color: var(--civitai-color-error-text);
+}
+.cm-res-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--civitai-color-text);
+  overflow-wrap: anywhere;
+}
+a.cm-res-chip .cm-res-name {
+  color: var(--civitai-color-primary-text);
+}
+/* The trailing "↗" hint on a linked chip — decorative, inherits the link ink. */
+.cm-res-go {
+  flex: 0 0 auto;
+  color: var(--civitai-color-primary-text);
+}
+
+/*
+ * .cm-res-trigger / .cm-res-pop — the list item's "N resources" affordance. It
+ * REUSES the existing popover mechanism (.cm-updated wrapper + .cm-updated-pop
+ * child) so it inherits the shared hover controller in modelPageScript plus the
+ * CSS :hover/:focus-within fallback; tabindex=0 on the trigger is what makes a
+ * CLICK (and a keyboard Tab) open it through :focus-within. Only the sizing is
+ * new — .cm-updated-pop's 18rem cap is too narrow for filename chips.
+ */
+.cm-res-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  color: var(--civitai-color-text-dimmed);
+  cursor: pointer;
+}
+.cm-res-trigger:focus-visible {
+  outline: 2px solid var(--civitai-color-primary);
+  outline-offset: 2px;
+  border-radius: 0.25rem;
+}
+.cm-res-pop {
+  min-width: 16rem;
+  max-width: 26rem;
+}
+
+/*
+ * .cm-generate — the combined "Generate" section on the workflow detail page,
+ * and its DEEP-LINK highlight. The library list item's primary Run CTA links to
+ * /workflows/<id>#cm-generate; the browser's native :target handles both halves
+ * with no JS: <html> already carries scroll-padding-top for the sticky nav, so
+ * the section lands below it, and the rules below pulse the primary CTA.
+ */
+.cm-generate:target {
+  border-color: var(--civitai-color-primary);
+}
+.cm-generate:target .cm-generate-cta {
+  border-radius: 0.5rem;
+  animation: cm-generate-pulse 1.4s ease-out 2;
+}
+@keyframes cm-generate-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--civitai-color-primary) 65%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 9px color-mix(in srgb, var(--civitai-color-primary) 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--civitai-color-primary) 0%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-generate:target .cm-generate-cta {
+    animation: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--civitai-color-primary) 55%, transparent);
+  }
+}
+
+/*
+ * .cm-gen-row / .cm-gen-sep — the Generate section's action row: the ComfyUI
+ * reachability icon, the primary "Generate" CTA, the secondary "Open in ComfyUI"
+ * form, and (when unreachable) the recheck icon button, all on one wrapping row.
+ */
+.cm-gen-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+.cm-gen-sep {
+  border-top: 1px solid var(--civitai-color-border);
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+}
+
+/*
+ * .cm-status-ico — the compact ComfyUI reachability indicator that replaced the
+ * wordy green/red pill. The words now live in the popover it carries (the same
+ * .cm-updated mechanism as everywhere else), and the icon itself keeps an
+ * aria-label so it is never colour-only for assistive tech.
+ */
+.cm-status-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  flex: 0 0 auto;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+.cm-status-ico[data-state="ok"] {
+  color: var(--civitai-color-success-text);
+}
+.cm-status-ico[data-state="down"] {
+  color: var(--civitai-color-error-text);
+}
+.cm-status-ico[data-state="off"] {
+  color: var(--civitai-color-text-dimmed);
+}
+
+/*
+ * .cm-param-* — the run "Parameters" form layout. Each control is sized to the
+ * EXPECTED LENGTH of its value, keyed off comfy.RunInput.Kind (never guessed
+ * from the label): a prompt gets a full-width multi-line box, a seed a wide
+ * number field, a step/CFG count a narrow one.
+ *
+ * 🔴 This is PRESENTATION ONLY. parseWidgetOverrides pairs the parallel
+ * wp_node/wp_widget/wp_value arrays BY DOM POSITION, so nothing here may reorder
+ * fields. CSS grid auto-placement preserves source order and `grid-column:1/-1`
+ * only changes the track a field occupies — the submitted form is byte-identical.
+ */
+.cm-param-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.75rem 1rem;
+  align-items: start;
+}
+.cm-param {
+  min-width: 0;
+}
+/* Prompts and free-text: their own full-width row. */
+.cm-param-text,
+.cm-param-other {
+  grid-column: 1 / -1;
+}
+.cm-param-text textarea[data-civitai-ui-control] {
+  width: 100%;
+  min-height: 7rem;
+  resize: vertical;
+}
+/* Enums (sampler/scheduler) need room for a long option name. */
+.cm-param-select {
+  grid-column: span 2;
+}
+.cm-param-select [data-civitai-ui-control] {
+  width: 100%;
+}
+/* A seed is up to ~16 digits; steps/CFG/denoise are 1-6 characters. */
+.cm-param-seed {
+  grid-column: span 2;
+}
+.cm-param-seed [data-civitai-ui-control] {
+  max-width: 13rem;
+}
+.cm-param-int [data-civitai-ui-control],
+.cm-param-float [data-civitai-ui-control] {
+  max-width: 7.5rem;
+}
+@media (max-width: 40rem) {
+  /* One column on a phone: a two-track span would overflow the card. */
+  .cm-param-grid {
+    grid-template-columns: 1fr;
+  }
+  .cm-param-select,
+  .cm-param-seed {
+    grid-column: 1 / -1;
+  }
+}
+
+/*
+ * .cm-graph-pan — the graph preview's click-to-drag panning affordance (see
+ * workflowGraphPanScript). The cursor is the ONLY styling the enhancement needs;
+ * the container is natively scrollable and carries tabindex=0, so arrow-key
+ * scrolling keeps working even if the script never runs.
+ */
+.cm-graph-pan {
+  cursor: grab;
+}
+.cm-graph-pan.cm-graph-panning {
+  cursor: grabbing;
+  user-select: none;
+}
+.cm-graph-pan:focus-visible {
+  outline: 2px solid var(--civitai-color-primary);
+  outline-offset: 2px;
+}

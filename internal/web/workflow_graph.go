@@ -336,10 +336,20 @@ func buildWorkflowGraphSVG(graph []byte) (g.Node, graphRenderStats, bool) {
 
 	// Genuinely scrollable BOTH ways now (see the min-width floor above), with a
 	// bounded height, so a huge graph never blows the layout.
+	//
+	// tabindex + role/aria-label make the scroll container reachable and operable
+	// from the KEYBOARD (arrow keys / PageUp / PageDown scroll a focused scrollable
+	// region natively). That is deliberate: the click-to-drag panning added in PR C1
+	// is a pointer-only enhancement layered on top, so the keyboard path must work
+	// with no JS at all.
 	kids := []g.Node{
-		// cm-graph scopes the theme-aware fallback palette (app.css) to this render.
-		h.Class("cm-graph overflow-auto rounded border border-slate-800 bg-slate-900 p-2"),
+		// cm-graph scopes the theme-aware fallback palette (app.css) to this render;
+		// cm-graph-pan is the drag-to-pan hook + grab cursor.
+		h.Class("cm-graph cm-graph-pan overflow-auto rounded border border-slate-800 bg-slate-900 p-2"),
 		h.Style("max-height:32rem"),
+		g.Attr("tabindex", "0"),
+		g.Attr("role", "region"),
+		g.Attr("aria-label", "Workflow graph preview — scrollable; drag to pan"),
 	}
 	if note := graphRenderNotice(st); note != nil {
 		kids = append(kids, note)
@@ -380,6 +390,86 @@ func graphRenderNotice(st graphRenderStats) g.Node {
 	}
 	return h.P(h.Class("mb-2 text-xs text-amber-400"),
 		g.Text("Incomplete preview — "+strings.Join(parts, "; ")+"."))
+}
+
+// workflowGraphPanScript is the graph preview's click-to-drag panning enhancement.
+//
+// WHAT IT DOES: on a primary-button press inside a `.cm-graph-pan` container it
+// records the pointer position and the container's scroll offsets, then mirrors
+// subsequent pointer movement into scrollLeft/scrollTop — the standard
+// grab-and-drag pan. `.cm-graph-panning` swaps the cursor to `grabbing` for the
+// duration. A 3px dead zone means a plain click (or a click on a link/text
+// selection) is never swallowed as a drag.
+//
+// HOW IT FAILS SAFE — this is the ONLY hand-rolled JS in PR C1, and the graph card
+// must never be the reason a page breaks:
+//
+//   - It is vendored INLINE (offline/no-CDN invariant) — no external asset.
+//   - Every capability it needs is feature-detected up front (PointerEvent,
+//     addEventListener, Element.closest). On any miss it returns immediately and
+//     the container is still a normal scrollable box.
+//   - The whole body is wrapped in try/catch, so a throw inside a handler cannot
+//     escape into the page.
+//   - It binds document-level listeners exactly ONCE behind a window guard, so
+//     re-emitting the script after an htmx swap never stacks handlers.
+//   - It only ever writes scrollLeft/scrollTop on an element that already matches
+//     `.cm-graph-pan`; it mutates no other state and has no network side effects.
+//
+// ACCESSIBILITY: drag-to-pan is a POINTER-ONLY enhancement — there is no keyboard
+// equivalent gesture, and none is needed, because the container carries tabindex=0
+// and is natively scrollable, so a keyboard user scrolls it with the arrow keys
+// whether or not this script runs. prefers-reduced-motion is not consulted: the
+// scroll follows the pointer 1:1 and there is no animation, transition or
+// auto-motion to reduce.
+//
+// NON-DOM caveat: no browser is available in this repo's test environment, so the
+// drag behaviour itself is markup/asset-verified only — the tests assert the hook
+// class, the container attributes and the script's presence + guards.
+func workflowGraphPanScript() g.Node {
+	const js = `
+(function(){
+  try {
+    if (window.__cmGraphPanBound) { return; }
+    if (!window.PointerEvent || !document.addEventListener || !Element.prototype.closest) { return; }
+    window.__cmGraphPanBound = true;
+    var st = null;
+    function panOf(e){
+      return (e && e.target && e.target.closest) ? e.target.closest('.cm-graph-pan') : null;
+    }
+    document.addEventListener('pointerdown', function(e){
+      try {
+        if (e.button !== 0) { return; }
+        var el = panOf(e);
+        if (!el) { return; }
+        st = { el: el, x: e.clientX, y: e.clientY,
+               sl: el.scrollLeft, stp: el.scrollTop, id: e.pointerId, moved: false };
+      } catch (err) { st = null; }
+    });
+    document.addEventListener('pointermove', function(e){
+      try {
+        if (!st || e.pointerId !== st.id) { return; }
+        var dx = e.clientX - st.x, dy = e.clientY - st.y;
+        if (!st.moved) {
+          if (Math.abs(dx) + Math.abs(dy) < 3) { return; }
+          st.moved = true;
+          st.el.classList.add('cm-graph-panning');
+        }
+        st.el.scrollLeft = st.sl - dx;
+        st.el.scrollTop = st.stp - dy;
+        if (e.cancelable) { e.preventDefault(); }
+      } catch (err) { st = null; }
+    });
+    function cmGraphPanEnd(){
+      try { if (st) { st.el.classList.remove('cm-graph-panning'); } } catch (err) {}
+      st = null;
+    }
+    document.addEventListener('pointerup', cmGraphPanEnd);
+    document.addEventListener('pointercancel', cmGraphPanEnd);
+    window.addEventListener('blur', cmGraphPanEnd);
+  } catch (err) { /* the preview stays a plain scrollable box */ }
+})();
+`
+	return h.Script(g.Raw(js))
 }
 
 // graphPreviewCaption is the standing honesty note under the graph card: the SVG is a
