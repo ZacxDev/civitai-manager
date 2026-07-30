@@ -61,8 +61,12 @@ const (
 	maxRuleIDLen     = 128
 	maxDetailTextLen = 500
 	maxURLLen        = 300
-	// maxA11yTags caps the axe tag list (wcag2aa, cat.color, …).
+	// maxImpactLen caps the axe impact string (critical|serious|moderate|minor), which
+	// is emitted BOTH as the finding severity and inside the detail.
+	maxImpactLen = 32
+	// maxA11yTags caps the axe tag list (wcag2aa, cat.color, …); maxTagLen caps each.
 	maxA11yTags = 12
+	maxTagLen   = 64
 )
 
 // Finding type + severity values. Types are the closed set auditloop's Validate
@@ -78,8 +82,31 @@ const (
 )
 
 // axeResult is the shape axeRunScript (axe.go) returns.
+//
+// Error is load-bearing, not decoration: axeRunScript catches a thrown exception and
+// returns {"error":"...","violations":[]}. Modelling no Error field made an axe scan
+// that NEVER RAN indistinguishable from a genuinely clean page. That was cosmetic
+// while only roll-up counts were pushed; once findings drive auditloop's a11y rule
+// set it is a correctness hole: one errored scan empties the run's rule set, so
+// `resolved_a11y_rules` reports EVERY rule as fixed and the next good run reports
+// every rule as NEW — a spurious regression-gate failure on a report that
+// simultaneously claims "no accessibility issues". A scan that didn't run is not a
+// passing audit, so it is surfaced as an error and fails the walk loudly.
 type axeResult struct {
+	Error      string         `json:"error,omitempty"`
 	Violations []axeViolation `json:"violations"`
+}
+
+// ErrAxeScanFailed reports that axe-core itself failed on a page (it threw, so the
+// page was never actually scanned). It is deliberately FATAL to a walk rather than
+// degrading: a silently-unscanned page reads as "clean" and corrupts the a11y rule
+// set auditloop diffs run to run.
+type ErrAxeScanFailed struct {
+	Reason string
+}
+
+func (e *ErrAxeScanFailed) Error() string {
+	return fmt.Sprintf("axe scan failed (the page was NOT scanned; treating as clean would corrupt the a11y regression baseline): %s", e.Reason)
 }
 
 // axeViolation is one violated axe RULE, mirroring the object axeRunScript emits.
@@ -119,15 +146,24 @@ type axeNode struct {
 //
 // A violation with a BLANK rule id is SKIPPED rather than emitted: it could not
 // serve as a stable gate key, and auditloop's legacy fallback would derive a
-// meaningless id from the JSON text. Unparseable axe JSON yields no findings (the
-// counts still stand) — never an error, so one bad page can't fail the walk.
-func A11yFindings(axeJSON []byte) []PushFinding {
+// meaningless id from the JSON text.
+//
+// It returns an *ErrAxeScanFailed when the axe result reports a scan error, and an
+// error when the axe JSON is unparseable — in BOTH cases the page was not reliably
+// scanned, and returning "no findings" would let it read as CLEAN and poison the
+// a11y regression baseline. An EMPTY axeJSON is not treated as an error (there is
+// nothing to interpret); the walk asserts separately that every capture produced axe
+// output, so an absent scan still fails loudly there.
+func A11yFindings(axeJSON []byte) ([]PushFinding, error) {
 	if len(axeJSON) == 0 {
-		return nil
+		return nil, nil
 	}
 	var res axeResult
 	if err := json.Unmarshal(axeJSON, &res); err != nil {
-		return nil
+		return nil, fmt.Errorf("axe result is not valid JSON (page not reliably scanned; treating as clean would corrupt the a11y regression baseline): %w", err)
+	}
+	if strings.TrimSpace(res.Error) != "" {
+		return nil, &ErrAxeScanFailed{Reason: truncateStr(strings.TrimSpace(res.Error), maxDetailTextLen)}
 	}
 	out := make([]PushFinding, 0, len(res.Violations))
 	for _, v := range res.Violations {
@@ -139,12 +175,13 @@ func A11yFindings(axeJSON []byte) []PushFinding {
 			// No stable rule id → unusable as a regression key; drop it.
 			continue
 		}
+		impact := truncateStr(strings.TrimSpace(v.Impact), maxImpactLen)
 		detail := axeViolation{
 			ID:        id,
-			Impact:    truncateStr(v.Impact, maxRuleIDLen),
+			Impact:    impact,
 			Help:      truncateStr(v.Help, maxHelpTextLen),
 			HelpURL:   truncateStr(v.HelpURL, maxURLLen),
-			Tags:      truncateSlice(v.Tags, maxA11yTags),
+			Tags:      boundTags(v.Tags),
 			NodeCount: v.NodeCount,
 			Nodes:     boundNodes(v.Nodes),
 		}
@@ -152,7 +189,9 @@ func A11yFindings(axeJSON []byte) []PushFinding {
 		if err != nil {
 			continue
 		}
-		sev := strings.TrimSpace(v.Impact)
+		// Severity carries the SAME bounded impact that goes into the detail (an
+		// untruncated v.Impact here would let an oversized value through).
+		sev := impact
 		if sev == "" {
 			// axe impact can be null; auditloop defaults "" to "info" anyway, but be
 			// explicit so the pushed severity is never blank.
@@ -161,7 +200,18 @@ func A11yFindings(axeJSON []byte) []PushFinding {
 		out = append(out, PushFinding{Type: FindingA11y, Severity: sev, Detail: string(encoded)})
 	}
 	if len(out) == 0 {
-		return nil
+		return nil, nil
+	}
+	return out, nil
+}
+
+// boundTags trims the axe tag list to maxA11yTags AND caps each tag's length (a tag
+// is attacker-influenceable via a custom axe config, and capping only the count still
+// allowed one arbitrarily long tag).
+func boundTags(tags []string) []string {
+	out := truncateSlice(tags, maxA11yTags)
+	for i, t := range out {
+		out[i] = truncateStr(t, maxTagLen)
 	}
 	return out
 }
@@ -262,14 +312,19 @@ func NetworkFindings(events []networkEvent) []PushFinding {
 
 // CaptureFindings is the full ordered finding set for one captured view: a11y rules
 // first (the gate-critical ones), then first-party console, then first-party network.
-func CaptureFindings(vc ViewCapture) []PushFinding {
-	out := A11yFindings(vc.AxeJSON)
+// It propagates an axe SCAN FAILURE as an error (see A11yFindings) so a page that was
+// never really scanned cannot be pushed as "clean".
+func CaptureFindings(vc ViewCapture) ([]PushFinding, error) {
+	out, err := A11yFindings(vc.AxeJSON)
+	if err != nil {
+		return nil, err
+	}
 	out = append(out, ConsoleFindings(vc.Console)...)
 	out = append(out, NetworkFindings(vc.Network)...)
 	if len(out) == 0 {
-		return nil
+		return nil, nil
 	}
-	return out
+	return out, nil
 }
 
 // truncateStr caps s at n bytes on a UTF-8 rune boundary, so a truncated string is

@@ -3,6 +3,7 @@ package uxaudit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -112,7 +113,10 @@ func auditloopRuleIDs(findings []PushFinding) []string {
 //     set — i.e. the CI a11y regression gate is no longer a no-op;
 //   - severity carries the axe impact through.
 func TestA11yFindingsOnePerRuleWithTopLevelID(t *testing.T) {
-	findings := A11yFindings([]byte(realisticAxeJSON))
+	findings, err := A11yFindings([]byte(realisticAxeJSON))
+	if err != nil {
+		t.Fatalf("A11yFindings: %v", err)
+	}
 
 	if len(findings) != 2 {
 		t.Fatalf("got %d a11y findings, want 2 (ONE PER RULE, not per node)", len(findings))
@@ -166,10 +170,13 @@ func topLevelID(detail string) (string, bool) {
 // TestA11yDetailIDAssertionIsNonVacuous proves the top-level-id assertion above can
 // actually FAIL — a mutation test, so a passing suite is real evidence rather than a
 // tautology. It takes the SAME detail the production code emits, strips the "id" key,
-// and asserts the assertion helper rejects it; it also rejects the pre-fix "no
-// findings at all" state, where the recovered rule set is empty.
+// and asserts the assertion helper rejects it; then it asserts a merely-NESTED id is
+// rejected too (the id must be top-level, which is the field auditloop reads).
 func TestA11yDetailIDAssertionIsNonVacuous(t *testing.T) {
-	findings := A11yFindings([]byte(realisticAxeJSON))
+	findings, err := A11yFindings([]byte(realisticAxeJSON))
+	if err != nil {
+		t.Fatalf("A11yFindings: %v", err)
+	}
 	if len(findings) == 0 {
 		t.Fatal("no findings to mutate")
 	}
@@ -195,9 +202,14 @@ func TestA11yDetailIDAssertionIsNonVacuous(t *testing.T) {
 	}
 
 	// MUTANT 2: the pre-fix state — no findings pushed at all → the gate input is
-	// empty, which is exactly the silent no-op this change fixes.
-	if ids := auditloopRuleIDs(nil); len(ids) != 0 {
-		t.Fatalf("expected an empty rule set for no findings, got %v", ids)
+	// MUTANT 2: the id must be TOP-LEVEL specifically. A detail carrying the rule id
+	// only in a nested object is the clean demonstration that the assertion inspects
+	// the exact field auditloop reads (the "rename the id tag" mutation is a blunter
+	// instrument — axeViolation is also used to DECODE the axe result, so renaming the
+	// tag yields zero findings instead of id-less ones).
+	nested, _ := json.Marshal(map[string]any{"violation": map[string]string{"id": "color-contrast"}})
+	if _, ok := topLevelID(string(nested)); ok {
+		t.Fatal("assertion is VACUOUS: a NESTED id was accepted as top-level")
 	}
 }
 
@@ -205,10 +217,13 @@ func TestA11yDetailIDAssertionIsNonVacuous(t *testing.T) {
 // rather than pushed: it could not serve as a stable gate key, and auditloop's legacy
 // fallback would otherwise derive a meaningless id from the JSON text.
 func TestA11yFindingsSkipsBlankRuleID(t *testing.T) {
-	findings := A11yFindings([]byte(`{"violations":[
+	findings, err := A11yFindings([]byte(`{"violations":[
 		{"id":"","impact":"serious","help":"no id"},
 		{"id":"  ","impact":"serious","help":"blank id"},
 		{"id":"label","impact":"critical","help":"Form elements must have labels"}]}`))
+	if err != nil {
+		t.Fatalf("A11yFindings: %v", err)
+	}
 	if len(findings) != 1 {
 		t.Fatalf("got %d findings, want 1 (blank-id violations dropped)", len(findings))
 	}
@@ -217,14 +232,72 @@ func TestA11yFindingsSkipsBlankRuleID(t *testing.T) {
 	}
 }
 
-// TestA11yFindingsDegradeOnBadInput asserts unparseable/empty axe JSON yields no
-// findings and no panic — one bad page must never fail the walk (the roll-up counts
-// still stand on their own).
-func TestA11yFindingsDegradeOnBadInput(t *testing.T) {
-	for _, in := range []string{"", "not json", `{"violations":null}`, `{"violations":[]}`, `{}`} {
-		if got := A11yFindings([]byte(in)); len(got) != 0 {
+// TestA11yFindingsCleanInputIsNotAnError asserts genuinely-clean/absent axe output
+// yields no findings AND no error — a clean page must stay pushable.
+func TestA11yFindingsCleanInputIsNotAnError(t *testing.T) {
+	for _, in := range []string{"", `{"violations":null}`, `{"violations":[]}`, `{}`} {
+		got, err := A11yFindings([]byte(in))
+		if err != nil {
+			t.Errorf("input %q: unexpected error %v", in, err)
+		}
+		if len(got) != 0 {
 			t.Errorf("input %q: got %d findings, want 0", in, len(got))
 		}
+	}
+}
+
+// TestAxeScanFailureIsNotClean is the regression test for the severity hole this PR
+// would otherwise have introduced.
+//
+// axeRunScript catches a thrown exception and returns {"error":"...","violations":[]}.
+// Modelling no `error` field made an axe scan that NEVER RAN indistinguishable from a
+// genuinely clean page. That was cosmetic while only roll-up counts were pushed; once
+// findings drive auditloop's a11y rule set it corrupts the regression baseline: the
+// errored run's rule set is empty → `resolved_a11y_rules` claims EVERY rule was fixed
+// → the next good run reports every rule as NEW → a --fail-on-regression gate fails
+// spuriously, on a report that simultaneously says "✓ no accessibility issues".
+//
+// So an errored scan must be an ERROR (fatal to the walk), never zero findings.
+func TestAxeScanFailureIsNotClean(t *testing.T) {
+	// The exact shape axeRunScript emits on a thrown exception.
+	const errored = `{"error":"TypeError: axe.run is not a function","violations":[]}`
+
+	got, err := A11yFindings([]byte(errored))
+	if err == nil {
+		t.Fatal("an ERRORED axe scan returned no error — it is indistinguishable from a clean page, which corrupts the a11y regression baseline")
+	}
+	if len(got) != 0 {
+		t.Errorf("errored scan produced %d findings, want none", len(got))
+	}
+	var scanErr *ErrAxeScanFailed
+	if !errors.As(err, &scanErr) {
+		t.Errorf("error = %T (%v), want *ErrAxeScanFailed", err, err)
+	} else if !strings.Contains(scanErr.Reason, "axe.run is not a function") {
+		t.Errorf("error reason %q lost the underlying axe message", scanErr.Reason)
+	}
+
+	// It must propagate through CaptureFindings...
+	if _, err := CaptureFindings(ViewCapture{AxeJSON: []byte(errored)}); err == nil {
+		t.Error("CaptureFindings swallowed the axe scan failure")
+	}
+	// ...and all the way out of BuildPayload, so Walk fails loudly rather than pushing
+	// a page that was never scanned as clean.
+	caps := []CapturedView{{
+		View:     View{Name: "dashboard"},
+		Viewport: Viewports[0],
+		Capture:  ViewCapture{ScreenshotPNG: tinyPNG, AxeJSON: []byte(errored)},
+	}}
+	_, _, err = BuildPayload("scan-failure", caps)
+	if err == nil {
+		t.Fatal("BuildPayload accepted a capture whose axe scan FAILED — the walk would push it as clean")
+	}
+	if !strings.Contains(err.Error(), "dashboard") {
+		t.Errorf("error %q does not identify the offending view", err)
+	}
+
+	// Unparseable axe JSON is likewise not "clean".
+	if _, err := A11yFindings([]byte("not json")); err == nil {
+		t.Error("unparseable axe JSON returned no error — it would read as a clean page")
 	}
 }
 
@@ -309,7 +382,11 @@ func TestThirdPartyOnlyCaptureEmitsNoFindings(t *testing.T) {
 		},
 		Network: []networkEvent{{URL: "https://cdn.example/x.js", Status: 502, FirstPart: false}},
 	}
-	if got := CaptureFindings(vc); len(got) != 0 {
+	got, err := CaptureFindings(vc)
+	if err != nil {
+		t.Fatalf("CaptureFindings: %v", err)
+	}
+	if len(got) != 0 {
 		t.Fatalf("got %d findings from a third-party-only capture, want 0: %+v", len(got), got)
 	}
 }
@@ -326,8 +403,12 @@ func TestFindingCapsBoundThePayload(t *testing.T) {
 	for i := 0; i < maxA11yFindings+40; i++ {
 		vs = append(vs, fmt.Sprintf(`{"id":"rule-%d","impact":"minor","nodeCount":1}`, i))
 	}
-	if got := A11yFindings([]byte(`{"violations":[` + strings.Join(vs, ",") + `]}`)); len(got) != maxA11yFindings {
-		t.Errorf("a11y findings = %d, want the cap %d", len(got), maxA11yFindings)
+	capped, err := A11yFindings([]byte(`{"violations":[` + strings.Join(vs, ",") + `]}`))
+	if err != nil {
+		t.Fatalf("A11yFindings: %v", err)
+	}
+	if len(capped) != maxA11yFindings {
+		t.Errorf("a11y findings = %d, want the cap %d", len(capped), maxA11yFindings)
 	}
 
 	// console: a runaway error loop → capped.
@@ -359,10 +440,13 @@ func TestFindingTruncation(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		nodes = append(nodes, fmt.Sprintf(`{"target":["%s","b","c","d","e","f"],"html":"%s"}`, long, long))
 	}
-	axe := fmt.Sprintf(`{"violations":[{"id":"color-contrast","impact":"serious","help":"%s","helpUrl":"%s","tags":["a","b","c","d","e","f","g","h","i","j","k","l","m","n"],"nodeCount":99,"nodes":[%s]}]}`,
-		long, long, strings.Join(nodes, ","))
+	axe := fmt.Sprintf(`{"violations":[{"id":"color-contrast","impact":"%s","help":"%s","helpUrl":"%s","tags":["%s","b","c","d","e","f","g","h","i","j","k","l","m","n"],"nodeCount":99,"nodes":[%s]}]}`,
+		long, long, long, long, strings.Join(nodes, ","))
 
-	findings := A11yFindings([]byte(axe))
+	findings, err := A11yFindings([]byte(axe))
+	if err != nil {
+		t.Fatalf("A11yFindings: %v", err)
+	}
 	if len(findings) != 1 {
 		t.Fatalf("got %d findings, want 1", len(findings))
 	}
@@ -384,6 +468,18 @@ func TestFindingTruncation(t *testing.T) {
 	}
 	if len(got.Tags) > maxA11yTags {
 		t.Errorf("tags = %d, want <= %d", len(got.Tags), maxA11yTags)
+	}
+	for _, tag := range got.Tags {
+		if len(tag) > maxTagLen {
+			t.Errorf("tag = %d bytes, want <= %d (count was capped but each tag was not)", len(tag), maxTagLen)
+		}
+	}
+	// Impact is bounded in BOTH places it is emitted: the detail and the severity.
+	if len(got.Impact) > maxImpactLen {
+		t.Errorf("detail impact = %d bytes, want <= %d", len(got.Impact), maxImpactLen)
+	}
+	if len(findings[0].Severity) > maxImpactLen {
+		t.Errorf("severity = %d bytes, want <= %d (untruncated impact leaked into severity)", len(findings[0].Severity), maxImpactLen)
 	}
 	if got.NodeCount != 99 {
 		t.Errorf("nodeCount = %d, want the true count 99 preserved", got.NodeCount)
@@ -487,7 +583,10 @@ func synthCapturesWithSignals() []CapturedView {
 // and the resulting payload still passes Validate.
 func TestBuildPayloadEmitsFindingsAndPreservesCounts(t *testing.T) {
 	caps := synthCapturesWithSignals()
-	payload, files := BuildPayload("findings integration", caps)
+	payload, files, err := BuildPayload("findings integration", caps)
+	if err != nil {
+		t.Fatalf("BuildPayload: %v", err)
+	}
 
 	if len(payload.Pages) != len(caps) {
 		t.Fatalf("pages = %d, want %d", len(payload.Pages), len(caps))
@@ -536,26 +635,38 @@ func TestBuildPayloadEmitsFindingsAndPreservesCounts(t *testing.T) {
 		t.Fatalf("payload with findings failed Validate: %v", err)
 	}
 
-	// And it must survive the server's strict (DisallowUnknownFields) decoder.
+	// The a11y detail must arrive on the wire as a JSON *string* whose contents parse
+	// into an object with a top-level id. Decoding into an INDEPENDENT struct (not our
+	// own PushPayload) is what makes this non-vacuous: round-tripping our type through
+	// our own type structurally cannot fail, whereas this asserts the actual wire
+	// encoding — `"detail": "{\"id\":\"…\"}"` — which is what auditloop's server reads.
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dec := json.NewDecoder(strings.NewReader(string(raw)))
-	dec.DisallowUnknownFields()
-	var round PushPayload
-	if err := dec.Decode(&round); err != nil {
-		t.Fatalf("payload with findings failed a strict decode: %v", err)
+	var wire struct {
+		Pages []struct {
+			Findings []struct {
+				Type   string `json:"type"`
+				Detail string `json:"detail"` // MUST be a JSON string on the wire
+			} `json:"findings"`
+		} `json:"pages"`
 	}
-	// The a11y detail must survive the string round-trip with its top-level id intact
-	// (the JSON-in-a-JSON-string encoding is what auditloop stores verbatim).
-	for _, f := range round.Pages[0].Findings {
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("wire payload did not decode into the server's field shape (detail must be a string): %v", err)
+	}
+	a11ySeen := 0
+	for _, f := range wire.Pages[0].Findings {
 		if f.Type != FindingA11y {
 			continue
 		}
+		a11ySeen++
 		if _, ok := topLevelID(f.Detail); !ok {
-			t.Errorf("a11y detail lost its top-level id across the wire round-trip: %s", f.Detail)
+			t.Errorf("a11y detail is not an id-carrying object once decoded from the wire: %s", f.Detail)
 		}
+	}
+	if a11ySeen == 0 {
+		t.Error("no a11y findings survived to the wire")
 	}
 }
 
@@ -611,7 +722,10 @@ func TestA11yFindingsAgainstRealAxe(t *testing.T) {
 		t.Fatalf("real axe found no violations on a deliberately inaccessible page — the scan is not working; axe json: %s", truncate(string(vc.AxeJSON), 400))
 	}
 
-	findings := A11yFindings(vc.AxeJSON)
+	findings, err := A11yFindings(vc.AxeJSON)
+	if err != nil {
+		t.Fatalf("A11yFindings on real axe output: %v", err)
+	}
 	if len(findings) != vc.AxeViolations {
 		t.Errorf("emitted %d a11y findings for %d violated rules — want one per RULE", len(findings), vc.AxeViolations)
 	}
@@ -675,7 +789,11 @@ func TestDecodeConsoleArg(t *testing.T) {
 // TestCaptureFindingsEmptyCaptureIsNil asserts a genuinely clean view emits no
 // findings (so a clean page is reported clean, rather than carrying empty noise).
 func TestCaptureFindingsEmptyCaptureIsNil(t *testing.T) {
-	if got := CaptureFindings(ViewCapture{AxeJSON: []byte(`{"violations":[]}`)}); got != nil {
+	got, err := CaptureFindings(ViewCapture{AxeJSON: []byte(`{"violations":[]}`)})
+	if err != nil {
+		t.Fatalf("CaptureFindings: %v", err)
+	}
+	if got != nil {
 		t.Fatalf("clean capture emitted %d findings, want none", len(got))
 	}
 }

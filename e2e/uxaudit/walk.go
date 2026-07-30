@@ -160,7 +160,12 @@ func Walk(ctx context.Context, execPath, outDir, label string) (*WalkResult, err
 		}
 	}
 
-	payload, files := BuildPayload(label, caps)
+	payload, files, err := BuildPayload(label, caps)
+	if err != nil {
+		// An axe scan failure is FATAL: a page that was never scanned must not be
+		// pushed as clean (it would corrupt the a11y regression baseline).
+		return nil, fmt.Errorf("build payload: %w", err)
+	}
 	metaJSON, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return nil, err
@@ -168,7 +173,7 @@ func Walk(ctx context.Context, execPath, outDir, label string) (*WalkResult, err
 	if err := payload.Validate(setOf(files)); err != nil {
 		return nil, fmt.Errorf("built payload is invalid: %w", err)
 	}
-	if err := payload.ValidateFiles(files); err != nil {
+	if err := payload.ValidateFiles(metaJSON, files); err != nil {
 		return nil, fmt.Errorf("built payload exceeds push size caps: %w", err)
 	}
 
@@ -206,13 +211,21 @@ func Walk(ctx context.Context, execPath, outDir, label string) (*WalkResult, err
 // the pushed run reports "no accessibility issues" and the CI a11y gate is a no-op.
 // Third-party events stay counts-only, and no perf/layout findings are emitted
 // (auditloop derives those server-side).
-func BuildPayload(label string, caps []CapturedView) (PushPayload, map[string][]byte) {
+// It returns an error when a capture's axe scan FAILED (axe threw, so the page was
+// never scanned): pushing that page as "clean" would empty auditloop's a11y rule set
+// for the run and flip the regression delta on the next good run.
+func BuildPayload(label string, caps []CapturedView) (PushPayload, map[string][]byte, error) {
 	files := map[string][]byte{}
 	pages := make([]PushPage, 0, len(caps))
 	for _, cv := range caps {
 		base := cv.View.Name + "." + cv.Viewport.Name
 		shot := base + ".png"
 		files[shot] = cv.Capture.ScreenshotPNG
+
+		findings, err := CaptureFindings(cv.Capture)
+		if err != nil {
+			return PushPayload{}, nil, fmt.Errorf("%s (%s): %w", cv.View.Name, cv.Viewport.Name, err)
+		}
 
 		pg := PushPage{
 			URL:               cv.View.Name + "@" + cv.Viewport.Name,
@@ -223,7 +236,7 @@ func BuildPayload(label string, caps []CapturedView) (PushPayload, map[string][]
 			ConsoleThirdParty: cv.Capture.ConsoleThirdParty,
 			NetworkFirstParty: cv.Capture.NetworkFirstParty,
 			NetworkThirdParty: cv.Capture.NetworkThirdParty,
-			Findings:          CaptureFindings(cv.Capture),
+			Findings:          findings,
 		}
 		if len(cv.Capture.AxeJSON) > 0 {
 			axe := base + ".axe.json"
@@ -237,7 +250,7 @@ func BuildPayload(label string, caps []CapturedView) (PushPayload, map[string][]
 		}
 		pages = append(pages, pg)
 	}
-	return PushPayload{Label: label, Environment: EnvLab, Pages: pages}, files
+	return PushPayload{Label: label, Environment: EnvLab, Pages: pages}, files, nil
 }
 
 // setOf returns the key set of a file map (the "provided" set Validate expects).
@@ -347,7 +360,7 @@ func MaybePush(ctx context.Context, res *WalkResult) (runURL string, attempted b
 	if !ok {
 		return "", false, nil
 	}
-	if err := res.Payload.ValidateFiles(res.Files); err != nil {
+	if err := res.Payload.ValidateFiles(res.Metadata, res.Files); err != nil {
 		return "", true, fmt.Errorf("refusing to push: %w", err)
 	}
 	out, err := Upload(ctx, nil, baseURL, token, res.Metadata, res.Files)

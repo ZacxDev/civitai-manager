@@ -110,8 +110,19 @@ const (
 // this runs before artifacts are persisted, so an oversize fails the whole walk
 // (fail-loud beats a server-side 413); on the MaybePush path an oversize just
 // skips the push, non-fatally.
-func (p *PushPayload) ValidateFiles(files map[string][]byte) error {
-	var total int64
+//
+// metaJSON is the `metadata` part and COUNTS TOWARD THE TOTAL, because the server's
+// 64 MiB http.MaxBytesReader wraps the WHOLE multipart body, not just the file parts.
+// It used to be excluded, which was harmless while metadata was a few KB of roll-up
+// counts — but now that each page carries FINDINGS (axe violation details, console/
+// network text) the metadata part is the one part that scales with page content: a
+// max-pathological payload measures ~11 MiB. Omitting it under-reported the real body
+// by that much, so the self-check could pass a body the server would 413.
+func (p *PushPayload) ValidateFiles(metaJSON []byte, files map[string][]byte) error {
+	total := int64(len(metaJSON))
+	if total > MaxFileBytes {
+		return fmt.Errorf("metadata part is %d bytes, over the %d-byte (16 MiB) per-part cap", total, MaxFileBytes)
+	}
 	for name, data := range files {
 		n := int64(len(data))
 		if n > MaxFileBytes {
@@ -120,7 +131,7 @@ func (p *PushPayload) ValidateFiles(files map[string][]byte) error {
 		total += n
 	}
 	if total > MaxTotalBytes {
-		return fmt.Errorf("total upload is %d bytes, over the %d-byte (64 MiB) cap", total, MaxTotalBytes)
+		return fmt.Errorf("total upload (metadata + %d files) is %d bytes, over the %d-byte (64 MiB) cap", len(files), total, MaxTotalBytes)
 	}
 	return nil
 }
@@ -142,8 +153,12 @@ func (p *PushPayload) Validate(provided map[string]bool) error {
 	if len(p.Pages) > MaxPages {
 		return fmt.Errorf("too many pages: %d (max %d)", len(p.Pages), MaxPages)
 	}
+	// The closed finding-type set auditloop accepts. a11y/console/network are the ones
+	// this harness emits (see findings.go); perf/layout are computed server-side from
+	// the raw blocks and "other" is the catch-all — accepted here for wire parity.
 	validType := map[string]bool{
-		"a11y": true, "console": true, "network": true, "perf": true, "layout": true, "other": true,
+		FindingA11y: true, FindingConsole: true, FindingNetwork: true,
+		"perf": true, "layout": true, "other": true,
 	}
 	seenRefs := map[string]bool{}
 	for i, pg := range p.Pages {
