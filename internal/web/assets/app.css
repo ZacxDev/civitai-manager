@@ -1685,6 +1685,23 @@ html {
 .cm-rail-collapse {
   display: none;
 }
+/*
+ * The COLLAPSED edge's expand control (railExpandControl): a full-height button
+ * overlaying the 2.25rem strip, so a click anywhere on it expands the rail rather
+ * than only on the small chevron.
+ *
+ * Desktop-only, and that is load-bearing: below 1024px the rail is an off-canvas
+ * DRAWER where data-collapsed carries no meaning, so this overlay would sit on
+ * top of the drawer's tiles and swallow their clicks. It is only ever RENDERED in
+ * the collapsed state, and only ever DISPLAYED at the desktop breakpoint.
+ *
+ * No z-index: it is the last child of .cm-rail and every sibling it covers is
+ * statically positioned, so DOM order already paints it on top (the same reason
+ * .cm-rail-cap needs none).
+ */
+.cm-rail-expand {
+  display: none;
+}
 
 .cm-rail-body {
   display: grid;
@@ -1831,6 +1848,42 @@ html {
   }
   .cm-rail[data-collapsed="true"] .cm-rail-vlabel {
     display: block;
+  }
+  .cm-rail[data-collapsed="true"] .cm-rail-expand {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.5rem 0.25rem;
+    border: 0;
+    background: transparent;
+    color: var(--civitai-color-text-dimmed);
+    font: inherit;
+    cursor: pointer;
+  }
+  /*
+   * Hover/focus feedback: the whole strip is the target, so it must LOOK like one.
+   * A SURFACE change (not an intent colour) is what reads as "this box is the
+   * button" — and it deliberately introduces NO new foreground/background token
+   * pair: surface-2 under --civitai-color-text is already an asserted pair in
+   * contrast_web_test.go, so this cannot open a new WCAG hole.
+   */
+  .cm-rail[data-collapsed="true"] .cm-rail-expand:hover {
+    background: var(--civitai-color-surface-2);
+    color: var(--civitai-color-text);
+  }
+  .cm-rail[data-collapsed="true"] .cm-rail-expand:focus-visible {
+    outline: 2px solid var(--civitai-color-primary);
+    outline-offset: -2px;
+    background: var(--civitai-color-surface-2);
+    color: var(--civitai-color-text);
+  }
+  .cm-rail-expand-glyph {
+    flex: none;
+    font-size: 1rem;
+    line-height: 1;
   }
   /* EXACTLY ONE of these lands on <body> (see railShellClass). */
   .cm-shell-rail {
