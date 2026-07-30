@@ -226,6 +226,65 @@ func TestQueueQuickPickStartsBatch(t *testing.T) {
 	}
 }
 
+// TestQueueCountInputCarriesABatchDefault pins the fix for the silent single run:
+// the plain Queue button sends only CSRF in hx-vals, so an EMPTY count input made it
+// post count="" → clampBatchCount → 1 → a control labelled "Queue ×N" quietly doing
+// an ordinary Run. The input must ship a real batch count.
+func TestQueueCountInputCarriesABatchDefault(t *testing.T) {
+	if defaultBatchCount < 2 {
+		t.Fatalf("defaultBatchCount = %d — an untouched Queue click would run once",
+			defaultBatchCount)
+	}
+	srv := newTestServer(t)
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, queueSeedGraph)
+	body := get(t, srv, "/workflows/"+id).Body.String()
+
+	i := strings.Index(body, `id="cm-batch-count"`)
+	if i < 0 {
+		t.Fatalf("the custom count input is not rendered: %s", body)
+	}
+	end := i + 300
+	if end > len(body) {
+		end = len(body)
+	}
+	input := body[i:end]
+	if !strings.Contains(input, `value="`+strconv.Itoa(defaultBatchCount)+`"`) {
+		t.Errorf("the count input has no batch default: %s", input)
+	}
+	if strings.Contains(input, `value=""`) {
+		t.Errorf("the count input is still empty: %s", input)
+	}
+}
+
+// TestQueueWithoutACountSaysItRanOnce pins the backstop: the empty count is still
+// reachable (a cleared field, a hand-built request), and when it happens the user
+// must be TOLD that one run started and nothing was queued — otherwise the response
+// is byte-indistinguishable from Run's and the click looks like it did nothing.
+func TestQueueWithoutACountSaysItRanOnce(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, queueSeedGraph)
+	release := make(chan struct{})
+	var calls int32
+	srv.runFn = blockingRunFn(&calls, release)
+
+	rec := postQueue(t, srv, id, url.Values{"csrf_token": {srv.csrf}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Started a single run — nothing was queued.") {
+		t.Errorf("an empty count started a run and said nothing: %s", body)
+	}
+	if snap := srv.runJobState(); snap.BatchTotal != 1 {
+		t.Errorf("BatchTotal = %d, want 1", snap.BatchTotal)
+	}
+	close(release)
+	waitBatchDone(t, srv)
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Errorf("runFn calls = %d, want 1", n)
+	}
+}
+
 // ── the no-seed offer ────────────────────────────────────────────────────────
 
 // TestQueueOffersNoSeedConfirm pins "offer, do not perform": a seedless graph's

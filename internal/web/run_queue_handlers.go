@@ -137,11 +137,18 @@ func (s *Server) handleWorkflowRunQueue(w http.ResponseWriter, r *http.Request) 
 //     then runs enforceOutputsCap, which deletes the OLDEST generations to stay
 //     under the disk cap. A batch multiplies that pressure N-fold, and finding your
 //     older outputs gone is exactly the kind of thing that must be said up front.
+//   - a count of ONE, which is the surprising case: a click on a control labelled
+//     "Queue ×N" produced an ordinary single run, and the response was otherwise
+//     byte-indistinguishable from Run. That is reachable whenever the count input is
+//     cleared (or a hand-built request omits it) — clampBatchCount reads "" as 1.
+//     runQueueControl's default keeps it off the ordinary path; this line covers the
+//     rest.
 //
 // Nothing from the request is reflected into it.
 func queueStartNotice(count int, clamped, noSeed bool) string {
 	if count <= 1 {
-		return ""
+		return "Started a single run — nothing was queued. Enter a count above 1, " +
+			"or use a quick pick, to queue a batch."
 	}
 	msg := "Queued " + strconv.Itoa(count) + " runs. They run one at a time; Stop cancels the rest."
 	if clamped {
@@ -240,12 +247,20 @@ func runQueueControl(wfID string, csrf string) g.Node {
 	// The number input is NOT inside the preset form's field set by accident: it is
 	// named `count`, which no other run control submits, so it rides along on every
 	// preset request harmlessly and is read only here.
+	//
+	// It carries defaultBatchCount rather than an empty value: the plain "Queue"
+	// button sends only CSRF in hx-vals, so an EMPTY input made it post count="",
+	// which clampBatchCount reads as 1 — a control labelled "Queue ×N" quietly doing
+	// a single run, with a response indistinguishable from Run's. A pre-filled
+	// default makes the untouched click do what the label says. The quick picks are
+	// unaffected: the vendored htmx merges hx-vals AFTER the included input, so
+	// hx-vals wins.
 	custom := h.Div(dataAttr("civitai-ui", "text-input"), h.Class("cm-param-int"),
 		h.Label(dataFlag("civitai-ui-label"), h.For("cm-batch-count"), g.Text("Custom count")),
 		h.Input(dataFlag("civitai-ui-control"), h.ID("cm-batch-count"),
 			h.Type("number"), h.Name(batchCountField),
 			g.Attr("min", "1"), g.Attr("max", strconv.Itoa(maxBatchCount)),
-			g.Attr("step", "1"), h.Value("")),
+			g.Attr("step", "1"), h.Value(strconv.Itoa(defaultBatchCount))),
 	)
 	queue := civButton("outline", "sm", []g.Node{
 		h.Type("button"),

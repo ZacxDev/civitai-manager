@@ -48,6 +48,15 @@ const maxBatchCount = 25
 // batchQuickPicks are the one-click counts offered beside the number input.
 var batchQuickPicks = []int{2, 4, 8, 16}
 
+// defaultBatchCount pre-fills the "Custom count" input so an untouched click on the
+// plain Queue button queues an actual batch instead of silently doing one run.
+//
+// It is deliberately the SMALLEST real batch. Every extra item is another captured
+// generation and therefore more enforceOutputsCap eviction pressure on the user's
+// older outputs, so the value a user gets without asking for it must be the least
+// costly one that still means "queue".
+const defaultBatchCount = 2
+
 // batchCountField / batchConfirmNoSeedField are the queue endpoint's form fields.
 const (
 	batchCountField         = "count"
