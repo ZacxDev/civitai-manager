@@ -244,15 +244,18 @@ func storableOverrides(entries []comfy.PresetEntry) []uiWidgetOverrideEntry {
 	return out
 }
 
-// presetParamsWith REPLACES the stored entries with entries. It is the from-scratch
-// writer: creating a preset (prev is "") and the one write that may not carry
-// anything forward (see presetEntryWrite's certifying branch).
+// presetParamsWith REPLACES the stored entries AND the stored mode selection with
+// what it is given. It is the from-scratch writer: creating a preset (prev is "") and
+// the one write that may not carry anything forward (see presetEntryWrite's
+// certifying branch) — for the mode selection just as much as for the entries.
 func presetParamsWith(prev string, entries []comfy.PresetEntry, modes map[string]string) string {
 	return presetParamsFrom(prev, storableOverrides(entries), modes)
 }
 
 // presetParamsMerged MERGES entries over the stored ones: a captured key wins for
-// itself, every other stored key is carried forward untouched.
+// itself, every other stored key is carried forward untouched. The mode selection
+// merges by the same rule (presetModesMerged), so the two positional families
+// cannot drift apart in behaviour.
 //
 // This is the shape the storage model forces. A preset holds the FULL run-parameter
 // set (design decision 4), but a save can only ever capture WHAT IS ON SCREEN, and
@@ -290,7 +293,60 @@ func presetParamsMerged(prev string, entries []comfy.PresetEntry, modes map[stri
 		// stays dropped-and-NAMED on the next open.
 		carried = append(carried, e)
 	}
-	return presetParamsFrom(prev, append(carried, storableOverrides(entries)...), modes)
+	return presetParamsFrom(prev, append(carried, storableOverrides(entries)...),
+		presetModesMerged(prev, modes))
+}
+
+// presetModesMerged MERGES the captured mode picks over the stored ones: a selector
+// this request picked for wins for itself, a selector it said nothing about keeps its
+// stored pick.
+//
+// Same failure as the widget wipe, one field over. A preset holds the FULL run
+// parameter set including its mode, but a request only carries a mode_key when the
+// picker actually submitted one — and presetParamsFrom REPLACED the stored selection
+// wholesale, so a save that captured widget values while posting no mode_key stored
+// an empty selection over the user's pick. parseModeChoices' own comment already
+// reads `"" (keep as saved)`; the write then did not keep it.
+//
+// WHAT "CAPTURED" MEANS FOR A MODE is narrower than for a widget, and the difference
+// is structural rather than a judgement call:
+//
+//   - A parameter field ALWAYS submits — a text input posts whether or not it holds
+//     text — so an absent widget key means the field was not on screen, and an empty
+//     posted value is a deliberate CLEAR that must win.
+//   - A mode <select> submits one value per selector, and parseModeChoices keeps only
+//     values naming a real mode of a real selector. So no mode_key for a selector
+//     (absent, blank placeholder, unknown, hostile) is the ABSENCE of a capture and
+//     carries the stored pick forward; an explicit live mode key IS the capture and
+//     wins for its selector.
+//
+// ⚠ KNOWN LIMIT — a stored pick can be REPLACED by a save, never REMOVED by one.
+// "The user deselected the mode" is not representable in the posted form at all:
+// runModeSelect renders the blank "Choose a mode…" option ONLY while nothing is
+// selected, so a picker showing a mode offers no way back to blank, and a blank value
+// parses identically to no field at all. A sentinel meaning "clear it" is
+// deliberately NOT invented here — that is new UI, not a merge fix. Deleting the tab
+// is today's way to clear a stored pick. Carrying forward is still the strictly safer
+// half of that trade: the alternative was deleting the pick on a write that never
+// asked to.
+//
+// This does NOT let a stored pick outlive a picker change (RESOLVED decision 1(c):
+// #run-modes is the source of truth, a preset's mode only pre-selects it). Every run
+// control hx-includes "#run-modes select", so a user who changed the picker posts the
+// NEW key — which is a capture, and wins.
+func presetModesMerged(prev string, modes map[string]string) map[string]string {
+	stored := parseRunParams(prev).ModeSelection
+	if len(stored) == 0 {
+		return modes
+	}
+	out := make(map[string]string, len(stored)+len(modes))
+	for k, v := range stored {
+		out[k] = v
+	}
+	for k, v := range modes {
+		out[k] = v
+	}
+	return out
 }
 
 // presetUncapturedCount counts the stored entries this capture did NOT cover — the
@@ -307,6 +363,19 @@ func presetUncapturedCount(prev string, entries []comfy.PresetEntry) int {
 			continue
 		}
 		n++
+	}
+	return n
+}
+
+// presetUncapturedModes counts the stored mode picks this request did not capture —
+// the picks a REPLACING (certifying) write discards, counted so the caller can SAY
+// so rather than dropping them in silence.
+func presetUncapturedModes(prev string, modes map[string]string) int {
+	n := 0
+	for selKey := range parseRunParams(prev).ModeSelection {
+		if _, ok := modes[selKey]; !ok {
+			n++
+		}
 	}
 	return n
 }
@@ -461,6 +530,23 @@ func presetAdoptable(wf *store.Workflow) bool {
 //     is exactly "I do not certify a param set against a graph I did not inspect").
 //     The discarded count is returned so the caller can SAY so; those same values
 //     were already named as drops in the banner the user adopted from.
+//
+// THE MODE SELECTION IS SUBJECT TO EXACTLY THE SAME ARGUMENT, because a
+// comfy.ModeGroup.Key is "<selector node id>:<group index>" — as positional as a
+// widget index, and re-derived from the CURRENT graph on every read:
+//
+//   - hash == "" → ResolvePresetModes' hash gate withholds every stored pick and
+//     NAMES it, so carrying is free.
+//   - hash != "" AND presetHashMatch → the pick was captured under this very hash by
+//     induction; carrying keeps the claim true.
+//   - hash != "" AND NOT presetHashMatch (an ADOPTION) → the hash gate stops firing,
+//     leaving only the STRUCTURE check, which passes as long as the key still names
+//     SOME group of that selector. An author who inserted or reordered a group keeps
+//     the key valid while it now names a DIFFERENT pipeline — the retarget hazard, at
+//     pipeline scale. So an adoption certifies only the picks this request made, and
+//     an uncaptured stored pick counts toward discarded like any other saved value it
+//     did not keep. (Adoption only happens on the drifted path, where the pick was
+//     already named as a PresetDropModeDrifted in the banner the user adopted from.)
 func presetEntryWrite(p *store.RunPreset, wf *store.Workflow, entries []comfy.PresetEntry, modes map[string]string, adopt bool) (params, hash string, discarded int) {
 	if len(entries) == 0 {
 		return p.Params, p.GraphHash, 0
@@ -468,7 +554,7 @@ func presetEntryWrite(p *store.RunPreset, wf *store.Workflow, entries []comfy.Pr
 	hash = presetWriteHash(p, wf, adopt)
 	if hash != "" && !presetHashMatch(p, wf) {
 		return presetParamsWith(p.Params, entries, modes), hash,
-			presetUncapturedCount(p.Params, entries)
+			presetUncapturedCount(p.Params, entries) + presetUncapturedModes(p.Params, modes)
 	}
 	return presetParamsMerged(p.Params, entries, modes), hash, 0
 }
@@ -864,7 +950,8 @@ type presetSaveOutcome struct {
 	// Drifted is the pre-write verdict.
 	Drifted bool
 	// Discarded counts stored values an ADOPTION could not certify and therefore did
-	// not keep (presetEntryWrite's certifying branch). Zero on every other write.
+	// not keep (presetEntryWrite's certifying branch) — uncaptured widget entries AND
+	// an uncaptured mode pick, both positional. Zero on every other write.
 	Discarded int
 	// Rescannable is true when this workflow row came from a disk scan, so "re-scan
 	// it" is advice the user can actually act on.
