@@ -390,6 +390,20 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   leaving a **committed tree that FAILS**. After ANY subagent: `git status` must be
   clean AND re-run the real gate **on the committed tree** (the verify-agent gate
   catches this — trust it over the agent's "green").
+- **A subagent can DIE MID-FILE — recovery is mechanical.** Distinct from the
+  uncommitted-bump trap above, which is about a *completed* agent: one hit a
+  **monthly spend limit** partway through writing a test file and left a tree that
+  **did not compile** (an undefined fixture symbol) plus 8 uncommitted files. Order:
+  1. `git log <base>..HEAD` — what actually landed as commits.
+  2. `git status --porcelain` — what is dirty; the unfinished work is here.
+  3. `go build ./...` then `go test ./...` — **the first compile error is usually the
+     exact line the agent was writing when it stopped.**
+  4. Finish or revert that one thing, then gate on the **committed** tree and commit
+     the dirty remainder as its own step.
+
+  **Do not assume a partial tree is broken beyond the truncation point** — in that
+  case everything else was complete and correct, and the whole feature was
+  recoverable in a few edits.
 - **Stale `<new-diagnostics>` after a subagent are almost always false.** The
   classic false-alarm signature: a `go.mod` "updates needed / go mod tidy" warning
   + an `undefined: X` cascade across many files + cross-branch/worktree symbol
@@ -409,6 +423,32 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   built binary against it), not only synthetic-body tests. This session had THREE
   such catches: `types` plural, app `id` ULID, `modelVersions[]` ordering — all green
   in tests, all broken against reality.
+- 🔴 **A green guard test is NOT evidence until you have proven it can FAIL.** When
+  the failure mode is invisible to the assertion you wrote, green means nothing — so
+  mutate the thing under guard and watch the test go red. The instrument differs by
+  class: a **logic/concurrency guard → mutate the guard**; anything **visual → a real
+  browser** (see the browser bullets above); an **external API integration → the live
+  API** (the fake-reader bullet above). Ground case:
+  `internal/web/run_batch_singleton_web_test.go` guards the `applyRunOutcomeLocked`
+  split (a per-item settle leaves `running == true`; only the per-batch settle clears
+  it). **Its first version was green AND vacuous** — it gated inside `runFn`, so the
+  eight ticks fired in microseconds, the between-items gap never coincided with an
+  in-flight POST, and deliberately clearing `job.running` in `applyItemOutcomeLocked`
+  went **completely undetected**. For a **timing-window** guard: (a) hold the window
+  open **deterministically** — gate the LOOP with one token per item, plus a small
+  settle, so the hammering goroutines have somewhere to land — rather than relying on
+  scheduling luck; and (b) mutate and watch it go red before you trust it. The
+  committed version fails that mutation with "the singleton opened between items 1
+  and 2".
+- **The other half — bound the probe to EXACTLY the window being guarded, or you get
+  FALSE POSITIVES.** That same test's second attempt checked the invariant *past the
+  final item*, where the batch has legitimately finished and the singleton is
+  correctly free. It reported "a SECOND batch started mid-run" — **a bug that did not
+  exist** — and additionally **hung**, because the legitimately-admitted batch blocked
+  on a channel nobody fed. Both halves came from one test within an hour:
+  mutation-verification and window-bounding are complementary, and **neither alone is
+  sufficient** — one catches a test that cannot fail, the other a test that fails at
+  nothing.
 - **A REAL BROWSER IS AVAILABLE — use it for anything visual.** (This bullet used
   to claim the opposite; that claim is dead. MCP Playwright is still broken on this
   NixOS host and there is still no `chromium` on PATH, but neither of those is the
