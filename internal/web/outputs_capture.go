@@ -344,7 +344,17 @@ func (s *Server) captureGeneration(wf *store.Workflow, opts runOptions, res *run
 		GraphHash:    wf.GraphHash,
 		Params:       marshalRunParams(buildRunParamsSnapshot(wf, opts)),
 		PresetName:   opts.PresetName,
-		Status:       status,
+		// Batch attribution is carried straight off runOptions. This is the ONLY
+		// bridge between runBatch (which sets the three fields per item) and
+		// InsertGeneration (which writes them): captureGeneration is the only caller
+		// of InsertGeneration, so dropping them here silently NULLs every row and
+		// makes migration 0016's columns, ix_generations_batch and
+		// ListGenerationsByBatch unreachable in the shipped binary. A single run
+		// carries "",0,0 and stays NULL in all three — see nullPositiveInt.
+		BatchID:    opts.BatchID,
+		BatchIndex: opts.BatchIndex,
+		BatchTotal: opts.BatchTotal,
+		Status:     status,
 	}
 	// preset_id is a real FK (ON DELETE SET NULL). A preset deleted between the run
 	// starting and the capture landing would fail the insert — and losing the images

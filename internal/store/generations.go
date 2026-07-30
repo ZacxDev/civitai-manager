@@ -42,6 +42,14 @@ type Generation struct {
 	// PresetName is a SNAPSHOT of the preset's label at run time (the same idiom as
 	// WorkflowName), so a deleted preset's runs stay labeled.
 	PresetName string
+	// BatchID groups the N runs one "Queue ×N" click produced; "" for an ordinary
+	// single run. BatchIndex is 1-based within the batch and BatchTotal is N AS
+	// REQUESTED (not as captured), so a batch halted at item 3 of 8 still reports
+	// eight — counting captured rows would hide that five runs were never made.
+	// All three are zero/"" together: a run either belongs to a batch or does not.
+	BatchID    string
+	BatchIndex int
+	BatchTotal int
 	Status     string
 	ImageCount int
 	CreatedAt  time.Time
@@ -75,37 +83,70 @@ type ListGenerationsOpts struct {
 }
 
 const generationCols = `id, workflow_id, workflow_name, prompt_id, base_model,
-	graph_hash, params, preset_id, preset_name, status, image_count, created_at`
+	graph_hash, params, preset_id, preset_name, batch_id, batch_index, batch_total,
+	status, image_count, created_at`
+
+// genNulls is the set of landing pads for a generation row's NULLable columns.
+//
+// It exists so `generationCols`, the scan destinations and the null→field mapping
+// live in ONE place. They used to be spelled out twice (scanGeneration and
+// ListGenerations' inline loop), and a column added to the list but to only one of
+// the two scans is a silent mis-alignment — every subsequent column reads the wrong
+// value with no error at all.
+type genNulls struct {
+	workflowID sql.NullInt64
+	baseModel  sql.NullString
+	graphHash  sql.NullString
+	params     sql.NullString
+	presetID   sql.NullInt64
+	presetName sql.NullString
+	batchID    sql.NullString
+	batchIndex sql.NullInt64
+	batchTotal sql.NullInt64
+	createdAt  string
+}
+
+// dest returns the scan destinations for generationCols, IN THAT EXACT ORDER.
+func (n *genNulls) dest(gen *Generation) []any {
+	return []any{
+		&gen.ID, &n.workflowID, &gen.WorkflowName, &gen.PromptID,
+		&n.baseModel, &n.graphHash, &n.params, &n.presetID, &n.presetName,
+		&n.batchID, &n.batchIndex, &n.batchTotal,
+		&gen.Status, &gen.ImageCount, &n.createdAt,
+	}
+}
+
+// apply copies the scanned nullable values onto gen.
+func (n *genNulls) apply(gen *Generation) {
+	if n.workflowID.Valid {
+		id := n.workflowID.Int64
+		gen.WorkflowID = &id
+	}
+	if n.presetID.Valid {
+		id := n.presetID.Int64
+		gen.PresetID = &id
+	}
+	gen.BaseModel = n.baseModel.String
+	gen.GraphHash = n.graphHash.String
+	gen.Params = n.params.String
+	gen.PresetName = n.presetName.String
+	gen.BatchID = n.batchID.String
+	gen.BatchIndex = int(n.batchIndex.Int64)
+	gen.BatchTotal = int(n.batchTotal.Int64)
+	gen.CreatedAt = parseTime(n.createdAt)
+}
 
 // scanGeneration reads the core generation columns (generationCols order). It does
 // NOT populate FirstImageID (ListGenerations selects that separately).
 func scanGeneration(sc scanner) (Generation, error) {
 	var (
-		gen        Generation
-		workflowID sql.NullInt64
-		baseModel  sql.NullString
-		graphHash  sql.NullString
-		params     sql.NullString
-		presetID   sql.NullInt64
-		presetName sql.NullString
-		createdAt  string
+		gen Generation
+		n   genNulls
 	)
-	if err := sc.Scan(&gen.ID, &workflowID, &gen.WorkflowName, &gen.PromptID,
-		&baseModel, &graphHash, &params, &presetID, &presetName,
-		&gen.Status, &gen.ImageCount, &createdAt); err != nil {
+	if err := sc.Scan(n.dest(&gen)...); err != nil {
 		return Generation{}, err
 	}
-	if workflowID.Valid {
-		gen.WorkflowID = &workflowID.Int64
-	}
-	if presetID.Valid {
-		gen.PresetID = &presetID.Int64
-	}
-	gen.BaseModel = baseModel.String
-	gen.GraphHash = graphHash.String
-	gen.Params = params.String
-	gen.PresetName = presetName.String
-	gen.CreatedAt = parseTime(createdAt)
+	n.apply(&gen)
 	return gen, nil
 }
 
@@ -153,11 +194,15 @@ func (s *Store) InsertGeneration(ctx context.Context, gen *Generation, images []
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO generations
 			(workflow_id, workflow_name, prompt_id, base_model, graph_hash,
-			 params, preset_id, preset_name, status, image_count, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 params, preset_id, preset_name, batch_id, batch_index, batch_total,
+			 status, image_count, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		nullInt64(gen.WorkflowID), gen.WorkflowName, gen.PromptID,
 		nullStr(gen.BaseModel), nullStr(gen.GraphHash), nullStr(gen.Params),
 		nullInt64(gen.PresetID), nullStr(gen.PresetName),
+		// A run with no batch stores NULL in all three, matching every pre-0016 row
+		// (and keeping `batch_id IS NOT NULL` a truthful "this was a batch item").
+		nullStr(gen.BatchID), nullPositiveInt(gen.BatchIndex), nullPositiveInt(gen.BatchTotal),
 		gen.Status, gen.ImageCount, formatTime(gen.CreatedAt))
 	if err != nil {
 		return 0, fmt.Errorf("insert generation: %w", err)
@@ -222,39 +267,87 @@ func (s *Store) ListGenerations(ctx context.Context, opts ListGenerationsOpts) (
 	}
 	defer rows.Close()
 
+	return scanGenerationsWithThumb(rows)
+}
+
+// scanGenerationsWithThumb drains rows of `generationCols, first_image_id`. Both
+// list queries (the gallery/rail list and the per-batch list) go through it, so
+// they can never disagree about column order.
+func scanGenerationsWithThumb(rows *sql.Rows) ([]Generation, error) {
 	var out []Generation
 	for rows.Next() {
 		var (
-			gen        Generation
-			workflowID sql.NullInt64
-			baseModel  sql.NullString
-			graphHash  sql.NullString
-			params     sql.NullString
-			presetID   sql.NullInt64
-			presetName sql.NullString
-			createdAt  string
-			firstImg   int64
+			gen      Generation
+			n        genNulls
+			firstImg int64
 		)
-		if err := rows.Scan(&gen.ID, &workflowID, &gen.WorkflowName, &gen.PromptID,
-			&baseModel, &graphHash, &params, &presetID, &presetName,
-			&gen.Status, &gen.ImageCount, &createdAt, &firstImg); err != nil {
+		if err := rows.Scan(append(n.dest(&gen), &firstImg)...); err != nil {
 			return nil, err
 		}
-		if workflowID.Valid {
-			gen.WorkflowID = &workflowID.Int64
-		}
-		if presetID.Valid {
-			gen.PresetID = &presetID.Int64
-		}
-		gen.BaseModel = baseModel.String
-		gen.GraphHash = graphHash.String
-		gen.Params = params.String
-		gen.PresetName = presetName.String
-		gen.CreatedAt = parseTime(createdAt)
+		n.apply(&gen)
 		gen.FirstImageID = firstImg
 		out = append(out, gen)
 	}
 	return out, rows.Err()
+}
+
+// nullPositiveInt maps a non-positive count to SQL NULL. batch_index/batch_total
+// are 1-based when present, so 0 means "not a batch item" and must not be stored
+// as a literal 0 that later reads as a real (impossible) position.
+func nullPositiveInt(n int) sql.NullInt64 {
+	if n <= 0 {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: int64(n), Valid: true}
+}
+
+// maxBatchIDLen bounds an accepted batch id. comfy.NewID() is far shorter; the
+// bound exists so a hostile URL segment can never become a long bound parameter.
+const maxBatchIDLen = 64
+
+// ValidBatchID reports whether s is a plausible batch id: a bare
+// [A-Za-z0-9_-]{1,64}. batch_id reaches the store from a URL PATH SEGMENT
+// (/outputs/batch/{id}), so it is untrusted input; everything else is rejected
+// before it is ever bound into a query. An id that is well-formed but unknown is
+// NOT an error — it simply selects zero rows.
+func ValidBatchID(s string) bool {
+	if len(s) == 0 || len(s) > maxBatchIDLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// ListGenerationsByBatch returns the captured generations of ONE batch in run
+// order (batch_index ASC, id ASC), each with its FirstImageID for a thumbnail.
+//
+// An invalid id returns nil with NO query issued, and a well-formed but unknown id
+// returns zero rows rather than an error — the batch page must 404/empty on a
+// stale or guessed id, never 500.
+func (s *Store) ListGenerationsByBatch(ctx context.Context, batchID string) ([]Generation, error) {
+	if !ValidBatchID(batchID) {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+generationCols+`,
+		COALESCE((SELECT gi.id FROM generation_images gi
+		          WHERE gi.generation_id = generations.id
+		          ORDER BY gi.idx, gi.id LIMIT 1), 0) AS first_image_id
+		FROM generations
+		WHERE batch_id = ?
+		ORDER BY batch_index ASC, id ASC`, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanGenerationsWithThumb(rows)
 }
 
 // recentGenerationsCap is the HARD upper bound on ListRecentGenerations' limit.

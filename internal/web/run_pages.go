@@ -287,10 +287,41 @@ func dataRunSeq(seq int64) g.Node {
 // runStopped is the terminal fragment after an explicit Stop (no poller).
 func runStopped(snap runSnapshot, wfID int64, csrf string) g.Node {
 	body := []g.Node{h.P(h.Class("text-sm text-amber-400"), g.Text("Run stopped."))}
+	if line := batchSummaryNode(snap); line != nil {
+		body = append(body, line)
+	}
 	if wfID > 0 {
 		body = append(body, h.Div(h.Class("pt-1"), runAgainButton(wfID, csrf)))
 	}
-	return h.Div(dataRunSeq(snap.Seq), h.Class("space-y-3"), g.Group(body))
+	return h.Div(dataRunSeq(snap.Seq), dataBatchProgress(snap), h.Class("space-y-3"), g.Group(body))
+}
+
+// dataBatchProgress stamps data-batch-index / data-batch-total on a run-status
+// fragment root, beside data-run-seq. Same rationale as that attribute: the harness
+// (and any test) can pin batch progress without scraping prose, and the prose is
+// then free to change.
+//
+// Omitted entirely for a single run, so every existing fragment's markup is
+// byte-identical to before.
+func dataBatchProgress(snap runSnapshot) g.Node {
+	if !snap.IsBatch() {
+		return g.Group(nil)
+	}
+	return g.Group([]g.Node{
+		g.Attr("data-batch-index", strconv.Itoa(snap.BatchIndex)),
+		g.Attr("data-batch-total", strconv.Itoa(snap.BatchTotal)),
+	})
+}
+
+// batchSummaryNode renders the one extra terminal line a MULTI-item batch adds
+// ("8 of 8 complete.", "Batch halted at item 3 of 8 — 2 completed, 5 not started.").
+// It is server-authored text composed under runMu while the counters were still
+// consistent, and nil for a single run.
+func batchSummaryNode(snap runSnapshot) g.Node {
+	if snap.BatchSummary == "" {
+		return nil
+	}
+	return h.P(h.Class("text-sm text-slate-300"), g.Text(snap.BatchSummary))
 }
 
 // runPoller is the one-shot re-arming poll element driving the running view to its
@@ -314,16 +345,27 @@ func runRunning(snap runSnapshot, wfID int64, csrf string) g.Node {
 	if snap.Phase == runPhaseQueued {
 		line = fmt.Sprintf("Queued — %d ahead", snap.QueuePos)
 	}
+	stopLabel := "Stop"
+	if snap.IsBatch() {
+		// The batch's progress leads the phase line: "which of my eight is this?" is
+		// the first thing the user asks, and it is the only thing the phase line
+		// cannot answer.
+		line = fmt.Sprintf("Item %d of %d · %s", snap.BatchIndex, snap.BatchTotal, line)
+		// Naming what Stop actually does: it cancels the whole remaining batch, not
+		// just the item on screen.
+		stopLabel = "Stop batch"
+	}
 	stop := civButton("filled", "sm", []g.Node{
 		h.Type("button"),
 		hx("post", "/workflows/run/stop"),
 		hx("target", "#"+runStatusContainerID),
 		hx("swap", "innerHTML"),
 		runStopVals(csrf, wfID),
-	}, g.Text("Stop"))
+	}, g.Text(stopLabel))
 
 	return h.Div(
 		dataRunSeq(snap.Seq),
+		dataBatchProgress(snap),
 		h.Class("space-y-3"),
 		h.Div(h.Class("flex items-center gap-2 text-sm text-slate-300"),
 			spinnerGlyph(),
@@ -344,6 +386,14 @@ func runStopVals(csrf string, wfID int64) g.Node {
 // report (message + preflight/warnings detail) — plus a "Run again" button.
 func runTerminal(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mode string) g.Node {
 	var body []g.Node
+	// The batch line goes ABOVE the (byte-for-byte unchanged) per-run report. On a
+	// halt the failing item's runFailure panel keeps every missing-model /
+	// node-attribution / option-fix affordance working — the batch wrapper must not
+	// swallow them, because those are the actions that let the user fix it and
+	// re-queue.
+	if line := batchSummaryNode(snap); line != nil {
+		body = append(body, line)
+	}
 	switch snap.Phase {
 	case runPhaseDone:
 		body = append(body, h.P(h.Class("text-sm text-emerald-400"), g.Text(snap.Message)))
@@ -366,7 +416,7 @@ func runTerminal(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mod
 		}
 		body = append(body, h.Div(h.Class("pt-1 flex flex-wrap items-center gap-2"), g.Group(actions)))
 	}
-	return h.Div(dataRunSeq(snap.Seq), h.Class("space-y-3"), g.Group(body))
+	return h.Div(dataRunSeq(snap.Seq), dataBatchProgress(snap), h.Class("space-y-3"), g.Group(body))
 }
 
 // runAgainButton re-triggers a run into the same stable container.

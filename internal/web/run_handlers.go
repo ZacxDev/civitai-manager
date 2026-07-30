@@ -12,6 +12,7 @@ import (
 
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
 	"github.com/ZacxDev/civitai-manager/internal/store"
+	g "maragu.dev/gomponents"
 )
 
 // runJobBudget is a RUNAWAY BACKSTOP for a workflow run (not the normal
@@ -106,6 +107,37 @@ type runJob struct {
 	startedAt  time.Time
 	finishedAt time.Time
 	cancel     context.CancelFunc
+
+	// ── Batch fields (a single run is simply a batch of 1) ───────────────────
+	//
+	// ONE job owns N prompts and submits them SEQUENTIALLY. There is no second job
+	// type: runSeq / data-run-seq / #run-status / runStatusFragment are all keyed to
+	// one job, and a parallel batch-job type would have to duplicate every one of
+	// them. batchTotal == 1 && batchID == "" is exactly today's behaviour.
+
+	// batchID groups this batch's captured generations (generations.batch_id). It is
+	// "" for a single run, so an ordinary run's row stays NULL in all three batch
+	// columns, indistinguishable from every pre-0016 row.
+	batchID string
+	// batchTotal is N AS REQUESTED, batchIndex the 1-based item currently in flight,
+	// batchDone the number that reached phase==done. Keeping total as requested is
+	// what lets a halt say "3 of 8 — 5 not started" instead of silently reporting a
+	// batch of 3.
+	batchTotal int
+	batchIndex int
+	batchDone  int
+	// batchStop is the Stop request. It is READ at the top of every item, under
+	// runMu, BEFORE any work — so the un-submitted remainder is never submitted.
+	// Nothing is queued ahead, which is the whole payoff of sequential submission.
+	batchStop bool
+	// itemCancel cancels the CURRENT item only (the batch-level cancel is `cancel`).
+	// Cancelling the item is what unblocks realRun's poll loop.
+	itemCancel context.CancelFunc
+	// batchSummary is the one extra terminal line a MULTI-item batch renders above
+	// the existing (unchanged) terminal fragment. It is kept OFF `message` on
+	// purpose: message may carry untrusted ComfyUI error text and drives the failure
+	// panel, and the batch accounting must not be entangled with it.
+	batchSummary string
 }
 
 // runResult is what runFn returns: images on success, or a preflight report /
@@ -166,6 +198,14 @@ type runOptions struct {
 	// run that did not come from a preset.
 	PresetID   int64
 	PresetName string
+	// BatchID/BatchIndex/BatchTotal attribute the run to the "Queue ×N" batch it is
+	// an item of. Like PresetID/PresetName they are pure ATTRIBUTION — nothing about
+	// the run behaves differently — and are snapshotted onto the captured generation
+	// so N runs group into one batch in the gallery instead of flooding it with N
+	// undifferentiated tiles. Zero/"" for an ordinary single run.
+	BatchID    string
+	BatchIndex int
+	BatchTotal int
 }
 
 // runUpdater lets runFn stream phase transitions into the job under the mutex.
@@ -194,6 +234,31 @@ func (s *Server) startRun(wf *store.Workflow, opts runOptions) bool {
 	return s.startRunWithMessage(wf, opts, "Starting run…")
 }
 
+// startRunNotice starts a single run and returns the line to render ABOVE the status
+// fragment: "" when it started, and the refusal otherwise.
+//
+// Every fragment-returning run handler goes through it. They all used to discard the
+// refusal and re-render the OTHER run's status, so a click while something was in
+// flight looked like nothing happened at all — tolerable for a re-click, actively
+// confusing for "I clicked Queue ×8".
+func (s *Server) startRunNotice(wf *store.Workflow, opts runOptions) string {
+	started, ref := s.startBatch(wf, opts, batchSpec{Count: 1, Message: "Starting run…"})
+	if started {
+		return ""
+	}
+	return ref.notice()
+}
+
+// renderRunStatus writes the refusal line (if any) plus the run-status fragment.
+// The line is a SIBLING above #run-status's content, never a wrapper: the poller
+// still swaps this whole body into the stable #run-status container.
+func (s *Server) renderRunStatus(w http.ResponseWriter, wfID int64, notice string) {
+	s.render(w, http.StatusOK, g.Group([]g.Node{
+		runNoticeLine(notice, false),
+		runStatusFragment(s.runJobState(), wfID, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()),
+	}))
+}
+
 // startRunWithMessage is startRun with the job's OPENING status line supplied, so a
 // caller that reached the run by a notable route (e.g. "the file was already installed,
 // nothing was downloaded") can say so instead of showing an indistinguishable
@@ -204,55 +269,19 @@ func (s *Server) startRun(wf *store.Workflow, opts runOptions) bool {
 // (e.g. the batch install's N resolutions) must say so rather than answer with the
 // other job's panel.
 func (s *Server) startRunWithMessage(wf *store.Workflow, opts runOptions, msg string) bool {
-	s.runMu.Lock()
-	defer s.runMu.Unlock()
-	if s.runJob != nil && s.runJob.running {
-		return false // one run at a time
-	}
-
-	base := s.baseCtx
-	if base == nil {
-		base = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(base, runJobBudget)
-	s.runSeq++
-	job := &runJob{
-		running: true, workflowID: wf.ID, seq: s.runSeq, phase: runPhasePreparing,
-		message: msg, startedAt: time.Now(), cancel: cancel,
-		uiFormat: wf.Format == store.WorkflowFormatUI,
-	}
-	s.runJob = job
-
-	up := s.newRunUpdater(job)
-
-	run := s.runFn
-	if run == nil {
-		run = s.realRun
-	}
-
-	go func() {
-		defer cancel()
-		var res *runResult
-		var err error
-		// The run path parses two large untrusted surfaces (the imported UI graph in
-		// ConvertUIToAPI and untrusted comfy JSON). A panic here must fail THIS job,
-		// not crash the server. (audit 🟡)
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					err = fmt.Errorf("run panicked: %v", r)
-				}
-			}()
-			res, err = run(ctx, wf, up, opts)
-		}()
-		s.settleAndCapture(job, wf, opts, res, err)
-	}()
-	return true
+	started, _ := s.startBatch(wf, opts, batchSpec{Count: 1, Message: msg})
+	return started
 }
 
-// settleAndCapture is the shared tail of EVERY run path (startRun and
-// startDownloadAndRun): it settles the finished job under runMu, then runs the
-// best-effort output capture.
+// settleAndCapture is the settle-then-capture tail of the DOWNLOAD-THEN-RUN job
+// (run_download.go), which builds and drives its own runJob: it settles the finished
+// job under runMu, then runs the best-effort output capture.
+//
+// The ordinary run path no longer comes through here — it is a batch of one and
+// runBatch inlines this same sequence per item (see run_batch.go), because a batch
+// must settle the ITEM without finishing the JOB. Both paths still share
+// applyRunOutcomeLocked / applyItemOutcomeLocked, so the classification cannot
+// diverge; only the running=false transition differs, and that is the whole point.
 //
 // Two properties are load-bearing and must not be reordered:
 //   - applyRunOutcomeLocked runs under runMu, and the phase is snapshotted under
@@ -302,13 +331,38 @@ func (s *Server) newRunUpdater(job *runJob) runUpdater {
 	}
 }
 
-// applyRunOutcomeLocked settles job from a run's (res, err). The caller MUST hold
-// runMu. It marks the job finished and classifies the terminal state (stopped,
-// error, failed preflight, conversion warnings, success). Shared by the plain run
-// and the download-then-run job.
+// applyRunOutcomeLocked settles job from a run's (res, err) AND finishes it. The
+// caller MUST hold runMu. It is the WHOLE-JOB settle — classification plus the
+// running=false transition — and stays the shared tail of the download-then-run
+// path (settleAndCapture).
+//
+// It is now the composition of the two halves the batch runner needs separately. A
+// single run is a batch of one, so "settle the item, then finish the batch" is
+// exactly what it always did.
 func (s *Server) applyRunOutcomeLocked(job *runJob, res *runResult, err error) {
-	job.running = false
-	job.finishedAt = time.Now()
+	s.applyItemOutcomeLocked(job, res, err)
+	s.applyBatchOutcomeLocked(job)
+}
+
+// applyItemOutcomeLocked classifies ONE run's outcome into job: stopped, error,
+// failed preflight, conversion warnings, success. The caller MUST hold runMu. The
+// classification switch below is the ORIGINAL one, moved verbatim — nothing about
+// how a run is judged changed, only when the job stops being "running".
+//
+// 🔴 IT DELIBERATELY DOES NOT TOUCH job.running.
+// Between the items of a batch the run singleton MUST stay held. If this cleared
+// `running`, a concurrent startRun would slip in through the gap between item i's
+// settle and item i+1's submit, and two runs would be submitting into ComfyUI at
+// once — a nondeterministic, load-dependent failure, the hardest kind to catch
+// after the fact. Clearing it is applyBatchOutcomeLocked's job and happens exactly
+// ONCE per batch. TestBatchSingletonHeldAcrossItems and
+// TestBatchConcurrentStartRunRace exist for this four-line split alone.
+//
+// It reports whether the item ended in a NON-done state, which HALTS the batch (see
+// runBatch): preflight failures are deterministic across items — only the seed
+// differs — and the failure panel's fix actions each start a NEW run, so they
+// cannot coherently target "item 4 of 8".
+func (s *Server) applyItemOutcomeLocked(job *runJob, res *runResult, err error) bool {
 	switch {
 	case job.stopped:
 		job.phase, job.message = runPhaseFailed, "Run stopped."
@@ -343,6 +397,46 @@ func (s *Server) applyRunOutcomeLocked(job *runJob, res *runResult, err error) {
 		}
 	default:
 		job.phase, job.message = runPhaseFailed, "Run produced no result."
+	}
+	return job.phase != runPhaseDone
+}
+
+// applyBatchOutcomeLocked FINISHES the job: it is the only place `running` is
+// cleared, and it runs exactly once per batch. The caller MUST hold runMu.
+//
+// It also composes the batch summary line while every counter is still consistent
+// under this lock — computing it later, from a snapshot, is how "3 of 8" drifts.
+func (s *Server) applyBatchOutcomeLocked(job *runJob) {
+	job.running = false
+	job.finishedAt = time.Now()
+	job.itemCancel = nil
+	job.batchSummary = batchSummaryLine(job)
+}
+
+// batchSummaryLine is the extra terminal line a MULTI-item batch renders. It
+// returns "" for a single run (batchTotal <= 1), so every existing terminal
+// fragment is byte-identical to before.
+//
+// The three shapes match the three terminal states. `stopped` is checked FIRST
+// because a Stop during item i settles that item as failed (the classification
+// switch's first case), and reporting it as "halted" would blame the workflow for
+// the user's own click.
+func batchSummaryLine(job *runJob) string {
+	if job.batchTotal <= 1 {
+		return ""
+	}
+	done, idx, total := job.batchDone, job.batchIndex, job.batchTotal
+	switch {
+	case job.stopped:
+		return fmt.Sprintf("Batch stopped — %d of %d completed, %d cancelled.",
+			done, total, total-done)
+	case job.phase != runPhaseDone:
+		// batchTotal is N AS REQUESTED, so "not started" is honest about the runs that
+		// were never submitted rather than silently reporting a smaller batch.
+		return fmt.Sprintf("Batch halted at item %d of %d — %d completed, %d not started.",
+			idx, total, done, total-idx)
+	default:
+		return fmt.Sprintf("%d of %d complete.", done, total)
 	}
 }
 
@@ -512,17 +606,46 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater,
 	}
 }
 
-// stopRun cancels the running run and best-effort interrupts ComfyUI. Idempotent.
+// stopRun cancels the running run — the WHOLE remaining batch — and best-effort
+// interrupts ComfyUI. Idempotent.
+//
+// Its ordering is load-bearing and unchanged: `stopped` is set SYNCHRONOUSLY, under
+// runMu, before the run goroutine settles, which is why runStatusFragment can key
+// the terminal render off it (the Stop response and any in-flight poll immediately
+// render the poller-free view, so the poll loop halts instead of re-arming).
+//
+// What happens to each part of a batch:
+//
+//   - THE CURRENTLY EXECUTING PROMPT: `Interrupt` is sent, once. It takes no prompt
+//     id, so it interrupts whatever ComfyUI is executing right now — which is our
+//     item, because we submit strictly one at a time and never enqueue ahead. ⚠ It
+//     can also kill a prompt the user submitted from their own ComfyUI tab; that
+//     hazard exists today for a single run and a batch does NOT widen it. Do not
+//     add a queue-clear.
+//   - THE UN-SUBMITTED REMAINDER: never submitted at all. batchStop is read at the
+//     top of each item under runMu, before any work. There is nothing to cancel
+//     because nothing was queued — the direct payoff of sequential submission.
+//   - ALREADY-CAPTURED GENERATIONS: kept. Stop is not undo; the images are on disk
+//     and the rows exist, and deleting them would destroy the user's output.
+//
+// The `stopped` early return makes a double-click a genuine no-op: a second
+// Interrupt could otherwise land on whatever ComfyUI picked up next.
 func (s *Server) stopRun() {
 	s.runMu.Lock()
 	j := s.runJob
-	if j == nil || !j.running {
+	if j == nil || !j.running || j.stopped {
 		s.runMu.Unlock()
 		return
 	}
 	j.stopped = true
-	cancel := j.cancel
+	j.batchStop = true
+	cancel, itemCancel := j.cancel, j.itemCancel
 	s.runMu.Unlock()
+	// The ITEM context first — that is the one realRun's poll loop selects on — then
+	// the batch context, which also stops the loop from starting anything further.
+	if itemCancel != nil {
+		itemCancel()
+	}
 	if cancel != nil {
 		cancel()
 	}
@@ -552,7 +675,19 @@ type runSnapshot struct {
 	Aborted          bool
 	UIFormat         bool
 	Stopped          bool
+	// Batch progress. BatchTotal <= 1 is a single run and every batch-aware render
+	// falls back to today's markup exactly. All four are snapshotted under the SAME
+	// runMu hold as the rest of the view, so a poller can never observe a torn
+	// "item 4 of 3".
+	BatchID      string
+	BatchIndex   int
+	BatchTotal   int
+	BatchDone    int
+	BatchSummary string
 }
+
+// IsBatch reports whether this snapshot describes a multi-item batch.
+func (s runSnapshot) IsBatch() bool { return s.BatchTotal > 1 }
 
 // runJobState returns a locked snapshot of the current run job.
 func (s *Server) runJobState() runSnapshot {
@@ -572,6 +707,8 @@ func (s *Server) runJobState() runSnapshot {
 		Images: imgs, Preflight: j.preflight, MissingModels: j.missingModels,
 		MissingResolved: j.missingResolved, LibMeta: j.libMeta, NodeAttr: j.nodeAttr,
 		Warnings: warns, Aborted: j.aborted, UIFormat: j.uiFormat, Stopped: j.stopped,
+		BatchID: j.batchID, BatchIndex: j.batchIndex, BatchTotal: j.batchTotal,
+		BatchDone: j.batchDone, BatchSummary: j.batchSummary,
 	}
 }
 
@@ -603,8 +740,7 @@ func (s *Server) handleWorkflowRun(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	s.startRun(wf, runOptions{ModeSelection: parseModeChoices(r.Form, wf)})
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
+	s.renderRunStatus(w, id, s.startRunNotice(wf, runOptions{ModeSelection: parseModeChoices(r.Form, wf)}))
 }
 
 // comfyStatusTimeout bounds the reachability probe so a dead/hung ComfyUI can

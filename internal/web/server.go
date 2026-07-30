@@ -628,6 +628,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /workflows/{id}/run/presets/{pid}/activate", s.handleWorkflowRunPresetActivate)
 	mux.HandleFunc("POST /workflows/{id}/run/presets/{pid}/save", s.handleWorkflowRunPresetSave)
 	mux.HandleFunc("POST /workflows/{id}/run/presets/{pid}/delete", s.handleWorkflowRunPresetDelete)
+	// Queue ×N: N sequential runs of the posted parameters, one batch job, a fresh
+	// random seed per item. CSRF + loopback like every other run endpoint.
+	mux.HandleFunc("POST /workflows/{id}/run/queue", s.handleWorkflowRunQueue)
 	mux.HandleFunc("POST /workflows/run/stop", s.handleWorkflowRunStop)
 	mux.HandleFunc("GET /workflows/run/view", s.handleWorkflowRunView)
 	// Missing-model resolution fragment (read-only GET, loopback-gated, TTL-cached).
