@@ -479,14 +479,8 @@ func failureMissingCounts(snap runSnapshot) (models, nodes int) {
 	return len(snap.Preflight.MissingModels), len(snap.Preflight.MissingNodes)
 }
 
-// isAre / itThem keep the generated copy grammatical for n == 1.
-func isAre(n int) string {
-	if n == 1 {
-		return "is"
-	}
-	return "are"
-}
-
+// itThem keeps the generated copy grammatical for n == 1. Its sibling `isAre` is the
+// shared one in model_pages.go — do NOT add a second copy here.
 func itThem(n int) string {
 	if n == 1 {
 		return "it"

@@ -675,7 +675,9 @@ func pluralWorkflows(n int) string {
 	return strconv.Itoa(n) + " workflows"
 }
 
-// isAre agrees the verb with pluralWorkflows' subject.
+// isAre agrees a verb with its count. Originally written for pluralWorkflows' subject;
+// the run-failure copy (run_pages.go / run_install_all.go) shares it, so keep it
+// count-generic rather than workflow-specific.
 func isAre(n int) string {
 	if n == 1 {
 		return "is"

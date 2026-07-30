@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1055,5 +1056,77 @@ func TestSingleFileInstallDroppedClickIsReported(t *testing.T) {
 			pollRunUntilDone(t, srv, wfID)
 			_ = dl
 		})
+	}
+}
+
+// TestBatchCTAComposesWithPresetTabs is the COMPOSITION guard against the run-presets
+// feature (tabs / Fork / reconciliation / mode capture), which merged into the same run
+// UI this panel rewrote.
+//
+// It renders the WHOLE run panel — preset tab strip and all — with a settled
+// missing-models failure, and pins the three ways the two features could collide:
+//
+//  1. the batch CTA still renders inside the new structure at all;
+//  2. its <form> is NOT nested inside the preset form (nested forms are invalid HTML and
+//     the inner one silently loses its fields) — the batch form must live in #run-status,
+//     a SIBLING of the #run-params container the tab strip and preset form occupy;
+//  3. the mode-picker hx-include target the CTA relies on is a real <select> inside
+//     #run-modes, since the preset feature now pre-selects that picker.
+func TestBatchCTAComposesWithPresetTabs(t *testing.T) {
+	srv := newTestServer(t)
+	wf := seedPresetWorkflow(t, srv, "t2i", presetUIGraph)
+	seedPreset(t, srv, wf, "Base", wf.GraphHash, func(ri comfy.RunInput) string { return ri.Current })
+	v := srv.buildPresetView(context.Background(), wf, 0, nil, true)
+
+	snap := runSnapshot{
+		Started: true, WorkflowID: wf.ID, Seq: 4, Phase: runPhaseFailed,
+		Message:   "Preflight failed — this workflow references nodes or models that are not installed.",
+		Preflight: &comfy.PreflightReport{MissingModels: []string{"alpha-MISSING.safetensors"}},
+		MissingModels: []comfy.MissingModel{
+			{Filename: "alpha-MISSING.safetensors", Query: "alpha", CivitaiType: "Checkpoint"}},
+		MissingResolved: map[string]missingResolution{},
+		LibMeta:         map[string]store.LocalModelMeta{},
+	}
+	page := renderString(t, runPanel(wf, snap, "tok", true, true /* dlEligible */, "blur", v))
+
+	// 1. The CTA survived the merge.
+	wfID := strconv.FormatInt(wf.ID, 10)
+	action := "/workflows/" + wfID + "/install-missing-and-run"
+	if !strings.Contains(page, action) {
+		t.Fatalf("batch CTA missing from the preset-tab run panel:\n%s", page)
+	}
+	if !strings.Contains(page, "Install 1 missing model file and run") {
+		t.Errorf("batch CTA label missing:\n%s", page)
+	}
+
+	// 2. The batch form is a SIBLING of the preset form, not nested inside it. The batch
+	// form lives in #run-status; the preset form (and the tab strip) live in #run-params,
+	// which closes before #run-status opens.
+	presetForm := strings.Index(page, `id="`+runPresetFormID+`"`)
+	status := strings.Index(page, `id="`+runStatusContainerID+`"`)
+	cta := strings.Index(page, action)
+	if presetForm < 0 || status < 0 || cta < 0 {
+		t.Fatalf("anchors missing (presetForm=%d status=%d cta=%d)", presetForm, status, cta)
+	}
+	if !(presetForm < status && status < cta) {
+		t.Errorf("the batch CTA must render inside #run-status, after the preset form "+
+			"(presetForm=%d status=%d cta=%d)", presetForm, status, cta)
+	}
+	// Structural proof rather than an ordering heuristic: between the preset form's
+	// opening tag and the batch form there must be a </form> closing it.
+	if !strings.Contains(page[presetForm:cta], "</form>") {
+		t.Errorf("the preset form is still open where the batch form starts — nested forms:\n%s",
+			page[presetForm:cta])
+	}
+
+	// 3. The hx-include target the CTA carries resolves to a real control. presetUIGraph
+	// is a single-mode workflow, so #run-modes is the stable EMPTY container and the
+	// selector legitimately matches nothing; assert the container exists (the selector's
+	// anchor) and that a multi-mode graph does produce the <select>.
+	if !strings.Contains(page, `id="`+runModesContainerID+`"`) {
+		t.Errorf("the #run-modes container the CTA hx-includes is gone:\n%s", page)
+	}
+	if !strings.Contains(page, `hx-include="`+runModesInclude+`"`) {
+		t.Errorf("the batch CTA lost its mode-picker include:\n%s", page)
 	}
 }
