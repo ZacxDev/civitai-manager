@@ -205,13 +205,32 @@ func runModeSelect(wfID, csrf string, idx int, sel comfy.ModeSelector, override 
 		// the fields on screen belong to the PREVIOUS mode while this select already
 		// reads as the new one. A Save clicked in that window posts the new mode_key
 		// with the old mode's fields, none of which survive the mode-applied
-		// allow-list. The server carries the stored values through unharmed
-		// (presetEntryWrite) — this keeps the user from meeting that path at all.
-		// htmx collects a request's input values BEFORE disabling anything, so this
-		// select's own mode_key still travels; "this" is included so the selector
-		// always matches something (an empty panel has no buttons, and htmx logs a
-		// console error for a selector that matches nothing).
-		hx("disabled-elt", "this, #"+runParamsContainerID+" button"),
+		// allow-list. The server merges rather than replaces (presetEntryWrite), so
+		// nothing is lost either way — this just keeps the user from meeting that path.
+		//
+		// The selector names the panel's buttons AND the panel container, and
+		// deliberately does NOT name this select. Both halves were read out of the
+		// vendored htmx.min.js rather than assumed:
+		//
+		//   - "this" is special-cased ONLY when it is the WHOLE attribute value
+		//     (`we()`: `if(n==="this")`). Inside a comma list it goes through the token
+		//     table in `p()` — closest / find / next / previous / document / window /
+		//     body / root / host — which has no "this", so it is emitted as a raw CSS
+		//     TYPE selector and matches nothing. It was inert here, and that is the only
+		//     reason this was safe: htmx's value collector SKIPS disabled controls
+		//     (`tn()`: `if(...||t.disabled||...)`), so a select that really got disabled
+		//     would drop out of every OTHER control's hx-include — a Run clicked in this
+		//     window would post with NO mode_key and convert an all-bypassed graph.
+		//     Making "this" resolve would create that hazard, so it is removed instead.
+		//   - A selector matching nothing makes htmx log 'The selector … returned no
+		//     matches!' and disable nothing. `#run-params button` alone matches nothing
+		//     exactly when a multi-mode template has no mode picked yet — the first use
+		//     of this picker. The stable #run-params container is therefore included so
+		//     there is always a match. `disabled` on a <div> is inert: it is not a form
+		//     control (the only rule in the bundle is `:disabled{cursor:default}`, a
+		//     pseudo-class no <div> matches), it does not disable descendants, and
+		//     htmx's collector only propagates disabledness through `fieldset[disabled]`.
+		hx("disabled-elt", "#"+runParamsContainerID+", #"+runParamsContainerID+" button"),
 	}
 	selAttrs = append(selAttrs, opts...)
 	_ = csrf // the picker itself changes no state; the GET carries no token

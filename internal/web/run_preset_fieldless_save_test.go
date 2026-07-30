@@ -249,8 +249,8 @@ func TestSaveStillStoresWhatItCanCapture(t *testing.T) {
 // TestModePickerDisablesTheParamsPanelWhileItRefetches closes the race at its
 // source: while the picker's GET /run/params is in flight the panel's buttons —
 // Save included — are disabled, so the user cannot post the previous mode's fields
-// against the new mode_key. Server-side carry-through is still the guarantee; this
-// is the mitigation that keeps the user from meeting it.
+// against the new mode_key. The server-side MERGE is still the guarantee; this is
+// the mitigation that keeps the user from meeting it.
 //
 // HONEST LIMIT: this asserts the ATTRIBUTE htmx acts on, not the browser behaviour
 // (no browser is available here). htmx collects a request's input values BEFORE it
@@ -260,9 +260,104 @@ func TestModePickerDisablesTheParamsPanelWhileItRefetches(t *testing.T) {
 	wf := seedPresetWorkflow(t, srv, "tmpl", presetModeUIGraph)
 
 	got := renderString(t, runModesPanel(wf, "tok"))
-	want := `hx-disabled-elt="this, #` + runParamsContainerID + ` button"`
+	want := `hx-disabled-elt="#` + runParamsContainerID + `, #` + runParamsContainerID + ` button"`
 	if !strings.Contains(got, want) {
 		t.Errorf("the mode picker must disable the parameter panel while it refetches "+
 			"(%s missing):\n%s", want, got)
 	}
+}
+
+// TestModePickerNeverDisablesItself is the 🟡 hazard this selector must not create.
+//
+// htmx's value collector SKIPS disabled controls, and EVERY run control carries the
+// mode picks by hx-include-ing `#run-modes select`. A picker that disabled itself
+// would therefore make a Run / Run-again / Run-with-options clicked during the
+// panel refetch post with NO mode_key — which converts a multi-mode template with
+// every pipeline bypassed and aborts as "nothing to run", or runs the wrong one.
+//
+// The old value said "this, #run-params button". htmx special-cases "this" only as
+// the WHOLE attribute value, so in a comma list it was a raw CSS type selector that
+// matched nothing — inert, but one edit away from being the hazard above. Pinned
+// here so nobody "fixes" the token into working.
+func TestModePickerNeverDisablesItself(t *testing.T) {
+	srv := newTestServer(t)
+	wf := seedPresetWorkflow(t, srv, "tmpl", presetModeUIGraph)
+
+	got := renderString(t, runModesPanel(wf, "tok"))
+	sel := disabledEltOf(t, got)
+	for _, forbidden := range []string{"this", "select", "#" + runModesContainerID, "cm-mode-"} {
+		if strings.Contains(sel, forbidden) {
+			t.Errorf("hx-disabled-elt %q names %q: a disabled mode <select> drops out of "+
+				"every run control's hx-include, so a concurrent Run would post no %s",
+				sel, forbidden, modeChoiceField)
+		}
+	}
+	// Every token must be a plain CSS selector rooted at the stable params container,
+	// so htmx resolves them through querySelectorAll and nothing else.
+	for _, tok := range strings.Split(sel, ",") {
+		if !strings.HasPrefix(strings.TrimSpace(tok), "#"+runParamsContainerID) {
+			t.Errorf("hx-disabled-elt token %q is not scoped to #%s: %q",
+				tok, runParamsContainerID, sel)
+		}
+	}
+	// The picker's OWN request still carries its mode_key: the select keeps its name
+	// and is not in the disabled set.
+	if !strings.Contains(got, `name="`+modeChoiceField+`"`) {
+		t.Errorf("the picker must still submit %s:\n%s", modeChoiceField, got)
+	}
+
+	// And the reason it matters: a run control's mode_key comes from that very select
+	// by hx-include, so disabling it would silently empty the run's mode selection.
+	selKey, modeA, _ := presetModeKeys(t, wf.Graph)
+	v := srv.buildPresetView(context.Background(), wf, 0, map[string]string{selKey: modeA}, false)
+	panel := renderString(t, runParamsBody(wf, "tok", v))
+	if !strings.Contains(panel, `hx-include="`+runModesInclude+`"`) &&
+		!strings.Contains(panel, runModesInclude+`"`) {
+		t.Errorf("the run control must hx-include %q — that is how a Run carries %s:\n%s",
+			runModesInclude, modeChoiceField, panel)
+	}
+}
+
+// TestModePickerDisabledSelectorAlwaysMatches: htmx logs 'The selector … returned
+// no matches!' and disables NOTHING when a selector matches nothing. "#run-params
+// button" alone matches nothing exactly when a multi-mode template has no mode
+// picked yet — i.e. the first time the picker is ever used — so the stable
+// container is included to guarantee a match.
+func TestModePickerDisabledSelectorAlwaysMatches(t *testing.T) {
+	srv := newTestServer(t)
+	wf := seedPresetWorkflow(t, srv, "tmpl", presetModeUIGraph)
+
+	// No mode picked: DetectRunInputs surfaces nothing, runPresetPanel returns nil,
+	// and the params body is an empty div carrying no buttons at all.
+	v := srv.buildPresetView(context.Background(), wf, 0, nil, true)
+	if len(v.Rec.Fields) != 0 {
+		t.Fatalf("fixture: want an empty panel, got %d fields", len(v.Rec.Fields))
+	}
+	if body := renderString(t, runParamsBody(wf, "tok", v)); strings.Contains(body, "<button") {
+		t.Fatalf("fixture: the empty panel is supposed to have no buttons:\n%s", body)
+	}
+
+	sel := disabledEltOf(t, renderString(t, runModesPanel(wf, "tok")))
+	if !strings.Contains(sel, "#"+runParamsContainerID+",") &&
+		!strings.HasSuffix(sel, "#"+runParamsContainerID) {
+		t.Errorf("hx-disabled-elt %q must name the always-present #%s container, or it "+
+			"matches nothing (and disables nothing) before a mode is picked",
+			sel, runParamsContainerID)
+	}
+}
+
+// disabledEltOf extracts the rendered hx-disabled-elt value.
+func disabledEltOf(t *testing.T, markup string) string {
+	t.Helper()
+	const attr = `hx-disabled-elt="`
+	i := strings.Index(markup, attr)
+	if i < 0 {
+		t.Fatalf("no hx-disabled-elt in:\n%s", markup)
+	}
+	rest := markup[i+len(attr):]
+	j := strings.Index(rest, `"`)
+	if j < 0 {
+		t.Fatalf("unterminated hx-disabled-elt in:\n%s", markup)
+	}
+	return rest[:j]
 }
