@@ -139,11 +139,16 @@ func parseWidgetOverridesAgainst(form url.Values, graph []byte) map[comfy.UIWidg
 	return out
 }
 
-// runParametersPanel renders the collapsible "Parameters" section on the run-ready
-// card: pre-filled controls for the workflow's curated editable inputs and a "Run
-// with these parameters" submit that posts to /run-with-params (CSRF-carrying). It
-// returns nil when the graph exposes no editable inputs (an api-format graph, or a
-// UI graph with none of the curated nodes) so the panel is simply absent.
+// runParametersPanel renders the run "Parameters" panel for a workflow with NO
+// preset context: the IMPLICIT tab, seeded from the graph's current values.
+//
+// It is a thin wrapper over runPresetPanel — the SAME renderer production uses —
+// deliberately, so a test asserting this markup is asserting live markup. A second,
+// parallel renderer would be exactly the "green tests over a dead production path"
+// trap this repo keeps paying for.
+//
+// It returns nil when the graph exposes no editable inputs (an api-format graph, or
+// a UI graph with none of the curated nodes) so the panel is simply absent.
 //
 // Sampler/scheduler render as free-text inputs here: choices come from /object_info,
 // which the render path does not fetch (offline/no slow network in render), so they
@@ -151,41 +156,7 @@ func parseWidgetOverridesAgainst(form url.Values, graph []byte) map[comfy.UIWidg
 // incompatible-options flow. DetectRunInputs still accepts object_info elsewhere, so
 // object_info-backed selects can be added without changing the wiring.
 func runParametersPanel(wf *store.Workflow, csrf string) g.Node {
-	inputs := comfy.DetectRunInputs([]byte(wf.Graph), nil)
-	if len(inputs) == 0 {
-		return nil
-	}
-	id := strconv.FormatInt(wf.ID, 10)
-	fields := make([]g.Node, 0, len(inputs))
-	for i, ri := range inputs {
-		fields = append(fields, runParamField(i, ri))
-	}
-	form := h.Form(
-		hx("post", "/workflows/"+id+"/run-with-params"),
-		hx("target", "#"+runStatusContainerID),
-		hx("swap", "innerHTML"),
-		hx("disabled-elt", "find button[type='submit']"),
-		hx("include", runModesInclude),
-		h.Class("mt-3 space-y-3"),
-		h.Input(h.Type("hidden"), h.Name("csrf_token"), h.Value(csrf)),
-		g.Group(fields),
-		h.P(h.Class("text-xs text-slate-500"),
-			g.Text("These edits apply to THIS run only — the saved workflow is unchanged.")),
-		h.Div(h.Class("flex flex-wrap items-center gap-2 pt-1"),
-			civButton("filled", "sm", []g.Node{h.Type("submit")}, g.Text("Run with these parameters")),
-			// A native form reset restores every control to its pre-filled value.
-			civButton("subtle", "sm", []g.Node{h.Type("reset")}, g.Text("Reset")),
-		),
-	)
-	return h.Details(
-		// No cm-run-params marker: nothing in the run scripts (or anywhere else)
-		// selects it and it carries no rule — it was a pure no-op.
-		h.Class("mt-4"),
-		h.Summary(h.Class("cursor-pointer text-sm font-semibold text-slate-200 select-none"),
-			g.Text("Parameters")),
-		form,
-		runParamsScript(),
-	)
+	return runPresetPanel(wf, csrf, implicitPresetView(wf, nil))
 }
 
 // runParamField renders one Parameters control, preceded by the hidden wp_node /

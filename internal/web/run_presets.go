@@ -304,6 +304,21 @@ func (s *Server) buildPresetView(ctx context.Context, wf *store.Workflow, active
 	return v
 }
 
+// implicitPresetView is the preset-free view: the IMPLICIT tab, every field
+// seeded from the graph's current values under the given mode selection. It is
+// what a workflow with nothing saved renders, and what the preset-free callers
+// (and their tests) go through, so there is only ever ONE parameter renderer.
+func implicitPresetView(wf *store.Workflow, modes map[string]string) presetTabView {
+	v := presetTabView{UIFormat: wf.Format == store.WorkflowFormatUI}
+	if !v.UIFormat {
+		return v
+	}
+	// No stored entries and hashMatch=true: nothing to reconcile, nothing to warn
+	// about — every field is simply the graph's own value.
+	v.Rec = comfy.ReconcileRunPreset(json.RawMessage(wf.Graph), modes, nil, nil, true)
+	return v
+}
+
 // ── HTTP surface ─────────────────────────────────────────────────────────────
 //
 // Every preset POST uses the run endpoints' prologue verbatim: ParseForm →

@@ -264,25 +264,3 @@ func runParamsBody(wf *store.Workflow, csrf string, v presetTabView) g.Node {
 	}
 	return h.Div()
 }
-
-// runParametersPanelForModes renders the Parameters panel against the graph the run
-// would actually convert: the stored graph with the chosen mode applied. An empty
-// choice set is the plain stored graph, so ordinary workflows are unaffected.
-//
-// It is the PRESET-FREE rendering path, kept for callers (and tests) that have no
-// preset context.
-func runParametersPanelForModes(wf *store.Workflow, csrf string, choices map[string]string) g.Node {
-	view := wf
-	if len(choices) > 0 && wf.Format == store.WorkflowFormatUI {
-		cp := *wf
-		cp.Graph = string(comfy.ApplyModeSelection(json.RawMessage(wf.Graph), choices))
-		view = &cp
-	}
-	// runParametersPanel yields nil when the graph exposes nothing editable (an
-	// api graph, or a template before a mode is picked). This is a RESPONSE body, so
-	// it must be a real node — an empty div clears the container honestly.
-	if panel := runParametersPanel(view, csrf); panel != nil {
-		return panel
-	}
-	return h.Div()
-}
