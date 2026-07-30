@@ -86,12 +86,18 @@ comfy_root: ""                     # ComfyUI install root (holds custom_nodes/).
                                    # Only used by the helper-extension install.
                                    # Derived from comfy_model_path's parent when
                                    # that looks like a ComfyUI install.
-comfy_cloud: false                 # opt-in: enable "Run on CivitAI Cloud".
-                                   # LEAVE THE KEY OUT to control it from the web
-                                   # UI instead (workflow detail → Run on CivitAI
-                                   # Cloud → the on/off toggle, stored in the DB).
-                                   # Setting it here EITHER WAY wins over that
-                                   # toggle, which then renders read-only.
+# comfy_cloud: true                 # opt-in: enable "Run on CivitAI Cloud".
+                                   # COMMENTED OUT ON PURPOSE — this sample is
+                                   # meant to be copied, and the recommended
+                                   # setup is to LEAVE THE KEY OUT entirely so
+                                   # the web UI owns it (workflow detail → Run on
+                                   # CivitAI Cloud → the on/off toggle, stored in
+                                   # the DB). Uncommenting it EITHER WAY, true or
+                                   # false, wins over that toggle, which then
+                                   # renders read-only — so a pasted
+                                   # `comfy_cloud: false` does not mean "off for
+                                   # now", it means "off, and the UI can no
+                                   # longer turn it on".
                                    # Cloud runs authenticate with the `token`
                                    # below — there is no separate cloud
                                    # credential, and none can be entered in the
