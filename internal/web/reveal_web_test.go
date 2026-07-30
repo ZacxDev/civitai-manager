@@ -638,6 +638,18 @@ func TestRevealRootsComposition(t *testing.T) {
 	}
 }
 
+// TestRevealChildInheritsTheServerEnvironment pins the documented (and
+// deliberately unchanged) fact that cmd.Env is left unset, so the opener child
+// inherits the server's FULL environment — including CIVITAI_TOKEN/HF_TOKEN when
+// `serve` was started with them. If this ever becomes an allowlisted env, this
+// test is the thing that says the header comment must change with it.
+func TestRevealChildInheritsTheServerEnvironment(t *testing.T) {
+	cmd := openerCommand(context.Background(), []string{wantOpener(t), "/tmp"})
+	if cmd.Env != nil {
+		t.Fatalf("cmd.Env = %#v; the comment above documents full inheritance (nil)", cmd.Env)
+	}
+}
+
 func containsString(xs []string, want string) bool {
 	for _, x := range xs {
 		if x == want {

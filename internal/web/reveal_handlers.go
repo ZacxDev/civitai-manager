@@ -26,8 +26,20 @@ import (
 //     containment in a configured library root (resolve-then-check). Checking
 //     before resolving is the classic bypass: a symlink whose name sits inside a
 //     root but whose target does not would pass it.
-//   - The opener is a fixed per-GOOS allowlist. It is never read from config, from
-//     the environment, or from the request.
+//   - The opener NAME is a fixed per-GOOS allowlist ("xdg-open"/"open"/"explorer").
+//     That name is never read from config, from the environment, or from the
+//     request. The BINARY it resolves to is a different question: exec.Command
+//     resolves a bare name through exec.LookPath, i.e. through $PATH, so which
+//     executable actually runs depends on the environment `serve` was started
+//     with. That is normal desktop-launcher behaviour and is deliberately not
+//     changed — but "never from the environment" is true of the NAME only, and
+//     anyone reading this for a security property needs to know the difference.
+//   - The child inherits the server's FULL environment: cmd.Env is left unset, so
+//     exec passes os.Environ() through — including CIVITAI_TOKEN and HF_TOKEN if
+//     `serve` was started with them. Again normal for a desktop launcher (the file
+//     manager needs DISPLAY/WAYLAND_DISPLAY/DBUS_SESSION_BUS_ADDRESS/XDG_* to do
+//     anything at all), and again documented rather than changed. A scrubbed
+//     allowlist env is the alternative if that ever stops being acceptable.
 //   - There is no shell anywhere: exec.CommandContext receives an argv, so nothing
 //     in the directory name can be interpreted as a command, a redirect, or a
 //     separator regardless of what characters it contains.
@@ -122,11 +134,44 @@ func (s *Server) opener() func(argv []string) error {
 // revealRoots is the set of directories a revealed file is allowed to live under:
 // this app's own model root, the ComfyUI models dir it installs into, the extra
 // library paths from config, and the scan directories the user explicitly
-// selected. Every one of them is a location the USER configured as part of their
-// library — nothing here comes from a request.
+// selected.
+//
+// 🔴 The root set IS request-extensible, and pretending otherwise would be the
+// kind of comment that outlives the code. The first three legs come from config
+// (or flags) and cannot be reached over HTTP; the fourth, store.ListScanDirs,
+// is populated by `POST /library/scan-dirs/add`, which takes the directory
+// straight from r.FormValue("path") (handleScanDirAdd in discover_handlers.go).
+// So a request CAN add a directory to this allowlist. That is not a widening we
+// consider exploitable, and it is deliberately left alone, because the add path
+// is:
+//
+//   - CSRF-verified and loopback-gated, exactly like this endpoint;
+//   - validated by validateScanDir (library_handlers.go): non-empty, ABSOLUTE,
+//     Clean'd, and os.Stat'd as an EXISTING DIRECTORY at add time;
+//   - passed through library.CheckScanRoot, which refuses "/", the system
+//     directories, and the bare home directory.
+//
+// In other words a local user can extend their own library allowlist from their
+// own browser, which is the feature — not an escalation, since the same user
+// already controls the config file.
+//
+// Second-order fact worth stating, because it is where the two checks disagree:
+// validateScanDir proves the path is a real DIRECTORY at ADD time and nothing
+// re-proves it afterwards. resolveRoots re-runs EvalSymlinks at CLICK time, so a
+// stored root that has since become a SYMLINK is followed to wherever it now
+// points, and that resolved target becomes the containment root. The persisted
+// string is the only thing that is stable; what it names is re-read on every
+// click. (resolveRoots does re-check IsDir, so a root that became a regular file
+// is dropped — but a root that became a symlink TO a directory is honoured.)
 //
 // A blank entry is dropped rather than treated as "/" (an empty root would make
-// the containment check pass for every path on the filesystem).
+// the containment check pass for every path on the filesystem). A LITERAL "/"
+// is, however, accepted: resolveRoots([]string{"/"}) returns ["/"], and every
+// absolute path is then contained. The UI cannot produce that — CheckScanRoot
+// refuses it on the add path — but `library_paths: ["/"]` in the config file
+// reaches here unfiltered. Known and accepted: config is the same trust level as
+// model_root, and a user who writes that has disabled their own containment
+// check on purpose.
 func (s *Server) revealRoots() []string {
 	candidates := []string{s.cfg.ModelRoot, s.cfg.ComfyModelPath}
 	candidates = append(candidates, s.cfg.LibraryPaths...)
@@ -159,7 +204,8 @@ func (s *Server) revealRoots() []string {
 // (which calls Clean), so it cannot smuggle a path out of a root either.
 //
 // A path that does not exist cannot be resolved and is refused: we will not open
-// a folder we cannot prove is where we think it is.
+// a folder we cannot prove is where we think it is. Nor will we open something
+// that is not a folder at all — see the IsDir test in containedDirIn.
 func containedDir(path string, roots []string) (string, bool) {
 	return containedDirIn(path, resolveRoots(roots))
 }
@@ -169,7 +215,7 @@ func containedDir(path string, roots []string) (string, bool) {
 // still resolves at action time, so a stale rendered button can never authorise
 // anything the fresh check would refuse.
 //
-// A root that does not resolve (missing, or not a directory we can stat) is
+// A root that does not resolve (missing) or does not stat as a DIRECTORY is
 // dropped: it cannot contain anything.
 func resolveRoots(roots []string) []string {
 	out := make([]string, 0, len(roots))
