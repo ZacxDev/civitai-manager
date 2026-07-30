@@ -202,6 +202,74 @@ func outputsGalleryPage(gens []store.Generation, wfRefs []store.GenerationWorkfl
 	return page("Outputs", theme, csrf, nsfwMode, railOf(rail), body...)
 }
 
+// batchLabel is the human name of a batch: the run preset's snapshotted label
+// when the batch came from one, else the workflow label. Both are untrusted-ish
+// snapshot text — every caller renders it through g.Text.
+func batchLabel(first store.Generation) string {
+	if l := strings.TrimSpace(first.PresetName); l != "" {
+		return l
+	}
+	return generationLabel(first)
+}
+
+// batchCountLine states how many of the batch's requested runs were actually
+// captured.
+//
+// BatchTotal is N AS REQUESTED at batch start, but Stop cancels the remainder and
+// a run can fail without producing images — so len(gens) is routinely LESS than
+// BatchTotal. Printing a bare "8 runs" over five tiles would be a lie, so a short
+// batch says so explicitly. (A row written before batch_total existed, or a
+// corrupted one, reports 0 — fall back to the captured count rather than claiming
+// "5 of 0".)
+func batchCountLine(captured, total int) string {
+	if total > captured {
+		return fmt.Sprintf("%d of %d runs captured — the batch was stopped or some runs failed.", captured, total)
+	}
+	if captured == 1 {
+		return "1 run."
+	}
+	return fmt.Sprintf("%d runs.", captured)
+}
+
+// batchGalleryPage is GET /outputs/batch/{id}: the N generations of ONE batch in
+// run order, with the parameters they SHARE rendered once at the top instead of
+// once per tile. That is the whole point of the surface — "here are my 8 seeds of
+// the same prompt, side by side" — and it is why the params card is hoisted out
+// of the grid rather than repeated.
+//
+// Read-only (no CSRF, no actions): per-generation Re-run/Delete stay on the
+// detail page, one click away through any tile. Render-plain like every other
+// outputs surface — these are the user's own local generations.
+//
+// gens is never empty: the handler 404s a batch with zero rows, so gens[0] is
+// safe. The grid's empty branch is therefore unreachable and only exists so a
+// direct unit-test call cannot panic.
+func batchGalleryPage(gens []store.Generation, csrf, theme, nsfwMode string, rail ...railData) g.Node {
+	first := gens[0]
+	label := batchLabel(first)
+
+	header := h.Div(h.Class("flex items-center justify-between gap-4"),
+		h.H1(h.Class("text-2xl font-semibold text-slate-100"), g.Text("Batch «"+label+"»")),
+		h.A(h.Href("/outputs"), h.Class("text-sm text-indigo-400 hover:text-indigo-300"),
+			g.Text("← All outputs")),
+	)
+
+	body := []g.Node{
+		header,
+		h.P(h.Class("text-sm text-slate-400"), g.Text(batchCountLine(len(gens), first.BatchTotal))),
+		h.P(h.Class("text-sm text-slate-400"),
+			g.Text("Every run in this batch shares the parameters below — only the seed differs.")),
+		generationParamsCard(&gens[0]),
+		card(generationGrid(gens, emptyState(
+			"This batch captured no images",
+			"A batch records one generation per run that produced output. If every run was "+
+				"stopped or failed there is nothing to show here.",
+			"/outputs", "Back to all outputs"))),
+	}
+
+	return page("Batch "+label, theme, csrf, nsfwMode, railOf(rail), body...)
+}
+
 // outputsPagination renders Prev/Next controls preserving the workflow filter.
 func outputsPagination(selectedWorkflow string, page, total int) g.Node {
 	lastPage := (total - 1) / outputsPageSize

@@ -105,6 +105,37 @@ func (s *Server) handleOutputs(w http.ResponseWriter, r *http.Request) {
 		page, total, s.csrf, s.currentTheme(), s.nsfwMode(), s.rail(ctx)))
 }
 
+// handleOutputsBatch renders ONE batch's generations (GET /outputs/batch/{id}).
+//
+// {id} is UNTRUSTED URL PATH INPUT, so it is validated against store.ValidBatchID
+// (a bare [A-Za-z0-9_-]{1,64}) before it can reach a query — a hostile or stale id
+// must be a missing page, never a 500 and never a bound parameter of unbounded
+// shape. A well-formed but UNKNOWN id selects zero rows, which is likewise a 404:
+// an empty batch page would tell the user a batch exists when it does not.
+//
+// GET + read-only → no CSRF. Not loopback-gated, for handleOutputsImage's reason:
+// it reads app-owned local data (its own generations table), not an arbitrary
+// filesystem path and not a comfy-reaching proxy, so it works on a LAN bind like
+// every other browse page.
+func (s *Server) handleOutputsBatch(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := r.PathValue("id")
+	if !store.ValidBatchID(id) {
+		http.NotFound(w, r)
+		return
+	}
+	gens, err := s.store.ListGenerationsByBatch(ctx, id)
+	if err != nil {
+		s.renderError(w, "list batch generations", err)
+		return
+	}
+	if len(gens) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	s.render(w, http.StatusOK, batchGalleryPage(gens, s.csrf, s.currentTheme(), s.nsfwMode(), s.rail(ctx)))
+}
+
 // handleOutputsImage serves one app-owned output image by id, from disk,
 // path-contained. GET, read-only app data → no CSRF. NOT loopback-gated (it serves
 // local app files, not a comfy-reaching proxy — works on a LAN bind like every

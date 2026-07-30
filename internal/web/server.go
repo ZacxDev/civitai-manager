@@ -577,6 +577,10 @@ func (s *Server) Handler() http.Handler {
 	// specific literal-prefixed pattern regardless of order.
 	mux.HandleFunc("GET /outputs", s.handleOutputs)
 	mux.HandleFunc("GET /outputs/img/{imageID}", s.handleOutputsImage)
+	// Batch view (R2's read half). Same specificity story as /outputs/img/{…}
+	// above: the literal "batch" prefix wins over /outputs/{id} regardless of
+	// registration order, so the two patterns coexist.
+	mux.HandleFunc("GET /outputs/batch/{id}", s.handleOutputsBatch)
 	mux.HandleFunc("GET /outputs/{id}", s.handleGenerationDetail)
 	mux.HandleFunc("POST /outputs/{id}/rerun", s.handleGenerationRerun)
 	mux.HandleFunc("POST /outputs/{id}/delete", s.handleGenerationDelete)
