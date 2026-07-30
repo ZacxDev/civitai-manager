@@ -369,8 +369,10 @@ func TestPlanBatchInstallKeepsDistinctFilesSharingABasename(t *testing.T) {
 		t.Errorf("label must count both files:\n%s", body)
 	}
 
-	// A genuine duplicate (same basename AND same destination) still collapses, including
-	// across LORA/LoCon/LyCORIS which all map to loras/.
+	// A genuine duplicate (same basename AND same destination) still collapses. LORA and
+	// LoCon both map to loras/ and both are in resolveTypeWhitelist. (LyCORIS also maps to
+	// loras/ in comfy.typeSubdirs but is NOT whitelisted, so civitaiTypeParam normalizes it
+	// to "" — it is deliberately not used as a "same destination" example.)
 	same := []comfy.MissingModel{
 		{Filename: "a/x.safetensors", CivitaiType: "LORA"},
 		{Filename: "b/x.safetensors", CivitaiType: "LoCon"},
@@ -378,13 +380,90 @@ func TestPlanBatchInstallKeepsDistinctFilesSharingABasename(t *testing.T) {
 	if got := len(planBatchInstall(same, true).Installable); got != 1 {
 		t.Errorf("same basename + same destination must collapse, got %d", got)
 	}
-	// And two same-named files with different UN-mappable types stay distinct.
+	// Two same-named files with UN-ROUTABLE types are ONE install: neither has a
+	// destination, so both resolve through the same filename-keyed HuggingFace path.
 	odd := []comfy.MissingModel{
 		{Filename: "x.bin", CivitaiType: ""},
 		{Filename: "x.bin", CivitaiType: "SomethingUnmapped"},
 	}
-	if got := len(planBatchInstall(odd, true).Installable); got != 2 {
-		t.Errorf("distinct un-mappable types must not merge, got %d", got)
+	if got := len(planBatchInstall(odd, true).Installable); got != 1 {
+		t.Errorf("same basename with no destination is one install, got %d", got)
+	}
+}
+
+// TestInstallDedupeKeyIsCaseSensitiveLikeSafeModelDest pins the CASE decision, which is a
+// deliberate platform trade rather than an oversight (see installDedupeKey).
+//
+// comfy.SafeModelDest preserves case, so `Model.safetensors` and `model.safetensors` are
+// two destinations. Folding them would make the CTA offer "Install 1" for two missing
+// files, install one, and leave the run failing with nothing said — the exact defect the
+// key exists to prevent. On a case-insensitive filesystem the pair over-counts by one,
+// which costs a redundant request that ErrDestExists refuses before any body is streamed.
+func TestInstallDedupeKeyIsCaseSensitiveLikeSafeModelDest(t *testing.T) {
+	upper, _ := installDedupeKey("Model.safetensors", "Checkpoint")
+	lower, _ := installDedupeKey("model.safetensors", "Checkpoint")
+	if upper == lower {
+		t.Fatalf("case must be significant, matching SafeModelDest: %q == %q", upper, lower)
+	}
+	models := []comfy.MissingModel{
+		{Filename: "Model.safetensors", CivitaiType: "Checkpoint"},
+		{Filename: "model.safetensors", CivitaiType: "Checkpoint"},
+	}
+	p := planBatchInstall(models, true)
+	if len(p.Installable) != 2 {
+		t.Fatalf("two case-variant references are two installs, got %d: %+v", len(p.Installable), p.Installable)
+	}
+	body := renderString(t, installAllMissingAction(p, 2, 7, "tok"))
+	if !strings.Contains(body, "Install 2 missing model files and run") {
+		t.Errorf("both case variants must be offered:\n%s", body)
+	}
+
+	// The key is built from the SAME normalization the handler applies, so the two layers
+	// cannot diverge. LyCORIS is the witness: routable per comfy.typeSubdirs, not
+	// whitelisted per resolveTypeWhitelist.
+	lyc, _ := installDedupeKey("x.safetensors", "LyCORIS")
+	none, _ := installDedupeKey("x.safetensors", "")
+	if lyc != none {
+		t.Errorf("the key must normalize the type exactly as the handler does: %q != %q", lyc, none)
+	}
+}
+
+// TestFailureHeadlineAgreesWithTheCTA: two references that are ONE install must not
+// produce "Run failed — 2 model files missing" above "Install 1 … and run".
+func TestFailureHeadlineAgreesWithTheCTA(t *testing.T) {
+	snap := runSnapshot{
+		Started: true, WorkflowID: 7, Phase: runPhaseFailed, Message: "Preflight failed.",
+		Preflight: &comfy.PreflightReport{MissingModels: []string{
+			"SDXL/dup.safetensors", "flux/dup.safetensors"}},
+		MissingModels: []comfy.MissingModel{
+			{Filename: "SDXL/dup.safetensors", CivitaiType: "Checkpoint"},
+			{Filename: "flux/dup.safetensors", CivitaiType: "Checkpoint"},
+		},
+		MissingResolved: map[string]missingResolution{},
+		LibMeta:         map[string]store.LocalModelMeta{},
+	}
+	body := renderString(t, runStatusFragment(snap, 7, "tok", true, NSFWBlur))
+
+	if !strings.Contains(body, "Run failed — 1 model file missing") {
+		t.Errorf("headline must count the DISTINCT set, like the CTA:\n%s", body)
+	}
+	if strings.Contains(body, "Run failed — 2 model files missing") {
+		t.Errorf("headline still counts raw preflight strings:\n%s", body)
+	}
+	if !strings.Contains(body, "Install 1 missing model file and run") {
+		t.Errorf("CTA count changed unexpectedly:\n%s", body)
+	}
+	if !strings.Contains(body, "1 model file that is not installed") {
+		t.Errorf("the lead must agree too:\n%s", body)
+	}
+
+	// Fallback: an OLDER snapshot with no enriched analysis has no triage to count, so the
+	// preflight count still drives the headline.
+	old := snap
+	old.MissingModels = nil
+	oldBody := renderString(t, runStatusFragment(old, 7, "tok", true, NSFWBlur))
+	if !strings.Contains(oldBody, "Run failed — 2 model files missing") {
+		t.Errorf("with no enriched analysis the preflight count must stand:\n%s", oldBody)
 	}
 }
 
@@ -398,10 +477,16 @@ func TestInstallDedupeKeyDistinguishesDestinations(t *testing.T) {
 	if ckpt == lora {
 		t.Errorf("keys must differ by destination: %q == %q", ckpt, lora)
 	}
+	// Same basename (byte-for-byte) + same destination → one key.
 	a, _ := installDedupeKey("a/x.safetensors", "LORA")
-	b, _ := installDedupeKey("b/X.SAFETENSORS", "LoCon") // loras/ for both, case-insensitive
+	b, _ := installDedupeKey("b/x.safetensors", "LoCon")
 	if a != b {
 		t.Errorf("same basename + same destination must share a key: %q != %q", a, b)
+	}
+	// A case variant is a DIFFERENT destination (SafeModelDest preserves case) — see
+	// TestInstallDedupeKeyIsCaseSensitiveLikeSafeModelDest.
+	if c, _ := installDedupeKey("b/X.SAFETENSORS", "LoCon"); c == b {
+		t.Errorf("case must be significant: %q == %q", c, b)
 	}
 	if _, ok := installDedupeKey("  ", "Checkpoint"); ok {
 		t.Error("an empty basename is not installable")
@@ -1112,11 +1197,23 @@ func TestBatchCTAComposesWithPresetTabs(t *testing.T) {
 		t.Errorf("the batch CTA must render inside #run-status, after the preset form "+
 			"(presetForm=%d status=%d cta=%d)", presetForm, status, cta)
 	}
-	// Structural proof rather than an ordering heuristic: between the preset form's
-	// opening tag and the batch form there must be a </form> closing it.
-	if !strings.Contains(page[presetForm:cta], "</form>") {
-		t.Errorf("the preset form is still open where the batch form starts — nested forms:\n%s",
-			page[presetForm:cta])
+	// Structural proof, not a heuristic: count <form>/</form> depth and require the batch
+	// form to OPEN at depth 0. A bare strings.Contains(…, "</form>") would be satisfied by
+	// any close — including the <form method="dialog"> wrappers inside the missing-model
+	// rows — and so would not prove the preset form itself had closed.
+	//
+	// Measure at the batch form's own opening tag, NOT at its action attribute: the action
+	// string sits inside that tag, so measuring at it counts the form itself and reads 1.
+	batchFormStart := strings.LastIndex(page[:cta], "<form")
+	if batchFormStart < 0 {
+		t.Fatalf("the batch action is not inside a <form> at all")
+	}
+	if d := formDepthAt(page, batchFormStart); d != 0 {
+		t.Errorf("the batch form opens at form-nesting depth %d, want 0 (nested forms lose "+
+			"the inner form's fields)", d)
+	}
+	if d := formDepthAt(page, len(page)); d != 0 {
+		t.Errorf("unbalanced form tags in the rendered panel (final depth %d)", d)
 	}
 
 	// 3. The hx-include target the CTA carries resolves to a real control. presetUIGraph
@@ -1128,5 +1225,137 @@ func TestBatchCTAComposesWithPresetTabs(t *testing.T) {
 	}
 	if !strings.Contains(page, `hx-include="`+runModesInclude+`"`) {
 		t.Errorf("the batch CTA lost its mode-picker include:\n%s", page)
+	}
+}
+
+// formDepthAt returns the <form> nesting depth at byte offset upto — 0 means the offset
+// sits outside every form. It scans opening/closing form tags in order rather than
+// searching for any close, so it cannot be satisfied by an unrelated </form>.
+func formDepthAt(page string, upto int) int {
+	depth, i := 0, 0
+	for i < upto {
+		open := strings.Index(page[i:upto], "<form")
+		closed := strings.Index(page[i:upto], "</form")
+		switch {
+		case open < 0 && closed < 0:
+			return depth
+		case closed < 0 || (open >= 0 && open < closed):
+			depth++
+			i += open + len("<form")
+		default:
+			depth--
+			i += closed + len("</form")
+		}
+	}
+	return depth
+}
+
+// TestFormDepthAtCountsNesting proves the helper above actually measures nesting — a
+// broken counter would make the composition test vacuous.
+func TestFormDepthAtCountsNesting(t *testing.T) {
+	for name, tc := range map[string]struct {
+		page string
+		want int
+	}{
+		"outside":            {`<form></form>|`, 0},
+		"inside":             {`<form>|`, 1},
+		"nested":             {`<form><form>|`, 2},
+		"closed then marker": {`<form method="dialog"></form><div>|`, 0},
+		"sibling closes":     {`<form id="a"></form><form id="b">|`, 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := formDepthAt(tc.page, strings.Index(tc.page, "|")); got != tc.want {
+				t.Errorf("formDepthAt = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDetectorPrefixIsNotFlaggedUncertain closes the advisory's FALSE NEGATIVE: a
+// non-curated detector ref carries a bbox//segm/ prefix that hf.searchSubdir routes on,
+// so it can auto-install off a recognized-org search hit. Warning "may not be found"
+// about a file that usually IS found is the kind of inaccuracy that makes the whole
+// advisory untrustworthy.
+func TestDetectorPrefixIsNotFlaggedUncertain(t *testing.T) {
+	custom := comfy.MissingModel{Filename: "bbox/my_custom_det.pt", CivitaiType: ""}
+	if comfyTypeRoutable(civitaiTypeParam(custom.CivitaiType)) {
+		t.Fatal("fixture invalid: the ref must have no routable CivitAI type")
+	}
+	p := planBatchInstall([]comfy.MissingModel{custom}, true)
+	if len(p.Installable) != 1 || !p.Available {
+		t.Fatalf("a detector ref must be installable: %+v", p)
+	}
+	if len(p.Uncertain) != 0 {
+		t.Errorf("a bbox/ detector ref must NOT be flagged uncertain: %+v", p.Uncertain)
+	}
+	plain := comfy.MissingModel{Filename: "mystery-MISSING.bin", CivitaiType: ""}
+	if got := planBatchInstall([]comfy.MissingModel{plain}, true); len(got.Uncertain) != 1 {
+		t.Errorf("a genuinely unroutable ref must stay flagged: %+v", got.Uncertain)
+	}
+}
+
+// TestPostResolutionAlreadyInstalledDroppedClickIsReported covers the LAST two dropped-
+// click sites: the already-installed-at-destination branches of download-and-run and
+// install-option-and-run. They sit AFTER resolveInstallPlan, so the click has already
+// paid a live resolution — my earlier claim that no remaining site did visible work
+// before the guarded call was wrong about exactly these two.
+//
+// They are reached via the HuggingFace path: with no CivitAI type the pre-resolution fast
+// path is skipped, resolution yields the HF destination, and that file already exists.
+func TestPostResolutionAlreadyInstalledDroppedClickIsReported(t *testing.T) {
+	for name, tc := range map[string]struct {
+		path string
+		form url.Values
+	}{
+		"download-and-run": {"/download-and-run", url.Values{
+			"filename": {"bbox/face_yolov9c.pt"}}},
+		"install-option-and-run": {"/install-option-and-run", url.Values{
+			"install_filename": {"bbox/face_yolov9c.pt"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := []byte("YOLO-DETECTOR-WEIGHTS")
+			fake := &fakeHFClient{match: curatedMatch(body), ok: true, body: body}
+			srv, comfyModels := newHFServer(t, fake)
+			rr := &runRecorder{}
+			release := rr.hold() // park the first run so it stays "running"
+			defer release()
+			srv.runFn = rr.fn()
+			wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI,
+				`{"42":{"class_type":"UltralyticsDetectorProvider","inputs":{"model_name":"bbox/face_yolov9c.pt"}}}`)
+
+			// Pre-create the HF destination so the POST-resolution branch is the one taken.
+			dir := filepath.Join(comfyModels, "ultralytics", "bbox")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "face_yolov9c.pt"), body, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			if rec := post(t, srv, "/workflows/"+wfID+"/run", nil, true); rec.Code != http.StatusOK {
+				t.Fatalf("first run = %d", rec.Code)
+			}
+			if snap := srv.runJobState(); !snap.Running {
+				t.Fatalf("expected an in-flight run to contend with, got %+v", snap)
+			}
+			seqBefore := srv.runJobState().Seq
+
+			rec := post(t, srv, "/workflows/"+wfID+tc.path, tc.form, true)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("contended %s = %d", name, rec.Code)
+			}
+			if fake.resolveHits == 0 {
+				t.Fatalf("%s never resolved — the test is not exercising the post-resolution branch", name)
+			}
+			if !strings.Contains(rec.Body.String(), "another run or download is already in progress") {
+				t.Errorf("%s dropped the click silently after paying for a resolution:\n%s",
+					name, rec.Body.String())
+			}
+			if got := srv.runJobState().Seq; got != seqBefore {
+				t.Errorf("%s must not start a second job (seq %d → %d)", name, seqBefore, got)
+			}
+			release()
+			pollRunUntilDone(t, srv, wfID)
+		})
 	}
 }

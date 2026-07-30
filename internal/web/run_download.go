@@ -220,7 +220,15 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 
 	// Already installed at the resolved destination → skip the download, run.
 	if fileExists(plan.DestPath) {
-		s.startRunWithMessage(wf, runOptions{}, alreadyInstalledNote(filename))
+		// This branch sits AFTER resolveInstallPlan, i.e. after a live CivitAI round-trip
+		// this click already paid for. A drop by the one-run-at-a-time guard must therefore
+		// be REPORTED, not answered with the other job's panel (finding 9). The pre-resolution
+		// fast path above is left alone: it does no network work, so a dropped click there is
+		// a plain no-op.
+		if !s.startRunWithMessage(wf, runOptions{}, alreadyInstalledNote(filename)) {
+			s.renderRunActionDeclined(w, id, installMissingBusyReason)
+			return
+		}
 		s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 		return
 	}
@@ -330,7 +338,15 @@ func (s *Server) handleWorkflowInstallOptionAndRun(w http.ResponseWriter, r *htt
 
 	// Already installed at the resolved destination → skip the download, run with fixes.
 	if fileExists(plan.DestPath) {
-		s.startRunWithMessage(wf, opts, alreadyInstalledNote(filename))
+		// This branch sits AFTER resolveInstallPlan, i.e. after a live CivitAI round-trip
+		// this click already paid for. A drop by the one-run-at-a-time guard must therefore
+		// be REPORTED, not answered with the other job's panel (finding 9). The pre-resolution
+		// fast path above is left alone: it does no network work, so a dropped click there is
+		// a plain no-op.
+		if !s.startRunWithMessage(wf, opts, alreadyInstalledNote(filename)) {
+			s.renderRunActionDeclined(w, id, installMissingBusyReason)
+			return
+		}
 		s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
 		return
 	}

@@ -100,7 +100,9 @@ func planBatchInstall(models []comfy.MissingModel, dlEligible bool) batchInstall
 		}
 		seen[key] = true
 		p.Installable = append(p.Installable, mm)
-		if !comfyTypeRoutable(mm.CivitaiType) && !hf.CuratedFamilyMatch(mm.Filename) {
+		// Normalize the type exactly as the handler does (civitaiTypeParam), so the two
+		// layers never disagree about routability — see installDedupeKey.
+		if !comfyTypeRoutable(civitaiTypeParam(mm.CivitaiType)) && !hf.CuratedFamilyMatch(mm.Filename) {
 			p.Uncertain = append(p.Uncertain, mm)
 		}
 	}
@@ -112,22 +114,41 @@ func planBatchInstall(models []comfy.MissingModel, dlEligible bool) batchInstall
 	return p
 }
 
-// installDedupeKey identifies ONE install: the reference's basename plus the destination
-// it would be written to. Two references with the same basename but different
+// installDedupeKey identifies ONE install: the reference's basename plus the ComfyUI
+// subfolder it would be written to. Two references with the same basename but different
 // destinations are different files (see planBatchInstall). An empty/dot basename is not
 // installable at all (ok=false).
 //
-// When the type does not map to a subfolder the raw lowercased type stands in, so two
-// same-named files with different un-mappable types stay distinct rather than merging.
+// It is deliberately built from the SAME two functions that decide the real destination —
+// civitaiTypeParam (which the handler applies to every submitted type) then
+// comfy.TypeSubdir — so the render and handler layers can never key differently. Reading
+// mm.CivitaiType raw here would diverge: `LyCORIS` is in comfy.typeSubdirs (→ loras/) but
+// NOT in resolveTypeWhitelist, so the handler normalizes it to "" while an un-normalized
+// render key would say "loras". Unreachable today (InferCivitaiType never emits it), but
+// a divergence between two copies of one rule is exactly what this key exists to avoid.
+//
+// CASE: the basename is compared CASE-SENSITIVELY, matching comfy.SafeModelDest, which
+// preserves case. On a case-sensitive filesystem that is simply correct —
+// `Model.safetensors` and `model.safetensors` are two files, and folding them would make
+// the CTA offer "Install 1" for two missing models, install one, and leave the run
+// failing with no explanation.
+//
+// On a case-INSENSITIVE filesystem (macOS/Windows) the two references name ONE file, so
+// this key over-counts by one. That direction degrades safely and visibly: both are
+// resolved, the first is written, and the second's write is refused by
+// comfy.ErrDestExists BEFORE any body is streamed (the existence check precedes the temp
+// file), which downloadModelFile treats as "already present, proceed". The cost is one
+// redundant HTTP request, not a redundant download. The asymmetry is why folding is not
+// the safer default: over-counting wastes a request, under-counting silently drops a file
+// the run needs.
 func installDedupeKey(filename, civitaiType string) (string, bool) {
-	base := strings.ToLower(path.Base(strings.ReplaceAll(strings.TrimSpace(filename), "\\", "/")))
+	base := path.Base(strings.ReplaceAll(strings.TrimSpace(filename), "\\", "/"))
 	if base == "" || base == "." || base == ".." {
 		return "", false
 	}
-	dest, ok := comfy.TypeSubdir(civitaiType)
-	if !ok {
-		dest = strings.ToLower(strings.TrimSpace(civitaiType))
-	}
+	// An un-routable type has no destination, so every same-basename reference with one
+	// resolves through the SAME filename-keyed HuggingFace path — one install.
+	dest, _ := comfy.TypeSubdir(civitaiTypeParam(civitaiType))
 	return base + "\x1f" + dest, true
 }
 

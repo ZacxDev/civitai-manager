@@ -335,11 +335,12 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mode
 	// Triage the missing set ONCE: the lead, the headline and the CTA must agree about
 	// what this server can actually deliver (see batchInstallPlan).
 	batch := planBatchInstall(snap.MissingModels, dlEligible)
+	nm, nn := failureMissingCounts(snap, batch)
 
 	var detail []g.Node
 	// Lead: what went wrong, in the user's terms. The raw engine message moves into
 	// the technical <details> at the bottom.
-	if lead := failureLead(snap, batch.Available); lead != "" {
+	if lead := failureLead(snap, nm, nn, batch.Available); lead != "" {
 		detail = append(detail, h.P(h.Class("text-sm text-slate-300"), g.Text(lead)))
 	}
 
@@ -374,19 +375,18 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mode
 			detail = append(detail, incompatibleOptionsSection(snap.Preflight.BadOptions, wfID, csrf, dlEligible))
 		}
 	}
-	if tech := failureTechnicalDetail(snap); tech != nil {
+	if tech := failureTechnicalDetail(snap, nm, nn); tech != nil {
 		detail = append(detail, tech)
 	}
 	// The glyph makes the failure state distinguishable by shape, not by tint alone.
-	return alertIcon("error", "⚠", failureTitle(snap), detail...)
+	return alertIcon("error", "⚠", failureTitle(snap, nm, nn), detail...)
 }
 
 // failureTitle is the failure alert's headline. It keeps the "Run failed" stem
 // (that is the state, and it is what every failure surface is identified by) and
 // appends the plain-language count of what is actually wrong, so the headline alone
 // answers "what do I have to do?" for the overwhelmingly common case.
-func failureTitle(snap runSnapshot) string {
-	nm, nn := failureMissingCounts(snap)
+func failureTitle(snap runSnapshot, nm, nn int) string {
 	switch {
 	case nm > 0 && nn > 0:
 		return fmt.Sprintf("Run failed — %d model file%s and %d custom node%s are missing",
@@ -408,13 +408,19 @@ func failureTitle(snap runSnapshot) string {
 // renders as the lead instead (see failureTechnicalDetail).
 //
 // canInstall is whether the batch-install CTA can actually deliver on this server
-// (see batchInstallPlan). It is LOAD-BEARING, not cosmetic: "Install them and it
-// should run" is a promise, and on a server that cannot install anything — no
-// comfy_model_path, a remote ComfyUI, or references whose type could not be inferred
-// — that sentence is false and sends the reader looking for a button that is greyed
-// out. The un-installable wording names the real next step instead.
-func failureLead(snap runSnapshot, canInstall bool) string {
-	nm, nn := failureMissingCounts(snap)
+// (batchInstallPlan.Available = comfy_model_path + a local ComfyUI + a non-empty set).
+// It is LOAD-BEARING, not cosmetic: "Install them and it should run" is a promise, and
+// on a server that cannot install anything it is false and sends the reader looking for
+// a button that is greyed out. The un-installable wording names the real next step.
+//
+// SCOPE, stated precisely because an earlier version of this comment overstated it: a
+// reference whose model type could not be inferred does NOT suppress the promise. Since
+// those files are attempted (the HuggingFace fallback often places them — see
+// batchInstallPlan) they are only FLAGGED, and if they cannot be matched the handler
+// declines the whole batch and names them. Suppressing the lead for a file that will
+// probably install would be its own false signal; the honest decline is what covers the
+// case where it does not.
+func failureLead(snap runSnapshot, nm, nn int, canInstall bool) string {
 	switch {
 	case nm > 0 && nn > 0:
 		if !canInstall {
@@ -450,8 +456,9 @@ func failureLead(snap runSnapshot, canInstall bool) string {
 // idiom (a native <details>, as used for the collapsed substitute tail and the
 // model description). It returns nil when the raw message was already promoted to
 // the lead, so nothing is ever shown twice.
-func failureTechnicalDetail(snap runSnapshot) g.Node {
-	nm, nn := failureMissingCounts(snap)
+// nm/nn are the same counts the headline used; only whether they are NON-ZERO matters
+// here (it decides whether the raw message was already promoted to the lead).
+func failureTechnicalDetail(snap runSnapshot, nm, nn int) g.Node {
 	hasSummary := nm > 0 || nn > 0 || (snap.Preflight != nil && len(snap.Preflight.BadOptions) > 0)
 	var body []g.Node
 	if hasSummary && strings.TrimSpace(snap.Message) != "" {
@@ -469,14 +476,26 @@ func failureTechnicalDetail(snap runSnapshot) g.Node {
 	)
 }
 
-// failureMissingCounts is the (missing models, missing nodes) pair the copy above
-// is built from. It counts the PREFLIGHT report (the authority) so the wording is
-// right even when the enriched per-model analysis is absent.
-func failureMissingCounts(snap runSnapshot) (models, nodes int) {
+// failureMissingCounts is the (missing models, missing nodes) pair the headline and lead
+// are built from.
+//
+// The model count comes from the batch triage's DISTINCT set whenever there is one, so
+// the headline and the CTA can never disagree: two references sharing a basename and a
+// destination are ONE install, and counting raw preflight strings rendered
+// "Run failed — 2 model files missing" directly above "Install 1 missing model file and
+// run". The CTA is the honest number, so the headline follows it.
+//
+// It falls back to the PREFLIGHT count when the enriched per-model analysis is absent
+// (an older snapshot carrying only filenames), where no triage is possible.
+func failureMissingCounts(snap runSnapshot, batch batchInstallPlan) (models, nodes int) {
 	if snap.Preflight == nil {
 		return 0, 0
 	}
-	return len(snap.Preflight.MissingModels), len(snap.Preflight.MissingNodes)
+	models = len(snap.Preflight.MissingModels)
+	if n := len(batch.Installable) + batch.Overflow; n > 0 {
+		models = n
+	}
+	return models, len(snap.Preflight.MissingNodes)
 }
 
 // itThem keeps the generated copy grammatical for n == 1. Its sibling `isAre` is the
