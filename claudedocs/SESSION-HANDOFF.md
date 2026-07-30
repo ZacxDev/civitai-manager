@@ -79,10 +79,35 @@ is obvious from the markup:
    three of the rail's slots in the browser. `outputs_rail.go` contains no `batch`
    reference. Higher blast radius than the page was — that query runs on EVERY page
    render.
-2. **Queue ×N has STILL never been live-verified against a real ComfyUI.** Nothing
-   this session changed that: the gallery verification seeded a temp DB directly and
-   never submitted a prompt. Batch runs **actually submit**, so verify against a
-   **throwaway temp DB**, be ready to Stop, and never start with a 25-item batch.
+2. ✅ **Queue ×N IS NOW LIVE-VERIFIED against real ComfyUI 0.27.1 — it works, no bugs
+   found.** Three real batches (3, 5, and 6-stopped-at-1) on workflow 575
+   `zz_illustrious_txt2img`, against a throwaway temp DB on `:8976`. What was
+   confirmed, in the order it matters:
+   - **Batch identity is really written** — shared `batch_id`, `batch_index` 1..N,
+     `batch_total` = N as requested. Migration 0016 populated end-to-end for the
+     first time (it was DEAD once; see the R2 note below).
+   - **Seeds genuinely differ per item** — 3 distinct seeds across 3 items, and a
+     **deliberately posted `seed=12345` was overridden**, proving `withFreshSeeds`
+     actually fires rather than passing the form value through.
+   - 🔴 **The strongest check: 3 DISTINCT image sha256s on disk.** The DB recording
+     different seeds does not prove ComfyUI *used* them; different image bytes does.
+   - Non-seed params byte-identical across items.
+   - The batch page renders both shapes correctly with real rows: `3 runs.` for a
+     complete batch and `1 of 6 runs captured — the batch was stopped or some runs
+     failed.` for the stopped one.
+   - **Stop works**: "1 of 6 completed, 5 cancelled", and ComfyUI's own queue was
+     left EMPTY — the remainder is never submitted, not submitted-then-abandoned.
+   ⚠ **What this does NOT cover: the multi-mode path.** Workflow 575 is
+   SINGLE-mode (no rgthree Fast Groups Bypasser). The known near-miss — seed keys
+   must come from the **mode-applied** graph, or a bypassed pipeline's seed gets
+   randomised while the selected one stays fixed — can only manifest on a MULTI-MODE
+   template pack. That specific risk is still unverified live; it is pinned only by
+   `TestQueueSeedKeysComeFromTheModeAppliedGraph`. **Re-run this exercise against a
+   multi-mode pack** (e.g. something from pack 1386234) and check the image hashes
+   differ, which is the one instrument that would catch it.
+   Practical note for a repeat: at 512×512/6 steps a 5-item batch finishes in **under
+   9 seconds**, so a Stop test needs SLOW items — 1024×1024/40 steps gave a usable
+   mid-batch window at ~14s.
 3. **Two known-loose spots in the new code**, both judged not worth blocking on:
    - `TestBatchPageHostileIDsAre404NotError` proves the *predicate* rejects hostile
      ids, **not that the handler's guard is what does it**. Verified: neutering only
@@ -139,3 +164,10 @@ is obvious from the markup:
   had disconnected earlier in the session and came back on its own.
 - All agent worktrees removed; `git worktree list` shows only the main checkout.
 - Dogfood v0.1.84 running unattended on `:8972` against the real DB.
+- ⚠ **The Queue ×N live verification wrote 9 images into the user's real ComfyUI
+  output dir** — `ComfyUI_01061_.png` … `ComfyUI_01069_.png`, 2026-07-30 16:16–16:20.
+  That is unavoidable: the workflow's `SaveImage` node writes there, and the app
+  COPIES from it. They were left in place (the user's own outputs directory is not
+  mine to prune). The app-side temp DB, its outputs dir, and the scratch binary were
+  all deleted; the real DB was never written to (still 5 generations, all batch
+  columns NULL).
