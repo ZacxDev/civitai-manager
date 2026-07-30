@@ -175,14 +175,27 @@ func TestNewestVersionInfoByModel(t *testing.T) {
 	}
 }
 
+// headerCardView builds the modelDetailView modelHeaderCard now takes, from the
+// loose args these tests used to pass positionally. verName/verDate are folded
+// into the selected version (both empty → no selected version at all).
+func headerCardView(m *civitai.ModelDetail, lastUpdated time.Time, selVID int, verName, verDate string) modelDetailView {
+	v := modelDetailView{Model: m, LastUpdated: lastUpdated, SelectedVersionID: selVID}
+	if verName != "" || verDate != "" {
+		v.Version = &civitai.ModelVersionDetail{ID: selVID, Name: verName}
+		v.PublishedAt = verDate
+	}
+	return v
+}
+
 // TestModelHeaderUpdatedStat proves the detail header renders "Updated X ago"
 // with a hover popover (absolute date + latest version name/date) when a
 // last-updated time is present, and omits it when zero.
 func TestModelHeaderUpdatedStat(t *testing.T) {
 	m := &civitai.ModelDetail{ID: 1, Name: "M", Type: "LORA"}
 
-	set := renderString(t, modelHeaderCard(m, "", "csrf", "https://civitai.com/models/1", nil,
-		time.Now().Add(-3*time.Hour), 2, "v2", "2026-01-15"))
+	set := renderString(t, modelHeaderCard(
+		headerCardView(m, time.Now().Add(-3*time.Hour), 2, "v2", "2026-01-15"),
+		nil, "csrf", "https://civitai.com"))
 	if !strings.Contains(set, "Updated") || !strings.Contains(set, "3h ago") {
 		t.Errorf("header should render \"Updated 3h ago\" when set; html:\n%s", set)
 	}
@@ -193,8 +206,9 @@ func TestModelHeaderUpdatedStat(t *testing.T) {
 		}
 	}
 
-	zero := renderString(t, modelHeaderCard(m, "", "csrf", "https://civitai.com/models/1", nil,
-		time.Time{}, 2, "v2", "2026-01-15"))
+	zero := renderString(t, modelHeaderCard(
+		headerCardView(m, time.Time{}, 2, "v2", "2026-01-15"),
+		nil, "csrf", "https://civitai.com"))
 	if strings.Contains(zero, "Updated") {
 		t.Errorf("header should omit \"Updated\" when the time is zero; html:\n%s", zero)
 	}
@@ -207,8 +221,9 @@ func TestModelHeaderUpdatedDegradesAndEscapes(t *testing.T) {
 	m := &civitai.ModelDetail{ID: 1, Name: "M", Type: "LORA"}
 
 	// No version name/date → the popover renders only the "Updated {date}" line.
-	bare := renderString(t, modelHeaderCard(m, "", "csrf", "https://civitai.com/models/1", nil,
-		time.Now().Add(-1*time.Hour), 2, "", ""))
+	bare := renderString(t, modelHeaderCard(
+		headerCardView(m, time.Now().Add(-1*time.Hour), 2, "", ""),
+		nil, "csrf", "https://civitai.com"))
 	if !strings.Contains(bare, "cm-updated-pop") {
 		t.Error("popover should still render with only the date line")
 	}
@@ -217,8 +232,9 @@ func TestModelHeaderUpdatedDegradesAndEscapes(t *testing.T) {
 	}
 
 	// A malicious version name must be escaped, not rendered as live markup.
-	evil := renderString(t, modelHeaderCard(m, "", "csrf", "https://civitai.com/models/1", nil,
-		time.Now().Add(-1*time.Hour), 2, `<script>alert(1)</script>`, "2026-01-15"))
+	evil := renderString(t, modelHeaderCard(
+		headerCardView(m, time.Now().Add(-1*time.Hour), 2, `<script>alert(1)</script>`, "2026-01-15"),
+		nil, "csrf", "https://civitai.com"))
 	if strings.Contains(evil, "<script>alert(1)</script>") {
 		t.Errorf("version name must be escaped; html:\n%s", evil)
 	}

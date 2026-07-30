@@ -336,6 +336,11 @@ func workflowImportContainerID(modelID int) string {
 // The button carries no explanatory paragraph of its own: it repeated, once per
 // card, what the Discover page's blurb already states about the civitai.com
 // egress, and on a grid of cards that note was pure noise.
+// It carries NO explanatory paragraph and no egress note in any form — not under
+// the button, not in a title, not in an aria-label. That was an explicit decision:
+// the note repeated, once per card, what the Discover page's blurb already states,
+// and on a grid of cards it was pure noise. The model DETAIL page has no blurb, so
+// it now carries no inline egress statement at all — a known, accepted consequence.
 func workflowImportAction(modelID int, csrf string) g.Node {
 	id := workflowImportContainerID(modelID)
 	return h.Div(

@@ -299,6 +299,17 @@ type modelDetailView struct {
 	// LocalVersionIDs is the set of this model's version ids the user has locally
 	// (derived from local files), used to badge owned versions in the version list.
 	LocalVersionIDs map[int]bool
+	// VersionPublishedAt maps a version id to ITS OWN publishedAt, parsed from the
+	// GetModel raw body. It is keyed by ID — never by position — because
+	// modelVersions[] is ordered by the creator's `index` (primary first), NOT by
+	// publish date; reading a date positionally is a documented ship-then-revert
+	// bug (see the CivitAI data gotcha in CLAUDE.md). A version with no parseable
+	// date is simply absent, and its tab then shows no date affordance.
+	VersionPublishedAt map[int]time.Time
+	// ImportedWorkflows is how many workflows in the local library were imported
+	// FROM this model (store.CountWorkflowsByModel). >0 flips the import section to
+	// its "already in your library" state. Only populated for Workflows-type models.
+	ImportedWorkflows int
 	// loadErr carries the model-load failure (used only to classify the HTTP
 	// status: a not-found model → 404, anything else → 502).
 	loadErr error
@@ -400,6 +411,42 @@ func newestVersionPublishedAt(raw []byte) time.Time {
 		ats = append(ats, v.PublishedAt)
 	}
 	return maxPublishedTime(ats)
+}
+
+// versionPublishedTimes maps each version id in a GetModel raw body to ITS OWN
+// publishedAt, parsed as a time.Time. It is keyed by `id` — never by array
+// position — because modelVersions[] is ordered by the creator's `index`
+// (primary/featured first), NOT by publish date; reading version N's date from
+// position N is the documented ship-then-revert bug (see CLAUDE.md).
+//
+// Defensive throughout: an empty/undecodable body yields an empty (non-nil) map,
+// and a version with a missing/unparseable/zero-id date is simply absent — the
+// caller then renders no date affordance for it rather than a wrong one.
+func versionPublishedTimes(raw []byte) map[int]time.Time {
+	out := map[int]time.Time{}
+	if len(raw) == 0 {
+		return out
+	}
+	var body struct {
+		ModelVersions []struct {
+			ID          int    `json:"id"`
+			PublishedAt string `json:"publishedAt"`
+		} `json:"modelVersions"`
+	}
+	if json.Unmarshal(raw, &body) != nil {
+		return out
+	}
+	for _, v := range body.ModelVersions {
+		if v.ID <= 0 {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, strings.TrimSpace(v.PublishedAt))
+		if err != nil {
+			continue
+		}
+		out[v.ID] = t
+	}
+	return out
 }
 
 // modelUpdateInfo is the per-model "last updated" summary derived from a
@@ -536,29 +583,16 @@ func updatedCardLine(modelID, versionID int, rel, absDate, versionName, versionD
 // image gallery with NSFW handling + a lightbox.
 func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, baseURL string, rail ...railData) g.Node {
 	m := v.Model
-	creator := ""
-	if m.Creator != nil {
-		creator = m.Creator.Username
-	}
 	mode := normalizeNSFWMode(v.NSFWMode)
-	modelURL := fmt.Sprintf("%s/models/%d", strings.TrimRight(baseURL, "/"), m.ID)
-
-	// The header's "Updated X ago" popover names the (default-selected, i.e. latest)
-	// version and its publish date when available — degrades gracefully when absent.
-	verName, verDate := "", ""
-	if v.Version != nil {
-		verName = v.Version.Name
-		verDate = isoDatePrefix(v.PublishedAt)
-	}
 
 	return page(m.Name, theme, csrf, mode, railOf(rail),
-		modelHeaderCard(m, creator, csrf, modelURL, sub, v.LastUpdated, v.SelectedVersionID, verName, verDate),
-		// The version-DEPENDENT region sits directly under the header, ABOVE the
-		// description: version tabs → larger showcase → files/metadata → community.
-		// Selecting a version htmx-swaps this container's innerHTML (see
-		// modelVersionTabsCard / handleModel's HX path) so the URL updates
-		// (hx-push-url) and scroll is preserved, without a full reload.
-		h.Div(h.ID(versionRegionID), versionRegionInner(v, csrf)),
+		// The header is now INSIDE the version region: the header card and the
+		// version tab strip are ONE card (see modelHeaderCard), and the active tab's
+		// highlight has to re-render on every version swap — so the whole combined
+		// card lives in the swapped container. Selecting a version htmx-swaps this
+		// container's innerHTML so the URL updates (hx-push-url) and scroll is
+		// preserved, without a full reload.
+		h.Div(h.ID(versionRegionID), versionRegionInner(v, sub, csrf, baseURL)),
 		g.If(strings.TrimSpace(v.Description) != "", modelDescriptionCard(v.Description)),
 		// Tags are a compact, de-emphasized inline chip row under the description
 		// (not a standalone "Tags" card).
@@ -576,40 +610,77 @@ func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, ba
 const versionRegionID = "version-region"
 
 // versionRegionInner renders the version-DEPENDENT content of the model page: the
-// showcase carousel for the selected version, the version list (with the active
-// version highlighted) + its detail, and the lazy community-feed container keyed
-// to the selected version. It is rendered both inside #version-region on the full
-// page AND standalone as the HX-swap response (handleModel's HX path), so a
-// version change re-renders exactly this content — including re-arming the
-// community feed's lazy `revealed` trigger for the new version id.
-func versionRegionInner(v modelDetailView, csrf string) g.Node {
+// combined header + version-tabs card, the showcase carousel for the selected
+// version, the download card, and the lazy community-feed container keyed to the
+// selected version. It is rendered both inside #version-region on the full page
+// AND standalone as the HX-swap response (handleModel's HX path), so a version
+// change re-renders exactly this content — including the active tab highlight and
+// the community feed's lazy `revealed` trigger for the new version id.
+func versionRegionInner(v modelDetailView, sub *store.Subscription, csrf, baseURL string) g.Node {
 	m := v.Model
 	mode := normalizeNSFWMode(v.NSFWMode)
-	// Order (community moves up with the region so the whole unit stays a single
-	// innerHTML swap): version tabs → larger showcase → files/metadata → community.
-	// The tab bar lives INSIDE the region so the active-tab highlight re-renders on
-	// every swap.
+	// Order: header+tabs (one card) → larger showcase → download → community.
 	return g.Group([]g.Node{
-		modelVersionTabsCard(v),
+		modelHeaderCard(v, sub, csrf, baseURL),
 		showcaseCard(m.ID, v.Images, mode),
-		versionDetailCard(v, csrf),
+		versionDownloadCard(v, csrf),
 		// Workflows-type models are zips of ComfyUI workflow .json — offer a one-click
 		// import into the local workflow library (Discover D2). Other model types are
 		// unaffected.
-		g.If(strings.EqualFold(m.Type, "Workflows"), workflowImportDetailCard(m.ID, csrf)),
+		g.If(strings.EqualFold(m.Type, "Workflows"),
+			workflowImportDetailCard(m.ID, csrf, v.ImportedWorkflows)),
 		communityFeedContainer(m.ID, v.SelectedVersionID),
 	})
 }
 
-// workflowImportDetailCard renders the "Import workflow(s)" affordance on a
-// Workflows-type model's detail page. It downloads the model's workflow zip(s)
-// from civitai.com (with the user's token) and stores each contained workflow
-// locally; the button swaps to the import result inline.
-func workflowImportDetailCard(modelID int, csrf string) g.Node {
+// workflowImportDetailCard renders the workflow-import section on a Workflows-type
+// model's detail page in ONE of its two states:
+//
+//   - imported (imported > 0): the model's workflows are already in the local
+//     library, so the state-changing import CTA is REPLACED by a "View in library"
+//     link into the workflows tab filtered to this model. Re-importing would only
+//     report "0 imported, N already present", so offering it is a dead end.
+//   - not imported: the import CTA. The old explanatory paragraph under the button
+//     is deliberately gone here (the discover cards keep it — see
+//     workflowImportAction); the egress it described is carried by the button's own
+//     title/aria-label instead.
+func workflowImportDetailCard(modelID int, csrf string, imported int) g.Node {
+	if imported > 0 {
+		return card(
+			h.H2(h.Class("text-sm font-semibold text-slate-300 mb-2"), g.Text("Workflows")),
+			h.P(h.Class("mb-2 text-xs text-slate-400"),
+				g.Text(fmt.Sprintf("Already imported — %s from this model %s in your workflow library.",
+					pluralWorkflows(imported), isAre(imported)))),
+			h.A(
+				h.Href(fmt.Sprintf("/library?tab=workflows&model=%d", modelID)),
+				dataAttr("civitai-ui", "button"),
+				dataAttr("variant", "filled"),
+				dataAttr("size", "sm"),
+				h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("→ ")),
+				g.Text("View in library"),
+			),
+		)
+	}
 	return card(
 		h.H2(h.Class("text-sm font-semibold text-slate-300 mb-2"), g.Text("Import workflows")),
 		workflowImportAction(modelID, csrf),
 	)
+}
+
+// pluralWorkflows renders "1 workflow" / "N workflows".
+func pluralWorkflows(n int) string {
+	if n == 1 {
+		return "1 workflow"
+	}
+	return strconv.Itoa(n) + " workflows"
+}
+
+// isAre agrees the verb with pluralWorkflows' subject.
+func isAre(n int) string {
+	if n == 1 {
+		return "is"
+	}
+	return "are"
 }
 
 // showcaseCard renders the selected version's showcase carousel (moved out of the
@@ -648,10 +719,38 @@ func communityFeedContainer(modelID, versionID int) g.Node {
 	)
 }
 
-// modelHeaderCard renders the model header: name/type/creator, key stats, the
-// Subscribe affordance, and the "View on CivitAI" link. The showcase carousel is
-// NOT here — it lives in the version region so it re-renders on a version change.
-func modelHeaderCard(m *civitai.ModelDetail, creator, csrf, modelURL string, sub *store.Subscription, lastUpdated time.Time, latestVersionID int, versionName, versionDate string) g.Node {
+// modelCivitaiURL builds the model's canonical civitai.com URL from the
+// configured base URL.
+func modelCivitaiURL(baseURL string, modelID int) string {
+	return fmt.Sprintf("%s/models/%d", strings.TrimRight(baseURL, "/"), modelID)
+}
+
+// modelHeaderCard renders the model header AND the version tab strip as ONE card:
+// name/type/creator, the icon stats, the Subscribe affordance, the "View on
+// CivitAI" link, and — along the card's bottom edge — the version tabs. Merging
+// them removes a card boundary that split one logical unit (the model, and which
+// of its versions you are looking at) across two panels.
+//
+// Consequences of the merge, both deliberate:
+//   - the card lives INSIDE #version-region, because the active tab highlight must
+//     re-render on every version swap;
+//   - so the header re-renders on a version swap too. That is harmless (the same
+//     model data, and the handler re-resolves the subscription each time).
+//
+// The showcase carousel is NOT here — it stays its own card below.
+func modelHeaderCard(v modelDetailView, sub *store.Subscription, csrf, baseURL string) g.Node {
+	m := v.Model
+	creator := ""
+	if m.Creator != nil {
+		creator = m.Creator.Username
+	}
+	// The header's "Updated X ago" popover names the (default-selected) version and
+	// its publish date when available — degrades gracefully when absent.
+	verName, verDate := "", ""
+	if v.Version != nil {
+		verName = v.Version.Name
+		verDate = isoDatePrefix(v.PublishedAt)
+	}
 	return card(
 		h.Div(
 			h.Class("flex flex-wrap items-start justify-between gap-4"),
@@ -664,19 +763,23 @@ func modelHeaderCard(m *civitai.ModelDetail, creator, csrf, modelURL string, sub
 					g.If(creator != "", h.A(h.Href("/creators/"+creator),
 						h.Class("hover:underline"), g.Text("@"+creator))),
 				),
+				// Stats as icon + count, reusing the result cards' statWithIcon idiom and
+				// its two glyphs (downloads / thumbs-up "likes") rather than inventing new
+				// ones. The words are gone; the label survives via aria-label + title. The
+				// COMMENT count is dropped entirely — it linked nowhere and the number
+				// alone told the user nothing actionable.
 				h.Div(
-					h.Class("mt-2 flex flex-wrap gap-4 text-xs text-slate-400"),
-					statInline("Downloads", compactCount(m.Stats.DownloadCount)),
-					statInline("Likes", compactCount(m.Stats.ThumbsUpCount)),
-					statInline("Comments", compactCount(m.Stats.CommentCount)),
+					h.Class("cm-stats mt-2 text-xs text-slate-400"),
+					statWithIcon(downloadIconSVG, compactCount(m.Stats.DownloadCount), "downloads"),
+					statWithIcon(thumbsUpIconSVG, compactCount(m.Stats.ThumbsUpCount), "likes"),
 					// "Updated X ago" from the newest version's publish date, with a
 					// hover/focus popover (absolute date + latest version name/date).
 					// Omitted when no parseable date.
-					g.If(!lastUpdated.IsZero(), updatedHeaderStat(
-						m.ID, latestVersionID,
-						humanSince(lastUpdated),
-						lastUpdated.Local().Format("2006-01-02 15:04"),
-						versionName, versionDate)),
+					g.If(!v.LastUpdated.IsZero(), updatedHeaderStat(
+						m.ID, v.SelectedVersionID,
+						humanSince(v.LastUpdated),
+						v.LastUpdated.Local().Format("2006-01-02 15:04"),
+						verName, verDate)),
 				),
 			),
 			// Reflect the real subscription state (subscribed → "Subscribed ✓ /
@@ -685,9 +788,11 @@ func modelHeaderCard(m *civitai.ModelDetail, creator, csrf, modelURL string, sub
 			h.Div(
 				h.Class("flex flex-col items-end gap-2"),
 				subscribeControl(m.ID, sub, csrf),
-				viewOnCivitaiLink(modelURL),
+				viewOnCivitaiLink(modelCivitaiURL(baseURL, m.ID)),
 			),
 		),
+		// The version tabs sit on the same card, along its bottom edge.
+		h.Div(h.Class("mt-4"), modelVersionTabs(v)),
 	)
 }
 
@@ -695,7 +800,15 @@ func modelHeaderCard(m *civitai.ModelDetail, creator, csrf, modelURL string, sub
 // an anchor styled as a civitai outline button (the component CSS is
 // attribute-driven, so it styles an <a> too) that opens the model's civitai.com
 // page in a new tab, hardened with rel=noopener noreferrer.
+//
+// The URL is built from the configured BaseURL, but it is scheme-validated all
+// the same (isSafeHTTPURL, as on the Apps cards): a config carrying a
+// javascript:/data: base must never become an href. An unsafe/unparseable URL
+// renders as no link at all.
 func viewOnCivitaiLink(modelURL string) g.Node {
+	if !isSafeHTTPURL(modelURL) {
+		return nil
+	}
 	return h.A(
 		h.Href(modelURL),
 		h.Target("_blank"),
@@ -809,16 +922,62 @@ func versionTab(v modelDetailView, ver civitai.ModelVersionSummary) g.Node {
 			g.Text("✓"),
 		))
 	}
+	// Publish-date affordance, keyed by THIS version's id.
+	if pub, ok := v.VersionPublishedAt[ver.ID]; ok && !pub.IsZero() {
+		tab = append(tab, versionDatePopover(pub))
+	}
 	return h.A(tab...)
 }
 
-// modelVersionTabsCard renders the model's versions as a horizontal TAB BAR. It
-// lives inside #version-region so the active-tab highlight re-renders on every
-// htmx swap. Two layouts:
+// clockIconSVG is the small inline glyph the version tabs carry as their
+// publish-date affordance. Static, self-contained (feather-style) markup — no
+// external icon font or CDN — sized by .cm-vdate-ico in app.css and inheriting
+// currentColor so both data-theme paths render.
+const clockIconSVG = `<svg class="cm-vdate-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>`
+
+// versionDatePopover renders one version tab's publish-date affordance: the clock
+// icon plus a hover/focus popover carrying the RELATIVE publish date ("3 weeks
+// ago") and the absolute date beneath it.
 //
-//   - FLAT (default): a single scrollable row of version tabs. Used when there
-//     are few versions (<= versionGroupThreshold) OR all versions share one base
-//     model (grouping can't help).
+// It reuses the page's EXISTING popover mechanism rather than adding a second
+// one: the `.cm-updated` wrapper + `.cm-updated-pop` child is exactly what the
+// shared hover controller in modelPageScript delegates on (its selector is
+// `.cm-vstatus, .cm-updated`), so this popover gets the same open-on-hover,
+// stay-open-while-hovered, 200ms-grace behavior for free, with the CSS
+// :hover/:focus-within rules as the no-JS fallback.
+//
+// `pub` MUST be the version's own publishedAt looked up by version ID —
+// modelVersions[] is ordered by the creator's `index`, not by date.
+func versionDatePopover(pub time.Time) g.Node {
+	rel := humanSince(pub)
+	abs := pub.Local().Format("2006-01-02")
+	return h.Span(
+		// cm-updated → the shared popover controller + CSS; cm-vdate → the tab-local
+		// sizing/color of the icon.
+		h.Class("cm-updated cm-vdate"),
+		g.Attr("role", "img"),
+		// The date is also exposed as text for AT / non-hover users, since the icon
+		// itself carries no words.
+		g.Attr("aria-label", "Published "+rel),
+		h.Title("Published "+rel),
+		g.Raw(clockIconSVG),
+		h.Span(
+			h.Class("cm-updated-pop"),
+			g.Attr("role", "tooltip"),
+			h.Div(h.Class("cm-updated-title"), g.Text("Published "+rel)),
+			h.Div(h.Class("cm-updated-date"), g.Text(abs)),
+		),
+	)
+}
+
+// modelVersionTabs renders the model's versions as a TAB BAR. It is NOT its own
+// card — it is the bottom half of the combined header card (see modelHeaderCard),
+// which lives inside #version-region so the active-tab highlight re-renders on
+// every htmx swap. Two layouts:
+//
+//   - FLAT (default): a wrapping row of version tabs. Used when there are few
+//     versions (<= versionGroupThreshold) OR all versions share one base model
+//     (grouping can't help).
 //   - GROUPED: when there are MANY versions (> versionGroupThreshold) AND more
 //     than one distinct base model, a base-model selector (pills — one per
 //     EXACT-string base model) filters the tabs; only one group's tabs show at a
@@ -826,7 +985,7 @@ func versionTab(v modelDetailView, ver civitai.ModelVersionSummary) g.Node {
 //     set SERVER-SIDE (no JS needed to pick the default); pill switching is
 //     client-side (cmVGroup) so the version tabs stay inside #version-region and
 //     only a version click swaps the server fragment.
-func modelVersionTabsCard(v modelDetailView) g.Node {
+func modelVersionTabs(v modelDetailView) g.Node {
 	m := v.Model
 
 	// Bucket versions by EXACT base-model string, preserving first-seen order for
@@ -846,15 +1005,13 @@ func modelVersionTabsCard(v modelDetailView) g.Node {
 		for _, ver := range m.ModelVersions {
 			tabs = append(tabs, versionTab(v, ver))
 		}
-		return card(
-			sectionTitle("Versions"),
-			// Single horizontally-scrolling row (never wraps) — see .cm-version-tabs in
-			// app.css. Marked as a tablist for AT.
-			h.Div(
-				h.Class("cm-version-tabs"),
-				g.Attr("role", "tablist"),
-				g.Group(tabs),
-			),
+		// A wrapping row of tabs — see .cm-version-tabs in app.css. Marked as a
+		// tablist for AT, and labeled since the "Versions" heading is gone.
+		return h.Div(
+			h.Class("cm-version-tabs"),
+			g.Attr("role", "tablist"),
+			g.Attr("aria-label", "Model versions"),
+			g.Group(tabs),
 		)
 	}
 
@@ -905,6 +1062,7 @@ func modelVersionTabsCard(v modelDetailView) g.Node {
 			h.Class("cm-version-tabs cm-vgroup"),
 			dataAttr("cm-vgroup", key),
 			g.Attr("role", "tablist"),
+			g.Attr("aria-label", label+" versions"),
 		}
 		// Only the active group's tabs are shown on load; the rest carry the HTML
 		// boolean `hidden` attr (cmVGroup toggles it on a pill click).
@@ -915,55 +1073,80 @@ func modelVersionTabsCard(v modelDetailView) g.Node {
 		panels = append(panels, h.Div(panelAttrs...))
 	}
 
-	return card(
-		sectionTitle("Versions"),
+	return h.Div(
+		// Wrapper cmVGroup scopes its query to (so multiple models on a page — or
+		// a re-rendered region — can't cross-toggle).
+		dataAttr("cm-vgroups", "true"),
 		h.Div(
-			// Wrapper cmVGroup scopes its query to (so multiple models on a page — or
-			// a re-rendered region — can't cross-toggle).
-			dataAttr("cm-vgroups", "true"),
-			h.Div(
-				h.Class("cm-vgroup-pills"),
-				g.Attr("role", "group"),
-				g.Attr("aria-label", "Filter versions by base model"),
-				g.Group(pills),
-			),
-			g.Group(panels),
+			h.Class("cm-vgroup-pills"),
+			g.Attr("role", "group"),
+			g.Attr("aria-label", "Filter versions by base model"),
+			g.Group(pills),
 		),
+		g.Group(panels),
 	)
 }
 
-// versionDetailCard renders the selected version's files & metadata block
-// full-width under the tabs + showcase (moved out of the old 2-column grid). The
-// inner content (base-model badge, published date, trigger words, file list with
-// size + CSRF-protected Download) is unchanged — see versionDetail.
-func versionDetailCard(v modelDetailView, csrf string) g.Node {
-	return card(
-		sectionTitle("Files & metadata"),
-		versionDetail(v, csrf),
-	)
-}
-
-// versionDetail renders the selected version's key facts: base model, trigger
-// words as copy-able chips, published date, and the file list (each file with a
-// Download action that enqueues it — csrf is threaded through for that POST).
-func versionDetail(v modelDetailView, csrf string) g.Node {
+// versionDownloadCard is the selected version's DOWNLOAD card (formerly the
+// "Files & metadata" card). The primary action stays obvious: the file rows and
+// their Download buttons render first and are always visible. Everything that is
+// merely descriptive — base model, publish date, trigger words — is demoted into a
+// disclosure that is COLLAPSED by default (a plain <details>, so it works with no
+// JS at all and the download action is present whether it is open or shut).
+func versionDownloadCard(v modelDetailView, csrf string) g.Node {
 	ver := v.Version
 	if ver == nil {
-		return h.P(h.Class("text-sm text-slate-500"), g.Text("Select a version to see its details."))
+		return card(
+			sectionTitle("Download"),
+			h.P(h.Class("text-sm text-slate-500"), g.Text("Select a version to see its files.")),
+		)
 	}
+	return card(
+		h.Div(
+			h.Class("mb-3 flex flex-wrap items-center justify-between gap-2"),
+			h.H2(h.Class("text-lg font-semibold text-slate-100"), g.Text("Download")),
+			g.If(ver.BaseModel != "", badge(ver.BaseModel, "blue")),
+		),
+		fileList(v.Model.ID, ver.ID, ver.Files, ver.DownloadURL, csrf),
+		versionMetadataReveal(v, ver),
+	)
+}
+
+// versionMetadataReveal is the collapsed-by-default metadata disclosure at the
+// bottom of the download card: base model, publish date, and the copy-able
+// trigger-word chips. Rendered as a native <details> (no JS, keyboard-operable,
+// announced as a disclosure by AT); the open/close motion is CSS in
+// .cm-meta-reveal and is disabled under prefers-reduced-motion.
+//
+// It returns nil when the version carries none of those facts, so an empty
+// disclosure never appears.
+func versionMetadataReveal(v modelDetailView, ver *civitai.ModelVersionDetail) g.Node {
 	var rows []g.Node
 	if ver.BaseModel != "" {
 		rows = append(rows, detailRow("Base model", badge(ver.BaseModel, "blue")))
 	}
 	if v.PublishedAt != "" {
-		rows = append(rows, detailRow("Published", h.Span(h.Class("text-sm text-slate-300"), g.Text(v.PublishedAt))))
+		// The raw civitai value is a full ISO timestamp ("2023-07-29T20:50:47.173Z").
+		// Show just the date — the tab popover already carries the relative age, and a
+		// millisecond-precision stamp is noise in a metadata row.
+		rows = append(rows, detailRow("Published",
+			h.Span(h.Class("text-sm text-slate-300"), g.Text(isoDatePrefix(v.PublishedAt)))))
 	}
 	if len(ver.TrainedWords) > 0 {
 		rows = append(rows, detailRow("Trigger words", triggerWordChips(ver.TrainedWords)))
 	}
-	rows = append(rows, detailRow("Files", fileList(v.Model.ID, ver.ID, ver.Files, ver.DownloadURL, csrf)))
-
-	return h.Div(h.Class("space-y-3"), g.Group(rows))
+	if len(rows) == 0 {
+		return nil
+	}
+	return h.Details(
+		h.Class("cm-meta-reveal mt-3"),
+		h.Summary(
+			h.Class("cm-meta-summary"),
+			h.Span(h.Class("cm-meta-chevron"), g.Attr("aria-hidden", "true"), g.Text("›")),
+			g.Text("Version metadata"),
+		),
+		h.Div(h.Class("cm-meta-body space-y-3"), g.Group(rows)),
+	)
 }
 
 func detailRow(label string, value g.Node) g.Node {
@@ -1004,19 +1187,26 @@ func fileList(modelID, versionID int, files []civitai.ModelVersionFile, versionD
 		return h.P(h.Class("text-sm text-slate-500"), g.Text("No files."))
 	}
 	var rows []g.Node
-	for _, f := range files {
+	for i, f := range files {
 		hasURL := strings.TrimSpace(f.DownloadURL) != "" || strings.TrimSpace(versionDownloadURL) != ""
+		// The FIRST file is the version's primary artifact — its Download is the
+		// card's primary action and gets the filled treatment; the rest stay outline
+		// so there is exactly one visually-primary control.
+		variant := "outline"
+		if i == 0 {
+			variant = "filled"
+		}
 		rows = append(rows, h.Li(
-			h.Class("flex items-center justify-between gap-2 rounded border border-slate-800 px-2 py-1 text-xs"),
-			h.Span(h.Class("truncate text-slate-300"), g.Text(f.Name)),
-			h.Span(h.Class("flex shrink-0 items-center gap-2 text-slate-500"),
+			h.Class("cm-dl-file"),
+			h.Span(h.Class("truncate text-sm text-slate-200"), g.Text(f.Name)),
+			h.Span(h.Class("flex shrink-0 items-center gap-2 text-xs text-slate-500"),
 				g.If(f.Type != "", badge(f.Type, "slate")),
 				g.Text(humanBytes(int64(f.SizeKB*1024))),
-				downloadFileButton(modelID, versionID, f.ID, csrf, hasURL),
+				downloadFileButton(modelID, versionID, f.ID, csrf, hasURL, variant),
 			),
 		))
 	}
-	return h.Ul(h.Class("space-y-1"), g.Group(rows))
+	return h.Ul(h.Class("space-y-1.5"), g.Group(rows))
 }
 
 // downloadFileID is the stable element id for a file's download control, so the
@@ -1029,12 +1219,14 @@ func downloadFileID(modelID, versionID, fileID int) string {
 // is resolvable it renders a disabled note instead of a button. The POST carries
 // the CSRF token (via hx-vals) and the version/file ids; the server resolves the
 // destination path from the model/version/file metadata (no client path).
-func downloadFileButton(modelID, versionID, fileID int, csrf string, hasURL bool) g.Node {
+// variant selects the civitai button treatment ("filled" for the primary file,
+// "outline" for the rest) — the htmx contract is identical either way.
+func downloadFileButton(modelID, versionID, fileID int, csrf string, hasURL bool, variant string) g.Node {
 	if !hasURL {
 		return h.Span(h.Class("cm-disabled text-slate-500"), h.Title("No download URL available"), g.Text("no URL"))
 	}
 	id := downloadFileID(modelID, versionID, fileID)
-	return civButton("outline", "sm", []g.Node{
+	return civButton(variant, "sm", []g.Node{
 		h.Type("button"),
 		h.ID(id),
 		hx("post", fmt.Sprintf("/models/%d/download", modelID)),

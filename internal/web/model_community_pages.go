@@ -40,15 +40,17 @@ func imageReactionCount(st civitai.ImageStats) int {
 	return st.LikeCount + st.HeartCount + st.LaughCount + st.CryCount
 }
 
-// communityFeedNote renders the (non-error) community section with a single muted
-// line — used for the empty and error states so a failed lazy fetch degrades
-// gracefully instead of breaking the page.
-func communityFeedNote(msg string) g.Node {
-	return card(
-		h.H2(h.Class("text-lg font-semibold text-slate-100 mb-2"), g.Text("Community images")),
-		h.P(h.Class("text-sm text-slate-500"), g.Text(msg)),
-	)
-}
+// communityFeedAbsent is what the lazy community fragment renders when there is
+// nothing to show: NOTHING AT ALL.
+//
+// The section used to degrade to a card carrying the "Community images" heading
+// plus a muted "No community images yet." / "Couldn't load…" line. A heading over
+// a permanent blank is worse than no section: on a model with no community
+// images it is a dead panel the user has to read and dismiss on every visit. So
+// the whole section — heading included — is omitted, and the lazy container
+// (#community-feed) is simply left empty. Fetch failures are still logged
+// server-side; they just don't leave a scar on the page.
+func communityFeedAbsent() g.Node { return g.Text("") }
 
 // communityFeedFragment renders the community image grid. Each ImageItem honors
 // the NSFW display mode exactly like the showcase gallery: hide OMITS the image
@@ -63,8 +65,10 @@ func (s *Server) communityFeedFragment(items []civitai.ImageItem, mode string) g
 			tiles = append(tiles, tile)
 		}
 	}
+	// Zero renderable tiles → the section is omitted entirely (no heading, no empty
+	// state). See communityFeedAbsent.
 	if len(tiles) == 0 {
-		return communityFeedNote("No community images yet.")
+		return communityFeedAbsent()
 	}
 	return card(
 		h.H2(h.Class("text-lg font-semibold text-slate-100 mb-3"), g.Text("Community images")),

@@ -32,7 +32,9 @@ func TestImportButtonHasNoTrailingCopy(t *testing.T) {
 	}
 
 	// The model detail page's "Import workflows" card keeps its heading + button.
-	detail := renderString(t, workflowImportDetailCard(1818841, "csrf"))
+	// The third argument is the already-imported count (PR B); 0 = not yet imported,
+	// which is the state that still renders the import CTA.
+	detail := renderString(t, workflowImportDetailCard(1818841, "csrf", 0))
 	if strings.Contains(detail, importButtonNote) {
 		t.Errorf("the copy under the import button should be gone from the detail card:\n%s", detail)
 	}

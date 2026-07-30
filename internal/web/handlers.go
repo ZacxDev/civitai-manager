@@ -421,7 +421,7 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 	// region's inner content (not the full page shell), so scroll is preserved and
 	// the URL is updated via hx-push-url on the link.
 	if isHX {
-		s.render(w, http.StatusOK, versionRegionInner(view, s.csrf))
+		s.render(w, http.StatusOK, versionRegionInner(view, sub, s.csrf, s.cfg.BaseURL))
 		return
 	}
 	s.render(w, http.StatusOK, modelDetailPage(view, sub, s.csrf, s.currentTheme(), s.cfg.BaseURL, s.rail(r.Context())))
@@ -452,7 +452,7 @@ const communityCacheTTL = time.Hour
 func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
 	modelID, merr := strconv.Atoi(r.PathValue("id"))
 	if merr != nil || modelID <= 0 {
-		s.render(w, http.StatusOK, communityFeedNote("No community images yet."))
+		s.render(w, http.StatusOK, communityFeedAbsent())
 		return
 	}
 	versionID := strings.TrimSpace(r.URL.Query().Get("versionId"))
@@ -461,7 +461,7 @@ func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
 	// trip on it (a malformed value would only earn a rejection from civitai).
 	vid, verr := strconv.Atoi(versionID)
 	if verr != nil || vid <= 0 {
-		s.render(w, http.StatusOK, communityFeedNote("No community images yet."))
+		s.render(w, http.StatusOK, communityFeedAbsent())
 		return
 	}
 
@@ -507,12 +507,10 @@ func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 4. No usable cache → the muted note (error vs empty).
-	if err != nil {
-		s.render(w, http.StatusOK, communityFeedNote("Couldn't load community images."))
-		return
-	}
-	s.render(w, http.StatusOK, communityFeedNote("No community images yet."))
+	// 4. No usable cache → render NOTHING (the section is omitted entirely rather
+	// than leaving a "Community images" heading over a permanent blank). The fetch
+	// error, when there was one, is already logged above.
+	s.render(w, http.StatusOK, communityFeedAbsent())
 }
 
 // handleModelDownload enqueues a single model-version FILE into the app's
@@ -644,6 +642,22 @@ func (s *Server) loadModelView(parent context.Context, id, versionParam string) 
 		NSFWMode:    s.nsfwMode(),
 		// Newest publishedAt across all versions → header "Updated X ago".
 		LastUpdated: newestVersionPublishedAt(raw),
+		// Per-version publish times, keyed by version ID → the version tabs' date
+		// popovers. Keyed by ID because modelVersions[] is index-ordered, not
+		// date-ordered (see the CLAUDE.md data gotcha).
+		VersionPublishedAt: versionPublishedTimes(raw),
+	}
+
+	// "Already imported?" for the workflow-import section. Only Workflows-type
+	// models have one, so nothing else pays for the query.
+	if strings.EqualFold(m.Type, "Workflows") {
+		if mid, aerr := strconv.Atoi(id); aerr == nil {
+			if n, cerr := s.store.CountWorkflowsByModel(ctx, mid); cerr == nil {
+				view.ImportedWorkflows = n
+			} else {
+				s.log.Warn("count imported workflows", "model", id, "err", cerr)
+			}
+		}
 	}
 
 	// Selected version: the ?version= override, else the latest (first listed).

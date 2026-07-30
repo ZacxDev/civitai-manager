@@ -338,6 +338,34 @@ func (s *Store) ListWorkflowsByVersion(ctx context.Context, versionID int) ([]Wo
 		`SELECT `+workflowCols+` FROM workflows WHERE version_id = ? ORDER BY id DESC`, versionID)
 }
 
+// CountWorkflowsByModel returns how many workflows in the library carry this
+// civitai MODEL id as their source link — i.e. how many were imported FROM that
+// model (the importer stamps model_id on every row it inserts, and
+// /library?tab=workflows&model=<id> filters on the same column, so the two
+// surfaces agree by construction).
+//
+// It is the "already imported?" signal for a Workflows-type model detail page.
+// It is deliberately NOT the graph-content hash: the authoritative dedup key is
+// WorkflowExistsByGraphHash, but computing a REMOTE model's graph hash requires
+// downloading and unzipping its archive, which a page render must not do. The
+// consequence is one honest false-negative: if the identical graph was already
+// imported from a DIFFERENT model, the import-time dedup keeps the earlier row
+// (bearing the other model's id), this count reads 0, and the page offers the
+// import — which then truthfully reports "0 imported, N already present".
+//
+// A non-positive model id yields 0 without touching the DB.
+func (s *Store) CountWorkflowsByModel(ctx context.Context, modelID int) (int, error) {
+	if modelID <= 0 {
+		return 0, nil
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM workflows WHERE model_id = ?`, modelID).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 func (s *Store) queryWorkflows(ctx context.Context, q string, args ...any) ([]Workflow, error) {
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {

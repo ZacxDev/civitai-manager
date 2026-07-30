@@ -180,51 +180,82 @@ func TestCommunityFeedNSFWModes(t *testing.T) {
 	}
 }
 
-// TestCommunityFeedEmptyAndError proves the lazy fragment degrades gracefully:
-// empty items → "No community images yet."; a reader error → a graceful
-// "Couldn't load…" note (never a broken page / error alert).
+// TestCommunityFeedEmptyAndError proves the lazy fragment degrades to NOTHING —
+// no "Community images" heading, no empty state, no error note — in every path
+// that yields zero renderable tiles, while still answering 200 so htmx swaps an
+// empty container rather than erroring. The section is only ever rendered when
+// there is at least one image to show.
 func TestCommunityFeedEmptyAndError(t *testing.T) {
-	// Empty items.
+	cases := []struct {
+		name   string
+		target string
+		setup  func(r *fakeReader)
+	}{
+		{
+			name:   "empty items",
+			target: "/models/7/community?versionId=11",
+			setup:  func(r *fakeReader) { r.communityImages = []civitai.ImageItem{} }, // non-nil empty
+		},
+		{
+			name:   "reader error",
+			target: "/models/7/community?versionId=11",
+			setup:  func(r *fakeReader) { r.communityErr = errors.New("boom") },
+		},
+		{
+			// No versionId → no fetch attempted; communityErr would fire if it were.
+			name:   "missing versionId",
+			target: "/models/7/community",
+			setup:  func(r *fakeReader) { r.communityErr = errors.New("should-not-be-called") },
+		},
+		{
+			// Non-numeric versionId is rejected before spending an upstream round trip.
+			name:   "non-numeric versionId",
+			target: "/models/7/community?versionId=abc",
+			setup:  func(r *fakeReader) { r.communityErr = errors.New("should-not-be-called") },
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			reader := newModelReader(t)
+			c.setup(&reader)
+			srv := newModelServer(t, reader)
+
+			code, body := communityReq(t, srv, c.target)
+			if code != http.StatusOK {
+				t.Fatalf("feed = %d, want 200 (graceful)", code)
+			}
+			if strings.TrimSpace(body) != "" {
+				t.Errorf("a feed with no images must render NOTHING, got:\n%s", body)
+			}
+			// Belt and braces: neither the heading nor either old note may appear.
+			for _, banned := range []string{
+				"Community images", "No community images yet.", "load community images",
+			} {
+				if strings.Contains(body, banned) {
+					t.Errorf("empty feed must not render %q:\n%s", banned, body)
+				}
+			}
+		})
+	}
+}
+
+// TestCommunityFeedRendersWhenNonEmpty is the other half of the rule above: with
+// at least one image the section IS present, heading and all.
+func TestCommunityFeedRendersWhenNonEmpty(t *testing.T) {
 	reader := newModelReader(t)
-	reader.communityImages = []civitai.ImageItem{} // non-nil empty → no items
+	reader.communityImages = []civitai.ImageItem{
+		communityImage(9, "https://image.civitai.com/bucket/uuid/one.jpeg", "None", "dana", 1, 0),
+	}
 	srv := newModelServer(t, reader)
+
 	code, body := communityReq(t, srv, "/models/7/community?versionId=11")
 	if code != http.StatusOK {
-		t.Fatalf("empty feed = %d, want 200", code)
+		t.Fatalf("feed = %d, want 200", code)
 	}
-	if !strings.Contains(body, "No community images yet.") {
-		t.Errorf("empty feed should show the empty note:\n%s", body)
+	if !strings.Contains(body, "Community images") {
+		t.Errorf("a non-empty feed should render the section heading:\n%s", body)
 	}
-
-	// Reader error.
-	reader = newModelReader(t)
-	reader.communityErr = errors.New("boom")
-	srv = newModelServer(t, reader)
-	code, body = communityReq(t, srv, "/models/7/community?versionId=11")
-	if code != http.StatusOK {
-		t.Fatalf("errored feed = %d, want 200 (graceful)", code)
-	}
-	// gomponents escapes the apostrophe (Couldn&#39;t), so assert the plain tail.
-	if !strings.Contains(body, "load community images") {
-		t.Errorf("errored feed should show the graceful note:\n%s", body)
-	}
-
-	// Missing versionId → empty note (no fetch attempted).
-	reader = newModelReader(t)
-	reader.communityErr = errors.New("should-not-be-called")
-	srv = newModelServer(t, reader)
-	code, body = communityReq(t, srv, "/models/7/community")
-	if code != http.StatusOK || !strings.Contains(body, "No community images yet.") {
-		t.Errorf("missing versionId should render the empty note, got %d:\n%s", code, body)
-	}
-
-	// Non-numeric versionId → empty note, and NO upstream call (the guard rejects
-	// it before spending a round trip): communityErr would fire if SearchImages ran.
-	reader = newModelReader(t)
-	reader.communityErr = errors.New("should-not-be-called")
-	srv = newModelServer(t, reader)
-	code, body = communityReq(t, srv, "/models/7/community?versionId=abc")
-	if code != http.StatusOK || !strings.Contains(body, "No community images yet.") {
-		t.Errorf("non-numeric versionId should render the empty note without fetching, got %d:\n%s", code, body)
+	if !strings.Contains(body, "dana") {
+		t.Errorf("a non-empty feed should render its tiles:\n%s", body)
 	}
 }
