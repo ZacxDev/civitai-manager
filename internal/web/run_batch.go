@@ -252,9 +252,17 @@ func (s *Server) startBatch(wf *store.Workflow, opts runOptions, spec batchSpec)
 //	unlock
 //	        capture, OUTSIDE the mutex (network /view + disk writes)
 //
-// Capture running off the mutex means item i's capture can overlap item i+1's run —
-// already true today for two consecutive runs, and safe because enforceOutputsCap
-// never evicts an id >= the generation that triggered it.
+// Capture runs off the MUTEX but NOT off the loop: captureBatchItem is called
+// synchronously, before the next iteration begins, so item i's capture can never
+// overlap item i+1's run. (Two SEPARATE runs can still overlap a capture — the
+// singleton is released before settleAndCapture's capture half — which is why
+// enforceOutputsCap never evicts an id >= the generation that triggered it. That
+// guard stays load-bearing; it is just not what protects the batch loop.)
+//
+// The real, benign consequence of the synchronous call is a wall-clock one: the
+// batch pauses for each capture, and during it the job snapshot reads Phase=done
+// with Running still true — so the poller re-arms and briefly renders
+// "Item 3 of 8 · Run complete." before item 4 resets the item state.
 func (s *Server) runBatch(b batchPlan) {
 	defer b.cancel()
 	for i := 1; i <= b.count; i++ {
