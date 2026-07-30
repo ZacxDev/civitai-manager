@@ -215,11 +215,20 @@ func TestTabSwitchWithUnresolvableFieldsKeepsValues(t *testing.T) {
 
 // TestSaveStillStoresWhatItCanCapture is the other half of the invariant: the
 // carry-through must never swallow a REAL save. One surviving key is a save.
+//
+// This is ALSO the partial-capture case — one key in, one key out of the curated
+// set, against a preset holding the full set — so it asserts the MERGE, not the
+// replacement it used to accept. Asserting only "the surviving key was stored" is
+// what let the wipe of the other nine pass green through three rounds.
 func TestSaveStillStoresWhatItCanCapture(t *testing.T) {
 	srv := newTestServer(t)
 	wf := seedPresetWorkflow(t, srv, "t2i", presetUIGraph)
 	pid := seedPreset(t, srv, wf, "Base", wf.GraphHash,
-		func(ri comfy.RunInput) string { return "OLD" })
+		func(ri comfy.RunInput) string { return "OLD-" + ri.InputName })
+	before := storedValues(t, srv, pid)
+	if len(before) < 5 {
+		t.Fatalf("fixture: want a multi-value preset, got %d", len(before))
+	}
 
 	form := url.Values{
 		presetIDField:   {strconv.FormatInt(pid, 10)},
@@ -243,6 +252,26 @@ func TestSaveStillStoresWhatItCanCapture(t *testing.T) {
 	}
 	if strings.Contains(body, presetNoFieldsNotice) {
 		t.Errorf("a save that DID capture values must not report the out-of-date case:\n%s", body)
+	}
+
+	// The capture UPDATED its key and every other stored key survived untouched.
+	after := storedValues(t, srv, pid)
+	prompt := comfy.UIWidgetKey{NodeID: "6", Widget: 0}
+	if after[prompt] != "NEW TEXT" {
+		t.Errorf("the captured key = %q, want the posted value", after[prompt])
+	}
+	if len(after) != len(before) {
+		t.Fatalf("a one-key save left %d of %d stored values\nbefore: %v\nafter:  %v",
+			len(after), len(before), before, after)
+	}
+	for key, want := range before {
+		if key == prompt {
+			continue
+		}
+		if after[key] != want {
+			t.Errorf("%v was deleted or altered by a save that never captured it: "+
+				"%q → %q", key, want, after[key])
+		}
 	}
 }
 
