@@ -77,6 +77,28 @@ func (s *Server) localVersionIDs(modelID int) map[int]bool {
 	return out
 }
 
+// workflowsUsingModel gathers the library workflows that REFERENCE a file
+// belonging to this model, for the model page's usage section.
+//
+// It is FAIL-SOFT by construction — an error yields nil and the section is simply
+// not rendered. This is an informational cross-reference decorating a page whose
+// real content came from civitai; a local query failing must never turn a working
+// model page into an error, exactly like localVersionIDs above.
+//
+// Cost: three bounded statements (see store.ListWorkflowsUsingModel), not one per
+// workflow. Called on the FULL-PAGE render only.
+func (s *Server) workflowsUsingModel(ctx context.Context, modelID int) []store.WorkflowUsage {
+	if modelID <= 0 {
+		return nil
+	}
+	usages, err := s.store.ListWorkflowsUsingModel(ctx, modelID)
+	if err != nil {
+		s.log.Warn("list workflows using model", "model", modelID, "err", err)
+		return nil
+	}
+	return usages
+}
+
 // modelSubscription returns the user's model-kind subscription for the given
 // model id, or nil when not subscribed. It reads the local subscriptions table —
 // no civitai API call — so the matched card can render the correct subscribe/

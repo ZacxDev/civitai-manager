@@ -310,6 +310,14 @@ type modelDetailView struct {
 	// FROM this model (store.CountWorkflowsByModel). >0 flips the import section to
 	// its "already in your library" state. Only populated for Workflows-type models.
 	ImportedWorkflows int
+	// UsedByWorkflows are the library workflows that REFERENCE a file belonging to
+	// this model (store.ListWorkflowsUsingModel). It is a DIFFERENT relation from
+	// ImportedWorkflows above — that one counts workflows imported FROM this model —
+	// and the two render with different labels. Empty renders no section at all.
+	//
+	// It is version-INDEPENDENT (a workflow references files, not a version tab), so
+	// it is loaded on the full-page path only and lives outside #version-region.
+	UsedByWorkflows []store.WorkflowUsage
 	// loadErr carries the model-load failure (used only to classify the HTTP
 	// status: a not-found model → 404, anything else → 502).
 	loadErr error
@@ -593,6 +601,11 @@ func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, ba
 		// container's innerHTML so the URL updates (hx-push-url) and scroll is
 		// preserved, without a full reload.
 		h.Div(h.ID(versionRegionID), versionRegionInner(v, sub, csrf, baseURL)),
+		// The two workflow-linkage sections sit OUTSIDE #version-region: both are
+		// per-MODEL facts, so a version tab click must not re-render (or re-fetch)
+		// them. Each returns nil when it has nothing, so neither can leave an empty
+		// heading behind.
+		workflowUsageCard(m.ID, v.UsedByWorkflows),
 		g.If(strings.TrimSpace(v.Description) != "", modelDescriptionCard(v.Description)),
 		// Tags are a compact, de-emphasized inline chip row under the description
 		// (not a standalone "Tags" card).

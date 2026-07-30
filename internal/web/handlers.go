@@ -424,6 +424,11 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusOK, versionRegionInner(view, sub, s.csrf, s.cfg.BaseURL))
 		return
 	}
+	// FULL-PAGE ONLY: the workflow-linkage sections are per-MODEL and live outside
+	// #version-region, so a version swap must not pay for them again.
+	if mid, cerr := strconv.Atoi(id); cerr == nil {
+		view.UsedByWorkflows = s.workflowsUsingModel(r.Context(), mid)
+	}
 	s.render(w, http.StatusOK, modelDetailPage(view, sub, s.csrf, s.currentTheme(), s.cfg.BaseURL, s.rail(r.Context())))
 }
 
