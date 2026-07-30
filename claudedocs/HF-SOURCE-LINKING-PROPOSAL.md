@@ -918,7 +918,49 @@ and would need it regardless.
 
 ---
 
-## 11. Open questions — need the user's decision
+## ✅ RESOLVED 2026-07-30 — these are now constraints
+
+**Build PHASE 1 ONLY. Phase 2 (retroactive attribution) is CANCELLED, not deferred.**
+
+**Q1 is answered — measured on the real library** (read-only query, `mode=ro`):
+
+```
+473 local files · 473 hashed · 182 with no CivitAI match
+of those 182:  144 loras · 29 other · 4 checkpoints · 3 ultralytics · 2 upscale
+```
+
+**144 of 182 are LoRAs** — CivitAI's territory, not HuggingFace's. The HF fallback
+serves *aux* models (VAE, IPAdapter, ultralytics, CLIP vision, upscalers), and those
+buckets total **5 files**. So the entire addressable population is a handful, against
+a curated map of 82 oids. That independently confirms this doc's own argument from a
+different direction: the HF fallback shipped 2026-07-27 (v0.1.62) and `main` is
+v0.1.80, so almost nothing on disk ever came through that path.
+
+**Q2 is answered: only `recorded` — files WE downloaded. `verified` is dropped.**
+A hash match proves a file is *identical*, not that it *came from* there, and a chip
+reads as origin. So:
+- **Delete the `confidence` column entirely.** With `verified` gone there is exactly
+  one kind of row, and the distinction has nothing to express. This is stronger than
+  the doc's `CHECK (confidence IN ('recorded','verified'))`: the unshowable claim
+  becomes unrepresentable by *absence of the concept*, not by a constraint.
+- The link means "these bytes came from here", unambiguously.
+
+**Consequently dropped:** Q3 (no timer, no bulk egress, no new knob — Phase 1 adds
+**zero** new egress), and the whole curated-oid probing path.
+
+**Q4 (an honest "Search HuggingFace ↗" for unattributed chips): not now.** The doc
+recommends against shipping it beside Phase 1; agreed.
+
+**Q5/Q6 remain open but are unblocking:** `hf_fallback`/`resolve_node_packs` have no
+UI control (only `match_remote` does), and `getTree`'s ignored `Link` cursor is a
+latent pagination bug. Neither is touched by Phase 1.
+
+**Sequencing:** Phase 1 lands AFTER PR C1, because C1 owns the resource-chip
+rendering this reads into. Doing them in parallel would collide on the same surface.
+
+---
+
+## 11. Open questions — original (answers recorded above)
 
 - **Q1 — Ship Phase 2 at all?** My call is no, on §5.6 (two-day population,
   unmeasurable value). But you can measure what I could not: how many rows in your
