@@ -100,8 +100,8 @@ func TestMigration0006AppliesOnPopulatedDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 14 {
-		t.Fatalf("schema version = %d, want 14", v)
+	if v != 15 {
+		t.Fatalf("schema version = %d, want 15", v)
 	}
 	// The new tables are usable on the populated DB.
 	if err := st.SetSetting("k", "v"); err != nil {
