@@ -47,7 +47,10 @@ func synthCaptures() []CapturedView {
 // and exactly one referenced file per artifact.
 func TestBuildPayloadShape(t *testing.T) {
 	caps := synthCaptures()
-	payload, files := BuildPayload("civitai-manager funnel", caps)
+	payload, files, err := BuildPayload("civitai-manager funnel", caps)
+	if err != nil {
+		t.Fatalf("BuildPayload: %v", err)
+	}
 
 	if payload.Environment != EnvLab {
 		t.Fatalf("environment = %q, want %q", payload.Environment, EnvLab)
@@ -290,15 +293,16 @@ func TestBuildPayloadMatchesGoldenSchema(t *testing.T) {
 // rejected (mirroring auditloop's server-side per-file + total caps).
 func TestValidateFilesSizeCaps(t *testing.T) {
 	p := &PushPayload{}
+	smallMeta := []byte(`{"pages":[]}`)
 
 	// Normal small payload passes.
-	if err := p.ValidateFiles(map[string][]byte{"a.png": tinyPNG, "b.png": tinyPNG}); err != nil {
+	if err := p.ValidateFiles(smallMeta, map[string][]byte{"a.png": tinyPNG, "b.png": tinyPNG}); err != nil {
 		t.Fatalf("small payload should pass, got %v", err)
 	}
 
 	// One oversized file part → rejected.
 	over := make([]byte, MaxFileBytes+1)
-	if err := p.ValidateFiles(map[string][]byte{"big.png": over}); err == nil {
+	if err := p.ValidateFiles(smallMeta, map[string][]byte{"big.png": over}); err == nil {
 		t.Fatal("expected a >16 MiB file part to be rejected")
 	}
 
@@ -308,8 +312,33 @@ func TestValidateFilesSizeCaps(t *testing.T) {
 	for i := 0; i*len(chunk) <= MaxTotalBytes; i++ {
 		files[string(rune('a'+i))+".png"] = chunk
 	}
-	if err := p.ValidateFiles(files); err == nil {
+	if err := p.ValidateFiles(smallMeta, files); err == nil {
 		t.Fatal("expected a >64 MiB total upload to be rejected")
+	}
+}
+
+// TestValidateFilesCountsMetadata asserts the `metadata` part counts toward the 64 MiB
+// total and against the 16 MiB per-part cap. The server's MaxBytesReader wraps the
+// WHOLE multipart body, and metadata is now the part that scales with page content
+// (findings carry axe details + console/network text), so excluding it would
+// under-report the real body and let the self-check pass a body the server 413s.
+func TestValidateFilesCountsMetadata(t *testing.T) {
+	p := &PushPayload{}
+
+	// Files alone fit under the total; the oversized metadata is what busts it.
+	files := map[string][]byte{"a.png": make([]byte, MaxFileBytes-1)}
+	fatMeta := make([]byte, MaxTotalBytes) // 64 MiB of metadata on its own
+	if err := p.ValidateFiles(fatMeta, files); err == nil {
+		t.Fatal("expected an oversized metadata part to be counted and rejected")
+	}
+	// Same file set with small metadata must still pass — proving the metadata size,
+	// not the files, caused the rejection above.
+	if err := p.ValidateFiles([]byte(`{"pages":[]}`), files); err != nil {
+		t.Fatalf("small metadata + the same files should pass, got %v", err)
+	}
+	// Metadata over the per-part cap is rejected on its own.
+	if err := p.ValidateFiles(make([]byte, MaxFileBytes+1), map[string][]byte{}); err == nil {
+		t.Fatal("expected a >16 MiB metadata part to be rejected")
 	}
 }
 
@@ -322,7 +351,10 @@ func TestValidateFilesSizeCaps(t *testing.T) {
 // TestBuildPayloadMatchesGoldenSchema instead.
 func TestUploadWireShape(t *testing.T) {
 	caps := synthCaptures()
-	payload, files := BuildPayload("wire-shape", caps)
+	payload, files, err := BuildPayload("wire-shape", caps)
+	if err != nil {
+		t.Fatalf("BuildPayload: %v", err)
+	}
 	metaJSON, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
@@ -442,6 +474,58 @@ func TestPushConfigOptInGate(t *testing.T) {
 	t.Setenv("AUDITLOOP_PUSH_TOKENS", `{"someone-else":"x"}`)
 	if _, _, ok := PushConfigFromEnv(); ok {
 		t.Fatal("expected ok=false when the funnel key is absent")
+	}
+}
+
+// TestMaybePushCountsMetadataInSizeCheck is the CALL-SITE regression test for the
+// metadata-size fix. TestValidateFilesCountsMetadata proves the function counts
+// metadata; this proves the caller actually FEEDS it the real metadata bytes —
+// mutating the call to `ValidateFiles(nil, files)` otherwise leaves the suite green,
+// silently re-introducing the under-reported body the fix removed.
+//
+// It builds a WalkResult whose FILES are small but whose METADATA alone busts the
+// total, points it at an httptest server, and asserts MaybePush refuses BEFORE
+// POSTing (the server must never be hit).
+func TestMaybePushCountsMetadataInSizeCheck(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"run_id":"r","url":"u"}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("AUDITLOOP_PUSH_URL", srv.URL)
+	t.Setenv("AUDITLOOP_PUSH_TOKEN", "tok")
+	t.Setenv("AUDITLOOP_PUSH_TOKENS", "")
+
+	res := &WalkResult{
+		Payload:  PushPayload{Environment: EnvLab},
+		Files:    map[string][]byte{"a.png": tinyPNG}, // tiny: files alone are fine
+		Metadata: make([]byte, MaxTotalBytes+1),       // metadata alone busts the total
+	}
+	url, attempted, err := MaybePush(context.Background(), res)
+	if !attempted {
+		t.Fatal("expected an attempt (push env is configured)")
+	}
+	if err == nil {
+		t.Fatal("MaybePush ignored the metadata size — the caller is not passing res.Metadata to ValidateFiles")
+	}
+	if url != "" {
+		t.Errorf("url = %q, want empty on refusal", url)
+	}
+	if hits != 0 {
+		t.Errorf("server was hit %d times — MaybePush must refuse BEFORE POSTing", hits)
+	}
+
+	// Sanity/attribution: the SAME files with small metadata must reach the server, so
+	// the refusal above is provably about the metadata size and not the files or env.
+	res.Metadata = []byte(`{"pages":[]}`)
+	if _, _, err := MaybePush(context.Background(), res); err != nil {
+		t.Fatalf("small metadata should push, got %v", err)
+	}
+	if hits != 1 {
+		t.Errorf("server hits = %d, want 1", hits)
 	}
 }
 
