@@ -260,24 +260,47 @@ func runPresetDriftBanner(v presetTabView) g.Node {
 			// current graph. A quiet line, not the amber banner — and it MUST still
 			// carry the role-swap caveat: that hazard produces exactly zero drops, so
 			// this branch is the one where it is most likely to be doing damage.
+			//
+			// "Every saved value still matches" is VACUOUSLY true of a preset that
+			// stores no values at all, and reads as reassurance about values that do
+			// not exist. Nothing lost + nothing applied means the preset is empty (on
+			// the drift path every stored entry either applies or is dropped and
+			// named), so say that instead.
+			line := "This preset was saved against an earlier version of this workflow. " +
+				"Every saved value still matches. Use \"Adopt current graph\" to stop showing this."
+			if rec.Applied() == 0 {
+				line = "This preset was saved against an earlier version of this workflow and " +
+					"holds no saved values — every field below is the workflow's own current value."
+			}
 			return h.Div(h.Class("space-y-1"),
-				h.P(h.Class("text-xs text-slate-400"),
-					g.Text("This preset was saved against an earlier version of this workflow. "+
-						"Every saved value still matches. Use \"Adopt current graph\" to stop showing this.")),
+				h.P(h.Class("text-xs text-slate-400"), g.Text(line)),
 				presetRoleSwapCaveat(),
 			)
 		}
 		return nil
 	}
 
+	// An undecodable stored entry is a defect of the SAVED PRESET, not of the graph
+	// or of the mode selection, so it is listed (and titled) separately. Folding it
+	// into the graph/mode drops is what let a single bad key render a banner blaming
+	// the workflow mode on a preset whose hash proves the graph never moved.
+	reset, unreadable := splitMalformedDrops(rec.Dropped)
+
 	lines := []g.Node{
 		h.P(h.Class("text-sm"), g.Text(strconv.Itoa(rec.Applied())+" of "+
 			strconv.Itoa(rec.Applied()+len(rec.Dropped))+" saved values were re-applied.")),
 	}
-	if len(rec.Dropped) > 0 {
+	if len(reset) > 0 {
 		lines = append(lines, h.P(h.Class("text-sm"),
 			g.Text("Reset to the workflow's current values: "),
-			g.Group(namedDrops(rec.Dropped)),
+			g.Group(namedDrops(reset)),
+		))
+	}
+	if len(unreadable) > 0 {
+		lines = append(lines, h.P(h.Class("text-sm"),
+			g.Text("Stored in a form this preset could not read, so they were skipped: "),
+			g.Group(namedDrops(unreadable)),
+			g.Text(". Re-enter those values and Save to repair the preset."),
 		))
 	}
 	if len(rec.NewInputs) > 0 {
@@ -303,11 +326,48 @@ func runPresetDriftBanner(v presetTabView) g.Node {
 			"and were kept unchanged. \"Adopt current graph\" saves these values against "+
 			"the workflow as it is now.")))
 
-	title := "This workflow's graph changed since this preset was saved."
-	if v.Rec.Exact {
-		title = "Some saved values no longer apply to the selected workflow mode."
+	return alert("warning", presetBannerTitle(rec), lines...)
+}
+
+// presetBannerTitle names the cause the banner is actually reporting.
+//
+// The EXACT path is the one that needs care. An equal hash proves the graph did not
+// move, so on that path a drop can only come from two places: the mode picker
+// selecting a pipeline the stored keys do not belong to, or a stored entry whose
+// positional key was never decodable. The second has nothing to do with mode
+// selection — titling it "no longer apply to the selected workflow mode" told the
+// user to go looking at a picker that is not involved, and on a single-mode
+// workflow, at a picker that does not exist.
+func presetBannerTitle(rec comfy.PresetReconciliation) string {
+	if !rec.Exact {
+		return "This workflow's graph changed since this preset was saved."
 	}
-	return alert("warning", title, lines...)
+	_, unreadable := splitMalformedDrops(rec.Dropped)
+	other := len(rec.Dropped) - len(unreadable) + len(rec.DroppedModes)
+	switch {
+	case len(unreadable) > 0 && other == 0:
+		return "Some of this preset's saved values could not be read and were skipped."
+	case len(unreadable) > 0:
+		return "Some of this preset's saved values could not be read; others no longer " +
+			"apply to the selected workflow mode."
+	default:
+		return "Some saved values no longer apply to the selected workflow mode."
+	}
+}
+
+// splitMalformedDrops separates the drops that were RESET to the graph's current
+// value (the key resolved, the value did not survive) from the ones that could not
+// be read at all. They have different causes, different fixes, and therefore
+// different sentences.
+func splitMalformedDrops(drops []comfy.PresetDrop) (reset, unreadable []comfy.PresetDrop) {
+	for _, d := range drops {
+		if d.Reason == comfy.PresetDropMalformed {
+			unreadable = append(unreadable, d)
+			continue
+		}
+		reset = append(reset, d)
+	}
+	return reset, unreadable
 }
 
 // presetRoleSwapCaveat names the class of drift NO check in this codebase can
