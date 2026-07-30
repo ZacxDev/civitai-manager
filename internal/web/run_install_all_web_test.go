@@ -1221,10 +1221,13 @@ func TestBatchCTAComposesWithPresetTabs(t *testing.T) {
 		t.Errorf("unbalanced form tags in the rendered panel (final depth %d)", d)
 	}
 
-	// 3. The hx-include target the CTA carries resolves to a real control. presetUIGraph
-	// is a single-mode workflow, so #run-modes is the stable EMPTY container and the
-	// selector legitimately matches nothing; assert the container exists (the selector's
-	// anchor) and that a multi-mode graph does produce the <select>.
+	// 3. The hx-include target the CTA carries resolves to a real element. presetUIGraph
+	// is a single-mode workflow, so #run-modes is the stable EMPTY container — which the
+	// selector now NAMES DIRECTLY rather than reaching for a <select> inside it. That was
+	// issue #28: the old "#run-modes select" matched nothing here, and htmx logs a console
+	// error for an hx-include that resolves to zero elements. Nothing about the SUBMITTED
+	// request changed (a single-mode workflow has no mode to send). See
+	// TestRunPanelHxIncludesAlwaysMatch for the regression guard.
 	if !strings.Contains(page, `id="`+runModesContainerID+`"`) {
 		t.Errorf("the #run-modes container the CTA hx-includes is gone:\n%s", page)
 	}

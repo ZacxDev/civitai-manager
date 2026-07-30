@@ -51,11 +51,18 @@ type PushPayload struct {
 // PushPage is one captured view. url is the STABLE page identity auditloop's P2
 // diff matches on across pushes.
 type PushPage struct {
-	URL               string        `json:"url"`
-	Viewport          string        `json:"viewport"`
-	Screenshot        string        `json:"screenshot"`
-	Axe               string        `json:"axe,omitempty"`
-	Network           string        `json:"network,omitempty"`
+	URL        string `json:"url"`
+	Viewport   string `json:"viewport"`
+	Screenshot string `json:"screenshot"`
+	Axe        string `json:"axe,omitempty"`
+	Network    string `json:"network,omitempty"`
+	// A11yDigest is the OPTIONAL filename of this view's bounded DOM/accessibility
+	// digest part (a11y-digest.js output; see a11y.go). auditloop validates it
+	// STRICTLY at ingest and a violation 400s the WHOLE push — including a digest that
+	// decodes to all-empty lists — so it is set only when nonEmptyA11yDigest passes.
+	// Omitting it is always safe: auditloop then evaluates that page screenshot-only,
+	// exactly as before this field existed.
+	A11yDigest        string        `json:"a11y_digest,omitempty"`
 	AxeViolations     int           `json:"axe_violations"`
 	ConsoleFirstParty int           `json:"console_first_party"`
 	ConsoleThirdParty int           `json:"console_third_party"`
@@ -81,7 +88,7 @@ type PushResult struct {
 func (p *PushPayload) ReferencedFiles() map[string]bool {
 	out := map[string]bool{}
 	for _, pg := range p.Pages {
-		for _, f := range []string{pg.Screenshot, pg.Axe, pg.Network} {
+		for _, f := range []string{pg.Screenshot, pg.Axe, pg.Network, pg.A11yDigest} {
 			if f != "" {
 				out[f] = true
 			}
@@ -177,7 +184,7 @@ func (p *PushPayload) Validate(provided map[string]bool) error {
 		if strings.TrimSpace(pg.Screenshot) == "" {
 			return fmt.Errorf("page %d: screenshot filename is required", i)
 		}
-		for _, ref := range []string{pg.Screenshot, pg.Axe, pg.Network} {
+		for _, ref := range []string{pg.Screenshot, pg.Axe, pg.Network, pg.A11yDigest} {
 			if ref == "" {
 				continue
 			}

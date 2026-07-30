@@ -258,6 +258,17 @@ func BuildPayload(label string, caps []CapturedView) (PushPayload, map[string][]
 			files[net] = cv.Capture.NetworkJSON
 			pg.Network = net
 		}
+		// The DOM/a11y digest is attached ONLY when it carries at least one element.
+		// auditloop rejects an all-empty digest, and that rejection 400s the ENTIRE
+		// push — so the guard is not a nicety, it is what keeps one bare view (or one
+		// page where the digest script threw and hit its empty catch-all) from
+		// discarding the whole run. No ref and no file part is the correct, backward-
+		// compatible output for such a page.
+		if nonEmptyA11yDigest(cv.Capture.A11yDigestJSON) {
+			dig := base + ".a11y.json"
+			files[dig] = cv.Capture.A11yDigestJSON
+			pg.A11yDigest = dig
+		}
 		pages = append(pages, pg)
 	}
 
