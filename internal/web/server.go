@@ -627,6 +627,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /workflows/nodepacks/restart", s.handleWorkflowNodepackRestart)
 
 	mux.HandleFunc("GET /workflows/{id}/cloud", s.handleWorkflowCloud)
+	mux.HandleFunc("GET /workflows/{id}/cloud/connect", s.handleWorkflowCloudConnect)
+	mux.HandleFunc("POST /workflows/{id}/cloud/connect", s.handleWorkflowCloudConnectSet)
 	mux.HandleFunc("POST /workflows/{id}/cloud/whatif", s.handleWorkflowCloudWhatif)
 	mux.HandleFunc("POST /workflows/{id}/cloud/run", s.handleWorkflowCloudRun)
 	mux.HandleFunc("GET /workflows/cloud/status", s.handleWorkflowCloudStatus)

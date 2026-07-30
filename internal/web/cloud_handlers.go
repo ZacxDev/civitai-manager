@@ -321,7 +321,7 @@ func (s *Server) cloudPrepare(w http.ResponseWriter, r *http.Request) (*store.Wo
 		return nil, nil, nil, false
 	}
 	if !s.cloudEnabled() {
-		s.render(w, http.StatusOK, errorNote("CivitAI cloud run is disabled. Enable comfy_cloud in your config."))
+		s.render(w, http.StatusOK, errorNote("CivitAI cloud run is disabled. Turn it on above, or set comfy_cloud in your config."))
 		return nil, nil, nil, false
 	}
 	apiGraph, warnings, note, ok := s.cloudAPIGraph(r.Context(), wf)
