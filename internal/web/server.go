@@ -83,10 +83,17 @@ type Config struct {
 	MaxFileSizeBytes int64
 	// ComfyCloud enables the "Run on CivitAI Cloud" feature (submit to the CivitAI
 	// orchestration API, sending the graph + resource list to civitai.com and
-	// spending Buzz). Default false → the cloud UI is shown but disabled with a note.
-	ComfyCloud bool
+	// spending Buzz). Default OFF → the cloud UI is shown but disabled with a note.
+	//
+	// It is a *bool carried straight through from config.Config: nil means the
+	// config FILE said nothing, so the DB-stored web toggle governs (see
+	// Server.cloudEnabled); non-nil means the file is authoritative and the web
+	// toggle renders read-only. Read it through Server.cloudEnabled /
+	// Server.cloudEnabledFromConfig, never directly.
+	ComfyCloud *bool
 	// Token is the CivitAI API token, reused as the bearer for the cloud
-	// orchestration API. Secret — never rendered/logged.
+	// orchestration API — cloud auth introduces NO separate credential. Secret:
+	// never rendered (config.RedactToken only) and never logged.
 	Token string
 	// HFToken is the optional HuggingFace token for the HF fallback resolver. Secret
 	// — never rendered/logged; sent only to HuggingFace hosts.

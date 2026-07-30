@@ -54,7 +54,7 @@ func boolp(b bool) *bool { return &b }
 func newCloudTestServer(t *testing.T, fake *fakeCloud) *Server {
 	t.Helper()
 	srv := newLibraryTestServer(t, t.TempDir())
-	srv.cfg.ComfyCloud = true
+	srv.cfg.ComfyCloud = boolp(true)
 	srv.cfg.Token = "test-token"
 	if fake != nil {
 		srv.cloudClientFn = func() cloudClient { return fake }
@@ -237,7 +237,7 @@ func TestCloudLoopbackGated(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	srv := NewServer(st, stubReader{}, stubSubscriber{}, Config{
 		BaseURL: "https://civitai.com", DefaultPollInterval: time.Hour,
-		Addr: "0.0.0.0:8787", ComfyCloud: true, Token: "t",
+		Addr: "0.0.0.0:8787", ComfyCloud: boolp(true), Token: "t",
 	}, nil)
 	id := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"1":{"class_type":"X","inputs":{}}}`)
 	rec := get(t, srv, "/workflows/"+id+"/cloud")
