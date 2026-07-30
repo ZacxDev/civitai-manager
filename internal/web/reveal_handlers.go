@@ -71,22 +71,34 @@ func fileManagerArgv(dir string) ([]string, bool) {
 	return []string{opener, dir}, true
 }
 
+// openerCommand builds the *exec.Cmd for an argv. It is the single place a
+// process is constructed, and it is deliberately trivial so it can be asserted in
+// a test WITHOUT being run:
+//
+//	exec.CommandContext(ctx, argv[0], argv[1:]...)
+//
+// execs argv[0] directly with argv[1:] as its arguments. There is NO shell — no
+// "sh", no "-c", no string that gets parsed — so no character in the directory
+// name can be interpreted as a command separator, a redirect, or a glob,
+// regardless of what the filesystem contains.
+func openerCommand(ctx context.Context, argv []string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	// No stdio is wired up: the child must not be able to write into our streams,
+	// and it has nothing to read.
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
+	return cmd
+}
+
 // startFileManager is the production opener. It STARTS the child and returns —
 // the HTTP handler never blocks on a desktop process — while a background
 // goroutine reaps it and releases the timeout context. exec.CommandContext kills
 // the child if it outlives revealTimeout.
-//
-// exec.CommandContext(name, args...) execs `name` directly with `args` as argv;
-// there is no shell, so no character in dir can be interpreted as syntax.
 func startFileManager(argv []string) error {
 	if len(argv) == 0 {
 		return errNoOpener
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), revealTimeout)
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	// No stdio is wired up: the child must not be able to write into our streams,
-	// and it has nothing to read.
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
+	cmd := openerCommand(ctx, argv)
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return err
