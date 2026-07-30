@@ -32,15 +32,24 @@ func cloudGenerateBlock(wfID int64) g.Node {
 	return h.Div(
 		h.Class("cm-gen-sep"),
 		h.H3(h.Class("text-sm font-semibold text-slate-200 mb-2"), g.Text("Run on CivitAI Cloud")),
-		// --- PR C2 SEAM --------------------------------------------------------
-		// The CivitAI-cloud CONNECT form (the toggle + credential entry that turns
-		// comfy_cloud on from the UI) goes HERE, directly above the panel container
-		// and inside this same block. It is deliberately NOT built in C1: it would
-		// be a new secret-write path over HTTP, and where the token lands (config
-		// file vs DB) is an open decision recorded in claudedocs/SESSION-HANDOFF.md.
-		// Nothing below needs to change to accommodate it — the panel is a lazily
-		// loaded fragment and re-renders itself after a successful connect.
+		// --- PR C2 (filled the C2 SEAM) ----------------------------------------
+		// The CivitAI-cloud CONNECT block. C1 reserved this spot for a "credential
+		// entry" form; the real code says there is NO credential to enter. Cloud
+		// auth reuses the already-configured CivitAI Token (Server.cloud →
+		// comfy.NewCloudClient(_, cfg.Token) → `Authorization: Bearer …`), so the
+		// only thing to "connect" is the comfy_cloud on/off decision plus an honest
+		// statement of where that token comes from. No secret is written over HTTP
+		// and none is stored in the DB — see cloud_connect.go.
+		//
+		// It lazy-loads into its OWN stable container so a toggle re-renders it and,
+		// via a one-shot loader, the panel below.
 		// -----------------------------------------------------------------------
+		h.Div(h.ID(cloudConnectContainerID),
+			h.Class("mb-2"),
+			hx("get", "/workflows/"+id+"/cloud/connect"),
+			hx("trigger", "load"),
+			hx("swap", "innerHTML"),
+		),
 		h.Div(h.ID(cloudPanelContainerID),
 			hx("get", "/workflows/"+id+"/cloud"),
 			hx("trigger", "load"),
@@ -89,7 +98,8 @@ func cloudPanelFragment(v cloudPanelView, csrf string) g.Node {
 	if !v.enabled {
 		return h.Div(
 			alert("info", "Cloud run is off",
-				g.Text("Enable comfy_cloud in your config to run workflows on CivitAI cloud.")),
+				g.Text("Turn cloud run on above (or set comfy_cloud in your config) to run "+
+					"workflows on CivitAI cloud.")),
 		)
 	}
 	if !v.runnable {

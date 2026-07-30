@@ -151,7 +151,10 @@ func TestComfyCloudDefaultAndFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ComfyCloud {
+	if cfg.ComfyCloudConfigured() {
+		t.Errorf("comfy_cloud should be UNSET (nil) when the file omits it")
+	}
+	if cfg.ComfyCloudEnabled() {
 		t.Errorf("comfy_cloud should default to false")
 	}
 
@@ -161,7 +164,10 @@ func TestComfyCloudDefaultAndFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.ComfyCloud {
+	if !cfg.ComfyCloudConfigured() {
+		t.Errorf("comfy_cloud from file should be CONFIGURED (non-nil)")
+	}
+	if !cfg.ComfyCloudEnabled() {
 		t.Errorf("comfy_cloud from file: got false want true")
 	}
 	if !contains(cfg.String(), "ComfyCloud:true") {

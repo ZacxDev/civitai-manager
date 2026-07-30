@@ -86,7 +86,22 @@ comfy_root: ""                     # ComfyUI install root (holds custom_nodes/).
                                    # Only used by the helper-extension install.
                                    # Derived from comfy_model_path's parent when
                                    # that looks like a ComfyUI install.
-comfy_cloud: false                 # opt-in: enable "Run on CivitAI Cloud"
+# comfy_cloud: true                 # opt-in: enable "Run on CivitAI Cloud".
+                                   # COMMENTED OUT ON PURPOSE — this sample is
+                                   # meant to be copied, and the recommended
+                                   # setup is to LEAVE THE KEY OUT entirely so
+                                   # the web UI owns it (workflow detail → Run on
+                                   # CivitAI Cloud → the on/off toggle, stored in
+                                   # the DB). Uncommenting it EITHER WAY, true or
+                                   # false, wins over that toggle, which then
+                                   # renders read-only — so a pasted
+                                   # `comfy_cloud: false` does not mean "off for
+                                   # now", it means "off, and the UI can no
+                                   # longer turn it on".
+                                   # Cloud runs authenticate with the `token`
+                                   # below — there is no separate cloud
+                                   # credential, and none can be entered in the
+                                   # web UI.
 
 # --- Output gallery ---
 outputs_dir: ""                    # empty = <db-dir>/outputs
@@ -156,7 +171,7 @@ paths, so you can make an informed decision about each:
 | **HuggingFace fallback resolver** — when CivitAI has no match for a missing model filename, that **filename** is sent to HuggingFace to look for a download | `huggingface.co` | **on** | `hf_fallback: false` |
 | **Custom-node attribution** — when a run reports missing ComfyUI node types a local ComfyUI-Manager could not place, those **node class names** are sent to the Comfy Registry and to ComfyUI-Manager's static index to find which pack provides them | `api.comfy.org`, `raw.githubusercontent.com` | **on** | `resolve_node_packs: false` |
 | Workflow runs / preflight | your `comfy_url` (loopback by default) | on | — |
-| **CivitAI Cloud runs** — sends the graph + resource list to CivitAI **and spends Buzz** from the account behind your token | `civitai.com` | **off** | opt in with `comfy_cloud: true` |
+| **CivitAI Cloud runs** — sends the graph + resource list to CivitAI **and spends Buzz** from the account behind your token | `civitai.com` | **off** | opt in with `comfy_cloud: true`, or the toggle on a workflow's "Run on CivitAI Cloud" block |
 
 The `hf_token` is sent **only** to HuggingFace hosts — never to civitai.com and
 never to a CDN redirect target. The fallback works fully anonymously without it

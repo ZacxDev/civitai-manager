@@ -191,12 +191,15 @@ func (s *Server) handleWorkflowCloud(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load workflow", err)
 		return
 	}
+	// The EFFECTIVE comfy_cloud state: an explicit config-file value wins, else the
+	// DB toggle set from the connect block above this panel (see cloud_connect.go).
+	enabled := s.cloudEnabled()
 	view := cloudPanelView{
 		wfID:    wf.ID,
-		enabled: s.cfg.ComfyCloud,
+		enabled: enabled,
 		snap:    s.cloudJobState(),
 	}
-	if s.cfg.ComfyCloud {
+	if enabled {
 		apiGraph, warnings, note, ok := s.cloudAPIGraph(r.Context(), wf)
 		if ok {
 			view.runnable = true
@@ -317,8 +320,8 @@ func (s *Server) cloudPrepare(w http.ResponseWriter, r *http.Request) (*store.Wo
 		s.renderError(w, "load workflow", err)
 		return nil, nil, nil, false
 	}
-	if !s.cfg.ComfyCloud {
-		s.render(w, http.StatusOK, errorNote("CivitAI cloud run is disabled. Enable comfy_cloud in your config."))
+	if !s.cloudEnabled() {
+		s.render(w, http.StatusOK, errorNote("CivitAI cloud run is disabled. Turn it on above, or set comfy_cloud in your config."))
 		return nil, nil, nil, false
 	}
 	apiGraph, warnings, note, ok := s.cloudAPIGraph(r.Context(), wf)

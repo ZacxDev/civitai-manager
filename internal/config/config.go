@@ -206,10 +206,19 @@ type Config struct {
 	ResolveNodePacks *bool `yaml:"resolve_node_packs"`
 	// ComfyCloud enables the "Run on CivitAI Cloud" feature: submitting a workflow
 	// to the CivitAI orchestration API (which sends the graph + resource list to
-	// civitai.com AND spends Buzz from the account behind Token). Default false —
+	// civitai.com AND spends Buzz from the account behind Token). Default OFF —
 	// the cloud UI is only shown/enabled when this is true, so the egress+spend is
-	// strictly opt-in. It reuses the existing Token for auth (no new secret).
-	ComfyCloud bool `yaml:"comfy_cloud"`
+	// strictly opt-in. It reuses the existing Token for auth (NO new secret): the
+	// orchestration client is built from Token and nothing else (see
+	// internal/comfy/cloud.go's Authorization: Bearer header).
+	//
+	// It is a *bool — mirroring HFFallback/ResolveNodePacks — precisely so the web
+	// UI can tell "the user wrote comfy_cloud: false in the config file" apart from
+	// "the key is absent". An EXPLICIT config value (either way) WINS over the
+	// DB-stored web toggle and is shown read-only in the UI; only when this is nil
+	// does the DB setting govern. Two sources silently disagreeing is worse than
+	// either alone, so the precedence is explicit here and in the UI copy.
+	ComfyCloud *bool `yaml:"comfy_cloud"`
 
 	// MaxFileSizeBytes is the resolved byte value of MaxFileSize (0 = unlimited).
 	MaxFileSizeBytes int64 `yaml:"-"`
@@ -301,6 +310,22 @@ func (c *Config) HFFallbackEnabled() bool {
 // explicit `resolve_node_packs: false` disables them.
 func (c *Config) ResolveNodePacksEnabled() bool {
 	return c.ResolveNodePacks == nil || *c.ResolveNodePacks
+}
+
+// ComfyCloudConfigured reports whether the config FILE explicitly set
+// `comfy_cloud` (either true or false). When it did, that value is authoritative
+// and the web toggle must be read-only; when it did not, the DB-stored web
+// setting governs.
+func (c *Config) ComfyCloudConfigured() bool {
+	return c.ComfyCloud != nil
+}
+
+// ComfyCloudEnabled reports the CONFIG-LAYER value of `comfy_cloud`. It defaults
+// OFF (an unset key) — cloud runs send data to civitai.com and spend Buzz, so
+// they stay strictly opt-in. Callers that also honor the DB toggle must consult
+// ComfyCloudConfigured first; this is only the config layer's answer.
+func (c *Config) ComfyCloudEnabled() bool {
+	return c.ComfyCloud != nil && *c.ComfyCloud
 }
 
 // OutputsCapBytes returns the resolved output-gallery total disk cap in bytes: the
@@ -856,5 +881,5 @@ func (c *Config) Redacted() Config {
 func (c *Config) String() string {
 	r := c.Redacted()
 	return fmt.Sprintf("Config{BaseURL:%s Addr:%s ModelRoot:%s DBPath:%s PollInterval:%s DownloadJitter:%s MaxFileSize:%d ComfyURL:%s ComfyModelPath:%s ComfyCloud:%t HFFallback:%t ResolveNodePacks:%t Token:%s ComfyToken:%s HFToken:%s}",
-		r.BaseURL, r.Addr, r.ModelRoot, r.DBPath, c.DefaultPollInterval.D(), c.DownloadJitter.D(), c.MaxFileSizeBytes, r.ComfyURL, r.ComfyModelPath, c.ComfyCloud, c.HFFallbackEnabled(), c.ResolveNodePacksEnabled(), r.Token, r.ComfyToken, r.HFToken)
+		r.BaseURL, r.Addr, r.ModelRoot, r.DBPath, c.DefaultPollInterval.D(), c.DownloadJitter.D(), c.MaxFileSizeBytes, r.ComfyURL, r.ComfyModelPath, c.ComfyCloudEnabled(), c.HFFallbackEnabled(), c.ResolveNodePacksEnabled(), r.Token, r.ComfyToken, r.HFToken)
 }
