@@ -231,10 +231,14 @@ func facetCTA(href, label string) g.Node {
 // reads badly and there is nothing to widen to.
 func periodPhrase(period string) string {
 	switch period {
-	case "Month":
-		return "this month"
+	case "Day":
+		return "today"
 	case "Week":
 		return "this week"
+	case "Month":
+		return "this month"
+	case "Year":
+		return "this year"
 	}
 	return ""
 }
