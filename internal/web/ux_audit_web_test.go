@@ -327,6 +327,14 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 				Resources: []string{long}},
 			"csrf", "dark", NSFWBlur, false, comfyHelperView{}, workflowResolver{})),
 		"run preflight missing list": renderString(t, missingList("Missing", []string{long})),
+		// The batch page's h1 prints an untrusted label (a preset name is clamped to
+		// 80 bytes; a WORKFLOW name is not) at text-2xl in a flex row.
+		// pageMain scopes to <main>: the document <title> also carries the label but
+		// lays out nothing.
+		"batch page header": pageMain(renderString(t, batchGalleryPage(
+			[]store.Generation{{ID: 1, WorkflowID: &wfID, WorkflowName: long, PromptID: "p",
+				BatchID: "b", BatchIndex: 1, BatchTotal: 2}},
+			"csrf", "dark", NSFWBlur))),
 		"structured graph listing": renderString(t, workflowGraphSection(
 			[]byte(`{"nodes":[{"id":1,"type":"`+long+`","inputs":[{"name":"`+long+`"}]}]}`),
 			store.WorkflowFormatAPI)),
@@ -334,12 +342,22 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 	for name, html := range cases {
 		// Every element that prints the long string must be able to break it.
 		for _, chunk := range strings.Split(html, "<") {
-			if !strings.Contains(chunk, long) {
+			// Only TEXT CONTENT can widen a box. The same string inside an ATTRIBUTE
+			// (aria-label on the tile's overlay anchor, a title tooltip) lays out
+			// nothing, and flagging it is a false positive. A chunk is
+			// "tag attrs>text", so the text starts after the first '>'.
+			gt := strings.Index(chunk, ">")
+			if gt < 0 || !strings.Contains(chunk[gt:], long) {
 				continue
 			}
-			if !strings.Contains(chunk, "break-all") && !strings.Contains(chunk, "title=") {
-				t.Errorf("%s: an element printing an unbreakable %d-char string has no break-all:\n  <%s",
-					name, len(long), chunk)
+			// `truncate` is the third valid mechanism: it sets overflow:hidden, and a
+			// flex item's min-width:auto only applies while overflow is VISIBLE — so
+			// the item collapses to 0 and clips with an ellipsis instead of pushing
+			// the row wide. (The batch page's tile captions use it.)
+			if !strings.Contains(chunk, "break-all") && !strings.Contains(chunk, "title=") &&
+				!strings.Contains(chunk, "truncate") {
+				t.Errorf("%s: an element printing an unbreakable %d-char string can neither "+
+					"break nor truncate:\n  <%s", name, len(long), chunk)
 			}
 		}
 	}

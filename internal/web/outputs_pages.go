@@ -231,6 +231,30 @@ func batchCountLine(captured, total int) string {
 	return fmt.Sprintf("%d runs.", captured)
 }
 
+// batchParamsNote labels the hoisted params card HONESTLY.
+//
+// The card is `gens[0]` — ONE run's row — and it prints per-run fields
+// (Prompt id, Captured, Images, Status) plus, under "Parameter edits", that run's
+// own widget overrides. The batch's per-item SEED lives right there:
+// withFreshSeeds writes a fresh comfy.NewSeed() per item and buildRunParamsSnapshot
+// serializes it into each row's params. So an earlier draft reading "Every run in
+// this batch shares the parameters below — only the seed differs" was FALSE: it sat
+// directly above run #1's seed while claiming all N shared it.
+//
+// The fix is copy, not filtering: naming the card as one run's parameters is
+// accurate and costs no new card variant. It degrades for a one-run batch (nothing
+// to contrast against) and for a row missing its batch index/total.
+func batchParamsNote(first store.Generation) string {
+	const shared = " — every run shares these except the seed."
+	if first.BatchIndex > 0 && first.BatchTotal > 1 {
+		return fmt.Sprintf("Parameters of run %d of %d%s", first.BatchIndex, first.BatchTotal, shared)
+	}
+	if first.BatchTotal == 1 {
+		return "Parameters of this run."
+	}
+	return "Parameters of the first captured run" + shared
+}
+
 // batchGalleryPage is GET /outputs/batch/{id}: the N generations of ONE batch in
 // run order, with the parameters they SHARE rendered once at the top instead of
 // once per tile. That is the whole point of the surface — "here are my 8 seeds of
@@ -248,17 +272,23 @@ func batchGalleryPage(gens []store.Generation, csrf, theme, nsfwMode string, rai
 	first := gens[0]
 	label := batchLabel(first)
 
+	// The h1 prints an UNTRUSTED label (a preset name is clamped to 80 bytes, but a
+	// workflow name is unbounded) at text-2xl inside a flex row. A flex item's
+	// default min-width:auto is its min-content width, so without min-w-0 an
+	// unbreakable 80-char name is ~1150px and forces the whole PAGE into a
+	// horizontal scroll on a 390px phone; break-all gives it somewhere to wrap.
+	// Same class of bug as metaRow's — see TestLongUntrustedStringsCanBreak.
 	header := h.Div(h.Class("flex items-center justify-between gap-4"),
-		h.H1(h.Class("text-2xl font-semibold text-slate-100"), g.Text("Batch «"+label+"»")),
-		h.A(h.Href("/outputs"), h.Class("text-sm text-indigo-400 hover:text-indigo-300"),
+		h.H1(h.Class("min-w-0 break-all text-2xl font-semibold text-slate-100"),
+			g.Text("Batch «"+label+"»")),
+		h.A(h.Href("/outputs"), h.Class("shrink-0 text-sm text-indigo-400 hover:text-indigo-300"),
 			g.Text("← All outputs")),
 	)
 
 	body := []g.Node{
 		header,
 		h.P(h.Class("text-sm text-slate-400"), g.Text(batchCountLine(len(gens), first.BatchTotal))),
-		h.P(h.Class("text-sm text-slate-400"),
-			g.Text("Every run in this batch shares the parameters below — only the seed differs.")),
+		h.P(h.Class("text-sm text-slate-400"), g.Text(batchParamsNote(first))),
 		generationParamsCard(&gens[0]),
 		card(generationGrid(gens, emptyState(
 			"This batch captured no images",

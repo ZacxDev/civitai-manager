@@ -72,6 +72,16 @@ func TestBatchPageRendersEveryRunAndParamsOnce(t *testing.T) {
 	if !strings.Contains(main, "seed = 42") {
 		t.Error("the hoisted params card is missing the shared run parameters")
 	}
+	// The card is ONE run's row and its "Parameter edits" carry THAT run's seed
+	// (withFreshSeeds writes a fresh seed per item), so the note must name the run
+	// rather than claim all N share what is shown.
+	if !strings.Contains(main, "Parameters of run 1 of 4") {
+		t.Errorf("the params note must name which run the card belongs to; got:\n%s", main)
+	}
+	if strings.Contains(main, "only the seed differs") {
+		t.Error("the params note must not claim every run shares the parameters shown — " +
+			"the seed printed under Parameter edits belongs to run 1 alone")
+	}
 	// Header uses the preset name snapshot; back link present.
 	if !strings.Contains(main, "Hi-res 8-step") {
 		t.Error("batch header should use the snapshotted preset name")
@@ -115,6 +125,11 @@ func TestBatchPageCountIsHonestWhenStopped(t *testing.T) {
 	}
 	if strings.Contains(main, "8 runs.") {
 		t.Error("stopped batch must not claim 8 runs were captured")
+	}
+	// The params note reports the REQUESTED total too — the card is still run 1 of
+	// the eight that were asked for, not run 1 of the three that survived.
+	if !strings.Contains(main, "Parameters of run 1 of 8") {
+		t.Errorf("stopped batch params note should still name the requested total; got:\n%s", main)
 	}
 
 	// The complete batch says it plainly instead.
