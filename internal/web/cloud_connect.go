@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -136,6 +137,34 @@ func cloudConnectFragment(v cloudConnectView, csrf string) g.Node {
 // cloudTokenLine states, in one line, which credential cloud runs authenticate
 // with and whether it is present — redacted, always. This is the whole "connect"
 // story: no new secret, just the CivitAI token the app already has.
+//
+// 🔴 This is the FIRST place in this repo where any part of a secret is written
+// into an HTTP response body, and it is deliberate — not an oversight, and not a
+// precedent that widens on its own. Before this branch config.RedactToken was
+// reachable only from config.Redacted()/String(), i.e. diagnostics and logs. The
+// rule was changed on purpose, and the new boundary is exactly this:
+//
+//	a REDACTED credential (last four characters) may appear in a
+//	loopback-gated response; the RAW credential may not, anywhere, ever.
+//
+// What it buys: an answer to "which credential am I actually using". This app
+// resolves a token from four layers in precedence order — the --token flag, the
+// CIVITAI_TOKEN environment variable, `token:` in the config file, and the
+// official civitai CLI's own config as a last resort — and when more than one is
+// present, the last four characters are the only thing that tells a user which
+// one won. Nothing else on this page can distinguish them.
+//
+// Why it is acceptable here: the surface is loopback-gated and the write half is
+// CSRF-protected, so it is not reachable from another device or another origin;
+// and last-four is the standard redaction every cloud console uses for the same
+// question.
+//
+// The raw half is enforced, not merely asserted: the endpoint-level sweep in
+// TestCloudTokenNeverAppearsInRenderedHTML checks every surface this branch
+// touches (GET/POST connect, the cloud panel, the workflow detail page, whatif)
+// for the raw value AND for a distinctive fragment of it, and
+// TestCloudTokenLineRendersOnlyTheRedactedTail pins this component directly. If
+// this line ever renders anything but the redaction, both fail.
 func cloudTokenLine(v cloudConnectView) g.Node {
 	label := "Cloud runs authenticate with your CivitAI API token: "
 	return h.P(h.Class("text-sm text-slate-300"),
@@ -212,7 +241,11 @@ func cloudToggleButton(id string, on, usable bool, csrf string) g.Node {
 	if usable {
 		attrs = append(attrs,
 			hx("post", "/workflows/"+id+"/cloud/connect"),
-			hx("vals", `{"enabled":"`+next+`","csrf_token":"`+csrf+`"}`),
+			// %q, not concatenation: both values are a hex token and a "1"/"0" enum
+			// today, so nothing needs escaping — but building JSON by gluing strings
+			// is the habit that breaks the first time a value stops being either.
+			// Same form as the resource chip's reveal control.
+			hx("vals", fmt.Sprintf(`{"enabled":%q,"csrf_token":%q}`, next, csrf)),
 			hx("target", "#"+cloudConnectContainerID),
 			hx("swap", "innerHTML"),
 		)
@@ -242,8 +275,11 @@ func (s *Server) cloudConnectState(wfID int64) cloudConnectView {
 		enabled = s.cloudEnabled()
 	}
 	return cloudConnectView{
-		wfID:          wfID,
-		hasToken:      s.cloudTokenConfigured(),
+		wfID:     wfID,
+		hasToken: s.cloudTokenConfigured(),
+		// The ONLY derivative of the token that may leave this process over HTTP.
+		// See cloudTokenLine for why a redacted credential in a response body is
+		// allowed here and the raw one still is not, anywhere.
 		redactedToken: config.RedactToken(strings.TrimSpace(s.cfg.Token)),
 		enabled:       enabled,
 		configured:    configured,
