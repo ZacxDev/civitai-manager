@@ -35,6 +35,12 @@ type resourceInfo struct {
 	// carry a filesystem path and the server always re-derives the path itself.
 	// Zero when no concrete file resolved.
 	FileID int64
+	// Contained reports that Path resolved (through symlinks) into one of the
+	// CONFIGURED library roots at render time. The endpoint re-checks this itself
+	// on every click — a rendered page is a stale snapshot and can never authorise
+	// anything — so this exists purely so the button is not OFFERED for a file we
+	// already know we would refuse to open.
+	Contained bool
 	// HF is the RECORDED HuggingFace provenance for this file's bytes — non-nil
 	// only when THIS APP downloaded them through the HuggingFace fallback and
 	// verified their sha256 before the atomic rename. It is never a hash match
@@ -71,10 +77,15 @@ func (r resourceInfo) hfHref() (string, bool) {
 }
 
 // revealable reports whether the "open containing folder" control may be shown
-// for this resource. It requires a CONCRETE, known file — a chip that honestly
-// reads "present" for an AMBIGUOUS basename carries no path and no id, and must
-// therefore offer no folder button (there is no single folder to open).
-func (r resourceInfo) revealable() bool { return r.FileID > 0 && r.Path != "" }
+// for this resource. It requires a CONCRETE, CONTAINED file:
+//
+//   - a chip that honestly reads "present" for an AMBIGUOUS basename carries no
+//     path and no id, so there is no single folder to open and no button;
+//   - a file outside every configured library root would be refused on click, so
+//     offering the button would be offering a control that cannot work.
+func (r resourceInfo) revealable() bool {
+	return r.FileID > 0 && r.Path != "" && r.Contained
+}
 
 // resource resolves a referenced resource's BASENAME through the resolver's local
 // lookup. A nil lookup (the zero resolver used by several render paths) yields

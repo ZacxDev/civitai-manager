@@ -160,6 +160,31 @@ func (s *Server) revealRoots() []string {
 // A path that does not exist cannot be resolved and is refused: we will not open
 // a folder we cannot prove is where we think it is.
 func containedDir(path string, roots []string) (string, bool) {
+	return containedDirIn(path, resolveRoots(roots))
+}
+
+// resolveRoots resolves each configured root through symlinks ONCE. Rendering a
+// page of chips would otherwise re-resolve every root for every chip; the handler
+// still resolves at action time, so a stale rendered button can never authorise
+// anything the fresh check would refuse.
+//
+// A root that does not resolve (missing, or not a directory we can stat) is
+// dropped: it cannot contain anything.
+func resolveRoots(roots []string) []string {
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		if real, err := filepath.EvalSymlinks(root); err == nil {
+			out = append(out, real)
+		}
+	}
+	return out
+}
+
+// containedDirIn is containedDir against ALREADY-RESOLVED roots.
+func containedDirIn(path string, realRoots []string) (string, bool) {
 	path = strings.TrimSpace(path)
 	if path == "" || !filepath.IsAbs(path) {
 		return "", false
@@ -168,11 +193,7 @@ func containedDir(path string, roots []string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	for _, root := range roots {
-		realRoot, err := filepath.EvalSymlinks(root)
-		if err != nil {
-			continue
-		}
+	for _, realRoot := range realRoots {
 		rel, err := filepath.Rel(realRoot, dir)
 		if err != nil {
 			continue

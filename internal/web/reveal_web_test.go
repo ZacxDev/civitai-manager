@@ -500,6 +500,34 @@ func TestRevealSymlinkEscapeIsNotVacuous(t *testing.T) {
 	}
 }
 
+// TestWorkflowResolverOffersRevealOnlyForContainedFiles closes the loop through
+// the PRODUCTION resolver: two real, indexed files — one inside the configured
+// root, one outside it — and only the contained one gets a folder button.
+func TestWorkflowResolverOffersRevealOnlyForContainedFiles(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	outside := filepath.Join(base, "outside")
+	for _, d := range []string{filepath.Join(root, "loras"), outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv, _ := newRevealServer(t, root)
+	inID := seedFile(t, srv, filepath.Join(root, "loras", "inside.safetensors"))
+	outID := seedFile(t, srv, filepath.Join(outside, "outside.safetensors"))
+
+	res := srv.workflowResolver()
+
+	in := renderString(t, workflowResourceChip("inside.safetensors", res))
+	if !strings.Contains(in, "/library/files/"+strconv.FormatInt(inID, 10)+"/reveal") {
+		t.Fatalf("a contained file should offer the folder button:\n%s", in)
+	}
+	out := renderString(t, workflowResourceChip("outside.safetensors", res))
+	if strings.Contains(out, "/reveal") {
+		t.Fatalf("an uncontained file (id=%d) must NOT offer the folder button:\n%s", outID, out)
+	}
+}
+
 // TestResourceChipFolderButtonVisibility: the control appears ONLY for a
 // concrete, resolved file on a loopback bind — never for an ambiguous basename
 // (which resolves to no id and no path), never for a missing file, and never when
@@ -513,9 +541,16 @@ func TestResourceChipFolderButtonVisibility(t *testing.T) {
 		wantButton bool
 	}{
 		{
-			name: "resolved local file on a loopback bind", have: true, openFolder: true,
-			info:       resourceInfo{Path: "/models/loras/a.safetensors", FileID: 12},
+			name: "resolved, CONTAINED local file on a loopback bind", have: true, openFolder: true,
+			info:       resourceInfo{Path: "/models/loras/a.safetensors", FileID: 12, Contained: true},
 			wantButton: true,
+		},
+		{
+			// The click would be refused by the containment check, so offering the
+			// control at all would be offering something that cannot work.
+			name: "a resolved file OUTSIDE every configured root gets no button", have: true, openFolder: true,
+			info:       resourceInfo{Path: "/elsewhere/a.safetensors", FileID: 12},
+			wantButton: false,
 		},
 		{
 			// HasLocalFileNamed says "present"; LocalFileByBasename refuses to resolve
@@ -526,12 +561,12 @@ func TestResourceChipFolderButtonVisibility(t *testing.T) {
 		},
 		{
 			name: "an id with no path is not revealable", have: true, openFolder: true,
-			info:       resourceInfo{FileID: 12},
+			info:       resourceInfo{FileID: 12, Contained: true},
 			wantButton: false,
 		},
 		{
 			name: "a path with no id is not revealable", have: true, openFolder: true,
-			info:       resourceInfo{Path: "/models/loras/a.safetensors"},
+			info:       resourceInfo{Path: "/models/loras/a.safetensors", Contained: true},
 			wantButton: false,
 		},
 		{
@@ -540,8 +575,9 @@ func TestResourceChipFolderButtonVisibility(t *testing.T) {
 			wantButton: false,
 		},
 		{
+			// Everything else about this resource qualifies — only the bind gates it.
 			name: "capability gated off (non-loopback bind)", have: true, openFolder: false,
-			info:       resourceInfo{Path: "/models/loras/a.safetensors", FileID: 12},
+			info:       resourceInfo{Path: "/models/loras/a.safetensors", FileID: 12, Contained: true},
 			wantButton: false,
 		},
 	}
