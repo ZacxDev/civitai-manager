@@ -332,10 +332,14 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mode
 		return alert("warning", "Run aborted — nothing to run", g.Text(snap.Message))
 	}
 
+	// Triage the missing set ONCE: the lead, the headline and the CTA must agree about
+	// what this server can actually deliver (see batchInstallPlan).
+	batch := planBatchInstall(snap.MissingModels, dlEligible)
+
 	var detail []g.Node
 	// Lead: what went wrong, in the user's terms. The raw engine message moves into
 	// the technical <details> at the bottom.
-	if lead := failureLead(snap); lead != "" {
+	if lead := failureLead(snap, batch.Available); lead != "" {
 		detail = append(detail, h.P(h.Class("text-sm text-slate-300"), g.Text(lead)))
 	}
 
@@ -344,7 +348,8 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mode
 		// model file, then re-run. It leads the actions because "which of these
 		// buttons do I press?" was the top reported confusion.
 		if len(snap.MissingModels) > 0 {
-			detail = append(detail, installAllMissingAction(snap.MissingModels, wfID, csrf, dlEligible))
+			detail = append(detail, installAllMissingAction(batch,
+				len(batch.Installable)+len(batch.Unroutable)+batch.Overflow, wfID, csrf))
 		}
 		if len(snap.Preflight.MissingNodes) > 0 {
 			// Attributed, actionable panel: which pack provides each missing class, a
@@ -401,13 +406,30 @@ func failureTitle(snap runSnapshot) string {
 // fixes it, with no engine vocabulary ("preflight", "references", "graph"). It
 // returns "" when there is nothing to add beyond the raw message — which then
 // renders as the lead instead (see failureTechnicalDetail).
-func failureLead(snap runSnapshot) string {
+//
+// canInstall is whether the batch-install CTA can actually deliver on this server
+// (see batchInstallPlan). It is LOAD-BEARING, not cosmetic: "Install them and it
+// should run" is a promise, and on a server that cannot install anything — no
+// comfy_model_path, a remote ComfyUI, or references whose type could not be inferred
+// — that sentence is false and sends the reader looking for a button that is greyed
+// out. The un-installable wording names the real next step instead.
+func failureLead(snap runSnapshot, canInstall bool) string {
 	nm, nn := failureMissingCounts(snap)
 	switch {
 	case nm > 0 && nn > 0:
+		if !canInstall {
+			return fmt.Sprintf("This workflow needs %d model file%s and %d custom node%s that are not installed in "+
+				"ComfyUI yet. This copy of civitai-manager cannot fetch the model files for you — see the options "+
+				"for each one below.", nm, plural(nm), nn, plural(nn))
+		}
 		return fmt.Sprintf("Nothing is broken — this workflow just needs %d model file%s and %d custom node%s "+
 			"that are not installed in ComfyUI yet. Add them and it should run.", nm, plural(nm), nn, plural(nn))
 	case nm > 0:
+		if !canInstall {
+			return fmt.Sprintf("This workflow needs %d model file%s that %s not installed in ComfyUI yet. "+
+				"This copy of civitai-manager cannot fetch %s for you — see the options for each one below.",
+				nm, plural(nm), isAre(nm), itThem(nm))
+		}
 		return fmt.Sprintf("Nothing is broken — this workflow just needs %d model file%s that %s not installed "+
 			"in ComfyUI yet. Install %s and it should run.",
 			nm, plural(nm), isAre(nm), itThem(nm))

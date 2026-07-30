@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
@@ -114,6 +117,30 @@ func TestRunFailureLeadsWithSummaryThenOnePrimaryAction(t *testing.T) {
 	}
 }
 
+// TestBatchInstallHintScopesItsGuaranteeToMatching pins the CORRECTNESS of the
+// promise, which is the same class of defect this whole panel exists to remove: the
+// all-or-nothing guarantee holds for RESOLUTION only, so the hint must not imply that
+// a failed download leaves nothing behind (downloadBatchError exists precisely
+// because it does).
+func TestBatchInstallHintScopesItsGuaranteeToMatching(t *testing.T) {
+	if !strings.Contains(batchInstallHint, "cannot be matched, nothing is downloaded") {
+		t.Errorf("hint should keep the (true) resolution guarantee: %q", batchInstallHint)
+	}
+	for _, want := range []string{
+		"If a download fails part-way",
+		"stay on disk",
+		"how many landed",
+	} {
+		if !strings.Contains(batchInstallHint, want) {
+			t.Errorf("hint must disclose what a mid-download failure leaves behind (%q): %q", want, batchInstallHint)
+		}
+	}
+	// The unqualified promise must not come back.
+	if strings.Contains(batchInstallHint, "Nothing is downloaded if any of them cannot be matched") {
+		t.Errorf("hint reverted to the unscoped guarantee: %q", batchInstallHint)
+	}
+}
+
 // TestRunFailureSingularCopy: the generated copy has to read correctly for one file.
 func TestRunFailureSingularCopy(t *testing.T) {
 	snap := twoMissingSnapshot()
@@ -135,7 +162,8 @@ func TestRunFailureSingularCopy(t *testing.T) {
 
 // TestRunFailurePrimaryActionDisabledWhenIneligible: a server that cannot install
 // files must still SHOW the action, disabled, with the reason — never a silent
-// omission, and never a POST target.
+// omission, and never a POST target. AND the lead must not promise the install: "…
+// Install them and it should run" is false when the button is greyed out.
 func TestRunFailurePrimaryActionDisabledWhenIneligible(t *testing.T) {
 	body := renderString(t, runStatusFragment(twoMissingSnapshot(), 7, "tok", false, NSFWBlur))
 
@@ -147,6 +175,115 @@ func TestRunFailurePrimaryActionDisabledWhenIneligible(t *testing.T) {
 	}
 	if !strings.Contains(body, "comfy_model_path") {
 		t.Errorf("disabled primary action must explain itself:\n%s", body)
+	}
+	// The lead is GATED on the CTA being able to deliver.
+	if strings.Contains(body, "Nothing is broken") || strings.Contains(body, "Install them and it should run") {
+		t.Errorf("lead must not promise an install the disabled CTA cannot perform:\n%s", body)
+	}
+	if !strings.Contains(body, "cannot fetch them for you") {
+		t.Errorf("lead must name the real next step when installing is unavailable:\n%s", body)
+	}
+}
+
+// TestBatchInstallExcludesUnroutableFiles: a reference whose CivitAI type could not be
+// inferred has no destination subfolder, so a batch install can only ever fail on it.
+// It must be EXCLUDED from the batch (and named), never silently included so the user
+// pays N round-trips for a guaranteed decline.
+func TestBatchInstallExcludesUnroutableFiles(t *testing.T) {
+	snap := twoMissingSnapshot()
+	snap.Preflight = &comfy.PreflightReport{MissingModels: []string{
+		"routable-MISSING.safetensors", "mystery-MISSING.bin"}}
+	snap.MissingModels = []comfy.MissingModel{
+		{Filename: "routable-MISSING.safetensors", Query: "routable", CivitaiType: "Checkpoint"},
+		{Filename: "mystery-MISSING.bin", Query: "mystery", CivitaiType: ""}, // no inferred type
+	}
+	body := renderString(t, runStatusFragment(snap, 7, "tok", true, NSFWBlur))
+
+	if !strings.Contains(body, "Install 1 of 2 missing model files and run") {
+		t.Errorf("partial batch must say so in the label:\n%s", body)
+	}
+	if !strings.Contains(body, `value="routable-MISSING.safetensors"`) {
+		t.Errorf("the routable file must ride in the form:\n%s", body)
+	}
+	if strings.Contains(body, `name="missing_filename" value="mystery-MISSING.bin"`) {
+		t.Errorf("an unroutable file must NOT be submitted to the batch:\n%s", body)
+	}
+	for _, want := range []string{"cannot be installed in one click", "mystery-MISSING.bin"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the excluded file must be named (%q):\n%s", want, body)
+		}
+	}
+}
+
+// TestBatchInstallDisabledWhenNothingIsRoutable: when NO file can be routed, the CTA
+// is disabled with the real reason and the lead drops its promise.
+func TestBatchInstallDisabledWhenNothingIsRoutable(t *testing.T) {
+	snap := twoMissingSnapshot()
+	snap.Preflight = &comfy.PreflightReport{MissingModels: []string{"mystery-MISSING.bin"}}
+	snap.MissingModels = []comfy.MissingModel{{Filename: "mystery-MISSING.bin", Query: "m", CivitaiType: ""}}
+	body := renderString(t, runStatusFragment(snap, 7, "tok", true, NSFWBlur))
+
+	if strings.Contains(body, "install-missing-and-run") {
+		t.Errorf("a doomed batch must not be offered as a POST:\n%s", body)
+	}
+	if !strings.Contains(body, "cannot tell which ComfyUI folder") {
+		t.Errorf("disabled CTA must give the routing reason:\n%s", body)
+	}
+	if strings.Contains(body, "Nothing is broken") {
+		t.Errorf("lead must not promise a one-click install here:\n%s", body)
+	}
+}
+
+// TestPlanBatchInstallDeDupesAndCaps: the same file referenced by two loaders is ONE
+// install, and one click is bounded by maxBatchInstallFiles.
+func TestPlanBatchInstallDeDupesAndCaps(t *testing.T) {
+	dupes := []comfy.MissingModel{
+		{Filename: "a.safetensors", CivitaiType: "Checkpoint"},
+		{Filename: "sub/dir/a.safetensors", CivitaiType: "Checkpoint"}, // same basename
+		{Filename: "b.safetensors", CivitaiType: "Checkpoint"},
+	}
+	p := planBatchInstall(dupes, true)
+	if len(p.Installable) != 2 {
+		t.Errorf("duplicate references must collapse: got %d installable %v", len(p.Installable), p.Installable)
+	}
+
+	many := make([]comfy.MissingModel, 0, maxBatchInstallFiles+3)
+	for i := 0; i < maxBatchInstallFiles+3; i++ {
+		many = append(many, comfy.MissingModel{
+			Filename: fmt.Sprintf("m%02d.safetensors", i), CivitaiType: "Checkpoint"})
+	}
+	p = planBatchInstall(many, true)
+	if len(p.Installable) != maxBatchInstallFiles || p.Overflow != 3 {
+		t.Errorf("cap not applied: installable=%d overflow=%d", len(p.Installable), p.Overflow)
+	}
+	if !p.Available {
+		t.Error("a capped batch is still available")
+	}
+	// A cap that silently drops files would be the same defect again.
+	body := renderString(t, installAllMissingAction(p, len(many), 7, "tok"))
+	if !strings.Contains(body, "left for a second click") {
+		t.Errorf("the capped-out remainder must be disclosed:\n%s", body)
+	}
+}
+
+// TestBatchJobBudgetScalesWithFileCount: the runaway backstop must cover N downloads
+// PLUS the run. A one-file budget guarding a 4-file batch cancels mid-batch and
+// manufactures the partial-install state this flow avoids.
+func TestBatchJobBudgetScalesWithFileCount(t *testing.T) {
+	if got := batchJobBudget(1); got != runJobBudget {
+		t.Errorf("single-file budget changed: %v, want %v", got, runJobBudget)
+	}
+	if got := batchJobBudget(0); got != runJobBudget {
+		t.Errorf("empty budget = %v, want %v", got, runJobBudget)
+	}
+	for _, n := range []int{2, 4, maxBatchInstallFiles} {
+		want := runJobBudget + time.Duration(n-1)*downloadFileBudget
+		if got := batchJobBudget(n); got != want {
+			t.Errorf("batchJobBudget(%d) = %v, want %v", n, got, want)
+		}
+		if batchJobBudget(n) <= batchJobBudget(n-1) {
+			t.Errorf("budget must grow with n at n=%d", n)
+		}
 	}
 }
 
@@ -188,14 +325,28 @@ func TestRunFailureNodeAndOptionCopy(t *testing.T) {
 // and fails the URLs listed in failURLs, so a MID-BATCH failure is reproducible.
 // (fakeDownloader deliberately falls back to "any canned body" for an unknown URL,
 // which cannot express "this one file fails".)
+//
+// DownloadFile runs on the download GOROUTINE while assertions read from the test
+// goroutine, so the call log is mutex-guarded and read only through calls().
 type batchDownloader struct {
 	bodies   map[string][]byte
 	failURLs map[string]bool
-	calls    []string
+
+	mu       sync.Mutex
+	callLog  []string
+	blockOn  string
+	released chan struct{}
 }
 
 func (d *batchDownloader) DownloadFile(_ context.Context, fileURL string) (*http.Response, error) {
-	d.calls = append(d.calls, fileURL)
+	d.mu.Lock()
+	d.callLog = append(d.callLog, fileURL)
+	block := d.blockOn == fileURL
+	rel := d.released
+	d.mu.Unlock()
+	if block && rel != nil {
+		<-rel
+	}
 	if d.failURLs[fileURL] {
 		return nil, errors.New("simulated transport failure")
 	}
@@ -209,6 +360,24 @@ func (d *batchDownloader) DownloadFile(_ context.Context, fileURL string) (*http
 		Body:       io.NopCloser(bytes.NewReader(body)),
 		Header:     make(http.Header),
 	}, nil
+}
+
+// calls returns a copy of the call log under the mutex.
+func (d *batchDownloader) calls() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.callLog...)
+}
+
+// hold makes the download of one URL park until the returned func is called, so a
+// test can observe the IN-FLIGHT job state deterministically.
+func (d *batchDownloader) hold(url string) (release func()) {
+	d.mu.Lock()
+	ch := make(chan struct{})
+	d.blockOn, d.released = url, ch
+	d.mu.Unlock()
+	var once sync.Once
+	return func() { once.Do(func() { close(ch) }) }
 }
 
 // twoFileSearchRaw is a models-list body containing one model per named file, so
@@ -256,6 +425,30 @@ func installMissingForm(names ...string) url.Values {
 	return v
 }
 
+// seedFailedPreflightRun drives the workflow to the SETTLED missing-models failure the
+// batch CTA is offered from, so a declined batch has a real panel to re-render and the
+// run-job seq has a known value to compare against.
+func seedFailedPreflightRun(t *testing.T, srv *Server, wfID string, missing ...string) int64 {
+	t.Helper()
+	models := make([]comfy.MissingModel, 0, len(missing))
+	for _, m := range missing {
+		models = append(models, comfy.MissingModel{Filename: m, Query: m, CivitaiType: "Checkpoint"})
+	}
+	prev := srv.runFn
+	srv.runFn = func(context.Context, *store.Workflow, runUpdater, runOptions) (*runResult, error) {
+		return &runResult{
+			Preflight:     &comfy.PreflightReport{MissingModels: missing},
+			MissingModels: models,
+		}, nil
+	}
+	if rec := post(t, srv, "/workflows/"+wfID+"/run", nil, true); rec.Code != http.StatusOK {
+		t.Fatalf("seed run = %d", rec.Code)
+	}
+	pollRunUntilDone(t, srv, wfID)
+	srv.runFn = prev
+	return srv.runJobState().Seq
+}
+
 // TestInstallMissingAndRunInstallsAllThenRuns is the happy path: both files resolve,
 // both are written into comfy_model_path/checkpoints, and the ORIGINAL workflow runs
 // exactly once (no substitution — the referenced names now exist on disk).
@@ -286,8 +479,8 @@ func TestInstallMissingAndRunInstallsAllThenRuns(t *testing.T) {
 			t.Errorf("%s content = %q", name, got)
 		}
 	}
-	if len(dl.calls) != 2 {
-		t.Errorf("downloader called %d times, want 2 (%v)", len(dl.calls), dl.calls)
+	if n := len(dl.calls()); n != 2 {
+		t.Errorf("downloader called %d times, want 2 (%v)", n, dl.calls())
 	}
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
@@ -301,8 +494,14 @@ func TestInstallMissingAndRunInstallsAllThenRuns(t *testing.T) {
 
 // TestInstallMissingAndRunDeclinesWhenOneCannotBeMatched: resolution is
 // ALL-OR-NOTHING. One unmatched file means NOTHING is downloaded, no run is started,
-// and the response names the file that failed — the honest report, not a silent
-// half-install that leaves the run failing anyway.
+// and the response names the file that failed.
+//
+// The load-bearing assertion is the RUN-JOB SEQ: startDownloadsAndRun publishes its
+// job (and bumps runSeq) SYNCHRONOUSLY before returning, so an unchanged seq after
+// the POST proves no batch was started — deterministically, with no goroutine to race.
+// The filesystem/downloader assertions that follow are only sound BECAUSE of it (no
+// job ⇒ no download goroutine), and both were verified to fire when the decline branch
+// is deleted.
 func TestInstallMissingAndRunDeclinesWhenOneCannotBeMatched(t *testing.T) {
 	// Only alpha exists on the (fake) CivitAI; beta resolves to nothing.
 	srv, dl, comfyModels := newBatchInstallServer(t,
@@ -310,25 +509,8 @@ func TestInstallMissingAndRunDeclinesWhenOneCannotBeMatched(t *testing.T) {
 	rr := &runRecorder{}
 	srv.runFn = rr.fn()
 	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, twoMissingGraph)
-
-	// Reach the real state this action is offered from: a SETTLED run whose preflight
-	// reported both files missing. The declined response replaces that whole panel, so
-	// the panel has to exist for the assertion below to mean anything.
-	srv.runFn = func(context.Context, *store.Workflow, runUpdater, runOptions) (*runResult, error) {
-		return &runResult{
-			Preflight: &comfy.PreflightReport{MissingModels: []string{
-				"alpha-MISSING.safetensors", "beta-MISSING.safetensors"}},
-			MissingModels: []comfy.MissingModel{
-				{Filename: "alpha-MISSING.safetensors", Query: "alpha", CivitaiType: "Checkpoint"},
-				{Filename: "beta-MISSING.safetensors", Query: "beta", CivitaiType: "Checkpoint"},
-			},
-		}, nil
-	}
-	if rec := post(t, srv, "/workflows/"+wfID+"/run", nil, true); rec.Code != http.StatusOK {
-		t.Fatalf("seed run = %d", rec.Code)
-	}
-	pollRunUntilDone(t, srv, wfID)
-	srv.runFn = rr.fn()
+	seqBefore := seedFailedPreflightRun(t, srv, wfID,
+		"alpha-MISSING.safetensors", "beta-MISSING.safetensors")
 
 	rec := post(t, srv, "/workflows/"+wfID+"/install-missing-and-run",
 		installMissingForm("alpha-MISSING.safetensors", "beta-MISSING.safetensors"), true)
@@ -336,6 +518,15 @@ func TestInstallMissingAndRunDeclinesWhenOneCannotBeMatched(t *testing.T) {
 		t.Fatalf("install-missing-and-run = %d", rec.Code)
 	}
 	body := rec.Body.String()
+
+	// No job was started — the synchronous, race-free proof that nothing was written.
+	snap := srv.runJobState()
+	if snap.Seq != seqBefore {
+		t.Fatalf("all-or-nothing violated: a job was started (seq %d → %d)", seqBefore, snap.Seq)
+	}
+	if snap.Running || snap.Phase != runPhaseFailed {
+		t.Fatalf("declined batch changed the run state: running=%v phase=%q", snap.Running, snap.Phase)
+	}
 
 	for _, want := range []string{
 		"Nothing was downloaded",
@@ -351,8 +542,8 @@ func TestInstallMissingAndRunDeclinesWhenOneCannotBeMatched(t *testing.T) {
 	if !strings.Contains(body, "Missing model files") {
 		t.Errorf("declined response deleted the per-file panel it refers to:\n%s", body)
 	}
-	if len(dl.calls) != 0 {
-		t.Errorf("all-or-nothing violated: downloaded %v", dl.calls)
+	if calls := dl.calls(); len(calls) != 0 {
+		t.Errorf("all-or-nothing violated: downloaded %v", calls)
 	}
 	if _, err := os.Stat(filepath.Join(comfyModels, "checkpoints", "alpha-MISSING.safetensors")); !os.IsNotExist(err) {
 		t.Errorf("all-or-nothing violated: alpha was written (err=%v)", err)
@@ -377,7 +568,6 @@ func TestInstallMissingAndRunPartialDownloadReportsHonestly(t *testing.T) {
 	srv.runFn = rr.fn()
 	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, twoMissingGraph)
 
-	// Order the batch so the failing file is second.
 	rec := post(t, srv, "/workflows/"+wfID+"/install-missing-and-run",
 		installMissingForm("alpha-MISSING.safetensors", "beta-MISSING.safetensors"), true)
 	if rec.Code != http.StatusOK {
@@ -388,13 +578,79 @@ func TestInstallMissingAndRunPartialDownloadReportsHonestly(t *testing.T) {
 	if !strings.Contains(body, "installed 1 of 2 model files, then failed") {
 		t.Errorf("partial failure must report how many files landed:\n%s", body)
 	}
-	if len(dl.calls) != 2 {
-		t.Errorf("downloader calls = %v, want alpha then beta", dl.calls)
+	if n := len(dl.calls()); n != 2 {
+		t.Errorf("downloader calls = %v, want alpha then beta", dl.calls())
 	}
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
 	if rr.calls != 0 {
 		t.Errorf("a failed install must not run the workflow, got %d calls", rr.calls)
+	}
+}
+
+// TestInstallMissingAndRunMixedAlreadyPresentSaysSo: with one of two files already on
+// disk, the user must be TOLD — the count they asked about is 2, and reporting the
+// remaining one as "(1/1)" with no mention of the other silently rewrites the request.
+func TestInstallMissingAndRunMixedAlreadyPresentSaysSo(t *testing.T) {
+	files := map[string]string{
+		"alpha-MISSING.safetensors": "https://dl.example/alpha",
+		"beta-MISSING.safetensors":  "https://dl.example/beta",
+	}
+	srv, dl, comfyModels := newBatchInstallServer(t, files, nil)
+	rr := &runRecorder{}
+	srv.runFn = rr.fn()
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, twoMissingGraph)
+
+	// alpha is already installed; only beta has to be fetched.
+	ckpts := filepath.Join(comfyModels, "checkpoints")
+	if err := os.MkdirAll(ckpts, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ckpts, "alpha-MISSING.safetensors"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Park the remaining download so the in-flight status line is observable.
+	release := dl.hold("https://dl.example/beta")
+	defer release()
+
+	rec := post(t, srv, "/workflows/"+wfID+"/install-missing-and-run",
+		installMissingForm("alpha-MISSING.safetensors", "beta-MISSING.safetensors"), true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("install-missing-and-run = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "1 model file is already installed") {
+		t.Errorf("mixed batch must disclose the already-installed file:\n%s", body)
+	}
+	if !strings.Contains(body, "preparing to install the remaining 1") {
+		t.Errorf("mixed batch must name what is left to fetch:\n%s", body)
+	}
+	release()
+	pollRunUntilDone(t, srv, wfID)
+
+	// Only the missing file was fetched.
+	if calls := dl.calls(); len(calls) != 1 || calls[0] != "https://dl.example/beta" {
+		t.Errorf("mixed batch fetched %v, want only beta", dl.calls())
+	}
+}
+
+// TestDownloadStepMessageCountsTheWholeSet pins the progress prefix directly: an
+// already-present file still occupies its slot in the count.
+func TestDownloadStepMessageCountsTheWholeSet(t *testing.T) {
+	if got := downloadStepMessage(0, 1, 0, "Downloading x…"); got != "Downloading x…" {
+		t.Errorf("lone download must stay unprefixed, got %q", got)
+	}
+	if got := downloadStepMessage(0, 2, 0, "d"); got != "(1/2) d" {
+		t.Errorf("got %q, want (1/2) d", got)
+	}
+	if got := downloadStepMessage(0, 1, 1, "d"); got != "(2/2) d" {
+		t.Errorf("an already-present file must be counted, got %q, want (2/2) d", got)
+	}
+	if got := downloadBatchError(0, 1, 1, errors.New("boom")); !strings.Contains(got.Error(), "installed 1 of 2") {
+		t.Errorf("error must count the already-present file, got %q", got)
+	}
+	if got := downloadBatchError(0, 1, 0, errors.New("boom")); got.Error() != "boom" {
+		t.Errorf("single-file error must be unwrapped, got %q", got)
 	}
 }
 
@@ -426,28 +682,143 @@ func TestInstallMissingAndRunAlreadyInstalledSaysSo(t *testing.T) {
 	if body := rec.Body.String(); !strings.Contains(body, "nothing was downloaded") {
 		t.Errorf("already-installed batch must say nothing was downloaded:\n%s", body)
 	}
-	if len(dl.calls) != 0 {
-		t.Errorf("already-installed batch must not download: %v", dl.calls)
+	if n := len(dl.calls()); n != 0 {
+		t.Errorf("already-installed batch must not download: %v", dl.calls())
 	}
 	release()
 	pollRunUntilDone(t, srv, wfID)
 }
 
-// TestInstallMissingAndRunRefusesUnreferencedFile: missing_filename is free-form
-// input that drives a real download + filesystem write, so it must be bound to the
-// workflow that names it (the contract the single-file endpoint documents).
-func TestInstallMissingAndRunRefusesUnreferencedFile(t *testing.T) {
+// TestInstallMissingAndRunDroppedClickIsReported: the one-run-at-a-time guard silently
+// discards a click that lands mid-run. The user paid N resolutions for it, so the
+// response must SAY it was dropped instead of rendering the other job's panel as if
+// the install had started.
+func TestInstallMissingAndRunDroppedClickIsReported(t *testing.T) {
+	files := map[string]string{"alpha-MISSING.safetensors": "https://dl.example/alpha"}
+	srv, dl, _ := newBatchInstallServer(t, files, nil)
+	rr := &runRecorder{}
+	release := rr.hold() // park the first run so it stays "running"
+	defer release()
+	srv.runFn = rr.fn()
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, twoMissingGraph)
+
+	if rec := post(t, srv, "/workflows/"+wfID+"/run", nil, true); rec.Code != http.StatusOK {
+		t.Fatalf("first run = %d", rec.Code)
+	}
+	if snap := srv.runJobState(); !snap.Running {
+		t.Fatalf("expected an in-flight run to contend with, got %+v", snap)
+	}
+
+	rec := post(t, srv, "/workflows/"+wfID+"/install-missing-and-run",
+		installMissingForm("alpha-MISSING.safetensors"), true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("contended install = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "another run or download is already in progress") {
+		t.Errorf("a dropped click must be reported:\n%s", body)
+	}
+	if n := len(dl.calls()); n != 0 {
+		t.Errorf("a dropped click must not download: %v", dl.calls())
+	}
+	release()
+	pollRunUntilDone(t, srv, wfID)
+}
+
+// TestInstallMissingAndRunEnforcesCSRF: the endpoint performs real network fetches and
+// filesystem writes, so a request without the token must be REFUSED (not merely
+// rendered with a token field in the form).
+func TestInstallMissingAndRunEnforcesCSRF(t *testing.T) {
 	srv, dl, _ := newBatchInstallServer(t,
 		map[string]string{"alpha-MISSING.safetensors": "https://dl.example/alpha"}, nil)
+	rr := &runRecorder{}
+	srv.runFn = rr.fn()
 	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, twoMissingGraph)
 
 	rec := post(t, srv, "/workflows/"+wfID+"/install-missing-and-run",
-		installMissingForm("alpha-MISSING.safetensors", "not-in-this-workflow.safetensors"), true)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("unreferenced filename = %d, want 400", rec.Code)
+		installMissingForm("alpha-MISSING.safetensors"), false /* no CSRF */)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("no-CSRF install = %d, want 403", rec.Code)
 	}
-	if len(dl.calls) != 0 {
-		t.Errorf("refused request must not download: %v", dl.calls)
+	if n := len(dl.calls()); n != 0 {
+		t.Errorf("a CSRF-refused request must not download: %v", dl.calls())
+	}
+	if snap := srv.runJobState(); snap.Started {
+		t.Errorf("a CSRF-refused request must not start a job: %+v", snap)
+	}
+
+	// A WRONG token is refused too (constant-time compare, not a presence check).
+	form := installMissingForm("alpha-MISSING.safetensors")
+	req := httptest.NewRequest(http.MethodPost, "/workflows/"+wfID+"/install-missing-and-run",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", "not-the-token")
+	rec2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec2, req)
+	if rec2.Code != http.StatusForbidden {
+		t.Fatalf("wrong-CSRF install = %d, want 403", rec2.Code)
+	}
+	if n := len(dl.calls()); n != 0 {
+		t.Errorf("a wrong-token request must not download: %v", dl.calls())
+	}
+}
+
+// TestInstallMissingAndRunRefusesMalformedBatches covers the request-shape guards: an
+// unreferenced filename (free-form input that drives a real download + filesystem
+// write), an OFFSET missing_type array (which would route bytes into another file's
+// folder), and an over-cap batch.
+func TestInstallMissingAndRunRefusesMalformedBatches(t *testing.T) {
+	for name, form := range map[string]url.Values{
+		"unreferenced filename": installMissingForm(
+			"alpha-MISSING.safetensors", "not-in-this-workflow.safetensors"),
+		"offset type array": func() url.Values {
+			v := url.Values{}
+			v.Add("missing_filename", "alpha-MISSING.safetensors")
+			v.Add("missing_filename", "beta-MISSING.safetensors")
+			v.Add("missing_type", "Checkpoint") // one type for two files
+			return v
+		}(),
+		"over cap": func() url.Values {
+			v := url.Values{}
+			for i := 0; i <= maxBatchInstallFiles; i++ {
+				v.Add("missing_filename", "alpha-MISSING.safetensors")
+				v.Add("missing_type", "Checkpoint")
+			}
+			return v
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, dl, _ := newBatchInstallServer(t,
+				map[string]string{"alpha-MISSING.safetensors": "https://dl.example/alpha"}, nil)
+			wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, twoMissingGraph)
+			rec := post(t, srv, "/workflows/"+wfID+"/install-missing-and-run", form, true)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s = %d, want 400", name, rec.Code)
+			}
+			if n := len(dl.calls()); n != 0 {
+				t.Errorf("refused request must not download: %v", dl.calls())
+			}
+		})
+	}
+}
+
+// TestInstallMissingAndRunDeDupesDuplicateReferences: the same file named twice (two
+// loaders sharing a checkpoint) is fetched ONCE.
+func TestInstallMissingAndRunDeDupesDuplicateReferences(t *testing.T) {
+	files := map[string]string{"alpha-MISSING.safetensors": "https://dl.example/alpha"}
+	srv, dl, _ := newBatchInstallServer(t, files, nil)
+	rr := &runRecorder{}
+	srv.runFn = rr.fn()
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, twoMissingGraph)
+
+	rec := post(t, srv, "/workflows/"+wfID+"/install-missing-and-run",
+		installMissingForm("alpha-MISSING.safetensors", "alpha-MISSING.safetensors"), true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("duplicate batch = %d", rec.Code)
+	}
+	pollRunUntilDone(t, srv, wfID)
+	if calls := dl.calls(); len(calls) != 1 {
+		t.Errorf("duplicate references must be fetched once, got %v", calls)
 	}
 }
 
@@ -468,8 +839,8 @@ func TestInstallMissingAndRunIneligibleWritesNothing(t *testing.T) {
 		!strings.Contains(body, "comfy_model_path") {
 		t.Errorf("ineligible response must explain itself:\n%s", rec.Body.String())
 	}
-	if len(dl.calls) != 0 {
-		t.Errorf("ineligible request must not download: %v", dl.calls)
+	if n := len(dl.calls()); n != 0 {
+		t.Errorf("ineligible request must not download: %v", dl.calls())
 	}
 }
 
