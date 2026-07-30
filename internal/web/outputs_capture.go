@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
 	"github.com/ZacxDev/civitai-manager/internal/store"
@@ -41,7 +42,51 @@ type runParamsSnapshot struct {
 	// "<selector node id>:<group index>", i.e. POSITIONAL in the group array, so it
 	// is gated by the same graph-hash check as the positional widget overrides.
 	ModeSelection map[string]string `json:"mode_selection,omitempty"`
+
+	// PromptsCaptured marks that this run went through capturePrompts AT ALL. It is
+	// the ONLY way to tell a row written before prompt capture existed ("we do not
+	// know what the prompt was") from one whose graph simply exposes no prompt input
+	// ("we looked, there is none"). Rendering those two the same way would either
+	// invent a fact or hide one, so the detail page branches on this flag.
+	//
+	// params is a JSON blob, so no migration was needed — but that is exactly why the
+	// flag has to be explicit: an OLD row decodes to the zero value, silently, with
+	// no error to notice.
+	PromptsCaptured bool `json:"prompts_captured,omitempty"`
+	// Prompts are the EFFECTIVE prompt texts this run submitted, in graph order, each
+	// still labeled with which prompt it was (positive/negative, text_g/text_l).
+	// Empty with PromptsCaptured set means the graph exposes no prompt inputs.
+	Prompts []promptEntry `json:"prompts,omitempty"`
 }
+
+// promptEntry is ONE captured prompt input: the text that actually ran, plus enough
+// identity to keep a positive/negative (or text_g/text_l) pair distinguishable.
+//
+// Label is comfy.RunInput.Label — "Prompt (POSITIVE)", "Prompt (G)" — derived from
+// the graph author's own node title, so it is UNTRUSTED text like everything else in
+// this blob and every caller renders it through g.Text. ClassType/InputName are the
+// structural fallback for a graph whose nodes carry no titles: two CLIPTextEncode
+// nodes with no titles both label as bare "Prompt", and the node id is then the only
+// thing telling them apart, which is why it is recorded too.
+type promptEntry struct {
+	Label     string `json:"label,omitempty"`
+	NodeID    string `json:"node_id,omitempty"`
+	ClassType string `json:"class_type,omitempty"`
+	InputName string `json:"input_name,omitempty"`
+	Text      string `json:"text"`
+}
+
+// maxCapturedPromptBytes / maxCapturedPrompts bound what one capture writes into the
+// params blob. Every capture writes a row that is kept until the user deletes it, and
+// a prompt is arbitrary user/graph text (a wildcard-expanded prompt can be large), so
+// the blob needs a ceiling. A clipped prompt is marked in the stored text itself
+// (promptTruncatedMarker) so the detail page can never present a partial prompt as
+// the whole one.
+const (
+	maxCapturedPromptBytes = 4096
+	maxCapturedPrompts     = 16
+	promptTruncatedMarker  = "\n… (prompt truncated at capture time)"
+)
 
 type optionFixEntry struct {
 	InputName string `json:"input_name"`
@@ -166,8 +211,78 @@ func buildRunParamsSnapshot(wf *store.Workflow, opts runOptions) runParamsSnapsh
 		snap.Resources = wf.Resources
 		snap.BaseModel = wf.BaseModel
 		snap.Format = wf.Format
+		// The effective prompt is NOT derivable later: wf.Graph is replaced in place by
+		// a rescan and workflow_id goes NULL on delete, so reading it at render time
+		// would show TODAY's prompt for a PAST run. Capture it here, once, with the run.
+		snap.PromptsCaptured = true
+		snap.Prompts = capturePrompts(wf, opts)
 	}
 	return snap
+}
+
+// capturePrompts reads the effective prompt text out of the graph this run actually
+// submitted.
+//
+// 🔴 It must read the MODE-APPLIED, OVERRIDE-APPLIED graph, never wf.Graph:
+//
+//   - MODE: a multi-mode template ships every pipeline in one graph with all but one
+//     bypassed, and DetectRunInputs skips bypassed nodes. Read raw, a template records
+//     whichever pipeline happens to be un-bypassed in storage — i.e. the WRONG prompt,
+//     silently, for every run of every other mode. (Same trap
+//     TestQueueSeedKeysComeFromTheModeAppliedGraph pins for seeds.)
+//   - OVERRIDES: the Parameters panel's edit IS the prompt the user ran. Reading the
+//     graph's stored value would record the pre-edit text.
+//
+// The two are applied in the SAME ORDER realRun applies them (modes, then UI widget
+// overrides), because an override key is positional in the mode-applied graph.
+//
+// Only UI-format workflows yield anything: an api-format graph has no widgets_values,
+// so DetectRunInputs returns nothing and the row honestly records "no prompt inputs
+// detected" rather than a guess. Best-effort throughout — a capture must never fail a
+// run — so a graph that cannot be parsed simply yields no entries.
+func capturePrompts(wf *store.Workflow, opts runOptions) []promptEntry {
+	if wf == nil {
+		return nil
+	}
+	graph := modeAppliedGraph(wf, opts.ModeSelection)
+	if wf.Format == store.WorkflowFormatUI && len(opts.UIWidgetOverrides) > 0 {
+		graph = comfy.ApplyUIWidgetOverrides(graph, opts.UIWidgetOverrides)
+	}
+	var out []promptEntry
+	for _, ri := range comfy.DetectRunInputs(graph, nil) {
+		if ri.Kind != comfy.RunInputText {
+			continue // seeds/steps/cfg are already covered by the override list
+		}
+		if len(out) >= maxCapturedPrompts {
+			break
+		}
+		out = append(out, promptEntry{
+			Label:     ri.Label,
+			NodeID:    ri.NodeID,
+			ClassType: ri.ClassType,
+			InputName: ri.InputName,
+			Text:      clipPromptText(ri.Current),
+		})
+	}
+	return out
+}
+
+// clipPromptText bounds ONE captured prompt, marking the clip inside the stored text
+// so a truncated prompt can never be displayed as if it were complete.
+//
+// The cut walks BACK to a rune boundary: a byte-exact slice can split a multi-byte
+// rune, and the resulting invalid UTF-8 would be re-encoded by encoding/json as a
+// U+FFFD replacement character — a silent corruption at the tail of the very field
+// this whole feature exists to record faithfully.
+func clipPromptText(s string) string {
+	if len(s) <= maxCapturedPromptBytes {
+		return s
+	}
+	cut := maxCapturedPromptBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + promptTruncatedMarker
 }
 
 // marshalRunParams serializes a snapshot to JSON, returning "" on failure (the
