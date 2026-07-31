@@ -380,20 +380,7 @@ func versionBreakdownSection(v matchedModelCardView, csrf string) g.Node {
 
 	// 1. Prominent "update available" banner → the in-app model page at that version.
 	if v.UpdateAvailable && v.LatestID > 0 {
-		label := v.LatestName
-		if label == "" {
-			label = fmt.Sprintf("Version #%d", v.LatestID)
-		}
-		// The fill/border/hover live in .cm-fix-cta (app.css), NOT in bg-amber-950/30
-		// + hover:bg-amber-950/50: amber-950 is a color-mix() tint in tailwind.config.js
-		// and Tailwind cannot combine a color-mix() with an /<alpha-value> modifier, so
-		// BOTH of those utilities were silently dropped from the purged build and the
-		// banner rendered fully transparent with no hover feedback at all.
-		parts = append(parts, h.A(
-			h.Href(fmt.Sprintf("/models/%d?version=%d", v.ModelID, v.LatestID)),
-			h.Class("cm-fix-cta block rounded-md px-3 py-2 text-sm font-medium"),
-			g.Text("Update available: "+label+" →"),
-		))
+		parts = append(parts, updateAvailableCTA(v))
 	}
 
 	// 2. Versions you have (expandable), with a total-size line and size-by-version.
@@ -428,6 +415,59 @@ func versionBreakdownSection(v matchedModelCardView, csrf string) g.Node {
 	return h.Div(h.Class("space-y-2"), g.Group(parts))
 }
 
+// updateAvailableCTA is the matched card's "Update available" control: a custom
+// SVG glyph, the latest version's name, and the DETAILS in a hover/focus popover
+// instead of inline.
+//
+// COLOUR — 🔴 the split-token invariant. It used to be `.cm-fix-cta`, the WARNING
+// (amber) tint shared with the run-failure "Fix" CTA. Amber is the app's "something
+// is wrong" colour and an available update is not a fault; the card now paints
+// `.cm-upd-cta`, whose foreground is `--civitai-color-success-text` — the `-text`
+// half of the split pair, NEVER the bare `--civitai-color-success` fill token. The
+// base token is the tint under it; reaching for it to colour TEXT reintroduces
+// exactly the WCAG failures v0.1.79 fixed. The pair is pinned in
+// contrast_web_test.go's uiPairs() table, and TestUpdateCTAUsesTheTextToken parses
+// the shipped rule so a swap back to the fill token fails the build.
+//
+// STRUCTURE — the popover wrapper is a <div>, not the <a> itself. `.cm-updated` has
+// to be the positioned wrapper of `.cm-updated-pop`, and making the anchor the
+// wrapper would nest the popover's content inside a link. `:focus-within` on the
+// wrapper is what opens the popover when the anchor is tabbed to, so the wrapper
+// needs no tabindex of its own.
+func updateAvailableCTA(v matchedModelCardView) g.Node {
+	label := v.LatestName
+	if label == "" {
+		label = fmt.Sprintf("Version #%d", v.LatestID)
+	}
+	have := "none of its versions are in your library"
+	if len(v.Local) > 0 {
+		have = v.Local[0].Name // Local is newest-first (civitai list order)
+	}
+	return h.Div(
+		h.Class("cm-updated block"),
+		h.A(
+			h.Href(fmt.Sprintf("/models/%d?version=%d", v.ModelID, v.LatestID)),
+			h.Class("cm-upd-cta flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium"),
+			g.Raw(updateAvailableIconSVG),
+			// The version name is untrusted civitai data — g.Text escapes it. truncate +
+			// min-w-0 because it is a flex ITEM printing an unbounded string.
+			h.Span(h.Class("truncate min-w-0"), g.Text("Update available: "+label)),
+		),
+		h.Span(
+			h.Class("cm-updated-pop"),
+			g.Attr("role", "tooltip"),
+			h.Div(h.Class("cm-updated-title"), g.Text("Update available")),
+			// break-all: a civitai version name is untrusted and can be one unbroken
+			// 88-char token, which would otherwise widen the popover past its max-width.
+			h.Div(h.Class("break-all"), g.Text("You have: "+have)),
+			h.Div(h.Class("break-all"), g.Text("Latest: "+label)),
+			h.Div(h.Class("cm-updated-date"),
+				g.Text(fmt.Sprintf("%d version(s) published · %d in your library",
+					len(v.Available), len(v.Local)))),
+		),
+	)
+}
+
 // subFromView reconstructs the minimal *store.Subscription the toggle needs from
 // the view's subscription state (nil when not subscribed).
 func subFromView(v matchedModelCardView) *store.Subscription {
@@ -446,7 +486,7 @@ func localVersionRows(groups []localVersionGroup) []g.Node {
 	for _, gr := range groups {
 		rows = append(rows, h.Div(
 			h.Class("flex items-center justify-between gap-2"),
-			h.Span(h.Class("truncate text-slate-300"), g.Text(gr.Name)),
+			h.Span(h.Class("truncate min-w-0 text-slate-300"), g.Text(gr.Name)),
 			h.Span(h.Class("shrink-0 text-slate-500"),
 				g.Text(humanBytes(gr.Bytes)+" · "+strconv.Itoa(gr.FileCount)+" file(s)")),
 		))
@@ -475,7 +515,7 @@ func availableVersionRows(modelID int, avs []availableVersion) []g.Node {
 		}
 		rows = append(rows, h.Div(
 			h.Class("flex items-center justify-between gap-2"),
-			h.Span(h.Class("truncate text-slate-300"), g.Text(av.Name)),
+			h.Span(h.Class("truncate min-w-0 text-slate-300"), g.Text(av.Name)),
 			h.Span(h.Class("shrink-0"), mark),
 		))
 	}
@@ -511,11 +551,18 @@ func subscribeToggle(modelID int, sub *store.Subscription, csrf string) g.Node {
 }
 
 // subscribeControlCollapsed is state 1: the "Subscribe" button that GETs the
-// options panel into the shared container. note, when non-empty, appends a small
-// status line (e.g. "Unsubscribed") beneath it.
+// options panel into the shared container, plus an info affordance explaining what
+// subscribing actually does. note, when non-empty, appends a small status line
+// (e.g. "Unsubscribed") beneath it.
+//
+// SIZE: `md`, not `sm`. Subscribing is the primary standing action on a matched
+// model card and it was the smallest control there, losing to the two <details>
+// disclosures above it. The size is raised HERE, in the shared control, rather than
+// forked per surface — one Subscribe button should not be two different sizes on
+// the library card and the search card.
 func subscribeControlCollapsed(modelID int, csrf, note string) g.Node {
 	id := subscribeControlID(modelID)
-	btn := civButton("outline", "sm",
+	btn := civButton("outline", "md",
 		[]g.Node{
 			h.Type("button"),
 			hx("get", fmt.Sprintf("/models/%d/subscribe-options", modelID)),
@@ -525,7 +572,46 @@ func subscribeControlCollapsed(modelID int, csrf, note string) g.Node {
 		},
 		g.Text("Subscribe"),
 	)
-	return h.Div(h.ID(id), h.Class("flex flex-col items-start gap-1"), btn, subscribeNote(note))
+	return h.Div(h.ID(id), h.Class("flex flex-col items-start gap-1"),
+		h.Div(h.Class("flex items-center gap-2"), btn, subscribeInfoPopover()),
+		subscribeNote(note))
+}
+
+// subscribeInfoPopover is the ⓘ beside the Subscribe button: what subscribing does,
+// stated plainly BEFORE the click, because the default mode DOWNLOADS FILES.
+//
+// The consequence is the point. "Subscribe" reads like a notification opt-in, but
+// the default (subscribeOptionsPanel pre-checks Auto-download) makes the poller
+// enqueue and fetch every new version into the model folder — multi-GB checkpoints,
+// unattended, with no second confirmation. Naming that here is the difference
+// between an informed click and a surprise.
+//
+// It reuses the SAME popover mechanism as the status chips — a `.cm-updated`
+// wrapper with a `.cm-updated-pop` child — so it inherits the shared hover
+// controller (delegation matters: this control is htmx-swapped), the grace period
+// and the CSS-only fallback. role="img" + aria-label give the icon-only trigger an
+// accessible name; with role="img" the aria-label IS the name, so there is nothing
+// left for a `title=` to add and adding one would stack the native tooltip on top
+// of this popover (see updatedPopBody / popover_no_title_web_test.go).
+func subscribeInfoPopover() g.Node {
+	return h.Span(
+		h.Class("cm-updated cm-subinfo"),
+		g.Attr("role", "img"),
+		g.Attr("tabindex", "0"),
+		g.Attr("aria-label", "What subscribing does"),
+		g.Raw(infoIconSVG),
+		h.Span(
+			h.Class("cm-updated-pop"),
+			g.Attr("role", "tooltip"),
+			h.Div(h.Class("cm-updated-title"), g.Text("What subscribing does")),
+			h.Div(g.Text("civitai-manager watches this model for new versions.")),
+			h.Div(g.Text("With Auto-download (the default) each new version is queued and "+
+				"downloaded to your model folder automatically — using disk space and "+
+				"bandwidth without asking again.")),
+			h.Div(h.Class("cm-updated-date"),
+				g.Text("Choose Notify only to hear about a new version without downloading it.")),
+		),
+	)
 }
 
 // subscribeOptionsPanel is state 2: a form (carrying the shared container id) with

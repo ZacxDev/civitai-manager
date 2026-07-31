@@ -416,6 +416,31 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 		// as the label of a download link, in a narrow grid cell.
 		"generation detail unrenderable output": renderString(t, generationDetailMedia(
 			store.GenerationImage{ID: 1, Filename: long, ContentType: outputMediaTypeRefused})),
+		// The matched library card's update CTA prints a civitai VERSION NAME, which
+		// is as untrusted and unbounded as a filename, inside a flex row (the row's
+		// other item is the icon). Both the CTA face and its popover print it.
+		"matched card update CTA": renderString(t, updateAvailableCTA(matchedModelCardView{
+			ModelID: 7, LatestID: 30, UpdateAvailable: true, LatestName: long,
+			Local: []localVersionGroup{{VersionID: 10, Name: long}},
+		})),
+		// The matched card's version breakdown prints civitai VERSION NAMES in flex
+		// rows — a direct flex item carrying `truncate`, which only collapses while
+		// paired with min-w-0.
+		//
+		// (The unmatched-files TABLE is deliberately NOT listed. It prints scanned
+		// paths through pathCell, whose <bdi> carries no class at all — but the whole
+		// table is wrapped in `overflow-x-auto`, so a long path scrolls the TABLE and
+		// never the page, which is what this test is about. Listing it would force
+		// break-all onto .cm-path-ellipsis and destroy the start-ellipsis that makes a
+		// long path readable, buying nothing.)
+		"matched card version breakdown": renderString(t, versionBreakdownSection(matchedModelCardView{
+			ModelID: 7,
+			Local:   []localVersionGroup{{VersionID: 10, Name: long, Bytes: 1, FileCount: 1}},
+			Available: []availableVersion{
+				{ID: 10, Name: long, InLibrary: true},
+				{ID: 11, Name: "b." + long, Newer: true},
+			},
+		}, "csrf")),
 	}
 	for name, html := range cases {
 		// Every element that prints the long string must be able to break it.

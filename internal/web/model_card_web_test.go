@@ -224,8 +224,8 @@ func TestMatchedModelsOrderedBySizeAndLazy(t *testing.T) {
 		`hx-get="/library/model-card/2"`,
 		`hx-get="/library/model-card/1"`,
 		`hx-trigger="load"`,
-		"Matched models",
-		"Other files",
+		"Matched models (",
+		"Unmatched (",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("results view missing %q", want)

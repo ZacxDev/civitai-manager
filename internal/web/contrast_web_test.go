@@ -294,6 +294,15 @@ func uiPairs() []pair {
 			lightDebt(2.9161, whyVendoredIntent)},
 		{"success text in a light button", "--civitai-color-success-text", tint("--civitai-color-success", 12), wcagAANormal,
 			lightDebt(2.9816, whyVendoredIntent)},
+		// The matched library card's "Update available: <version>" CTA (.cm-upd-cta,
+		// updateAvailableCTA in model_card_pages.go). It paints the SUCCESS `-text`
+		// foreground on a 14% success tint of its own — the same geometry as a light
+		// success badge, listed separately because it is a different element and a
+		// future re-tint of this CTA must be re-measured here rather than assumed to
+		// be covered by the badge row. TestUpdateCTAUsesTheTextToken pins that the
+		// shipped rule really reads the `-text` half; this pins the ratio.
+		{"update-available CTA (success) on its own tint", "--civitai-color-success-text", tint("--civitai-color-success", 14), wcagAANormal,
+			lightDebt(2.9161, whyVendoredIntent)},
 		{"error text on the page", "--civitai-color-error-text", plain("--civitai-color-body"), wcagAANormal,
 			lightDebt(3.2567, whyVendoredIntent)},
 		{"error text in a light badge", "--civitai-color-error-text", tint("--civitai-color-error", 14), wcagAANormal,

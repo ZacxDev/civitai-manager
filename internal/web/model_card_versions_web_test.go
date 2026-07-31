@@ -108,7 +108,7 @@ func TestVersionBreakdownRendersSection(t *testing.T) {
 	out := renderString(t, matchedModelCard(view, "csrf"))
 
 	for _, want := range []string{
-		"Update available: v3 →",       // prominent indicator
+		"Update available: v3",         // prominent indicator
 		`href="/models/7?version=30"`,  // links to the in-app page at the latest version
 		"Versions in your library (1)", // expandable local-versions details
 		"<details", "<summary",         // the expandable containers

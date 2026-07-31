@@ -102,6 +102,42 @@ func spinnerGlyph() g.Node {
 		"inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-slate-500 border-t-transparent"))
 }
 
+// ---------------------------------------------------------------------------
+// Library dashboard icons.
+//
+// Inline, self-contained (feather-style) SVG — the SAME idiom as downloadIconSVG /
+// thumbsUpIconSVG (pages.go) and clockIconSVG (model_pages.go): no icon font, no
+// CDN, `stroke="currentColor"` so each glyph inherits its container's colour and
+// both data-theme paths render for free, and aria-hidden + focusable=false so AT
+// reads the element's own text/aria-label instead of announcing a graphic.
+//
+// These are NOT the `.cm-cta-icon` text-glyph vocabulary (→ ＋ ↗ ▶). That set is
+// for "go somewhere" affordances on a button; there is no sensible unicode glyph
+// for "duplicate copy" or "out of date", and the emoji the summary pills used
+// before (📦 ⧉ ⟳ ⚠ ○) render at the mercy of the platform emoji font, ignore
+// currentColor, and do not respond to the theme at all.
+//
+// Sizing lives in app.css (.cm-stat-ico 14px, .cm-btn-ico / .cm-upd-ico /
+// .cm-info-ico) so no new Tailwind utility enters the purged output.css build.
+// ---------------------------------------------------------------------------
+const (
+	// modelsIconSVG — a package/box: one identified model in the library.
+	modelsIconSVG = `<svg class="cm-stat-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>`
+	// duplicateIconSVG — two stacked sheets: a redundant copy of a file you already
+	// have (duplicate or superseded).
+	duplicateIconSVG = `<svg class="cm-stat-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`
+	// outOfDateIconSVG — a refresh cycle: a newer remote version exists.
+	outOfDateIconSVG = `<svg class="cm-stat-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`
+	// unmatchedIconSVG — a question mark: a scanned file CivitAI could not identify.
+	unmatchedIconSVG = `<svg class="cm-stat-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`
+	// rescanIconSVG — the refresh cycle again, sized for a button label.
+	rescanIconSVG = `<svg class="cm-btn-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`
+	// updateAvailableIconSVG — an up-arrow in a circle: an upgrade is on offer.
+	updateAvailableIconSVG = `<svg class="cm-upd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><polyline points="16 12 12 8 8 12"/><line x1="12" y1="16" x2="12" y2="8"/></svg>`
+	// infoIconSVG — the "what does this do?" affordance beside the Subscribe button.
+	infoIconSVG = `<svg class="cm-info-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`
+)
+
 // libraryView bundles the data the library page renders.
 type libraryView struct {
 	Files       []store.LocalFile
@@ -181,7 +217,7 @@ func libraryPage(v libraryView, csrf string, allowExtra bool, selectedDirs []str
 func libraryTabStrip(active string) g.Node {
 	return h.Div(
 		g.Attr("role", "tablist"),
-		h.Class("lib-tabs mt-1 mb-4 flex gap-6"),
+		h.Class(libTabsClass),
 		libraryTab("sources", "Install directories", active),
 		libraryTab("files", "Model files", active),
 		libraryTab("workflows", "Workflows", active),
@@ -195,7 +231,7 @@ func libraryTab(id, label, active string) g.Node {
 	}
 	if id == active {
 		attrs = append(attrs,
-			h.Class("lib-tab lib-tab-active"),
+			h.Class(libTabActiveClass),
 			g.Attr("aria-selected", "true"),
 			// aria-current="page" marks the active tab as the current page for AT,
 			// on top of the visual accent-underline distinction.
@@ -203,7 +239,7 @@ func libraryTab(id, label, active string) g.Node {
 		)
 	} else {
 		attrs = append(attrs,
-			h.Class("lib-tab"),
+			h.Class(libTabClass),
 			g.Attr("aria-selected", "false"),
 		)
 	}
@@ -285,7 +321,7 @@ func filesPanel(v libraryView, csrf string, allowExtra bool, selectedDirs []stri
 	if scanInitial == nil {
 		// Idle: the scan controls above the idle library content. Before the first
 		// scan the form is inline; once results exist it moves behind a dialog.
-		scanInitial = filesTabBody(libraryContent(v, csrf), csrf, matchRemote, hasResults(v))
+		scanInitial = filesTabBody(libraryContent(v, csrf), csrf, matchRemote, libraryHasModels(v))
 	}
 	// The STABLE poll/results container is now the ONLY always-on element: only its
 	// innerHTML is ever swapped, so the re-arming scan poller can never orphan a
@@ -295,19 +331,37 @@ func filesPanel(v libraryView, csrf string, allowExtra bool, selectedDirs []stri
 	return h.Div(h.ID("scan-results"), scanInitial)
 }
 
-// hasResults reports whether the Model-files tab has any scan output yet — matched
-// model files or flagged candidates. It gates the scan-controls placement: inline
-// before the first scan (nothing yet), behind a "Scan / Rescan" dialog once there
-// are results (so the controls stop dominating a populated results view).
-func hasResults(v libraryView) bool {
-	return len(v.Files) > 0 || len(v.Candidates) > 0
+// libraryHasModels reports whether the persisted library holds at least one MODEL
+// FILE row — i.e. whether a scan has ever produced models. It gates the whole
+// Model-files tab layout: the big guided SCAN CARD on the first run, a compact
+// "Rescan" BUTTON + modal once there is a library to manage.
+//
+// WHY THIS SIGNAL AND NOT A "last scanned" TIMESTAMP: the schema has none. The
+// `settings` table stores only theme / maturity_range / match_remote / comfy_cloud
+// / outputs_rail_collapsed, and the only other "has a scan happened" state is
+// scanJobState().Started, which lives on the Server struct and RESETS ON RESTART —
+// so it answers "did a scan run in THIS process", not "was this library ever
+// scanned". The local_files row count is the durable answer and it is already
+// loaded for the render (ListLocalFiles → buildLibraryView), so this costs nothing.
+//
+// It counts MODEL files only (v.Files is the model-kind partition), which is
+// exactly "never scanned OR holds 0 models": a scan that turned up nothing but
+// broken sidecars still lands on the guided first-run card, because the user has no
+// models to manage yet. Its predecessor (hasResults) also counted v.Candidates,
+// which let a candidates-only library skip the guided state.
+func libraryHasModels(v libraryView) bool {
+	return len(v.Files) > 0
 }
 
-// scanFormDialogID is the native <dialog> holding the scan form once the tab has
-// results. Mirrors workflowImportDialogID — opened by an inline showModal() (an
-// inline script is allowed; only EXTERNAL scripts/styles are forbidden), closed by
-// its own <form method="dialog"> control.
+// scanFormDialogID is the native <dialog> holding the scan form once the library
+// holds models. Mirrors workflowImportDialogID — opened by an inline showModal()
+// (an inline script is allowed; only EXTERNAL scripts/styles are forbidden),
+// closed by its own <form method="dialog"> control.
 const scanFormDialogID = "scan-form-dialog"
+
+// scanFormDialogTitleID is the heading the dialog is labelled by (aria-labelledby),
+// so AT announces "Scan for model files" rather than an unnamed dialog.
+const scanFormDialogTitleID = "scan-form-dialog-title"
 
 // modelScanFormCard is the "Model files" scan form wrapped in its titled card. It
 // is the INLINE (first-scan) form: shown above the idle library content before any
@@ -319,50 +373,72 @@ func modelScanFormCard(csrf string, matchRemote bool) g.Node {
 	)
 }
 
-// scanRescanCard is the post-results scan control: a titled card with a "Scan /
-// Rescan" trigger that opens the native <dialog> holding the scan form. The form,
-// its POST endpoint, CSRF, loopback gate and the streaming poll into #scan-results
-// are UNCHANGED — the form is only relocated behind the modal. The dialog closes
-// on submit (onsubmit → dialog.close()) and on Cancel/✕ (<form method="dialog">).
-func scanRescanCard(csrf string, matchRemote bool) g.Node {
+// scanRescanControl is the populated-library scan control: a single "Rescan
+// library" BUTTON (not a card) plus the native <dialog> holding the scan form. The
+// form, its POST endpoint, CSRF, loopback gate and the streaming poll into
+// #scan-results are UNCHANGED — only the placement moved. The dialog closes on
+// submit (via the scan's HX-Redirect reload) and on Cancel/✕ (<form
+// method="dialog">).
+//
+// It replaced a full titled CARD, which spent a whole card of vertical space on a
+// control the user touches once per session. A row with one right-aligned button
+// costs a line.
+//
+// 🔴 WHY A NATIVE <dialog>.showModal() AND NOT A HAND-ROLLED PANEL. Everything the
+// brief asks of the modal — Escape dismissal, focus moved INTO the dialog on open,
+// focus TRAPPED while open (the rest of the document is inert), and focus RESTORED
+// to the trigger on close — is behaviour the browser gives us for free, but ONLY
+// via showModal(). The `open` attribute and `.show()` render the same box as a
+// NON-modal: no top layer, no inertness, no Escape handling, no focus containment.
+// That is the whole reason railDrawerScript (outputs_rail.go) has to hand-roll
+// role=dialog + aria-modal + an `inert` sweep + a saved activeElement + an Escape
+// listener: the rail is a static complementary COLUMN on desktop and only becomes a
+// drawer on mobile, so it cannot be a <dialog> at all. This control has no such
+// constraint, so it uses the platform and adds nothing but a label. Do not
+// "simplify" showModal() to .show().
+func scanRescanControl(csrf string, matchRemote bool) g.Node {
 	trigger := civButton("outline", "md", []g.Node{
 		h.Type("button"),
 		g.Attr("onclick", "document.getElementById('"+scanFormDialogID+"').showModal()"),
-	}, g.Text("Scan / Rescan"))
+	}, g.Raw(rescanIconSVG), g.Text("Rescan library"))
 
 	dialog := h.Dialog(
 		h.ID(scanFormDialogID),
 		// Transparent shell; the inner card is the visible, theme-aware surface.
 		h.Class("bg-transparent p-0 border-0 w-full max-w-lg"),
+		g.Attr("aria-labelledby", scanFormDialogTitleID),
 		card(
 			h.Div(h.Class("flex items-center justify-between gap-4 mb-3"),
-				h.H2(h.Class("text-lg font-semibold text-slate-100"), g.Text("Scan for model files")),
+				h.H2(h.ID(scanFormDialogTitleID),
+					h.Class("text-lg font-semibold text-slate-100"), g.Text("Scan for model files")),
 				h.Form(h.Method("dialog"), h.Class("inline"),
 					civButton("subtle", "sm", []g.Node{h.Type("submit"),
 						g.Attr("aria-label", "Close")}, g.Text("✕"))),
 			),
+			h.P(h.Class("mb-3 text-sm text-slate-400"),
+				g.Text("Re-run the scan to pick up new, changed, or removed files.")),
 			modelScanForm(csrf, matchRemote),
 		),
 	)
 
-	return card(
-		sectionTitle("Model files"),
-		h.P(h.Class("text-sm text-slate-400"),
-			g.Text("Re-run the scan to pick up new, changed, or removed files.")),
-		h.Div(h.Class("mt-2"), trigger),
+	return h.Div(
+		h.Class("flex items-center justify-end gap-3"),
+		trigger,
 		dialog,
 	)
 }
 
 // filesTabBody is the innerHTML of #scan-results for the IDLE and TERMINAL states:
 // the scan CONTROLS above the given results body (idle library content, or the
-// terminal scanResults view). Before the first scan (hasResults=false) the form is
-// inline; once there are results it moves behind the "Scan / Rescan" dialog. The
-// RUNNING state does NOT use this — it swaps in scanScanning alone (no form).
-func filesTabBody(body g.Node, csrf string, matchRemote, hasResults bool) g.Node {
+// terminal scanResults view). With NO models yet (hasModels=false) the guided scan
+// CARD is rendered inline and prominent — that is the first-run state and it should
+// dominate. Once the library holds models the card collapses to the "Rescan
+// library" button + modal, so the results own the page. The RUNNING state does NOT
+// use this — it swaps in scanScanning alone (no form).
+func filesTabBody(body g.Node, csrf string, matchRemote, hasModels bool) g.Node {
 	controls := modelScanFormCard(csrf, matchRemote)
-	if hasResults {
-		controls = scanRescanCard(csrf, matchRemote)
+	if hasModels {
+		controls = scanRescanControl(csrf, matchRemote)
 	}
 	return h.Div(
 		h.Class("space-y-6"),
@@ -427,21 +503,15 @@ func libraryContent(v libraryView, csrf string) g.Node {
 	matched, unmatched := splitMatchedUnmatched(v.Files)
 	return h.Div(
 		h.Class("space-y-6"),
-		summaryBanner(v),
-		card(
-			sectionTitle("Summary"),
-			h.Div(
-				h.Class("grid grid-cols-2 gap-4 sm:grid-cols-4 text-sm"),
-				stat("Files", strconv.Itoa(len(v.Files))),
-				stat("Total size", humanBytes(v.TotalBytes)),
-				stat("Candidates", strconv.Itoa(len(v.Candidates))),
-				stat("Reclaimable", humanBytes(v.Reclaimable)),
-			),
-		),
-		// MATCHED MODELS FIRST — enriched, lazy-loaded cards.
-		matchedModelsSection(matched, v.ModelNames),
-		// Unmatched / other files in a clearly-separated secondary section.
-		otherFilesSection(unmatched),
+		// ONE status card. It replaced the old summaryBanner (a pills row + a
+		// quarantine CTA + a "your library is clean" alert) AND the separate "Summary"
+		// card (a 4-cell Files / Total size / Candidates / Reclaimable grid). Those two
+		// restated the same numbers in two shapes one above the other; every figure
+		// they carried now lives in exactly one place — a chip, or that chip's popover.
+		libraryStatusCard(v),
+		// Matched models + unmatched files, ONE card with two tabs (they used to be two
+		// stacked cards, which buried the unmatched list under up to 200 model cards).
+		matchedFilesCard(matched, unmatched, v.ModelNames),
 		card(
 			h.ID("deletion-candidates"),
 			sectionTitle("Deletion candidates"),
@@ -457,22 +527,159 @@ func libraryContent(v libraryView, csrf string) g.Node {
 	)
 }
 
-// matchedModelsSection renders the identified models at the TOP of the results
-// as enriched, lazy-loaded cards (one per model), ordered by total local size
-// descending so the biggest reclaimable footprints lead. Each card renders
-// immediately as a placeholder and lazy-loads its name + carousel + details.
+// ---------------------------------------------------------------------------
+// Matched / unmatched, ONE card with two tabs.
+//
+// They used to be two stacked cards ("Matched models (N)" then "Other files (M
+// unmatched)"), which put the unmatched list BELOW up to maxRenderedMatchedCards
+// model cards — in a real library that is several screens of scrolling before the
+// files that most need attention.
+//
+// The strip REUSES the page's existing underline tab idiom (.lib-tabs / .lib-tab /
+// .lib-tab-active, shared with libraryTabStrip via the consts below) rather than
+// inventing a second one. It differs in ONE way, deliberately: libraryTabStrip's
+// tabs are <a href="/library?tab=…"> full-page navigations, because switching the
+// PAGE tab re-renders a different panel server-side. These two panels are both
+// already in the DOM (the matched cards lazy-load themselves, the unmatched table
+// is a plain table), so a round trip would be pure latency — they are <button>s
+// toggling `hidden`, which keeps Enter/Space activation for free and adds
+// ArrowLeft/Right roving per the ARIA tabs pattern.
+// ---------------------------------------------------------------------------
+
+// The shared underline-tab class vocabulary. Both strips read these consts, so the
+// two can never drift apart into a fork (and the class-coverage guard resolves
+// package-level consts, so the tokens stay covered by the stylesheet check).
+const (
+	libTabsClass      = "lib-tabs mt-1 mb-4 flex gap-6"
+	libTabClass       = "lib-tab"
+	libTabActiveClass = "lib-tab lib-tab-active"
+)
+
+// Stable ids wiring the in-card tabs to their panels (aria-controls /
+// aria-labelledby, and the toggle script's lookup).
+const (
+	matchedTabID    = "lib-files-tab-matched"
+	unmatchedTabID  = "lib-files-tab-unmatched"
+	matchedPanelID  = "lib-files-panel-matched"
+	unmatchedPanelI = "lib-files-panel-unmatched"
+)
+
+// matchedFilesCard renders the identified models and the unidentified files as two
+// TABS of one card. The matched tab is selected by default (it is the primary
+// content); both panels are always in the DOM, so switching costs no request.
+func matchedFilesCard(matched []fileGroup, unmatched []store.LocalFile, names map[int]string) g.Node {
+	return card(
+		sectionTitle("Model files"),
+		h.Div(
+			g.Attr("role", "tablist"),
+			g.Attr("aria-label", "Model files"),
+			h.Class(libTabsClass),
+			filesTab(matchedTabID, matchedPanelID,
+				fmt.Sprintf("Matched models (%d)", len(matched)), true),
+			filesTab(unmatchedTabID, unmatchedPanelI,
+				fmt.Sprintf("Unmatched (%d)", len(unmatched)), false),
+		),
+		h.Div(
+			h.ID(matchedPanelID),
+			g.Attr("role", "tabpanel"),
+			g.Attr("aria-labelledby", matchedTabID),
+			// tabindex=0 makes a scrollable panel keyboard-reachable (ARIA APG).
+			g.Attr("tabindex", "0"),
+			matchedModelsSection(matched, names),
+		),
+		h.Div(
+			h.ID(unmatchedPanelI),
+			g.Attr("role", "tabpanel"),
+			g.Attr("aria-labelledby", unmatchedTabID),
+			g.Attr("tabindex", "0"),
+			// The boolean `hidden` attribute (gomponents' h.Hidden is the INPUT type),
+			// which is what cmLibFilesTab toggles.
+			g.Attr("hidden"),
+			otherFilesSection(unmatched),
+		),
+		libraryFilesTabScript(),
+	)
+}
+
+// filesTab renders one in-card tab button. The active/inactive class pair and the
+// aria-selected flag are the SAME contract libraryTab uses; only the element
+// differs (<button> vs <a>), because these tabs switch a panel already in the DOM.
+func filesTab(id, panelID, label string, active bool) g.Node {
+	cls := libTabClass
+	sel := "false"
+	if active {
+		cls = libTabActiveClass
+		sel = "true"
+	}
+	return h.Button(
+		h.ID(id),
+		h.Type("button"),
+		g.Attr("role", "tab"),
+		h.Class(cls),
+		g.Attr("aria-selected", sel),
+		g.Attr("aria-controls", panelID),
+		g.Attr("onclick", "cmLibFilesTab(this)"),
+		g.Attr("onkeydown", "cmLibFilesTabKey(event,this)"),
+		g.Text(label),
+	)
+}
+
+// libraryFilesTabScript toggles the in-card matched/unmatched tabs. Vendored
+// inline, no framework, idempotent so it survives every htmx swap of the results
+// fragment (the scan poller re-renders this whole subtree).
+//
+// It drives BOTH the visual state (.lib-tab-active) and the a11y state
+// (aria-selected + the panels' `hidden`), from the tablist it was clicked in — so
+// the same helper would serve a second in-card strip without modification. Arrow
+// keys move between tabs per the ARIA tabs pattern; Enter/Space need no handling at
+// all because these are real <button>s.
+func libraryFilesTabScript() g.Node {
+	const js = `
+function cmLibFilesTab(btn){
+  var strip = btn.closest('[role="tablist"]');
+  if(!strip){ return; }
+  var tabs = Array.prototype.slice.call(strip.querySelectorAll('[role="tab"]'));
+  tabs.forEach(function(t){
+    var on = t === btn;
+    t.setAttribute('aria-selected', on ? 'true' : 'false');
+    t.className = on ? 'lib-tab lib-tab-active' : 'lib-tab';
+    var panel = document.getElementById(t.getAttribute('aria-controls'));
+    if(panel){ panel.hidden = !on; }
+  });
+  btn.focus();
+}
+function cmLibFilesTabKey(e, btn){
+  if(e.key !== 'ArrowLeft' && e.key !== 'ArrowRight'){ return; }
+  var strip = btn.closest('[role="tablist"]');
+  if(!strip){ return; }
+  var tabs = Array.prototype.slice.call(strip.querySelectorAll('[role="tab"]'));
+  var i = tabs.indexOf(btn);
+  if(i < 0){ return; }
+  e.preventDefault();
+  var next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+  if(next){ cmLibFilesTab(next); }
+}
+`
+	return h.Script(g.Raw(js))
+}
+
+// matchedModelsSection renders the identified models as enriched, lazy-loaded
+// cards (one per model), ordered by total local size descending so the biggest
+// reclaimable footprints lead. Each card renders immediately as a placeholder and
+// lazy-loads its name + carousel + details.
+//
+// It returns PANEL CONTENT, not a card: the card + heading now belong to
+// matchedFilesCard, and the count moved into the tab label (a heading inside a tab
+// panel would restate the tab).
 func matchedModelsSection(groups []fileGroup, names map[int]string) g.Node {
 	if len(groups) == 0 {
-		return card(
-			sectionTitle("Matched models"),
-			h.P(h.Class("text-sm text-slate-500"),
-				g.Text("No models identified yet. Enable “Match against CivitAI” and scan to identify your library.")),
-		)
+		return h.P(h.Class("text-sm text-slate-500"),
+			g.Text("No models identified yet. Enable “Match against CivitAI” and scan to identify your library."))
 	}
 	total := len(groups)
 	// Cap the rendered cards. groups is already sorted biggest-footprint-first
 	// (splitMatchedUnmatched), so the cap keeps the most important models; do NOT
-	// change that sort. The heading below shows the TRUE total, not the capped N.
+	// change that sort. The TAB LABEL shows the TRUE total, not the capped N.
 	shown := groups
 	if total > maxRenderedMatchedCards {
 		shown = groups[:maxRenderedMatchedCards]
@@ -481,27 +688,21 @@ func matchedModelsSection(groups []fileGroup, names map[int]string) g.Node {
 	for _, gr := range shown {
 		cards = append(cards, modelCardLazy(gr, names[gr.modelID]))
 	}
-	return card(
-		sectionTitle(fmt.Sprintf("Matched models (%d)", total)),
+	return h.Div(
 		h.Div(h.Class("grid gap-4 md:grid-cols-2"), g.Group(cards)),
 		renderCapNote(len(shown), total),
 	)
 }
 
-// otherFilesSection renders the unmatched (unidentified) files as a secondary,
-// sortable table below the matched model cards. When everything matched it shows
-// a reassuring note instead.
+// otherFilesSection renders the unmatched (unidentified) files as a sortable
+// table. When everything matched it shows a reassuring note instead. Like
+// matchedModelsSection it returns PANEL CONTENT — matchedFilesCard owns the card
+// and the tab label owns the count.
 func otherFilesSection(unmatched []store.LocalFile) g.Node {
 	if len(unmatched) == 0 {
-		return card(
-			sectionTitle("Other files"),
-			h.P(h.Class("text-sm text-slate-500"), g.Text("Every scanned file was identified on CivitAI.")),
-		)
+		return h.P(h.Class("text-sm text-slate-500"), g.Text("Every scanned file was identified on CivitAI."))
 	}
-	return card(
-		sectionTitle(fmt.Sprintf("Other files (%d unmatched)", len(unmatched))),
-		libraryModelTable(unmatched),
-	)
+	return libraryModelTable(unmatched)
 }
 
 // splitMatchedUnmatched partitions scanned model files into matched-model groups
@@ -632,75 +833,140 @@ func computeOutOfDate(v libraryView, resolve modelDetailResolver) int {
 	return n
 }
 
-// summaryBanner is the "what to do next" banner at the top of the Model-files
-// results: an at-a-glance roll-up plus a clear primary action. When there are
-// duplicates/broken files it offers a primary "Review & quarantine…" CTA (which
-// scrolls to the candidates section) and a secondary link; when the library is
-// clean it reassures instead. Theme-aware, civitai-styled.
-func summaryBanner(v libraryView) g.Node {
+// ---------------------------------------------------------------------------
+// The ONE library status card.
+//
+// It replaced TWO cards that sat one above the other and said the same things in
+// two shapes: summaryBanner (an emoji pills row + a "Review & quarantine…" CTA + a
+// "Your library is clean" alert) and the "Summary" card (a four-cell Files / Total
+// size / Candidates / Reclaimable grid). "Candidates" and "duplicates" were the
+// same population counted twice; "Files" and "models" were adjacent and easy to
+// confuse. De-duplication is by CONSTRUCTION here: every figure has exactly one
+// home — either a chip's face or that chip's popover — so the two can never drift.
+//
+// The card's content IS the chip row, at text-xs (the pills row + the 4-cell grid
+// + an alert were roughly five times the height).
+//
+// POPOVERS: the chips reuse the app's EXISTING popover mechanism verbatim — a
+// `.cm-updated` wrapper with a `.cm-updated-pop` child — so they inherit the shared
+// hover controller in modelPageScript (delegated on `.cm-vstatus, .cm-updated`,
+// which matters because this fragment is htmx-swapped), the ~200 ms grace period,
+// the CSS :hover/:focus-within no-JS fallback, and the `.cm-lift:has(...)` popover
+// escape rule. `tabindex="0"` is what makes :focus-within reachable from the
+// keyboard, so "click/hover" means the same thing with a keyboard.
+//
+// NO `title=` on a chip: an element owning a custom popover must not also carry the
+// native tooltip, or the user gets two overlapping tooltips saying the same thing
+// (see updatedPopBody, and popover_no_title_web_test.go). Each chip's accessible
+// name is its own visible text ("3 duplicates"); the icons are aria-hidden.
+// ---------------------------------------------------------------------------
+
+// libraryStatusCard renders the single roll-up card: four chips — models,
+// duplicates, out of date, unmatched — each opening a popover with the detail.
+func libraryStatusCard(v libraryView) g.Node {
 	s := summarizeLibrary(v)
 
-	// The stat-pills row: always show the models pill; show the rest only when > 0.
-	// The "out of date" pill is the REMOTE update-available signal (cache-only),
-	// distinct from the local duplicate/superseded (quarantine) counts.
-	pills := []g.Node{
-		statPill("neutral", "📦", s.ModelsIdentified, "models"),
+	models := []g.Node{
+		statChipLine(humanBytes(v.TotalBytes) + " on disk"),
+		statChipLine(fmt.Sprintf("%s model file(s) across %s model(s)",
+			humanCount(len(v.Files)), humanCount(s.ModelsIdentified))),
 	}
-	if s.Duplicates > 0 {
-		pills = append(pills, statPill("dup", "⧉", s.Duplicates,
-			"duplicates · "+humanBytes(s.DuplicateBytes)))
-	}
-	if s.OutOfDate > 0 {
-		pills = append(pills, statPill("update", "⟳", s.OutOfDate, "out of date"))
+
+	// The duplicates chip absorbs the whole quarantine story the old banner told:
+	// the reclaimable bytes, the BROKEN count (which is a candidate reason, not a
+	// fifth chip — it shares the deletion-candidates table with the duplicates), and
+	// the jump to that table.
+	dups := []g.Node{
+		statChipLine(humanBytes(s.DuplicateBytes) + " reclaimable"),
+		statChipLine("Duplicate and superseded copies of files you already have."),
 	}
 	if s.Broken > 0 {
-		pills = append(pills, statPill("broken", "⚠", s.Broken, "broken"))
+		dups = append(dups, statChipLine(fmt.Sprintf("Plus %s broken file(s) — same table.", humanCount(s.Broken))))
 	}
-	if s.Unmatched > 0 {
-		pills = append(pills, statPill("neutral", "○", s.Unmatched, "unmatched"))
-	}
-
-	// Clean state: nothing to quarantine — reassure rather than nag. The pills row
-	// is still informative, so render it above the reassurance.
-	if s.Duplicates == 0 && s.Broken == 0 {
-		return card(
-			h.Class("border-indigo-500/40"),
-			h.Div(h.Class("flex flex-wrap items-center gap-2"), g.Group(pills)),
-			alert("success", "Your library is clean",
-				h.P(h.Class("mt-1 text-sm"),
-					g.Text(fmt.Sprintf("No duplicates or broken files found — %d models identified · %d unmatched.",
-						s.ModelsIdentified, s.Unmatched))),
-			),
-		)
+	if s.Duplicates > 0 || s.Broken > 0 {
+		// onclick stops propagation so the click navigates from inside the
+		// JS-hover-controlled popover (same trick as the version-status deeplink).
+		dups = append(dups, h.Div(h.A(
+			h.Href("#deletion-candidates"),
+			h.Class("text-indigo-300 hover:text-indigo-200"),
+			g.Attr("onclick", "event.stopPropagation()"),
+			g.Text("Review deletion candidates →"),
+		)))
+	} else {
+		dups = append(dups, statChipLine("Nothing to reclaim — your library is clean."))
 	}
 
-	primaryLabel := "Review & quarantine duplicates"
-	if s.Duplicates == 0 {
-		primaryLabel = "Review broken files"
+	outdated := []g.Node{
+		statChipLine("Models whose newest CivitAI version is not in your library."),
+		// Honesty about the cache-only derivation: computeOutOfDate skips a model
+		// whose detail is uncached/stale rather than fetching it, so a cold cache
+		// UNDERSTATES. Saying so beats a number the user cannot reconcile.
+		statChipLine("Counted from cached model details only, so a freshly-scanned library can read low until its cards load."),
+	}
+	if s.OutOfDate == 0 {
+		outdated = []g.Node{statChipLine("Every model whose details are cached is on its newest version.")}
+	}
+
+	unmatched := []g.Node{
+		statChipLine("Scanned files CivitAI could not identify by hash."),
+		statChipLine("Usually a renamed, merged or self-trained file. Open the Unmatched tab to see them."),
+	}
+	if s.Unmatched == 0 {
+		unmatched = []g.Node{statChipLine("Every scanned file was identified on CivitAI.")}
 	}
 
 	return card(
-		h.Class("border-indigo-500/40"),
 		h.Div(
-			h.Class("flex flex-wrap items-center justify-between gap-4"),
-			h.Div(
-				h.Class("flex flex-wrap items-center gap-2"),
-				g.Group(pills),
-			),
-			h.Div(
-				h.Class("flex items-center gap-3"),
-				civButton("filled", "md", []g.Node{
-					h.Type("button"),
-					g.Attr("onclick",
-						"var e=document.getElementById('deletion-candidates');if(e){e.scrollIntoView({behavior:'smooth'});}"),
-				}, g.Text(primaryLabel)),
-				h.A(h.Href("#deletion-candidates"),
-					h.Class("text-sm text-indigo-300 hover:text-indigo-200 underline"),
-					g.Text("See deletion candidates")),
-			),
+			h.Class("flex flex-wrap items-center gap-2"),
+			statChip("neutral", modelsIconSVG, s.ModelsIdentified, "models", models),
+			statChip("dup", duplicateIconSVG, s.Duplicates, "duplicates", dups),
+			statChip("update", outOfDateIconSVG, s.OutOfDate, "out of date", outdated),
+			statChip("neutral", unmatchedIconSVG, s.Unmatched, "unmatched", unmatched),
 		),
 	)
 }
+
+// statChip renders one status chip: an inline SVG icon, the count, a label, and a
+// hover/focus popover carrying the detail.
+//
+// 🔴 A ZERO COUNT RENDERS DIMMED — IT IS NEVER OMITTED. Pinned deliberately, both
+// ways round. The old pills row hid every zero, which made the row's SHAPE depend
+// on the data (four chips, then two, then three as a scan progressed) and silently
+// dropped the reassurance a user actually wants: "0 duplicates" is information, an
+// absent chip is not — the old card had to spend a whole `alert("success", "Your
+// library is clean")` re-stating what a visible zero says by itself.
+//
+// The dimming is a COLOUR swap (.cm-chip-zero → the dimmed text token + the neutral
+// border), NOT `opacity`. `opacity < 1` creates a stacking context (CSS Color 4
+// §12), which would trap the chip's own `z-index: 50` popover inside the chip — the
+// exact class of bug the .cm-lift POPOVER ESCAPE block exists for. Do not
+// "simplify" this to an opacity.
+func statChip(variant, iconSVG string, count int, label string, detail []g.Node) g.Node {
+	// Two literal h.Class call sites rather than one built from a local variable:
+	// the class-coverage guard resolves literals and `"lit"+param` concatenations,
+	// and classCoverageOpaqueBudget is pinned EXACTLY — a shape it cannot resolve
+	// would fail that test as a new blind spot.
+	cls := h.Class("cm-updated cm-chip-stat cm-pill cm-pill-" + variant)
+	if count == 0 {
+		cls = h.Class("cm-updated cm-chip-stat cm-pill cm-chip-zero")
+	}
+	return h.Span(
+		cls,
+		g.Attr("tabindex", "0"),
+		g.Raw(iconSVG),
+		h.Span(h.Class("font-semibold"), g.Text(strconv.Itoa(count))),
+		g.Text(" "+label),
+		h.Span(
+			h.Class("cm-updated-pop"),
+			g.Attr("role", "tooltip"),
+			h.Div(h.Class("cm-updated-title"), g.Text(strconv.Itoa(count)+" "+label)),
+			g.Group(detail),
+		),
+	)
+}
+
+// statChipLine is one plain detail row inside a chip's popover.
+func statChipLine(text string) g.Node { return h.Div(g.Text(text)) }
 
 // pathCell renders a truncated filesystem-path table cell.
 //
@@ -721,19 +987,6 @@ func pathCell(cls g.Node, path string) g.Node {
 		// <bdi> isolates the path's own text direction inside the RTL cell, so the
 		// leading "/" cannot be reordered to the tail (see .cm-path-ellipsis).
 		g.El("bdi", g.Text(path)),
-	)
-}
-
-// statPill renders one color-coded count chip for the summary row: a glyph, the
-// bold count, and a label. variant selects the theme-aware .cm-pill-* color
-// (neutral/dup/update/broken), all of which resolve from --civitai-* tokens so the
-// pill reads in both light and dark (data-theme). See app.css.
-func statPill(variant, glyph string, count int, label string) g.Node {
-	return h.Span(
-		h.Class("cm-pill cm-pill-"+variant),
-		g.Text(glyph+" "),
-		h.Span(h.Class("font-semibold"), g.Text(strconv.Itoa(count))),
-		g.Text(" "+label),
 	)
 }
 
@@ -776,14 +1029,6 @@ func sizeCell(b int64) g.Node {
 // streamed scan-result cards, which are not tables).
 func sizeText(b int64) g.Node {
 	return h.Span(h.Class("shrink-0 text-xs "+sizeClass(b)), g.Text(humanBytes(b)))
-}
-
-func stat(label, value string) g.Node {
-	return h.Div(
-		h.Class("rounded-md border border-slate-800 bg-slate-900 p-3"),
-		h.Div(h.Class("text-xs text-slate-400"), g.Text(label)),
-		h.Div(h.Class("text-lg font-semibold text-slate-100"), g.Text(value)),
-	)
 }
 
 func libraryModelTable(files []store.LocalFile) g.Node {

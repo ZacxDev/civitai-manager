@@ -113,7 +113,7 @@ func TestFilesTabIdleShowsForm(t *testing.T) {
 }
 
 // TestFilesTabTerminalShowsFormAndResults proves that once a scan finishes, the
-// Model files tab restores the scan form ABOVE the terminal results (Summary +
+// Model files tab restores the scan form ABOVE the terminal results (status card +
 // "Scan result" status), inside the stable #scan-results container, with NO poller.
 func TestFilesTabTerminalShowsFormAndResults(t *testing.T) {
 	root := t.TempDir()
@@ -134,7 +134,7 @@ func TestFilesTabTerminalShowsFormAndResults(t *testing.T) {
 
 	// The terminal status-poll body restores the form ABOVE the results.
 	term := pollScanUntilDone(t, srv)
-	for _, want := range []string{scanFormMarker, "Scan result", "Summary"} {
+	for _, want := range []string{scanFormMarker, "Scan result", "cm-chip-stat"} {
 		if !strings.Contains(term, want) {
 			t.Errorf("terminal status body missing %q:\n%s", want, term)
 		}
@@ -145,7 +145,7 @@ func TestFilesTabTerminalShowsFormAndResults(t *testing.T) {
 
 	// The terminal full-page bootstrap agrees: form + results in the stable container.
 	page := get(t, srv, "/library?tab=files").Body.String()
-	for _, want := range []string{`id="scan-results"`, scanFormMarker, "Scan result", "Summary"} {
+	for _, want := range []string{`id="scan-results"`, scanFormMarker, "Scan result", "cm-chip-stat"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("terminal page missing %q:\n%s", want, page)
 		}

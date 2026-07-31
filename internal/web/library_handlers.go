@@ -344,7 +344,7 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 		} else {
 			// Terminal: the scan form card above the completed results (form restored).
 			tv := s.annotateLibrary(buildLibraryView(files))
-			scanInitial = filesTabBody(scanResults(tv, snap, s.csrf), s.csrf, s.matchRemoteEnabled(), hasResults(tv))
+			scanInitial = filesTabBody(scanResults(tv, snap, s.csrf), s.csrf, s.matchRemoteEnabled(), libraryHasModels(tv))
 		}
 	}
 	tab := r.URL.Query().Get("tab")
