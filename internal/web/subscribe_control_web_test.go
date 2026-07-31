@@ -194,15 +194,21 @@ func TestSubscribeCSRFRejectedBeforeMutation(t *testing.T) {
 }
 
 // TestCreatorSubscribeShowsSuccessNote proves the creator subscribe stays
-// one-click (POST /subscribe, auto_download) but now carries a success note
-// revealed after a successful request.
+// one-click (POST /subscribe, auto-download pre-selected) and carries a success
+// note revealed after a successful request.
+//
+// The auto-download choice used to be a HIDDEN `auto_download=true` input with no
+// options at all, which made "Notify only" unreachable on the creator path — see
+// TestCreatorSubscribeOffersNotifyOnly, which pins the replacement. The default is
+// still auto-download, so the one-click behaviour this test was written for is
+// unchanged.
 func TestCreatorSubscribeShowsSuccessNote(t *testing.T) {
 	out := renderString(t, subscribeInline("creator", "alice", "Subscribe to creator", "test-csrf"))
 	for _, want := range []string{
 		`hx-post="/subscribe"`, // still the one-click dashboard subscribe
 		`name="creator"`,       // creator field
 		`value="alice"`,        // the target
-		`name="auto_download"`, // auto-download on
+		`value="auto_download" class="text-indigo-500" checked`, // auto-download still the default
 		"hx-on::after-request", // reveals the note on success
 		"data-sub-note",        // the note element
 		"Subscribed ✓",         // the success message
@@ -211,6 +217,11 @@ func TestCreatorSubscribeShowsSuccessNote(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("creator subscribe missing %q\n%s", want, out)
 		}
+	}
+	// The hidden input is GONE — if it came back it would silently override the
+	// radio (checkboxVal reads auto_download directly) and re-break Notify only.
+	if strings.Contains(out, `type="hidden" name="auto_download"`) {
+		t.Errorf("the hardcoded hidden auto_download input must not come back:\n%s", out)
 	}
 }
 

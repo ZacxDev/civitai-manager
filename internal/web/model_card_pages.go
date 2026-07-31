@@ -537,17 +537,32 @@ func subscribeControlID(modelID int) string {
 // Subscribe → options (auto-download vs notify-only + Confirm/Cancel) →
 // subscribed feedback → Unsubscribe → collapsed. Used for MODEL subscribes on
 // the matched card, search cards, suggestions, and the model page.
-func subscribeControl(modelID int, sub *store.Subscription, csrf string) g.Node {
+//
+// `workflow` says the model is a CivitAI Workflows post (civitai.IsWorkflowPost
+// on whichever shape the caller holds — ModelDetail.Type on the model page,
+// ModelListItem.Type on a search card, which is all a card has). It is NOT a
+// cosmetic flag: for a workflow post the control becomes NOTIFY-ONLY end to end,
+// because the poller permanently refuses to download such a post (its Archive
+// .zip lands outside library.DefaultExtensions and is never scanned, counted,
+// deduped or quarantined). Offering an Auto-download choice whose only possible
+// outcome is a skip event is exactly the affordance that shipped the bug.
+func subscribeControl(modelID int, sub *store.Subscription, csrf string, workflow bool) g.Node {
 	if sub != nil {
-		return subscribeControlSubscribed(modelID, sub, csrf, "")
+		return subscribeControlSubscribed(modelID, sub, csrf, "", workflow)
 	}
-	return subscribeControlCollapsed(modelID, csrf, "")
+	return subscribeControlCollapsed(modelID, csrf, "", workflow)
 }
 
 // subscribeToggle is the matched-card entry point (kept for its callers); it
 // renders the shared subscribe control.
+//
+// It passes workflow=false unconditionally, and that is CORRECT rather than a
+// gap: a matched card exists because the library scanner matched a LOCAL FILE to
+// this model, and a workflow post's only artifact is a `.zip`, which is not in
+// library.DefaultExtensions and is therefore never scanned into the library at
+// all. A workflow post cannot reach this surface.
 func subscribeToggle(modelID int, sub *store.Subscription, csrf string) g.Node {
-	return subscribeControl(modelID, sub, csrf)
+	return subscribeControl(modelID, sub, csrf, false)
 }
 
 // subscribeControlCollapsed is state 1: the "Subscribe" button that GETs the
@@ -560,22 +575,59 @@ func subscribeToggle(modelID int, sub *store.Subscription, csrf string) g.Node {
 // disclosures above it. The size is raised HERE, in the shared control, rather than
 // forked per surface — one Subscribe button should not be two different sizes on
 // the library card and the search card.
-func subscribeControlCollapsed(modelID int, csrf, note string) g.Node {
+// For a WORKFLOW POST the button says "Notify me", not "Subscribe": the only
+// thing this control can do for such a model is notify (see subscribeControl),
+// and a button labelled identically to the one that downloads a checkpoint is
+// the lie this fix exists to remove. The `?workflow=1` on the options request is
+// belt to the handler's braces — the handler re-derives the flag from the model
+// cache, and the parameter only ever NARROWS the panel to notify-only, so a
+// forged one cannot grant anything.
+func subscribeControlCollapsed(modelID int, csrf, note string, workflow bool) g.Node {
 	id := subscribeControlID(modelID)
+	label, aria := "Subscribe", "Subscribe to this model"
+	if workflow {
+		label, aria = "Notify me", "Get notified about new versions of this workflow post"
+	}
 	btn := civButton("outline", "md",
 		[]g.Node{
 			h.Type("button"),
-			hx("get", fmt.Sprintf("/models/%d/subscribe-options", modelID)),
+			hx("get", subscribeOptionsPath(modelID, workflow)),
 			hx("target", "#"+id),
 			hx("swap", "outerHTML"),
-			g.Attr("aria-label", "Subscribe to this model"),
+			g.Attr("aria-label", aria),
 		},
-		g.Text("Subscribe"),
+		g.Text(label),
 	)
 	return h.Div(h.ID(id), h.Class("flex flex-col items-start gap-1"),
-		h.Div(h.Class("flex items-center gap-2"), btn, subscribeInfoPopover()),
+		h.Div(h.Class("flex items-center gap-2"), btn, subscribeInfoPopover(workflow)),
 		subscribeNote(note))
 }
+
+// subscribeOptionsPath / subscribeControlPath build the two GET endpoints the
+// control swaps from, carrying the workflow flag so the panel the user lands on
+// (and the collapsed control they Cancel back to) keeps the right shape.
+func subscribeOptionsPath(modelID int, workflow bool) string {
+	return fmt.Sprintf("/models/%d/subscribe-options%s", modelID, workflowQuery(workflow))
+}
+
+func subscribeControlPath(modelID int, workflow bool) string {
+	return fmt.Sprintf("/models/%d/subscribe-control%s", modelID, workflowQuery(workflow))
+}
+
+// workflowQuery is the `?workflow=1` suffix (empty when false). One helper so the
+// parameter name cannot drift between the emitters and workflowParam, which reads
+// it back.
+func workflowQuery(workflow bool) string {
+	if workflow {
+		return "?" + workflowParamName + "=1"
+	}
+	return ""
+}
+
+// workflowParamName is the query/form key carrying "this model is a Workflows
+// post" across an htmx swap. It is a HINT, never an authority: every handler ORs
+// it with a server-side check, and it can only narrow the control to notify-only.
+const workflowParamName = "workflow"
 
 // subscribeInfoPopover is the ⓘ beside the Subscribe button: what subscribing does,
 // stated plainly BEFORE the click, because the default mode DOWNLOADS FILES.
@@ -593,23 +645,46 @@ func subscribeControlCollapsed(modelID int, csrf, note string) g.Node {
 // accessible name; with role="img" the aria-label IS the name, so there is nothing
 // left for a `title=` to add and adding one would stack the native tooltip on top
 // of this popover (see updatedPopBody / popover_no_title_web_test.go).
-func subscribeInfoPopover() g.Node {
+// For a WORKFLOW POST the copy is different because the FACTS are different:
+// there is no auto-download to warn about, so warning about one would be the
+// same lie as the button label. It says instead what actually happens and names
+// Import as the action that puts the workflows somewhere useful.
+func subscribeInfoPopover(workflow bool) g.Node {
+	title := "What subscribing does"
+	body := []g.Node{
+		h.Div(g.Text("civitai-manager watches this model for new versions.")),
+		h.Div(g.Text("With Auto-download (the default) each new version is queued and " +
+			"downloaded to your model folder automatically — using disk space and " +
+			"bandwidth without asking again.")),
+		h.Div(h.Class("cm-updated-date"),
+			g.Text("Choose Notify only to hear about a new version without downloading it.")),
+	}
+	if workflow {
+		title = "What this does"
+		body = []g.Node{
+			h.Div(g.Text("civitai-manager watches this workflow post for new versions and " +
+				"tells you when one appears.")),
+			h.Div(g.Text("It never downloads it: a workflow post is a zip of ComfyUI graphs, " +
+				"not model weights, so nothing here would land in your model library.")),
+			// Deliberately NOT the literal CTA label "Import workflows": that string
+			// is what TestWorkflowsModelPageDetectsImport uses to assert the import
+			// CTA is not re-offered once a model's workflows are already in the
+			// library, and this popover renders on that page.
+			h.Div(h.Class("cm-updated-date"),
+				g.Text("To get the graphs themselves, import them from the model page.")),
+		}
+	}
 	return h.Span(
 		h.Class("cm-updated cm-subinfo"),
 		g.Attr("role", "img"),
 		g.Attr("tabindex", "0"),
-		g.Attr("aria-label", "What subscribing does"),
+		g.Attr("aria-label", title),
 		g.Raw(infoIconSVG),
 		h.Span(
 			h.Class("cm-updated-pop"),
 			g.Attr("role", "tooltip"),
-			h.Div(h.Class("cm-updated-title"), g.Text("What subscribing does")),
-			h.Div(g.Text("civitai-manager watches this model for new versions.")),
-			h.Div(g.Text("With Auto-download (the default) each new version is queued and "+
-				"downloaded to your model folder automatically — using disk space and "+
-				"bandwidth without asking again.")),
-			h.Div(h.Class("cm-updated-date"),
-				g.Text("Choose Notify only to hear about a new version without downloading it.")),
+			h.Div(h.Class("cm-updated-title"), g.Text(title)),
+			g.Group(body),
 		),
 	)
 }
@@ -618,7 +693,13 @@ func subscribeInfoPopover() g.Node {
 // the Auto-download (default) vs Notify-only radio group, a "Subscribe to <name>?"
 // heading, a Confirm submit (POST /models/{id}/subscribe, CSRF via the hidden
 // field) and a Cancel (GET /models/{id}/subscribe-control → back to collapsed).
-func subscribeOptionsPanel(modelID int, name, csrf string) g.Node {
+//
+// For a WORKFLOW POST there is NO radio group. The Auto-download option would
+// resolve to a permanent poller skip, so the panel states the one thing that
+// will happen and posts a hidden mode=notify_only. Removing the choice (rather
+// than pre-selecting Notify only) is deliberate: a disabled-looking radio still
+// reads as "this is a mode you could pick".
+func subscribeOptionsPanel(modelID int, name, csrf string, workflow bool) g.Node {
 	id := subscribeControlID(modelID)
 	radio := func(value, label string, checked bool) g.Node {
 		attrs := []g.Node{
@@ -634,6 +715,26 @@ func subscribeOptionsPanel(modelID int, name, csrf string) g.Node {
 			g.Text(label),
 		)
 	}
+	heading := "Subscribe to " + name + "?"
+	// The mode chooser, or — for a workflow post — the single honest sentence that
+	// replaces it, plus the hidden mode the form posts instead of a radio.
+	modes := []g.Node{
+		h.Div(h.Class("flex flex-col gap-1"),
+			radio("auto_download", "Auto-download", true),
+			radio("notify_only", "Notify only", false),
+		),
+	}
+	if workflow {
+		heading = "Notify me about " + name + "?"
+		modes = []g.Node{
+			h.Input(h.Type("hidden"), h.Name("mode"), h.Value("notify_only")),
+			h.Input(h.Type("hidden"), h.Name(workflowParamName), h.Value("1")),
+			h.P(h.Class("text-xs text-slate-400"),
+				g.Text("Workflow posts are imported, not downloaded — this only tells you "+
+					"when a new version appears. To add the graphs to your workflow "+
+					"library, import them from the model page.")),
+		}
+	}
 	return h.Form(
 		h.ID(id),
 		h.Class("flex flex-col gap-2 rounded-md border border-slate-700 bg-slate-900/40 p-3"),
@@ -642,16 +743,13 @@ func subscribeOptionsPanel(modelID int, name, csrf string) g.Node {
 		hx("swap", "outerHTML"),
 		csrfInput(csrf),
 		// name is untrusted civitai data — g.Text auto-escapes it.
-		h.P(h.Class("text-sm font-medium text-slate-200"), g.Text("Subscribe to "+name+"?")),
-		h.Div(h.Class("flex flex-col gap-1"),
-			radio("auto_download", "Auto-download", true),
-			radio("notify_only", "Notify only", false),
-		),
+		h.P(h.Class("text-sm font-medium text-slate-200"), g.Text(heading)),
+		g.Group(modes),
 		h.Div(h.Class("flex items-center gap-2"),
 			civButton("filled", "sm", []g.Node{h.Type("submit")}, g.Text("Confirm")),
 			civButton("subtle", "sm", []g.Node{
 				h.Type("button"),
-				hx("get", fmt.Sprintf("/models/%d/subscribe-control", modelID)),
+				hx("get", subscribeControlPath(modelID, workflow)),
 				hx("target", "#"+id),
 				hx("swap", "outerHTML"),
 			}, g.Text("Cancel")),
@@ -662,17 +760,24 @@ func subscribeOptionsPanel(modelID int, name, csrf string) g.Node {
 // subscribeControlSubscribed is state 3: the "Subscribed ✓ · <mode>" feedback with
 // an Unsubscribe button (POST /models/{id}/unsubscribe, CSRF via hx-vals). note,
 // when non-empty, appends a status line.
-func subscribeControlSubscribed(modelID int, sub *store.Subscription, csrf, note string) g.Node {
+// The workflow flag rides along in the Unsubscribe hx-vals so the collapsed
+// control the user lands back on keeps its "Notify me" shape instead of
+// reverting to a plain "Subscribe" for one render.
+func subscribeControlSubscribed(modelID int, sub *store.Subscription, csrf, note string, workflow bool) g.Node {
 	id := subscribeControlID(modelID)
 	mode := "auto-download"
 	if sub != nil && sub.NotifyOnly {
 		mode = "notify only"
 	}
+	vals := fmt.Sprintf(`{"csrf_token":%q}`, csrf)
+	if workflow {
+		vals = fmt.Sprintf(`{"csrf_token":%q,%q:"1"}`, csrf, workflowParamName)
+	}
 	unsub := civButton("subtle", "sm",
 		[]g.Node{
 			h.Type("button"),
 			hx("post", fmt.Sprintf("/models/%d/unsubscribe", modelID)),
-			hx("vals", fmt.Sprintf(`{"csrf_token":%q}`, csrf)),
+			hx("vals", vals),
 			hx("target", "#"+id),
 			hx("swap", "outerHTML"),
 			g.Attr("aria-label", "Unsubscribe from this model"),

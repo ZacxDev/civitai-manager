@@ -634,6 +634,20 @@ func (s *Server) handleModelDownload(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "Could not load model", false))
 		return
 	}
+	// A CivitAI Workflows post is a model id like any other and its Archive .zip
+	// would pass every check below — but `.zip` is not in library.DefaultExtensions,
+	// so the bytes would never be scanned, counted, deduped or quarantined.
+	// headerDownloadControl no longer renders a Download button on such a page, and
+	// this is the OTHER half: a button disappearing is not the same as the endpoint
+	// refusing, and this endpoint is reachable by any hand-crafted loopback+CSRF
+	// POST (and by a stale page rendered before an upgrade). Fails OPEN on an empty
+	// type, like every other type check in this codebase — refusing a model whose
+	// type we simply did not get would be the worse bug.
+	if civitai.IsWorkflowPost(m.Type) {
+		s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID,
+			"Workflow posts are imported, not downloaded — use Import workflows", false))
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	vd, _, verr := s.reader.GetModelVersion(ctx, strconv.Itoa(versionID))
@@ -861,9 +875,13 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	if !s.gate(w) {
 		return
 	}
+	// `mode` is the radio spelling the creator control (and the model options
+	// panel) uses; the dashboard form keeps its checkboxes. Reading BOTH is purely
+	// additive — the dashboard form sends no `mode`, so its behaviour is unchanged.
+	mode := r.FormValue("mode")
 	opts := poller.SubscribeOptions{
-		AutoDownload:   checkboxVal(r, "auto_download"),
-		NotifyOnly:     checkboxVal(r, "notify_only"),
+		AutoDownload:   checkboxVal(r, "auto_download") || mode == "auto_download",
+		NotifyOnly:     checkboxVal(r, "notify_only") || mode == "notify_only",
 		BackfillLatest: checkboxVal(r, "backfill_latest"),
 		PollInterval:   s.cfg.DefaultPollInterval,
 	}
@@ -901,6 +919,36 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	s.renderSubsWithError(w, "")
 }
 
+// modelIsWorkflowPost answers "is this model id a CivitAI Workflows post?" for
+// the subscribe-control handlers WITHOUT a network round trip: it reads the
+// model_cache snapshot and IGNORES its TTL, because a model's type does not
+// change — a stale snapshot is authoritative for this one field in a way it is
+// not for stats or version lists.
+//
+// It fails OPEN: a cache miss answers false. That is the safe direction. A
+// workflow post whose detail was never cached renders the ordinary Subscribe
+// control and the poller's type guard still refuses the download; answering true
+// on a miss would silently narrow a REAL model's subscribe options, which is the
+// regression this whole change must not cause.
+func (s *Server) modelIsWorkflowPost(id int) bool {
+	ent, err := s.store.GetModelCache(id)
+	if err != nil || ent == nil {
+		return false
+	}
+	m := decodeModelDetail(ent.Raw)
+	return m != nil && civitai.IsWorkflowPost(m.Type)
+}
+
+// workflowPostFlag ORs the server-side answer with the request's `workflow=1`
+// hint (query or form). The rendered control carries that hint across every htmx
+// swap so a SEARCH CARD keeps its notify-only shape through the whole flow —
+// search results never write model_cache, so the server-side check alone would
+// answer false there. The hint can only NARROW the control to notify-only and
+// can never grant anything, so a forged one costs nothing.
+func (s *Server) workflowPostFlag(r *http.Request, id int) bool {
+	return r.FormValue(workflowParamName) == "1" || s.modelIsWorkflowPost(id)
+}
+
 // handleModelSubscribeOptions (GET) renders the subscribe options panel (state 2
 // of the shared control): the auto-download vs notify-only choice + Confirm/Cancel.
 // The heading resolves the model name from the local model_cache only (zero
@@ -915,7 +963,7 @@ func (s *Server) handleModelSubscribeOptions(w http.ResponseWriter, r *http.Requ
 	if ent, _ := s.store.GetModelCache(id); ent != nil && ent.Name != "" {
 		name = ent.Name
 	}
-	s.render(w, http.StatusOK, subscribeOptionsPanel(id, name, s.csrf))
+	s.render(w, http.StatusOK, subscribeOptionsPanel(id, name, s.csrf, s.workflowPostFlag(r, id)))
 }
 
 // handleModelSubscribeControl (GET) re-renders the shared subscribe control in its
@@ -927,7 +975,7 @@ func (s *Server) handleModelSubscribeControl(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	s.render(w, http.StatusOK, subscribeControl(id, s.modelSubscription(id), s.csrf))
+	s.render(w, http.StatusOK, subscribeControl(id, s.modelSubscription(id), s.csrf, s.workflowPostFlag(r, id)))
 }
 
 // handleModelSubscribe creates a MODEL subscription honoring the options panel's
@@ -957,6 +1005,15 @@ func (s *Server) handleModelSubscribe(w http.ResponseWriter, r *http.Request) {
 	// The options panel sends the choice as a radio (mode=auto_download|notify_only);
 	// an explicit notify_only=true is also honored.
 	notifyOnly := checkboxVal(r, "notify_only") || r.FormValue("mode") == "notify_only"
+	// A workflow post can only ever be a notify-only subscription: the poller
+	// permanently refuses to download one, so storing auto_download would make the
+	// control render "Subscribed ✓ · auto-download" about something that will never
+	// happen. Coerce here as well as in the panel — the panel's hidden field only
+	// binds a browser.
+	workflow := s.workflowPostFlag(r, id)
+	if workflow {
+		notifyOnly = true
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	_, subErr := s.sub.SubscribeModel(ctx, id, poller.SubscribeOptions{
@@ -968,12 +1025,12 @@ func (s *Server) handleModelSubscribe(w http.ResponseWriter, r *http.Request) {
 		// A genuine failure (e.g. the model didn't resolve): surface it in the
 		// control instead of silently collapsing to a bare "Subscribe" button.
 		s.log.Warn("model subscribe", "model", id, "err", subErr)
-		s.render(w, http.StatusOK, subscribeControlCollapsed(id, s.csrf, "Subscribe failed — please try again."))
+		s.render(w, http.StatusOK, subscribeControlCollapsed(id, s.csrf, "Subscribe failed — please try again.", workflow))
 		return
 	}
 	// Re-render from the persisted state so the control reflects reality
 	// (subscribed on success / already-subscribed).
-	s.render(w, http.StatusOK, subscribeControl(id, s.modelSubscription(id), s.csrf))
+	s.render(w, http.StatusOK, subscribeControl(id, s.modelSubscription(id), s.csrf, workflow))
 }
 
 // handleModelUnsubscribe removes the model subscription and returns the collapsed
@@ -1002,7 +1059,7 @@ func (s *Server) handleModelUnsubscribe(w http.ResponseWriter, r *http.Request) 
 			s.log.Warn("model unsubscribe", "model", id, "err", derr)
 		}
 	}
-	s.render(w, http.StatusOK, subscribeControlCollapsed(id, s.csrf, "Unsubscribed"))
+	s.render(w, http.StatusOK, subscribeControlCollapsed(id, s.csrf, "Unsubscribed", s.workflowPostFlag(r, id)))
 }
 
 func (s *Server) handleFlags(w http.ResponseWriter, r *http.Request) {
