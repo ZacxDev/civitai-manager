@@ -206,6 +206,37 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   - `/api/v1/apps` is **default-closed / launch-gated**: returns `{"items":[]}` for
     a normal user until CivitAI flips the marketplace flag; it auto-opens with no
     code change. Build apps features flag-tolerant.
+  - 🔴 **A `Workflows`-type "model" is SHAPED EXACTLY like a checkpoint — every
+    generic model path swallows it, and only `m.Type` says otherwise.** CivitAI
+    publishes workflow ZIPs at `/models/<id>` URLs, so a workflow post is a *model
+    id* to this codebase. Measured 2026-07-31 (1847730 / 1386234 vs 4384
+    DreamShaper): **identical top-level and `modelVersions[]` key sets**; every
+    version carries a populated `baseModel` (the base model the workflow is *for*,
+    not what it *is*), a `downloadUrl`, and a `files[]` entry with a real `SHA256`,
+    `primary: true` and `sizeKB`. The only differences are `type`, `files[].type`
+    (`Archive` vs `Model`), `files[].metadata.format` (`Other` vs `SafeTensor`) and
+    size. All 38 versions of 1386234 and all 10 of 1847730 carry an Archive, so it
+    never even degrades to "no downloadable file".
+    **Consequence: `SelectFile` → `DestPath` → `Enqueue` accepts a workflow post
+    whole.** Proven end-to-end on a throwaway DB: subscribing to 1847730 created a
+    real `download_queue` row for `…_AIO.zip`; only a per-creator 401 stopped the
+    fetch. The zip is a **dead end** — `.zip` is not in `library.DefaultExtensions`,
+    so it is never scanned, counted, deduped or quarantined. Invisible bytes, while
+    a working one-click **Import** sits on the same page.
+    Not exotic: `models search --query "wan workflow"` returns **98 of 99** items
+    with `type: "Workflows"`, `/search` sets no `types` param, and every rendered
+    card carries Subscribe with **auto-download pre-checked**.
+    🔴 **Type-check at the point of ACTION, not just at the point of RENDER.**
+    `poller.Candidate.ModelType` is already carried into `enqueueCandidate` and
+    **never read for a decision** — that is the load-bearing guard, and it covers
+    the CLI and the creator-subscription path that no render-layer fix reaches.
+    Four sites open-code this predicate in three spellings (`EqualFold` at
+    `handlers.go`, `discover_workflow_import.go`, `model_pages.go`; a raw `!=` at
+    `pages.go`) — route them through one helper.
+    ⚠ The import gate at `discover_workflow_import.go` **fails OPEN on an empty
+    type**, which is the correct shape (same lesson as the LoCon install refusal).
+    Do not tighten it: **94 of the top 100 `types=Other` models carry an Archive
+    `.zip`** (node packs, tutorials) and are genuinely not workflows.
   - 🔴 **A ComfyUI COMBO's option list is not always strings, and `[]string` decodes
     a numeric one into PHANTOM EMPTY STRINGS.** `json.Unmarshal([0.25,0.5,1.0], &[]string{})`
     allocates the slice, fails per element, and returns an error **with 3 empty
