@@ -43,8 +43,8 @@ func TestMigration0016AppliesOnPopulatedDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("schema version: %v", err)
 	}
-	if v != 16 {
-		t.Fatalf("schema version after migrate = %d, want 16", v)
+	if v != 17 {
+		t.Fatalf("schema version after migrate = %d, want 17", v)
 	}
 
 	// The pre-existing row survived, and its new columns are NULL — not 0, which
@@ -86,8 +86,8 @@ func TestMigration0016AppliesOnPopulatedDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("schema version 2: %v", err)
 	}
-	if v2 != 16 {
-		t.Fatalf("schema version after reopen = %d, want 16", v2)
+	if v2 != 17 {
+		t.Fatalf("schema version after reopen = %d, want 17", v2)
 	}
 }
 

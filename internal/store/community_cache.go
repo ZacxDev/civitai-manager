@@ -7,29 +7,35 @@ import (
 )
 
 // CommunityCacheEntry is one cached community-image feed snapshot (see the
-// community_cache migration). Raw is the exact SearchImages response body for
-// the (ModelID, VersionID) key; FetchedAt drives the caller's staleness /
-// fail-open decision.
+// community_cache migrations, 0010 + 0017). Raw is the exact SearchImages
+// response body for the (ModelID, VersionID, NSFW) key; FetchedAt drives the
+// caller's staleness / fail-open decision.
 type CommunityCacheEntry struct {
 	ModelID   int
 	VersionID int
+	// NSFW is the CivitAI `nsfw` BROWSING LEVEL the body was fetched under. It is
+	// part of the KEY, not decoration: /api/v1/images returns a completely
+	// different mix per level (omitting the param is SFW-only), so a body captured
+	// at one level must never be served for another. Changing the level in the
+	// caller is therefore self-invalidating — see 0017 for the live probe.
+	NSFW      string
 	Raw       []byte
 	FetchedAt time.Time
 }
 
 // GetCommunityCache returns the cached community-feed snapshot for a
-// (modelID, versionID), or (nil, nil) when there is no cached entry. The caller
-// decides whether the entry is fresh enough (via FetchedAt) and whether to serve
-// it stale on a fetch failure (fail-open).
-func (s *Store) GetCommunityCache(modelID, versionID int) (*CommunityCacheEntry, error) {
+// (modelID, versionID, nsfw), or (nil, nil) when there is no cached entry. The
+// caller decides whether the entry is fresh enough (via FetchedAt) and whether to
+// serve it stale on a fetch failure (fail-open).
+func (s *Store) GetCommunityCache(modelID, versionID int, nsfw string) (*CommunityCacheEntry, error) {
 	row := s.db.QueryRow(
-		`SELECT model_id, version_id, raw, fetched_at FROM community_cache
-			WHERE model_id = ? AND version_id = ?`, modelID, versionID)
+		`SELECT model_id, version_id, nsfw, raw, fetched_at FROM community_cache
+			WHERE model_id = ? AND version_id = ? AND nsfw = ?`, modelID, versionID, nsfw)
 	var (
 		e       CommunityCacheEntry
 		fetched string
 	)
-	if err := row.Scan(&e.ModelID, &e.VersionID, &e.Raw, &fetched); err != nil {
+	if err := row.Scan(&e.ModelID, &e.VersionID, &e.NSFW, &e.Raw, &fetched); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -49,13 +55,13 @@ func (s *Store) GetCommunityCache(modelID, versionID int) (*CommunityCacheEntry,
 // many model versions (or a hostile enumerator on a non-loopback deployment).
 var communityCacheMaxRows = 4000
 
-func (s *Store) PutCommunityCache(modelID, versionID int, raw []byte) error {
+func (s *Store) PutCommunityCache(modelID, versionID int, nsfw string, raw []byte) error {
 	if _, err := s.db.Exec(`
-		INSERT INTO community_cache (model_id, version_id, raw, fetched_at) VALUES (?, ?, ?, ?)
-		ON CONFLICT (model_id, version_id) DO UPDATE SET
+		INSERT INTO community_cache (model_id, version_id, nsfw, raw, fetched_at) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (model_id, version_id, nsfw) DO UPDATE SET
 			raw = excluded.raw,
 			fetched_at = excluded.fetched_at`,
-		modelID, versionID, raw, nowRFC3339()); err != nil {
+		modelID, versionID, nsfw, raw, nowRFC3339()); err != nil {
 		return err
 	}
 	// Opportunistic bound: drop everything but the newest N by fetched_at. Cheap
