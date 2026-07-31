@@ -11,6 +11,16 @@ import (
 // than any absolute number (which no test can know), which is what would catch
 // the classic port bugs: a wrong block-size field width making Total absurd, or
 // Free/Used being swapped.
+//
+// ⚠ ITS SENSITIVITY IS HOST-DEPENDENT — DO NOT TREAT IT AS THE WIRING GUARD. Every
+// assertion below is a RELATIONSHIP, and the relationships only separate Bfree
+// from Bavail when the mounted filesystem has a non-zero root reserve. On tmpfs,
+// APFS, exfat and many btrfs configs Bfree == Bavail and a mix-up is invisible
+// here. Measured: feeding Bfree into the bavail slot leaves this test GREEN even
+// on an ext4 /tmp, because it makes Used+Free add up to exactly Total, which no
+// bound below rejects. The deterministic pin is TestFromStatfsWiresEveryField in
+// usage_unix_test.go; what this test uniquely covers is that the REAL syscall
+// path runs at all and returns sane magnitudes.
 func TestStatRealDirectoryIsPlausible(t *testing.T) {
 	dir := t.TempDir()
 	u, err := Stat(dir)
@@ -150,6 +160,46 @@ func TestFromByteCountsMapsTheWindowsCounts(t *testing.T) {
 	}
 	if want := uint64(total - totalFree); u.Used != want {
 		t.Errorf("Used = %d, want %d (total - TotalNumberOfFreeBytes)", u.Used, want)
+	}
+}
+
+// TestDiskFreeSpaceExOutMapsToUsage is the Windows shim's WIRING guard — the
+// twin of TestFromStatfsWiresEveryField, and the reason diskFreeSpaceExOut is
+// declared in usage.go instead of usage_windows.go.
+//
+// 🔴 IT IS THE ONLY EXECUTABLE CHECK ON THIS MAPPING ANYWHERE. GetDiskFreeSpaceExW
+// runs on no machine that builds this repo, so with the mapping written inline in
+// stat() a totalFree/availToCaller swap — reporting the QUOTA-FREE figure as the
+// user's free space, a wrong number rather than a visible failure — could not be
+// caught by anything. Splitting the struct out is what makes this runnable on
+// linux.
+//
+// Every value differs, so no swap lands on a coincidentally correct answer.
+func TestDiskFreeSpaceExOutMapsToUsage(t *testing.T) {
+	out := diskFreeSpaceExOut{
+		AvailToCaller: 1433600, // honours the caller's quota  -> Usage.Free
+		Total:         4096000, // -> Usage.Total
+		TotalFree:     1638400, // ignores the quota           -> derives Usage.Used
+	}
+	if out.AvailToCaller == out.TotalFree || out.Total == out.TotalFree || out.Total == out.AvailToCaller {
+		t.Fatal("fixture is degenerate: the three counts must differ pairwise to tell a swap apart")
+	}
+	u := out.usage()
+	if u.Total != out.Total {
+		t.Errorf("Total = %d, want TotalNumberOfBytes %d", u.Total, out.Total)
+	}
+	if u.Free != out.AvailToCaller {
+		t.Errorf("Free = %d, want FreeBytesAvailableToCaller %d — the QUOTA-AWARE count, not "+
+			"TotalNumberOfFreeBytes (%d)", u.Free, out.AvailToCaller, out.TotalFree)
+	}
+	if want := out.Total - out.TotalFree; u.Used != want {
+		t.Errorf("Used = %d, want %d (Total - TotalNumberOfFreeBytes) — deriving it from "+
+			"FreeBytesAvailableToCaller would count the quota headroom as used", u.Used, want)
+	}
+	// Quota headroom is neither used nor free, exactly as the root reserve is on
+	// unix. This fails for EITHER direction of a TotalFree/AvailToCaller swap.
+	if want := out.TotalFree - out.AvailToCaller; u.Total-u.Used-u.Free != want {
+		t.Errorf("Total-Used-Free = %d, want the quota headroom %d", u.Total-u.Used-u.Free, want)
 	}
 }
 

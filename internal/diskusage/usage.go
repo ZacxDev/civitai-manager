@@ -15,7 +15,18 @@
 // from user config — they may not exist, may be on an unmounted volume, or may
 // live on a filesystem the syscall refuses. Every one of those is a normal
 // answer, not an error page: callers render "unknown" for a path whose Usage is
-// not Known. Stat therefore returns a zero Usage plus an error and never panics.
+// not Known. Stat therefore returns a zero Usage plus an error for every one of
+// them.
+//
+// ⚠ ONE HONEST EXCEPTION TO "IT ONLY EVER RETURNS AN ERROR": on Windows, Stat
+// reaches syscall.LazyProc.Call, which PANICS (via mustFind) if kernel32.dll or
+// GetDiskFreeSpaceExW cannot be resolved — it is not reported through Call's
+// error return. This doc previously claimed Stat "never panics", which was simply
+// wrong. The condition is not reachable on a supported Windows (kernel32 is a
+// KnownDLL and the symbol has been exported since Windows 95), so it is recorded
+// rather than recovered: a recover() here could not be exercised by any test this
+// repo can run and would swallow real bugs in the arithmetic below it. See
+// usage_windows.go for the stdlib source this is quoted from.
 package diskusage
 
 import "errors"
@@ -69,6 +80,9 @@ func (u Usage) UsedFraction() float64 {
 // It is implemented per-GOOS in usage_unix.go / usage_windows.go / usage_other.go.
 // A non-nil error always comes with a zero Usage, so a caller that ignores the
 // error still renders "unknown" rather than a fabricated zero-byte disk.
+//
+// See the package doc for the one case that is a panic rather than an error (an
+// unresolvable kernel32 symbol on Windows).
 func Stat(path string) (Usage, error) { return stat(path) }
 
 // fromBlocks converts raw statfs(2) block counters into a Usage.
@@ -119,4 +133,36 @@ func fromByteCounts(total, totalFree, availToCaller uint64) Usage {
 		used = total - totalFree
 	}
 	return Usage{Total: total, Free: availToCaller, Used: used}
+}
+
+// diskFreeSpaceExOut holds GetDiskFreeSpaceExW's three out-params, one field per
+// out-pointer, NAMED AND ORDERED as the Windows API declares them.
+//
+// 🔴 IT IS DECLARED HERE, NOT IN usage_windows.go, SO ITS MAPPING IS TESTABLE ON
+// EVERY PLATFORM. The Windows shim has the same second mapping decision the unix
+// shim has — which out-param becomes which Usage field — and nothing in the repo
+// could execute it: the DLL call runs on no developer machine and in no CI job,
+// so a totalFree/availToCaller swap (which silently reports the quota-free
+// figure as the user's free space) left the suite green. Splitting the struct out
+// makes usage() a pure function that TestDiskFreeSpaceExOutMapsToUsage pins with
+// synthetic values on linux.
+//
+// What is STILL not executable here is which &field sits in which Call argument
+// position; that is pinned as source text by TestWindowsShimWiresItsOutParams,
+// because the only instrument that could execute it is a Windows machine.
+type diskFreeSpaceExOut struct {
+	// AvailToCaller is lpFreeBytesAvailableToCaller (2nd param) — HONOURS the
+	// caller's disk quota, so it is the analogue of statfs' Bavail.
+	AvailToCaller uint64
+	// Total is lpTotalNumberOfBytes (3rd param).
+	Total uint64
+	// TotalFree is lpTotalNumberOfFreeBytes (4th param) — IGNORES the quota, so it
+	// is the analogue of statfs' Bfree and is what Used is derived from.
+	TotalFree uint64
+}
+
+// usage maps the three out-params onto a Usage. It is the Windows twin of
+// fromStatfs: the arithmetic is fromByteCounts', this is the wiring.
+func (o diskFreeSpaceExOut) usage() Usage {
+	return fromByteCounts(o.Total, o.TotalFree, o.AvailToCaller)
 }
