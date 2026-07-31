@@ -27,20 +27,55 @@ func runPresetPanel(wf *store.Workflow, csrf string, v presetTabView) g.Node {
 	}
 	id := strconv.FormatInt(wf.ID, 10)
 
-	body := []g.Node{
-		h.Summary(h.Class("cursor-pointer text-sm font-semibold text-slate-200 select-none"),
-			g.Text("Parameters")),
+	// 🔴 THE PANEL IS NO LONGER A DISCLOSURE. It used to be one <details> holding
+	// the whole thing — summary "Parameters", tab strip, every field, AND the Run
+	// button — closed unless the workflow had saved presets. So the default state of
+	// the page you land on to run a workflow was: the prompt you want to type in is
+	// hidden, and so is the button that runs it.
+	//
+	// Only the ADVANCED parameters collapse now (see runParamFieldSplit); the prompt
+	// inputs, the tab strip and the actions are visible on load.
+	return h.Div(
+		h.Class("mt-4"),
+		h.Div(h.Class("text-sm font-semibold text-slate-200"), g.Text("Parameters")),
 		runPresetTabStrip(id, csrf, v),
 		runPresetForm(id, csrf, v),
 		runParamsScript(),
+	)
+}
+
+// runParamFieldSplit partitions the rendered parameter controls into the ones that
+// stay VISIBLE and the ones that fold into the "Advanced parameters" disclosure.
+//
+// The split keys on comfy.RunInputKind — a STRUCTURAL property the detector
+// assigns — and never on the field's LABEL, which is the graph author's node title
+// and says nothing reliable about what the input is. RunInputText is the multiline
+// prompt kind (see internal/comfy: `RunInputText … // multiline prompt →
+// <textarea>`); everything else is a seed, a step count, a cfg scale or a
+// sampler/scheduler enum, i.e. the knobs you tune occasionally rather than the text
+// you type every run.
+//
+// 🔴 RELATIVE ORDER IS PRESERVED WITHIN EACH HALF, AND EVERY FIELD LANDS IN EXACTLY
+// ONE HALF. parseWidgetOverrides pairs the parallel wp_node / wp_widget / wp_value
+// arrays BY POSITION, which survives this because each control emits exactly one
+// entry in each of the three arrays — so partitioning permutes all three
+// identically and index i still names the same widget. What would break it is a
+// control that emits zero or several wp_value entries, or a field that appeared in
+// both halves. Neither is possible here, and TestAdvancedSplitKeepsWidgetPairing
+// pins it against the real parser rather than against this comment.
+//
+// A closed <details> does NOT disable its form controls — hidden fields still
+// submit — so an advanced value the user never expanded is still sent, exactly as
+// it was when the whole panel was collapsed.
+func runParamFieldSplit(fields []comfy.PresetField) (prompt, advanced []int) {
+	for i, f := range fields {
+		if f.Input.Kind == comfy.RunInputText {
+			prompt = append(prompt, i)
+			continue
+		}
+		advanced = append(advanced, i)
 	}
-	attrs := []g.Node{h.Class("mt-4")}
-	// A workflow the user has actually saved presets for should not hide them behind
-	// a closed disclosure.
-	if len(v.Presets) > 0 {
-		attrs = append(attrs, g.Attr("open"))
-	}
-	return h.Details(append(attrs, body...)...)
+	return prompt, advanced
 }
 
 // runPresetTabStrip renders the tab row + Fork. Each tab is a POST (activate),
@@ -143,9 +178,9 @@ func runPresetForkButton(wfID, csrf string, v presetTabView) g.Node {
 // reconciled parameter controls, and the actions.
 func runPresetForm(wfID, csrf string, v presetTabView) g.Node {
 	activeID := v.ActiveID()
-	fields := make([]g.Node, 0, len(v.Rec.Fields))
-	for i, f := range v.Rec.Fields {
-		fields = append(fields, runParamFieldValue(i, f.Input, f.Value))
+	field := func(i int) g.Node {
+		f := v.Rec.Fields[i]
+		return runParamFieldValue(i, f.Input, f.Value)
 	}
 
 	body := []g.Node{
@@ -176,9 +211,42 @@ func runPresetForm(wfID, csrf string, v presetTabView) g.Node {
 	// The parameter controls live in a responsive grid so each field can be sized to
 	// the length of its value (see runParamKindClass / .cm-param-* in app.css).
 	// ⚠ Grid auto-placement preserves DOM order, and DOM order is what pairs the
-	// parallel wp_node/wp_widget/wp_value arrays in parseWidgetOverrides — so this
-	// wrapper must never reorder `fields`.
-	body = append(body, h.Div(h.Class("cm-param-grid"), g.Group(fields)))
+	// parallel wp_node/wp_widget/wp_value arrays in parseWidgetOverrides — so a
+	// wrapper must never SPLIT a single field's three hidden/visible inputs apart.
+	// Partitioning WHOLE fields between the two grids below is safe for exactly that
+	// reason; see runParamFieldSplit.
+	prompt, advanced := runParamFieldSplit(v.Rec.Fields)
+	promptNodes := make([]g.Node, 0, len(prompt))
+	for _, i := range prompt {
+		promptNodes = append(promptNodes, field(i))
+	}
+	advancedNodes := make([]g.Node, 0, len(advanced))
+	for _, i := range advanced {
+		advancedNodes = append(advancedNodes, field(i))
+	}
+	// A graph exposing NO prompt input has no "basic vs advanced" distinction to
+	// draw — folding 100% of its parameters into a disclosure would hide everything
+	// and be strictly worse than what shipped. So the split only applies when there
+	// is actually something to leave outside it.
+	if len(promptNodes) == 0 {
+		promptNodes, advancedNodes = advancedNodes, nil
+	}
+	body = append(body, h.Div(h.Class("cm-param-grid"), g.Group(promptNodes)))
+	if len(advancedNodes) > 0 {
+		attrs := []g.Node{h.Class("cm-meta-reveal")}
+		// Same condition the whole panel used to open on: a user who has actually
+		// saved presets is looking at values they set, so do not hide them.
+		if len(v.Presets) > 0 {
+			attrs = append(attrs, g.Attr("open"))
+		}
+		body = append(body, h.Details(append(attrs,
+			h.Summary(h.Class("cm-meta-summary"),
+				h.Span(h.Class("cm-meta-chevron"), g.Attr("aria-hidden", "true"), g.Text("›")),
+				g.Text("Advanced parameters ("+strconv.Itoa(len(advancedNodes))+")")),
+			h.Div(h.Class("cm-meta-body"),
+				h.Div(h.Class("cm-param-grid"), g.Group(advancedNodes))),
+		)...))
+	}
 	body = append(body,
 		h.P(h.Class("text-xs text-slate-500"),
 			g.Text("These edits apply to THIS run only — the saved workflow is unchanged. "+
