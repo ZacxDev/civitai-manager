@@ -950,15 +950,70 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 }
 
 /*
- * NSFW blur (.cm-blur) — see galleryTile (model_pages.go) + communityImageTile
- * (model_community_pages.go). Applied to a showcase/community <img> when the
- * NSFW display mode is blur; cmReveal removes it on click-to-reveal. Defined here
- * (not as a Tailwind utility) because output.css is a static purged build — the
- * old blur-xl utility (24px) is replaced by this slightly-lower 18px blur.
- * Theme-agnostic (no token needed). No CDN.
+ * (A blur-filter rule for showcase/community images used to live here. It is
+ *  GONE, deliberately. The class name is spelled out nowhere on purpose: a
+ *  guard test that greps this file for it must not be satisfied by a comment.)
+ *
+ * The app-wide NSFW blur/show toggle was replaced by a PG..XXX maturity RANGE
+ * that OMITS out-of-range content server-side — the URL never reaches the DOM.
+ * A CSS filter only smeared pixels the browser had already downloaded, so it was
+ * a shoulder-surfing guard rather than a filter. Do not reintroduce it: a rule
+ * here would imply there is something on the page that needs obscuring, and
+ * under the range there never is.
  */
-.cm-blur {
-  filter: blur(18px);
+
+/*
+ * MATURITY RANGE CONTROL (.cm-maturity) — the nav's PG..XXX band picker; see
+ * maturityControl in layout.go. It replaced the old NSFW blur/show button.
+ *
+ * Two NATIVE <select>s in one <form>, not a dual slider: HTML has no two-thumb
+ * range input, and this app ships htmx and nothing else. Native selects are
+ * keyboard-operable and screen-reader-nameable for free, and each end offers only
+ * the levels that keep the band valid, so the control cannot emit an inverted
+ * range without a line of JavaScript.
+ *
+ * Colours are the already-audited text-on-surface-2 pair (see
+ * contrast_web_test.go), so this adds no new coloured pair in either theme. It
+ * lives beside the theme toggle in the nav's non-scrolling control group; at
+ * narrow widths the level labels are short enough (PG / PG-13 / R / X / XXX) that
+ * both ends still fit without collapsing into a menu.
+ */
+.cm-maturity {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0;
+}
+.cm-maturity-legend {
+  font-size: 0.75rem;
+  color: var(--civitai-color-text-dimmed);
+  white-space: nowrap;
+}
+.cm-maturity-dash {
+  font-size: 0.75rem;
+  color: var(--civitai-color-text-dimmed);
+}
+.cm-maturity-select {
+  appearance: auto;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  padding: 0.2rem 0.3rem;
+  border-radius: var(--civitai-radius-sm, 0.25rem);
+  border: 1px solid var(--civitai-color-border);
+  background: var(--civitai-color-surface-2);
+  color: var(--civitai-color-text);
+}
+.cm-maturity-select:focus-visible {
+  outline: 2px solid var(--civitai-color-primary);
+  outline-offset: 1px;
+}
+/* Below the nav's first breakpoint the legend word is redundant chrome — the two
+ * selects and the dash still read as a range, and the <label>s keep the
+ * accessible names regardless. */
+@media (max-width: 640px) {
+  .cm-maturity-legend {
+    display: none;
+  }
 }
 
 /*
@@ -2111,29 +2166,17 @@ html {
 }
 
 /*
- * NSFW "blur" mode: the rail is chrome visible on EVERY page, so under blur its
- * thumbnails render genuinely blurred and reveal on hover/focus. ("hide" never
- * reaches CSS - the server omits the rail markup entirely; "show" renders
- * plain.) A real filter on the pixels, matching .cm-blur.
+ * (A rail thumbnail blur block, selected by a data attribute on the rail, used
+ *  to live here. Also gone — and, as above, its selector is deliberately not
+ *  written out.)
  *
- * It targets .cm-out-thumb, which is BOTH the <img> and the <video> a rail tile
- * can hold — a video output must blur exactly like an image one. The selector
- * moved here from .cm-rail-thumb; class_coverage_web_test.go asserts this exact
- * string so the two cannot drift apart silently.
+ * Two separate reasons, and both matter:
+ *   1. Blur is dead app-wide — see the note further up this file where the
+ *      showcase blur rule used to live.
+ *   2. The rail shows the user's OWN generations, which carry no maturity level
+ *      from anyone, so the maturity range does not filter or treat them at all
+ *      (see railData.visible). There is no per-rail NSFW state left to style.
  */
-.cm-rail[data-nsfw="blur"] .cm-out-thumb {
-  filter: blur(14px);
-  transition: filter 120ms ease;
-}
-.cm-rail[data-nsfw="blur"] .cm-rail-item:hover .cm-out-thumb,
-.cm-rail[data-nsfw="blur"] .cm-rail-item:focus-visible .cm-out-thumb {
-  filter: none;
-}
-@media (prefers-reduced-motion: reduce) {
-  .cm-rail[data-nsfw="blur"] .cm-out-thumb {
-    transition: none;
-  }
-}
 
 /* Desktop: a real right-hand column that reserves its own width. */
 @media (min-width: 1024px) {

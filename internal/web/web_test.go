@@ -33,7 +33,7 @@ func TestPagesRenderWithoutPanic(t *testing.T) {
 	}
 
 	t.Run("dashboard", func(t *testing.T) {
-		out := renderString(t, dashboardPage(subs, nil, "test-csrf", "dark", NSFWBlur))
+		out := renderString(t, dashboardPage(subs, nil, "test-csrf", "dark", fullMaturityRange()))
 		for _, want := range []string{"Subscriptions", "Add a subscription", "Download queue", "Activity", "/assets/civitai-theme.css", "/assets/civitai-components.css", "/assets/app.css", "/assets/htmx.min.js", "alice"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("dashboard missing %q", want)
@@ -42,7 +42,7 @@ func TestPagesRenderWithoutPanic(t *testing.T) {
 	})
 
 	t.Run("search empty", func(t *testing.T) {
-		out := renderString(t, searchPage("", nil, nil, "test-csrf", "dark", NSFWBlur, "", "Most Downloaded", "Month"))
+		out := renderString(t, searchPage("", nil, nil, "test-csrf", "dark", fullMaturityRange(), "", "Most Downloaded", "Month"))
 		if !strings.Contains(out, "Search models") {
 			t.Error("search page missing header")
 		}
@@ -52,7 +52,7 @@ func TestPagesRenderWithoutPanic(t *testing.T) {
 		res := &civitai.ModelSearchResult{Items: []civitai.ModelListItem{
 			{ID: 1, Name: "Cool LoRA", Type: "LORA", Creator: &civitai.Creator{Username: "bob"}},
 		}}
-		out := renderString(t, searchResults(res, nil, NSFWBlur, "test-csrf", ""))
+		out := renderString(t, searchResults(res, nil, fullMaturityRange(), "test-csrf", ""))
 		for _, want := range []string{"Cool LoRA", "LORA", "bob", "/models/1"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("search results missing %q", want)
@@ -76,7 +76,7 @@ func TestPagesRenderWithoutPanic(t *testing.T) {
 
 	t.Run("creator", func(t *testing.T) {
 		res := &civitai.ModelSearchResult{Items: []civitai.ModelListItem{{ID: 9, Name: "M", Type: "LORA"}}}
-		out := renderString(t, creatorPage("dave", res, nil, "test-csrf", "dark", NSFWBlur))
+		out := renderString(t, creatorPage("dave", res, nil, "test-csrf", "dark", fullMaturityRange()))
 		if !strings.Contains(out, "@dave") || !strings.Contains(out, "Subscribe to creator") {
 			t.Error("creator page missing key elements")
 		}

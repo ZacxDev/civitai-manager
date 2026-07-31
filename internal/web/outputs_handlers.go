@@ -111,7 +111,7 @@ func (s *Server) handleOutputs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.render(w, http.StatusOK, outputsGalleryPage(gens, refs, selectedWorkflow,
-		page, total, s.csrf, s.currentTheme(), s.nsfwMode(), s.rail(ctx)))
+		page, total, s.csrf, s.currentTheme(), s.maturity(), s.rail(ctx)))
 }
 
 // handleOutputsBatch renders ONE batch's generations (GET /outputs/batch/{id}).
@@ -142,7 +142,7 @@ func (s *Server) handleOutputsBatch(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	s.render(w, http.StatusOK, batchGalleryPage(gens, s.csrf, s.currentTheme(), s.nsfwMode(), s.rail(ctx)))
+	s.render(w, http.StatusOK, batchGalleryPage(gens, s.csrf, s.currentTheme(), s.maturity(), s.rail(ctx)))
 }
 
 // handleOutputsImage serves one app-owned output image by id, from disk,
@@ -228,7 +228,7 @@ func (s *Server) handleGenerationDetail(w http.ResponseWriter, r *http.Request) 
 	// the run's resources through the shared .cm-res-chip component, which needs it to
 	// resolve a basename to a local file and its CivitAI/HuggingFace source link.
 	s.render(w, http.StatusOK, generationDetailPage(gen, images, s.csrf, s.currentTheme(),
-		s.nsfwMode(), s.workflowResolver(), s.rail(r.Context())))
+		s.maturity(), s.workflowResolver(), s.rail(r.Context())))
 }
 
 // handleGenerationRerun re-runs the CURRENT stored workflow with the generation's

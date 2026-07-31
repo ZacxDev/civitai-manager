@@ -51,7 +51,7 @@ const runGenerateSectionID = "cm-generate"
 // structurally cannot clobber a half-typed prompt in the preset tabs that live in
 // #run-params. Do not collapse or reparent them.
 func generateSection(wf *store.Workflow, snap runSnapshot, csrf string, extraAllowed, dlEligible bool,
-	mode string, presets presetTabView, comfyConfigured bool, helper comfyHelperView) g.Node {
+	mr maturityRange, presets presetTabView, comfyConfigured bool, helper comfyHelperView) g.Node {
 	id := strconv.FormatInt(wf.ID, 10)
 	sectionAttrs := []g.Node{h.ID(runGenerateSectionID), h.Class("cm-generate")}
 	if !extraAllowed {
@@ -101,7 +101,7 @@ func generateSection(wf *store.Workflow, snap runSnapshot, csrf string, extraAll
 	// mode picker can swap its innerHTML.
 	body = append(body, h.Div(h.ID(runParamsContainerID), runPresetPanel(wf, csrf, presets)))
 	// Run job status container (unchanged): poller drives running → terminal.
-	body = append(body, h.Div(h.ID(runStatusContainerID), runStatusFragment(snap, wf.ID, csrf, dlEligible, mode)))
+	body = append(body, h.Div(h.ID(runStatusContainerID), runStatusFragment(snap, wf.ID, csrf, dlEligible, mr)))
 	// The cloud run, as a separated sub-block of the SAME section.
 	body = append(body, cloudGenerateBlock(wf.ID))
 	// Helper install/remove stays a collapsed "advanced" disclosure and is never
@@ -253,7 +253,7 @@ func comfyDisplayURL(_ *store.Workflow) string { return "local ComfyUI" }
 // running fragment (with poller + Stop) while in flight, else the terminal result.
 // A run belonging to a DIFFERENT workflow is not shown here (the poller would
 // otherwise attach this page to another workflow's run).
-func runStatusFragment(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mode string) g.Node {
+func runStatusFragment(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mr maturityRange) g.Node {
 	if snap.Started && snap.Running && snap.WorkflowID != wfID {
 		return h.Div(h.Class("text-sm text-amber-400"),
 			g.Text("A run is already in progress for another workflow. Try again when it finishes."))
@@ -271,7 +271,7 @@ func runStatusFragment(snap runSnapshot, wfID int64, csrf string, dlEligible boo
 	if snap.Running {
 		return runRunning(snap, wfID, csrf)
 	}
-	return runTerminal(snap, wfID, csrf, dlEligible, mode)
+	return runTerminal(snap, wfID, csrf, dlEligible, mr)
 }
 
 // dataRunSeq stamps the run's monotonic identity onto a run-status fragment root as
@@ -386,7 +386,7 @@ func runStopVals(csrf string, wfID int64) g.Node {
 
 // runTerminal renders the settled run: a result gallery on success, or the failure
 // report (message + preflight/warnings detail) — plus a "Run again" button.
-func runTerminal(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mode string) g.Node {
+func runTerminal(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mr maturityRange) g.Node {
 	var body []g.Node
 	// The batch line goes ABOVE the (byte-for-byte unchanged) per-run report. On a
 	// halt the failing item's runFailure panel keeps every missing-model /
@@ -403,7 +403,7 @@ func runTerminal(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mod
 			body = append(body, gal)
 		}
 	default: // failed / stopped
-		body = append(body, runFailure(snap, wfID, csrf, dlEligible, mode))
+		body = append(body, runFailure(snap, wfID, csrf, dlEligible, mr))
 	}
 	if wfID > 0 {
 		actions := []g.Node{runAgainButton(wfID, csrf)}
@@ -480,7 +480,7 @@ func runViewURL(promptID string, ref comfy.ImageRef) string {
 // to recognise, they name the model to go and find, and hiding the per-item rows in
 // a collapsed <details> would also break each row's native <dialog>.showModal() —
 // a modal inside a closed <details> has no rendered ancestor box).
-func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mode string) g.Node {
+func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mr maturityRange) g.Node {
 	// An empty-conversion abort is not a failure in the run sense — nothing was
 	// submitted. Render it as its own actionable report (the message is the
 	// escaped, actionable guidance from *comfy.ConversionEmptyError).
@@ -520,7 +520,7 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mode
 			// enriched analysis; fall back to a plain bullet list if it is absent (e.g.
 			// an older snapshot with only filenames).
 			if len(snap.MissingModels) > 0 {
-				detail = append(detail, missingModelsPanel(snap.MissingModels, snap.MissingResolved, snap.LibMeta, wfID, csrf, dlEligible, mode))
+				detail = append(detail, missingModelsPanel(snap.MissingModels, snap.MissingResolved, snap.LibMeta, wfID, csrf, dlEligible, mr))
 			} else {
 				detail = append(detail, missingList("Missing model files", snap.Preflight.MissingModels))
 			}

@@ -204,7 +204,7 @@ func TestImportedWorkflowsCarouselUsesTheSharedCardRenderer(t *testing.T) {
 
 	// ...and the full library card still renders the parts compact drops, so
 	// "compact" stayed a VARIANT rather than quietly becoming the only card.
-	full := renderString(t, workflowCard(wf, "csrf", workflowResolver{nsfwMode: NSFWBlur}))
+	full := renderString(t, workflowCard(wf, "csrf", workflowResolver{mr: fullMaturityRange()}))
 	for _, want := range []string{"Delete", "View post", workflowRunDeepLink("1")} {
 		if !strings.Contains(full, want) {
 			t.Errorf("the FULL workflow card must still render %q:\n%s", want, full)

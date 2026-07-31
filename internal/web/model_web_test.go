@@ -29,17 +29,21 @@ type fakeReader struct {
 	// the slow /api/v1/images endpoint, so it must stay 0 on the page path
 	// (regression guard for the perf bug). By default SearchImages returns an error
 	// to prove the page does not depend on it; the lazy community-feed handler is
-	// exercised separately by setting communityImages/communityErr below.
+	// exercised separately by setting communityRaw/communityErr below.
 	searchHits *int32
-	// communityImages, when non-nil, is returned by SearchImages (as the feed
-	// result) instead of the default error. An empty (non-nil) slice models the
-	// "no community images" outcome. communityErr, when set, is returned instead.
-	communityImages []civitai.ImageItem
-	communityErr    error
-	// communityRaw, when non-nil, is returned as the SearchImages result's Raw
-	// body (the bytes the community cache stores + re-decodes). Existing tests
-	// leave it nil (the handler then skips caching), preserving prior behavior.
+	// communityRaw, when non-nil, is the RAW /api/v1/images body SearchImages
+	// returns — and it is the ONLY thing the community handler reads.
+	//
+	// 🔴 That is deliberate, not laziness. The typed civitai.ImageItem carries the
+	// STRING nsfwLevel, which labels BOTH of the top two levels "X"; only the raw
+	// body's numeric `browsingLevel` separates X from XXX. A fixture built from
+	// typed items literally CANNOT express the case the maturity range exists to
+	// handle, so the fake refuses to offer one. Build bodies with communityBody.
+	//
+	// An empty-but-present body (`{"items":[]}`) models the "no community images"
+	// outcome. communityErr, when set, is returned instead.
 	communityRaw []byte
+	communityErr error
 	// lastImageQuery, when non-nil, captures the url.Values of the most recent
 	// SearchImages call so tests can assert the community query params.
 	lastImageQuery *url.Values
@@ -73,8 +77,14 @@ func (f fakeReader) SearchImages(_ context.Context, q url.Values) (*civitai.Imag
 	if f.communityErr != nil {
 		return nil, f.communityErr
 	}
-	if f.communityImages != nil {
-		return &civitai.ImageSearchResult{Items: f.communityImages, Raw: f.communityRaw}, nil
+	if f.communityRaw != nil {
+		res, err := civitai.DecodeImageSearch(f.communityRaw)
+		if err != nil {
+			// A malformed fixture body is a test bug, not a scenario — surface it as
+			// the reader error rather than silently rendering nothing.
+			return nil, err
+		}
+		return res, nil
 	}
 	return nil, errors.New("SearchImages must not be called from the model page path")
 }
@@ -155,7 +165,7 @@ func newModelReader(t *testing.T) fakeReader {
 	// 32 = XXX (NSFW).
 	verRaw := versionRawJSON(t, "2026-01-15T00:00:00Z", []tImg{
 		{url: "https://image.civitai.com/safe.jpeg", level: "1", prompt: "a fluffy cat"},
-		{url: "https://image.civitai.com/nsfw.jpeg", level: "32", prompt: "spicy prompt"},
+		{url: "https://image.civitai.com/nsfw.jpeg", level: "16", prompt: "spicy prompt"},
 	})
 	return fakeReader{
 		model: model, modelRaw: modelRaw, version: version, verRaw: verRaw,
@@ -301,102 +311,120 @@ func TestModelHeaderViewOnCivitai(t *testing.T) {
 	}
 }
 
-func TestModelNSFWBlurByDefault(t *testing.T) {
+// TestModelShowcaseDefaultRangeShowsEverythingRatable proves the default (full)
+// range renders every image whose level is on the scale, PLAIN — there is no blur
+// left anywhere on the page.
+func TestModelShowcaseDefaultRangeShowsEverythingRatable(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
 	body := getModelPage(t, srv, "/models/7")
 
-	if !strings.Contains(body, "safe.jpeg") || !strings.Contains(body, "nsfw.jpeg") {
-		t.Fatal("both images should be present by default (blur mode)")
-	}
-	if !strings.Contains(body, `data-blurred="1"`) || !strings.Contains(body, "cm-blur") {
-		t.Error("NSFW image should be blurred by default (cm-blur + data-blurred)")
-	}
-	if !strings.Contains(body, "reveal") {
-		t.Error("blurred NSFW image should offer click-to-reveal")
-	}
-}
-
-func TestModelNSFWShowUnblurs(t *testing.T) {
-	srv := newModelServer(t, newModelReader(t))
-	if err := srv.store.SetSetting(nsfwSettingKey, NSFWShow); err != nil {
-		t.Fatal(err)
-	}
-	body := getModelPage(t, srv, "/models/7")
-	if !strings.Contains(body, "nsfw.jpeg") {
-		t.Error("show mode should include the NSFW image")
-	}
-	if strings.Contains(body, `data-blurred="1"`) {
-		t.Error("show mode must not blur any image")
-	}
-}
-
-// TestModelNSFWHideMigratesToBlur proves a stored "hide" mode is migrated to blur
-// (the toggle dropped the hide state): the NSFW image is now PRESENT but blurred,
-// not omitted.
-func TestModelNSFWHideMigratesToBlur(t *testing.T) {
-	srv := newModelServer(t, newModelReader(t))
-	if err := srv.store.SetSetting(nsfwSettingKey, NSFWHide); err != nil {
-		t.Fatal(err)
-	}
-	// The stored hide reads back as blur everywhere.
-	if got := srv.nsfwMode(); got != NSFWBlur {
-		t.Fatalf("stored hide should migrate to blur, got %q", got)
-	}
-	body := getModelPage(t, srv, "/models/7")
-	if !strings.Contains(body, "nsfw.jpeg") {
-		t.Error("migrated hide (→blur) should include the NSFW image, not omit it")
-	}
-	if !strings.Contains(body, `data-blurred="1"`) {
-		t.Error("migrated hide (→blur) should blur the NSFW image")
-	}
 	if !strings.Contains(body, "safe.jpeg") {
-		t.Error("safe images should still show")
+		t.Fatal("the PG showcase image should render under the default range")
+	}
+	for _, dead := range []string{"cm-blur", `data-blurred="1"`, "cmReveal", ">reveal<"} {
+		t.Run(dead, func(t *testing.T) {
+			if strings.Contains(body, dead) {
+				t.Errorf("the model page still emits the dead blur marker %q — blur was "+
+					"replaced by server-side omission:\n%s", dead, body)
+			}
+		})
 	}
 }
 
-// TestModelNSFWUnknownLevelFailsClosed proves an image carrying an
-// unrecognized nsfwLevel label is treated as NSFW (fail closed): blurred in blur
-// mode and omitted in hide mode. A genuinely-safe ("None") image is unaffected.
-func TestModelNSFWUnknownLevelFailsClosed(t *testing.T) {
+// TestModelShowcaseOmitsOutOfRange proves the showcase carousel OMITS an image
+// outside the band server-side: its URL must not be in the response at all.
+func TestModelShowcaseOmitsOutOfRange(t *testing.T) {
 	reader := newModelReader(t)
-	// A genuinely-safe image (level 1) and one whose nsfwLevel is a non-integer
-	// (garbage) → parsed as the unknown sentinel → must fail closed.
 	reader.verRaw = versionRawJSON(t, "2026-01-15T00:00:00Z", []tImg{
-		{url: "https://image.civitai.com/safe.jpeg", level: "1", prompt: "safe"},
-		{url: "https://image.civitai.com/unknown.jpeg", level: `"SuperSpicy9000"`, prompt: "unknown level"},
+		{url: "https://image.civitai.com/lvl-pg.jpeg", level: "1", prompt: "pg"},
+		{url: "https://image.civitai.com/lvl-r.jpeg", level: "4", prompt: "r"},
+		{url: "https://image.civitai.com/lvl-x.jpeg", level: "8", prompt: "x"},
+		{url: "https://image.civitai.com/lvl-xxx.jpeg", level: "16", prompt: "xxx"},
 	})
 	srv := newModelServer(t, reader)
 
-	// Blur mode (default): the unknown-level image is present but blurred, while
-	// the genuinely-safe image is NOT blurred (we didn't blur everything).
-	body := getModelPage(t, srv, "/models/7")
-	if !strings.Contains(body, "unknown.jpeg") {
-		t.Fatal("unknown-level image should be present in blur mode")
+	cases := []struct {
+		rng     string
+		present []string
+		absent  []string
+	}{
+		{"pg:xxx", []string{"lvl-pg.jpeg", "lvl-r.jpeg", "lvl-x.jpeg", "lvl-xxx.jpeg"}, nil},
+		{"pg:pg", []string{"lvl-pg.jpeg"}, []string{"lvl-r.jpeg", "lvl-x.jpeg", "lvl-xxx.jpeg"}},
+		{"pg:x", []string{"lvl-pg.jpeg", "lvl-r.jpeg", "lvl-x.jpeg"}, []string{"lvl-xxx.jpeg"}},
+		{"xxx:xxx", []string{"lvl-xxx.jpeg"}, []string{"lvl-pg.jpeg", "lvl-r.jpeg", "lvl-x.jpeg"}},
 	}
-	if !strings.Contains(body, `data-blurred="1"`) || !strings.Contains(body, "cm-blur") {
-		t.Error("unknown-level image must be blurred (fail closed)")
-	}
-	if !strings.Contains(body, "safe.jpeg") {
-		t.Error("genuinely-safe image should still be shown")
-	}
-
-	// A stored hide migrates to blur: the unknown-level (fail-closed NSFW) image is
-	// present but blurred, and the safe image remains un-blurred.
-	if err := srv.store.SetSetting(nsfwSettingKey, NSFWHide); err != nil {
-		t.Fatal(err)
-	}
-	body = getModelPage(t, srv, "/models/7")
-	if !strings.Contains(body, "unknown.jpeg") {
-		t.Error("migrated hide (→blur) should include the unknown-level image")
-	}
-	if !strings.Contains(body, `data-blurred="1"`) {
-		t.Error("migrated hide (→blur) must blur the unknown-level (fail-closed NSFW) image")
-	}
-	if !strings.Contains(body, "safe.jpeg") {
-		t.Error("the safe image should still show")
+	for _, c := range cases {
+		t.Run(c.rng, func(t *testing.T) {
+			if err := srv.store.SetSetting(maturitySettingKey, c.rng); err != nil {
+				t.Fatal(err)
+			}
+			body := getModelPage(t, srv, "/models/7")
+			for _, u := range c.present {
+				if !strings.Contains(body, u) {
+					t.Errorf("range %s should render %s", c.rng, u)
+				}
+			}
+			for _, u := range c.absent {
+				if strings.Contains(body, u) {
+					t.Errorf("range %s LEAKED %s — an out-of-range image URL must never reach "+
+						"the DOM", c.rng, u)
+				}
+			}
+		})
 	}
 }
 
+// TestModelMaturityDefaultsToTheFullRange proves an absent / malformed stored
+// value reads back as PG..XXX rather than silently narrowing.
+func TestModelMaturityDefaultsToTheFullRange(t *testing.T) {
+	srv := newModelServer(t, newModelReader(t))
+	if got := srv.maturity(); got != fullMaturityRange() {
+		t.Fatalf("with no stored setting, maturity() = %s, want the full range", got.String())
+	}
+	for _, junk := range []string{"", "blur", "show", "hide", "xxx:pg", "nope"} {
+		if err := srv.store.SetSetting(maturitySettingKey, junk); err != nil {
+			t.Fatal(err)
+		}
+		if got := srv.maturity(); got != fullMaturityRange() {
+			t.Errorf("stored %q read back as %s, want the full range (fail-open)", junk, got.String())
+		}
+	}
+}
+
+// TestModelUnknownLevelFailsClosed proves an image whose numeric level is absent,
+// garbage, or off the five-step scale (notably 32 = Blocked) is OMITTED at every
+// range, including the full one. Fail-closed: an unrated image is never rendered
+// on the assumption that it is tame.
+func TestModelUnknownLevelFailsClosed(t *testing.T) {
+	reader := newModelReader(t)
+	reader.verRaw = versionRawJSON(t, "2026-01-15T00:00:00Z", []tImg{
+		{url: "https://image.civitai.com/safe.jpeg", level: "1", prompt: "safe"},
+		{url: "https://image.civitai.com/garbage.jpeg", level: `"SuperSpicy9000"`, prompt: "garbage level"},
+		{url: "https://image.civitai.com/blocked.jpeg", level: "32", prompt: "blocked bucket"},
+	})
+	srv := newModelServer(t, reader)
+
+	for _, rng := range []string{"pg:xxx", "pg:pg", "xxx:xxx"} {
+		if err := srv.store.SetSetting(maturitySettingKey, rng); err != nil {
+			t.Fatal(err)
+		}
+		body := getModelPage(t, srv, "/models/7")
+		if strings.Contains(body, "garbage.jpeg") {
+			t.Errorf("range %s rendered an image with an unparseable level — must fail closed", rng)
+		}
+		if strings.Contains(body, "blocked.jpeg") {
+			t.Errorf("range %s rendered a level-32 (Blocked) image — Blocked is not a scale step", rng)
+		}
+	}
+
+	// …and the genuinely-rated image is unaffected: we did not omit everything.
+	if err := srv.store.SetSetting(maturitySettingKey, "pg:xxx"); err != nil {
+		t.Fatal(err)
+	}
+	if body := getModelPage(t, srv, "/models/7"); !strings.Contains(body, "safe.jpeg") {
+		t.Error("the PG image should still render — fail-closed must not mean fail-empty")
+	}
+}
 func TestModelGalleryLightboxAndMetadata(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
 	body := getModelPage(t, srv, "/models/7")
@@ -412,27 +440,47 @@ func TestModelGalleryLightboxAndMetadata(t *testing.T) {
 	}
 }
 
-func TestNSFWSettingPersistsViaEndpoint(t *testing.T) {
+// TestMaturitySettingPersistsViaEndpoint covers the setter: a valid range
+// persists and replies HX-Refresh, a missing CSRF token is 403, and an invalid or
+// INVERTED range is 400 with nothing written.
+func TestMaturitySettingPersistsViaEndpoint(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
-	// Toggle via the endpoint (CSRF required). The navbar toggle POSTs only the
-	// next mode + csrf; the handler persists it and replies HX-Refresh so whatever
-	// page is showing re-renders under the new mode.
-	rec := post(t, srv, "/settings/nsfw", url.Values{"mode": {"show"}}, true)
+
+	rec := post(t, srv, "/settings/maturity", url.Values{"min": {"pg"}, "max": {"r"}}, true)
 	if rec.Code != http.StatusNoContent {
-		t.Fatalf("set nsfw = %d, want 204", rec.Code)
+		t.Fatalf("set maturity = %d, want 204", rec.Code)
 	}
 	if rec.Header().Get("HX-Refresh") != "true" {
-		t.Errorf("set nsfw must reply HX-Refresh: true, got %q", rec.Header().Get("HX-Refresh"))
+		t.Errorf("set maturity must reply HX-Refresh: true, got %q", rec.Header().Get("HX-Refresh"))
 	}
-	// The setting persisted.
-	if v, _ := srv.store.GetSettingDefault(nsfwSettingKey, NSFWBlur); v != NSFWShow {
-		t.Fatalf("nsfw setting = %q, want show", v)
+	if v, _ := srv.store.GetSettingDefault(maturitySettingKey, ""); v != "pg:r" {
+		t.Fatalf("maturity setting = %q, want pg:r", v)
 	}
 
-	// Without CSRF → 403.
-	rec = post(t, srv, "/settings/nsfw", url.Values{"mode": {"hide"}}, false)
+	// Without CSRF → 403, and the stored value is untouched.
+	rec = post(t, srv, "/settings/maturity", url.Values{"min": {"pg"}, "max": {"xxx"}}, false)
 	if rec.Code != http.StatusForbidden {
-		t.Fatalf("set nsfw without CSRF = %d, want 403", rec.Code)
+		t.Fatalf("set maturity without CSRF = %d, want 403", rec.Code)
+	}
+	if v, _ := srv.store.GetSettingDefault(maturitySettingKey, ""); v != "pg:r" {
+		t.Fatalf("a CSRF-less POST changed the setting to %q", v)
+	}
+
+	// Inverted / unknown submissions are REJECTED, never swapped or clamped.
+	for _, bad := range []url.Values{
+		{"min": {"xxx"}, "max": {"pg"}},  // inverted
+		{"min": {"r"}, "max": {"pg13"}},  // inverted
+		{"min": {"pg"}, "max": {"pg14"}}, // unknown level
+		{"min": {"blur"}, "max": {"xxx"}},
+		{"max": {"xxx"}}, // missing end
+	} {
+		rec = post(t, srv, "/settings/maturity", bad, true)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("POST %v = %d, want 400", bad, rec.Code)
+		}
+		if v, _ := srv.store.GetSettingDefault(maturitySettingKey, ""); v != "pg:r" {
+			t.Fatalf("a rejected POST %v changed the setting to %q", bad, v)
+		}
 	}
 }
 
@@ -559,7 +607,7 @@ func TestParseVersionImages(t *testing.T) {
 	if len(imgs) != 5 {
 		t.Fatalf("parsed %d images, want 5", len(imgs))
 	}
-	wantLevels := []int{1, 4, 32, nsfwLevelUnknown, nsfwLevelUnknown}
+	wantLevels := []int{1, 4, 32, browsingLevelUnknown, browsingLevelUnknown}
 	for i, want := range wantLevels {
 		if imgs[i].NSFWLevel != want {
 			t.Errorf("image %d level = %d, want %d", i, imgs[i].NSFWLevel, want)

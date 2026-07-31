@@ -61,7 +61,7 @@ func TestRunFailureOffersOpenInComfyUI(t *testing.T) {
 
 	for name, snap := range failures {
 		t.Run(name, func(t *testing.T) {
-			body := renderString(t, runStatusFragment(snap, 9, "csrf-tok", false, "blur"))
+			body := renderString(t, runStatusFragment(snap, 9, "csrf-tok", false, fullMaturityRange()))
 			if !strings.Contains(body, openComfyAction) {
 				t.Errorf("failure path %q does not offer the existing Open-in-ComfyUI flow:\n%s", name, body)
 			}
@@ -96,7 +96,7 @@ func TestRunSuccessAndStopOmitOpenInComfyUI(t *testing.T) {
 			Phase: runPhaseFailed, Stopped: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			body := renderString(t, runStatusFragment(snap, 9, "csrf-tok", false, "blur"))
+			body := renderString(t, runStatusFragment(snap, 9, "csrf-tok", false, fullMaturityRange()))
 			if strings.Contains(body, "open-in-comfyui") {
 				t.Errorf("%s should not carry the Open-in-ComfyUI escape hatch:\n%s", name, body)
 			}
@@ -111,7 +111,7 @@ func TestRunFailureOmitsOpenInComfyUIForAPIGraphs(t *testing.T) {
 	snap := runSnapshot{Started: true, WorkflowID: 9, UIFormat: false,
 		Phase: runPhaseFailed, Message: "Preflight failed.",
 		Preflight: &comfy.PreflightReport{MissingModels: []string{"x.safetensors"}}}
-	body := renderString(t, runStatusFragment(snap, 9, "csrf-tok", false, "blur"))
+	body := renderString(t, runStatusFragment(snap, 9, "csrf-tok", false, fullMaturityRange()))
 	if strings.Contains(body, "open-in-comfyui") {
 		t.Errorf("api-format run failure must not offer the editor link:\n%s", body)
 	}
@@ -125,14 +125,14 @@ func TestRunFailureOmitsOpenInComfyUIForAPIGraphs(t *testing.T) {
 // failure report emit the SAME control from the SAME helper.
 func TestOpenInComfyFormIsSharedNotDuplicated(t *testing.T) {
 	wf := &store.Workflow{ID: 9, Format: store.WorkflowFormatUI, Graph: "{}"}
-	card := renderString(t, generateSection(wf, runSnapshot{}, "csrf-tok", true, false, "blur",
+	card := renderString(t, generateSection(wf, runSnapshot{}, "csrf-tok", true, false, fullMaturityRange(),
 		implicitPresetView(wf, nil), true, comfyHelperView{}))
 	fail := renderString(t, runStatusFragment(runSnapshot{
 		Started: true, WorkflowID: 9, UIFormat: true, Phase: runPhaseFailed,
 		Message: "Preflight failed.",
 		Preflight: &comfy.PreflightReport{
 			MissingNodes: []string{"CR Float To Integer"}},
-	}, 9, "csrf-tok", false, "blur"))
+	}, 9, "csrf-tok", false, fullMaturityRange()))
 
 	for _, want := range []string{openComfyAction, `target="_blank"`, `rel="noopener"`} {
 		if !strings.Contains(card, want) || !strings.Contains(fail, want) {

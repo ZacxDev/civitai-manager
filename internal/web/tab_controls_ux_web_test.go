@@ -71,7 +71,7 @@ func TestWorkflowsTabGatedOffLoopback(t *testing.T) {
 // dirs) offers a single guided CTA over to the Install-directories tab and does NOT
 // render a bare scan button.
 func TestModelFilesTabEmptyStateCTA(t *testing.T) {
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf", true, nil, "dark", "files", nil, false, nil, NSFWBlur, libraryWorkflowsView{}))
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf", true, nil, "dark", "files", nil, false, nil, fullMaturityRange(), libraryWorkflowsView{}))
 	if !strings.Contains(out, "No install directories yet") {
 		t.Errorf("missing guided empty state:\n%s", out)
 	}
@@ -87,7 +87,7 @@ func TestModelFilesTabEmptyStateCTA(t *testing.T) {
 // shows the scan primary + the match-CivitAI toggle, with CSRF + the stable
 // #scan-results poll container intact.
 func TestModelFilesTabPrimaryAndPollContainer(t *testing.T) {
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf", true, []string{"/some/dir"}, "dark", "files", nil, false, nil, NSFWBlur, libraryWorkflowsView{}))
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf", true, []string{"/some/dir"}, "dark", "files", nil, false, nil, fullMaturityRange(), libraryWorkflowsView{}))
 	for _, want := range []string{
 		"Scan for model files",    // the primary
 		`name="match_remote"`,     // the match-CivitAI toggle
@@ -105,7 +105,7 @@ func TestModelFilesTabPrimaryAndPollContainer(t *testing.T) {
 // discover primary + the stable #discover-results / #selected-dirs containers + a
 // guided empty state, with CSRF intact.
 func TestSourcesTabPrimaryAndPollContainer(t *testing.T) {
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf", true, nil, "dark", "sources", nil, false, nil, NSFWBlur, libraryWorkflowsView{}))
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf", true, nil, "dark", "sources", nil, false, nil, fullMaturityRange(), libraryWorkflowsView{}))
 	for _, want := range []string{
 		"Discover installs",           // the primary
 		`hx-post="/library/discover"`, // the discover endpoint
@@ -122,7 +122,7 @@ func TestSourcesTabPrimaryAndPollContainer(t *testing.T) {
 // TestSourcesTabGatedOffLoopback proves the discover/browse affordances are gated on
 // a non-loopback bind.
 func TestSourcesTabGatedOffLoopback(t *testing.T) {
-	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf", false, nil, "dark", "sources", nil, false, nil, NSFWBlur, libraryWorkflowsView{}))
+	out := renderString(t, libraryPage(buildLibraryView(nil), "csrf", false, nil, "dark", "sources", nil, false, nil, fullMaturityRange(), libraryWorkflowsView{}))
 	if strings.Contains(out, "Discover installs") {
 		t.Errorf("non-loopback bind must not offer discovery:\n%s", out)
 	}

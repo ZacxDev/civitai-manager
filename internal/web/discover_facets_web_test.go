@@ -662,39 +662,38 @@ func nsfwProbeResult(t *testing.T, typ string) *civitai.ModelSearchResult {
 	}
 }
 
-func facetViewFor(t *testing.T, res *civitai.ModelSearchResult, mode string) workflowDiscoverView {
+func facetViewFor(t *testing.T, res *civitai.ModelSearchResult, mr maturityRange) workflowDiscoverView {
 	t.Helper()
 	eco, _ := civitai.EcosystemBySlug("flux1")
 	use, _ := civitai.UseCaseBySlug("inpaint")
 	return workflowDiscoverView{
-		Sort: "Most Downloaded", Period: "Month", CSRF: "csrf", Res: res, Mode: mode,
+		Sort: "Most Downloaded", Period: "Month", CSRF: "csrf", Res: res, Mode: mr,
 		Facets: workflowFacets{Eco: &eco, Use: &use},
 	}
 }
 
-// TestFacetPageNSFWHandlingMatchesTheModelSearch pins the NSFW posture of the new
-// facet surface against the ALREADY-AUDITED /search renderer, for every mode.
+// TestFacetPageMaturityHandlingMatchesTheModelSearch pins the maturity posture of
+// the facet surface against the ALREADY-AUDITED /search renderer, at every band.
 //
-// It is written as an equivalence test rather than "hide omits the URL" because
-// of a REPO-WIDE PRE-EXISTING condition, verified here rather than assumed:
-// normalizeNSFWMode MIGRATES a stored "hide" to blur (the navbar toggle dropped
-// the hide state — see the const block in model_pages.go), and
-// modelCardCarouselW normalizes BEFORE testing mode == NSFWHide. So the
-// server-side omit branch is inert on the model search too, not just here — this
-// change neither introduced nor widened that. Asserting "hide omits" would have
-// been a test that documents a capability the app does not currently have.
-//
-// What this DOES guarantee is the thing a new surface can actually get wrong:
-// the facet page must never render NSFW content more permissively than the
-// existing search page does.
-func TestFacetPageNSFWHandlingMatchesTheModelSearch(t *testing.T) {
-	for _, mode := range []string{NSFWHide, NSFWBlur, NSFWShow} {
-		t.Run(mode, func(t *testing.T) {
-			facet := renderString(t, workflowDiscoverResults(facetViewFor(t, nsfwProbeResult(t, "Workflows"), mode)))
-			search := renderString(t, searchResults(nsfwProbeResult(t, "LORA"), nil, mode, "csrf", ""))
+// It is an equivalence test on purpose: the facet page is a second renderer over
+// the same cards, and the thing a new surface can actually get wrong is being
+// MORE PERMISSIVE than the audited one. Both must omit exactly the same URLs.
+func TestFacetPageMaturityHandlingMatchesTheModelSearch(t *testing.T) {
+	ranges := []maturityRange{
+		fullMaturityRange(),
+		{maturityPG, maturityPG},
+		{maturityR, maturityXXX},
+		{maturityXXX, maturityXXX},
+	}
+	for _, mr := range ranges {
+		t.Run(mr.String(), func(t *testing.T) {
+			facet := renderString(t, workflowDiscoverResults(facetViewFor(t, nsfwProbeResult(t, "Workflows"), mr)))
+			search := renderString(t, searchResults(nsfwProbeResult(t, "LORA"), nil, mr, "csrf", ""))
 
-			// Non-vacuity: both renderers actually produced the images.
-			if !strings.Contains(facet, "safe.jpeg") || !strings.Contains(search, "safe.jpeg") {
+			// Non-vacuity: at the full range both renderers actually produce images, so
+			// the comparison below is comparing something.
+			if mr == fullMaturityRange() &&
+				(!strings.Contains(facet, "safe.jpeg") || !strings.Contains(search, "safe.jpeg")) {
 				t.Fatal("neither renderer produced a showcase image — the comparison would be vacuous")
 			}
 			gotFacet := strings.Contains(facet, "NSFW-SECRET")
@@ -703,18 +702,11 @@ func TestFacetPageNSFWHandlingMatchesTheModelSearch(t *testing.T) {
 				t.Errorf("facet page renders the NSFW image=%v but /search renders it=%v — the new surface must not be more permissive",
 					gotFacet, gotSearch)
 			}
-			blurFacet := strings.Contains(facet, "cm-blur")
-			blurSearch := strings.Contains(search, "cm-blur")
-			if blurFacet != blurSearch {
-				t.Errorf("facet page blurs=%v but /search blurs=%v", blurFacet, blurSearch)
-			}
-			// Show mode must NOT blur; every other mode must (the effective behaviour
-			// after the hide→blur migration).
-			if mode == NSFWShow && blurFacet {
-				t.Error("show mode must render NSFW plainly")
-			}
-			if mode != NSFWShow && !blurFacet {
-				t.Errorf("%s mode must obscure the NSFW image", mode)
+			// Neither may ever fall back to a client-side treatment.
+			for _, dead := range []string{"cm-blur", `data-blurred="1"`} {
+				if strings.Contains(facet, dead) || strings.Contains(search, dead) {
+					t.Errorf("a renderer emitted the dead blur marker %q", dead)
+				}
 			}
 		})
 	}

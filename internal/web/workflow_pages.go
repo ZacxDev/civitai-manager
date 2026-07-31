@@ -26,12 +26,12 @@ type workflowResolver struct {
 	// basename is unknown OR ambiguous — the chip then renders without a path and
 	// without a source link rather than guessing.
 	localResource func(basename string) (resourceInfo, bool)
-	// nsfwMode is the persisted NSFW display mode (hide|blur|show) threaded to the
+	// mr is the persisted PG..XXX maturity range threaded to the
 	// list-item showcase carousels so they honor it (carried on the resolver to
 	// avoid threading it through workflowList/Item/Card + the scan-terminal path).
-	nsfwMode string
+	mr maturityRange
 	// csrf is the server's CSRF token, needed by the resource chip's "open folder"
-	// POST. Carried here for the same reason nsfwMode is: the chip renderer is
+	// POST. Carried here for the same reason mr is: the chip renderer is
 	// reached from four call sites (detail card, list popover, scan terminal,
 	// showcase) and threading a token through all of them would be noise.
 	csrf string
@@ -604,7 +604,7 @@ func workflowFormatBadge(format string) g.Node {
 func workflowCardShowcase(wf store.Workflow, resolver workflowResolver) g.Node {
 	if wf.ModelID != nil {
 		if imgs := resolver.showcase(*wf.ModelID); len(imgs) > 0 {
-			return modelCardCarousel(*wf.ModelID, imgs, resolver.nsfwMode)
+			return modelCardCarousel(*wf.ModelID, imgs, resolver.mr)
 		}
 	}
 	return h.Div(h.Class("cm-wf-noimg"), g.Text("No preview"))
@@ -966,7 +966,7 @@ func workflowModelNameText(modelID int, resolver workflowResolver) g.Node {
 // `generate` is the combined run section (nil renders no run controls at all).
 // `recent` is this workflow's most recent captured outputs (bounded by the handler);
 // empty renders no strip at all.
-func workflowDetailPage(wf *store.Workflow, csrf, theme, nsfwMode string, generate g.Node,
+func workflowDetailPage(wf *store.Workflow, csrf, theme string, mr maturityRange, generate g.Node,
 	recent []store.Generation, resolver workflowResolver, rail ...railData) g.Node {
 	id := strconv.FormatInt(wf.ID, 10)
 	name := wf.Name
@@ -983,11 +983,11 @@ func workflowDetailPage(wf *store.Workflow, csrf, theme, nsfwMode string, genera
 
 	// CivitAI showcase carousel for the linked model — REUSES the exact carousel the
 	// model detail page uses (modelCardCarouselW + the shared lightbox), fed entirely
-	// from the LOCAL model_cache (never a fetch). NSFW-aware via the reused component:
-	// `show` reveals, `blur`/`hide` obscure behind .cm-blur (the card carousel
-	// migrates `hide`→`blur` at this layer, matching the model detail showcase + the
-	// workflow list cards). Rendered only when the workflow is model-linked AND that
-	// model has cached images; otherwise nothing is emitted (no broken markup).
+	// from the LOCAL model_cache (never a fetch). Maturity-aware via the reused
+	// component: an image outside the band is OMITTED server-side, matching the model
+	// detail showcase and the workflow list cards. Rendered only when the workflow is
+	// model-linked AND that model has cached images; otherwise nothing is emitted (no
+	// broken markup).
 	//
 	// The "Showcase images" caption is deliberately omitted here (showcaseCardUntitled):
 	// on a workflow page the images are the only pictures present and sit directly
@@ -995,7 +995,7 @@ func workflowDetailPage(wf *store.Workflow, csrf, theme, nsfwMode string, genera
 	showcaseShown := false
 	if wf.ModelID != nil {
 		if imgs := resolver.showcase(*wf.ModelID); len(imgs) > 0 {
-			body = append(body, showcaseCardUntitled(*wf.ModelID, imgs, nsfwMode))
+			body = append(body, showcaseCardUntitled(*wf.ModelID, imgs, mr))
 			showcaseShown = true
 		}
 	}
@@ -1063,7 +1063,7 @@ func workflowDetailPage(wf *store.Workflow, csrf, theme, nsfwMode string, genera
 		body = append(body, lightboxOverlay(), modelPageScript(), libraryCarouselScript())
 	}
 
-	return page(name+" · Workflow", theme, csrf, nsfwMode, railOf(rail), body...)
+	return page(name+" · Workflow", theme, csrf, mr, railOf(rail), body...)
 }
 
 // workflowGraphSection picks the best graph rendering: an SVG for a UI-format

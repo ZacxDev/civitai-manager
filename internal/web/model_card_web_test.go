@@ -39,7 +39,7 @@ func modelCardRawJSON(t *testing.T) []byte {
 			map[string]any{"id": 11, "name": "v2", "baseModel": "SDXL",
 				"images": inlineImagesJSON([]tImg{
 					{url: "https://image.civitai.com/safe.jpeg", level: "1", prompt: "a cat"},
-					{url: "https://image.civitai.com/nsfw.jpeg", level: "32", prompt: "spicy"},
+					{url: "https://image.civitai.com/nsfw.jpeg", level: "16", prompt: "spicy"},
 				})},
 		},
 	})
@@ -115,72 +115,87 @@ func TestMatchedCardAuthorLink(t *testing.T) {
 // the creator username from a non-nil Creator and leaves it empty otherwise.
 func TestBuildMatchedCardViewResolvesCreator(t *testing.T) {
 	m := &civitai.ModelDetail{ID: 7, Name: "M", Creator: &civitai.Creator{Username: "carol"}}
-	if v := buildMatchedModelCardView(7, m, nil, nil, NSFWBlur, nil); v.Creator != "carol" {
+	if v := buildMatchedModelCardView(7, m, nil, nil, fullMaturityRange(), nil); v.Creator != "carol" {
 		t.Errorf("Creator = %q, want carol", v.Creator)
 	}
 	m2 := &civitai.ModelDetail{ID: 8, Name: "M"}
-	if v := buildMatchedModelCardView(8, m2, nil, nil, NSFWBlur, nil); v.Creator != "" {
+	if v := buildMatchedModelCardView(8, m2, nil, nil, fullMaturityRange(), nil); v.Creator != "" {
 		t.Errorf("Creator = %q, want empty for nil creator", v.Creator)
 	}
 }
 
-// TestModelCardCarouselRespectsNSFW proves the carousel honors the persisted
-// display mode: blur obscures the NSFW image behind click-to-reveal, a stored
-// hide migrates to blur (present + blurred, not omitted), show reveals it — never
-// re-flagging or exposing NSFW.
-func TestModelCardCarouselRespectsNSFW(t *testing.T) {
+// TestModelCardCarouselRespectsTheRange proves the carousel OMITS out-of-band
+// images server-side and renders in-band ones plain — no blur, no reveal overlay.
+//
+// The fixture deliberately includes a level-32 image: 32 is CivitAI's Blocked
+// bucket, not a step on the user-selectable scale, so it must be omitted at EVERY
+// range including the full one.
+func TestModelCardCarouselRespectsTheRange(t *testing.T) {
 	imgs := []galleryImage{
-		{URL: "https://image.civitai.com/safe.jpeg", NSFWLevel: 1},
-		{URL: "https://image.civitai.com/nsfw.jpeg", NSFWLevel: 32},
+		{URL: "https://image.civitai.com/pg.jpeg", NSFWLevel: 1},
+		{URL: "https://image.civitai.com/x.jpeg", NSFWLevel: 8},
+		{URL: "https://image.civitai.com/xxx.jpeg", NSFWLevel: 16},
+		{URL: "https://image.civitai.com/blocked.jpeg", NSFWLevel: 32},
 	}
 
-	blur := renderString(t, modelCardCarousel(7, imgs, NSFWBlur))
-	if !strings.Contains(blur, "nsfw.jpeg") || !strings.Contains(blur, `data-blurred="1"`) || !strings.Contains(blur, "cm-blur") {
-		t.Error("blur mode: NSFW image should be present but blurred")
+	full := renderString(t, modelCardCarousel(7, imgs, fullMaturityRange()))
+	for _, want := range []string{"pg.jpeg", "x.jpeg", "xxx.jpeg"} {
+		if !strings.Contains(full, want) {
+			t.Errorf("the full range should render %s", want)
+		}
 	}
-	if !strings.Contains(blur, "reveal") {
-		t.Error("blur mode: blurred image should offer click-to-reveal")
+	if strings.Contains(full, "blocked.jpeg") {
+		t.Error("a level-32 (Blocked) image must be omitted even at the full range")
 	}
-	if !strings.Contains(blur, "safe.jpeg") {
-		t.Error("blur mode: safe image should be present")
-	}
-
-	// A stored hide migrates to blur: the NSFW image is present and blurred.
-	hide := renderString(t, modelCardCarousel(7, imgs, NSFWHide))
-	if !strings.Contains(hide, "nsfw.jpeg") || !strings.Contains(hide, `data-blurred="1"`) {
-		t.Error("migrated hide (→blur): NSFW image should be present but blurred, not omitted")
-	}
-	if !strings.Contains(hide, "safe.jpeg") {
-		t.Error("migrated hide (→blur): safe image should still show")
+	for _, dead := range []string{"cm-blur", `data-blurred="1"`, ">reveal<"} {
+		if strings.Contains(full, dead) {
+			t.Errorf("the carousel still emits the dead blur marker %q", dead)
+		}
 	}
 
-	show := renderString(t, modelCardCarousel(7, imgs, NSFWShow))
-	if !strings.Contains(show, "nsfw.jpeg") {
-		t.Error("show mode: NSFW image should be included")
+	// X only — and the XXX image must NOT come along, even though CivitAI labels
+	// both "X" on the images API.
+	xOnly := renderString(t, modelCardCarousel(7, imgs, maturityRange{maturityX, maturityX}))
+	if !strings.Contains(xOnly, "x.jpeg") {
+		t.Error("an X-only range should render the level-8 image")
 	}
-	if strings.Contains(show, `data-blurred="1"`) {
-		t.Error("show mode: nothing should be blurred")
+	if strings.Contains(xOnly, "xxx.jpeg") {
+		t.Error("an X-only range LEAKED the level-16 (XXX) image")
+	}
+	if strings.Contains(xOnly, "pg.jpeg") {
+		t.Error("an X-only range LEAKED the PG image")
+	}
+
+	// Nothing in band → the honest empty line, not an empty strip.
+	none := renderString(t, modelCardCarousel(7,
+		[]galleryImage{{URL: "https://image.civitai.com/xxx.jpeg", NSFWLevel: 16}},
+		maturityRange{maturityPG, maturityPG}))
+	if !strings.Contains(none, "No showcase images.") {
+		t.Errorf("a carousel with nothing in band should say so:\n%s", none)
+	}
+	if strings.Contains(none, "xxx.jpeg") {
+		t.Error("the empty-state carousel LEAKED the omitted URL")
 	}
 }
 
-// TestHandleModelCardCarouselHonorsPersistedNSFW proves the endpoint reads the
-// persisted nsfw_display setting (show) rather than defaulting.
-func TestHandleModelCardCarouselHonorsPersistedNSFW(t *testing.T) {
+// TestHandleModelCardCarouselHonorsPersistedRange proves the endpoint reads the
+// persisted maturity_range setting rather than defaulting.
+func TestHandleModelCardCarouselHonorsPersistedRange(t *testing.T) {
 	var calls int32
 	reader := countingModelReader{calls: &calls, raw: modelCardRawJSON(t)}
 	srv := newModelServer(t, reader)
-	if err := srv.store.SetSetting(nsfwSettingKey, NSFWShow); err != nil {
+	if err := srv.store.SetSetting(maturitySettingKey, "pg:pg"); err != nil {
 		t.Fatal(err)
 	}
 	body := getModelPage(t, srv, "/library/model-card/7")
-	if !strings.Contains(body, "nsfw.jpeg") {
-		t.Error("show mode: the endpoint should render the NSFW showcase image")
-	}
-	if strings.Contains(body, `data-blurred="1"`) {
-		t.Error("show mode: the endpoint must not blur any showcase image")
+	if strings.Contains(body, "nsfw.jpeg") {
+		t.Errorf("a PG-only range LEAKED the NSFW showcase image:\n%s", body)
 	}
 	if !strings.Contains(body, "safe.jpeg") {
-		t.Error("show mode: the safe showcase image should still render")
+		t.Error("the PG showcase image should still render")
+	}
+	if strings.Contains(body, `data-blurred="1"`) {
+		t.Error("the endpoint must not blur any showcase image — blur is gone")
 	}
 }
 

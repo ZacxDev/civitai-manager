@@ -542,7 +542,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /models/{id}/unsubscribe", s.handleModelUnsubscribe)
 	mux.HandleFunc("GET /creators/{username}", s.handleCreator)
 
-	mux.HandleFunc("POST /settings/nsfw", s.handleSetNSFWDisplay)
+	mux.HandleFunc("POST /settings/maturity", s.handleSetMaturity)
 	mux.HandleFunc("POST /settings/theme", s.handleSetTheme)
 	mux.HandleFunc("POST /settings/outputs-rail", s.handleSetOutputsRail)
 

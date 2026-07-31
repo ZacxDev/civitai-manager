@@ -42,7 +42,7 @@ func TestGalleryTileVideoMarkers(t *testing.T) {
 	const uuid = "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/ad0eb2e0-c228-4131-956d-ca01b95552d3"
 	vidURL := uuid + "/clip.mp4"
 
-	vidHTML := renderString(t, galleryTile(galleryImage{URL: vidURL, Width: 1024, Type: "video"}, "cm-meta-v", false))
+	vidHTML := renderString(t, galleryTile(galleryImage{URL: vidURL, Width: 1024, Type: "video"}, "cm-meta-v"))
 	if !strings.Contains(vidHTML, `data-video="1"`) {
 		t.Errorf("video tile should carry data-video=\"1\"; html:\n%s", vidHTML)
 	}
@@ -59,7 +59,7 @@ func TestGalleryTileVideoMarkers(t *testing.T) {
 		t.Errorf("video tile src should be the anim=false poster; html:\n%s", vidHTML)
 	}
 
-	imgHTML := renderString(t, galleryTile(galleryImage{URL: uuid + "/pic.jpeg", Width: 1024, Type: "image"}, "cm-meta-i", false))
+	imgHTML := renderString(t, galleryTile(galleryImage{URL: uuid + "/pic.jpeg", Width: 1024, Type: "image"}, "cm-meta-i"))
 	if strings.Contains(imgHTML, "data-video") {
 		t.Errorf("image tile must NOT carry data-video; html:\n%s", imgHTML)
 	}
@@ -249,7 +249,7 @@ func TestModelHeaderUpdatedDegradesAndEscapes(t *testing.T) {
 func TestSearchCardUpdated(t *testing.T) {
 	it := civitai.ModelListItem{ID: 9, Name: "Vid Model", Type: "Checkpoint"}
 
-	set := renderString(t, modelCard(it, nil, nil, NSFWShow, "csrf",
+	set := renderString(t, modelCard(it, nil, nil, fullMaturityRange(), "csrf",
 		modelUpdateInfo{At: time.Now().Add(-2 * 24 * time.Hour), Name: "v9"}))
 	if !strings.Contains(set, "Updated 2 days ago") {
 		t.Errorf("search card should render \"Updated 2 days ago\"; html:\n%s", set)
@@ -260,7 +260,7 @@ func TestSearchCardUpdated(t *testing.T) {
 		}
 	}
 
-	zero := renderString(t, modelCard(it, nil, nil, NSFWShow, "csrf", modelUpdateInfo{}))
+	zero := renderString(t, modelCard(it, nil, nil, fullMaturityRange(), "csrf", modelUpdateInfo{}))
 	if strings.Contains(zero, "Updated") {
 		t.Errorf("search card should omit \"Updated\" when zero; html:\n%s", zero)
 	}
@@ -271,7 +271,7 @@ func TestSearchCardUpdated(t *testing.T) {
 // (/models/{id}?version={vid}) when the version id is known.
 func TestSearchCardUpdatedDeeplink(t *testing.T) {
 	it := civitai.ModelListItem{ID: 9, Name: "Vid Model", Type: "Checkpoint"}
-	out := renderString(t, modelCard(it, nil, nil, NSFWShow, "csrf",
+	out := renderString(t, modelCard(it, nil, nil, fullMaturityRange(), "csrf",
 		modelUpdateInfo{At: time.Now().Add(-2 * 24 * time.Hour), Name: "v9", VersionID: 42}))
 	if !strings.Contains(out, `href="/models/9?version=42"`) {
 		t.Errorf("search card latest-version line should deeplink to the version page; html:\n%s", out)
@@ -298,7 +298,7 @@ func TestUpdatedPopBodyPlainWithoutVersionID(t *testing.T) {
 // into a search card's updated popover is escaped.
 func TestSearchCardUpdatedEscapesVersionName(t *testing.T) {
 	it := civitai.ModelListItem{ID: 9, Name: "Vid Model", Type: "Checkpoint"}
-	out := renderString(t, modelCard(it, nil, nil, NSFWShow, "csrf",
+	out := renderString(t, modelCard(it, nil, nil, fullMaturityRange(), "csrf",
 		modelUpdateInfo{At: time.Now().Add(-1 * time.Hour), Name: `<img src=x onerror=alert(1)>`}))
 	if strings.Contains(out, "<img src=x onerror=alert(1)>") {
 		t.Errorf("version name must be escaped in the search card popover; html:\n%s", out)

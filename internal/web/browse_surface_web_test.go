@@ -249,7 +249,7 @@ func TestSearchResultsFragmentIsUnchangedByTheSurface(t *testing.T) {
 // TestSearchEmptyStateIsNotACardInsideTheSurface: the no-match state used to be
 // wrapped in its own card, which now sits INSIDE the surface card.
 func TestSearchEmptyStateIsNotACardInsideTheSurface(t *testing.T) {
-	got := renderString(t, searchResults(&civitai.ModelSearchResult{}, nil, "blur", "tok", ""))
+	got := renderString(t, searchResults(&civitai.ModelSearchResult{}, nil, fullMaturityRange(), "tok", ""))
 	if cardOpen.MatchString(got) {
 		t.Errorf("the empty state must not open a card inside the browse surface:\n%s", got)
 	}
@@ -261,19 +261,45 @@ func TestSearchEmptyStateIsNotACardInsideTheSurface(t *testing.T) {
 	}
 }
 
-// TestBrowseSurfacesHonourNSFWMode: the surfaces render cards that respect the
-// stored NSFW display mode, unchanged by the layout work.
-func TestBrowseSurfacesHonourNSFWMode(t *testing.T) {
-	srv := newBrowseServer(t, &civitai.ModelSearchResult{
-		Items: []civitai.ModelListItem{{ID: 5, Name: "A Model", NSFW: true}},
-		Raw: []byte(`{"items":[{"id":5,"name":"A Model","nsfw":true,` +
-			`"modelVersions":[{"id":1,"images":[{"url":"https://example.invalid/a.jpg","nsfwLevel":8}]}]}]}`),
-	})
-	if err := srv.store.SetSetting("nsfw_mode", "blur"); err != nil {
-		t.Fatalf("set nsfw mode: %v", err)
+// TestBrowseSurfacesHonourTheMaturityRange: the browse surfaces render cards that
+// respect the stored range, unchanged by the layout work. The fixture's only
+// showcase image is level 8 (X), so a PG-only band must leave the card with no
+// image at all rather than a styled one.
+func TestBrowseSurfacesHonourTheMaturityRange(t *testing.T) {
+	newSrv := func() *Server {
+		return newBrowseServer(t, &civitai.ModelSearchResult{
+			Items: []civitai.ModelListItem{{ID: 5, Name: "A Model", NSFW: true}},
+			Raw: []byte(`{"items":[{"id":5,"name":"A Model","nsfw":true,` +
+				`"modelVersions":[{"id":1,"images":[{"url":"https://example.invalid/a.jpg","nsfwLevel":8}]}]}]}`),
+		})
 	}
-	body := browseBody(t, srv, "/search?q=x")
-	if !strings.Contains(body, "cm-blur") {
-		t.Errorf("blur mode not applied on the search surface:\n%s", body)
+
+	narrow := newSrv()
+	if err := narrow.store.SetSetting(maturitySettingKey, "pg:pg"); err != nil {
+		t.Fatalf("set maturity range: %v", err)
+	}
+	body := browseBody(t, narrow, "/search?q=x")
+	if strings.Contains(body, "example.invalid/a.jpg") {
+		t.Errorf("a PG-only band LEAKED the X showcase image URL:\n%s", body)
+	}
+	if !strings.Contains(body, "No showcase images.") {
+		t.Errorf("a card whose every image is out of band should say so:\n%s", body)
+	}
+	// The MODEL itself is still listed: a model's own nsfwLevel is a bitmask union,
+	// not a comparable level, so the range filters IMAGES, never whole results.
+	if !strings.Contains(body, "A Model") {
+		t.Errorf("the model card must still be listed:\n%s", body)
+	}
+
+	wide := newSrv()
+	if err := wide.store.SetSetting(maturitySettingKey, "pg:xxx"); err != nil {
+		t.Fatalf("set maturity range: %v", err)
+	}
+	body = browseBody(t, wide, "/search?q=x")
+	if !strings.Contains(body, "example.invalid/a.jpg") {
+		t.Errorf("the full band should render the showcase image:\n%s", body)
+	}
+	if strings.Contains(body, "cm-blur") {
+		t.Errorf("blur is gone — an in-band image renders plain:\n%s", body)
 	}
 }

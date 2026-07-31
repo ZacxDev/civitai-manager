@@ -338,20 +338,80 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   Reduced-motion users never saw this bug at all — the same block sets
   `transform: none`, so no stacking context is created. That is why it survived so
   long and why it can only be caught in a real browser (v0.1.82).
-- **NSFW mode is TWO-STATE in production: `blur ⇄ show`.** The toggle cycles only
-  those two (`layout.go` `nsfwToggle`), and `normalizeNSFWMode` **migrates any
-  stored `hide` → `blur`**. Every caller passes the normalized mode, so the
-  server-side `NSFWHide` omit branches are **UNREACHABLE in production** — they
-  are an inert, preserved capability that is still worth keeping unit-testable.
-  Do NOT write or trust a test asserting "hide omits" as live behaviour, and do
-  not claim three modes in user-facing docs (two independent agents and a live
-  grep caught that claim in 2026-07).
-  `blur` is a **browser-side CSS filter** — the unblurred bytes still go over the
-  wire — so it is a shoulder-surfing guard, not an access control. Anything that
-  must not be served has to be omitted server-side.
-  **Open decision:** either restore a real `hide` (re-add it to the cycle and stop
-  normalizing it away) or drop the "hide must OMIT" invariant. Today the code and
-  this file disagree.
+- **Maturity is a PG..XXX RANGE, and out-of-range content is OMITTED SERVER-SIDE.**
+  (This supersedes the old two-state `blur ⇄ show` NSFW toggle, v0.1.92. The old
+  "restore a real hide vs drop the omit invariant" open decision is **CLOSED**:
+  omission is now the only behaviour, and blur is gone.)
+  One app-wide setting — `maturity_range` in `settings`, `"<min>:<max>"` over the
+  slugs `pg | pg13 | r | x | xxx` (`internal/web/maturity.go`). Content whose level
+  falls outside the band is **never emitted**: its URL does not reach the DOM.
+  Content inside renders **plain**.
+  **BLUR IS DEAD — do not reintroduce it.** `.cm-blur`, `data-nsfw`, `cmReveal`,
+  `data-blurred` and the reveal overlay are all removed; a CSS filter only smeared
+  pixels the browser had already downloaded, so it was a shoulder-surfing guard,
+  never a filter. `internal/web/assets/app.css` carries tombstone comments where
+  the two blur rules lived, deliberately **not** spelling out the old selectors, so
+  a guard test grepping for them cannot be satisfied by a comment (that exact false
+  pass happened while `class_coverage_web_test.go` was being updated).
+  🔴 **FILTER ON THE NUMERIC `browsingLevel`, NEVER THE STRING `nsfwLevel`.** The
+  two payloads disagree about which field is which, and the string one is lossy:
+  - `/api/v1/images` items carry a STRING `nsfwLevel` **and** a numeric
+    `browsingLevel`. **The string COLLAPSES the top two steps**: measured
+    2026-07-31 on `modelVersionId=3112728&nsfw=X&limit=100`, **41 items at
+    `browsingLevel` 8 and 40 at 16 — all 81 labelled `"X"`**. A string-driven scale
+    therefore cannot express "X only" or "up to X" and silently leaks XXX.
+    `civitai.LeveledImage` (`internal/civitai/image_levels.go`) exists solely
+    because `sdk.ImageItem` decodes only the string. The items also carry a bare
+    `nsfw` bool — coarser still; never use it.
+  - The INLINE `modelVersions[].images[]` on `/api/v1/models` is the opposite:
+    `nsfwLevel` is already the NUMBER (1|2|4|8|16) and there is **no**
+    `browsingLevel` key at all.
+  The measured scale: `1=PG, 2=PG-13, 4=R, 8=X, 16=XXX`. **32 = Blocked is a
+  moderation bucket, not a scale step** — it maps to `maturityUnknown` and is
+  omitted at every range, the full one included.
+  **The API cannot express a range — request a CEILING, filter the response.**
+  `/api/v1/images`' `nsfw` is a ceiling returning a MIX at and below it (measured:
+  `Mature` → Mature 77, Soft 17, X 1, None 5). Its enum, read out of the API's own
+  400 body, is **`None|Soft|Mature|X|Blocked`** — there is **no `XXX`**, so a
+  top-of-scale band asks for `X` and filters down. It fails **LOUDLY** (400), so
+  `imagesNSFWCeiling` may only ever emit an accepted value.
+  **`/api/v1/models` takes only a BOOLEAN** — `nsfw=Mature` is a 400 (`expected
+  boolean … "true"|"1"|"yes"|…`). So the range degrades to one bit there
+  (`modelsNSFWFlag`: true unless the band tops out at PG), and **a model is never
+  omitted by the range**: a model's own `nsfwLevel` is a BITMASK UNION of its
+  images' levels (measured 31 = 1|2|4|8|16, 60 = 4|8|16|32), not a comparable
+  level. Filtering happens per showcase IMAGE.
+  **Over-fetch and clamp.** Because the ceiling returns a mix, the community feed
+  fetches `communityFetchLimit` (4× `communityPageSize`) and renders up to a page.
+  The factor is justified against the measured worst case — a single-level band at
+  the top of the `X` ceiling is ~40% of the response. A thin band renders SHORT;
+  it is never padded. `communityFetchLimit` shapes the cached body but is **not**
+  part of the cache key, so changing it needs a cache invalidation like `0018`.
+  **The community cache key is the CEILING** (`community_cache.nsfw`, since 0017),
+  so two ranges resolving to the same ceiling share a body (correct — the band
+  filter runs at render time) and two that differ can never share one.
+  🔴 **"No level" is NOT `maturityUnknown`.** The outputs rail, the outputs gallery
+  and the per-batch gallery are the user's **own** generations: nobody rated them,
+  and they are OUT OF SCOPE of a scale describing CivitAI material. They render in
+  full at **every** range — `railData.visible()` deliberately takes no range at
+  all. `maturityUnknown` is the fail-CLOSED answer for CivitAI content whose
+  rating we *expected* and did not get (garbage level, Blocked, absent); that is
+  omitted. Conflating the two silently blanks the user's own work.
+  **`maturity()` fails OPEN, the per-item filter fails CLOSED.** A missing or
+  malformed stored range reads back as the FULL range (it is a preference, not an
+  access control, and silently narrowing on a bad read is worse than not
+  filtering); an unrated ITEM is omitted.
+  **The nav control is two native `<select>`s in one CSRF-protected form**
+  (`maturityControl`). Each end offers **only** the levels that keep the band
+  valid, so it cannot emit an inverted range; `handleSetMaturity` **rejects**
+  `min > max` with 400 rather than swapping (which would grant an unasked-for
+  band) or clamping to empty (which reads as a fetch failure). Both halves are
+  load-bearing — the markup constraint only binds a browser.
+  **Migration `0018` maps every old stored mode — `blur`, `show` AND `hide` — to
+  the FULL range**, so nothing the user could already see disappears on upgrade;
+  a fresh install stays setting-less and falls through to the code default. The
+  accepted consequence, agreed explicitly: previously-blurred content now renders
+  in the clear until the user narrows the band.
 - **CSRF on every POST.** All state-changing endpoints carry/validate a CSRF token.
 - **Loopback-gating.** Endpoints that take an arbitrary filesystem path
   (scan/browse/discover) are gated to loopback — do not expose them to non-local

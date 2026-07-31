@@ -19,7 +19,7 @@ type workflowDiscoverView struct {
 	Sort    string
 	Period  string
 	Facets  workflowFacets
-	Mode    string // NSFW display mode
+	Mode    maturityRange // the app-wide PG..XXX maturity band
 	CSRF    string
 	Heading string // section heading above the grid ("" = none)
 	Res     *civitai.ModelSearchResult
@@ -54,7 +54,7 @@ func (s *Server) handleDiscoverWorkflows(w http.ResponseWriter, r *http.Request)
 	v := workflowDiscoverView{
 		Query:  query,
 		Sort:   normalizeSearchSort(q0.Get("sort")),
-		Mode:   s.nsfwMode(),
+		Mode:   s.maturity(),
 		CSRF:   s.csrf,
 		Facets: normalizeWorkflowFacets(q0),
 	}

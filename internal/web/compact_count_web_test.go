@@ -42,7 +42,7 @@ func TestSearchCardRendersCompactCounts(t *testing.T) {
 		{ID: 1, Name: "Cool LoRA", Type: "LORA",
 			Stats: civitai.ModelStats{DownloadCount: 12_345, ThumbsUpCount: 6_789}},
 	}}
-	out := renderString(t, searchResults(res, nil, NSFWBlur, "test-csrf", ""))
+	out := renderString(t, searchResults(res, nil, fullMaturityRange(), "test-csrf", ""))
 
 	// Compact counts still present.
 	if !strings.Contains(out, "12.3K") {

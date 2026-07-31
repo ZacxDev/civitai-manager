@@ -29,11 +29,11 @@ func readAppCSS(t *testing.T) string {
 // workflowDetailPage with a nil section, so what they assert is what production
 // emits — the run controls, the "Open in ComfyUI" hand-off and the helper
 // disclosure all live inside the Generate section now.
-func detailPageNode(wf *store.Workflow, csrf, theme, nsfw string, comfyConfigured bool,
+func detailPageNode(wf *store.Workflow, csrf, theme string, mr maturityRange, comfyConfigured bool,
 	hv comfyHelperView, res workflowResolver) g.Node {
-	gen := generateSection(wf, runSnapshot{}, csrf, true, false, nsfw,
+	gen := generateSection(wf, runSnapshot{}, csrf, true, false, mr,
 		implicitPresetView(wf, nil), comfyConfigured, hv)
-	return workflowDetailPage(wf, csrf, theme, nsfw, gen, nil, res)
+	return workflowDetailPage(wf, csrf, theme, mr, gen, nil, res)
 }
 
 // uiGraphWithParams is a minimal UI-format graph carrying one of every editable
@@ -86,7 +86,7 @@ func TestWorkflowListRunCTAIsPrimaryAndDeepLinks(t *testing.T) {
 func TestGenerateSectionCarriesTheDeepLinkTarget(t *testing.T) {
 	wf := &store.Workflow{ID: 1, Name: "w", Format: store.WorkflowFormatUI, Graph: "{}",
 		Source: store.WorkflowSourceImported}
-	got := renderString(t, detailPageNode(wf, "csrf", "dark", NSFWBlur, true, comfyHelperView{}, workflowResolver{}))
+	got := renderString(t, detailPageNode(wf, "csrf", "dark", fullMaturityRange(), true, comfyHelperView{}, workflowResolver{}))
 
 	if !strings.Contains(got, `id="cm-generate"`) {
 		t.Errorf("the Generate section must carry the deep-link id:\n%s", got)
@@ -319,7 +319,7 @@ func TestWorkflowListViewPostReplacesTheRawModelLink(t *testing.T) {
 func TestWorkflowDetailViewPostReplacesTheRawModelLink(t *testing.T) {
 	wf := &store.Workflow{ID: 1, Name: "w", Format: store.WorkflowFormatAPI, Graph: "{}",
 		Source: store.WorkflowSourceImported, ModelID: intp(42), VersionID: intp(99)}
-	got := renderString(t, detailPageNode(wf, "csrf", "dark", NSFWBlur, false, comfyHelperView{}, workflowResolver{}))
+	got := renderString(t, detailPageNode(wf, "csrf", "dark", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{}))
 
 	if !strings.Contains(got, `href="/models/42" data-civitai-ui="button"`) {
 		t.Errorf("the detail page must offer the same View post button:\n%s", got)
@@ -337,8 +337,8 @@ func TestWorkflowDetailHidesShowcaseCopyAndRawJSON(t *testing.T) {
 	wf := &store.Workflow{ID: 1, Name: "w", Format: store.WorkflowFormatUI,
 		Graph:  `{"nodes":[{"id":1,"type":"KSampler","pos":[0,0],"size":[100,50]}],"links":[]}`,
 		Source: store.WorkflowSourceImported, ModelID: intp(42)}
-	got := renderString(t, detailPageNode(wf, "csrf", "dark", NSFWShow, false,
-		comfyHelperView{}, showcaseResolver(raw, NSFWShow)))
+	got := renderString(t, detailPageNode(wf, "csrf", "dark", fullMaturityRange(), false,
+		comfyHelperView{}, showcaseResolver(raw, fullMaturityRange())))
 
 	// The carousel is still there — only its caption is gone.
 	if !strings.Contains(got, "cm-showcase-lg") {
@@ -362,7 +362,7 @@ func TestWorkflowDetailFoldsNonKeyDetails(t *testing.T) {
 	wf := &store.Workflow{ID: 1, Name: "w", Format: store.WorkflowFormatAPI, Graph: "{}",
 		Source: store.WorkflowSourceScanned, SourcePath: "/disk/wf.json",
 		ModelID: intp(42), VersionID: intp(99)}
-	got := renderString(t, detailPageNode(wf, "csrf", "dark", NSFWBlur, false, comfyHelperView{}, workflowResolver{}))
+	got := renderString(t, detailPageNode(wf, "csrf", "dark", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{}))
 
 	for _, want := range []string{
 		`class="cm-meta-reveal mt-3"`,
@@ -393,7 +393,7 @@ func TestWorkflowDetailEscapesHostileNameAndPath(t *testing.T) {
 		ID: 1, Name: `<script>alert('n')</script>`, Format: store.WorkflowFormatAPI, Graph: "{}",
 		Source: store.WorkflowSourceScanned, SourcePath: `/disk/<img src=x onerror=alert(1)>.json`,
 	}
-	got := renderString(t, detailPageNode(wf, "csrf", "dark", NSFWBlur, false, comfyHelperView{}, workflowResolver{}))
+	got := renderString(t, detailPageNode(wf, "csrf", "dark", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{}))
 	for _, bad := range []string{"<script>alert(", "<img src=x"} {
 		if strings.Contains(got, bad) {
 			t.Errorf("hostile name/path leaked unescaped (%q):\n%s", bad, got)
@@ -412,7 +412,7 @@ func TestWorkflowDetailEscapesHostileNameAndPath(t *testing.T) {
 func TestGenerateSectionCombinesTheThreeRunSurfaces(t *testing.T) {
 	wf := &store.Workflow{ID: 3, Name: "ui", Format: store.WorkflowFormatUI, Graph: "{}",
 		Source: store.WorkflowSourceImported}
-	got := renderString(t, detailPageNode(wf, "csrf", "dark", NSFWBlur, true, comfyHelperView{}, workflowResolver{}))
+	got := renderString(t, detailPageNode(wf, "csrf", "dark", fullMaturityRange(), true, comfyHelperView{}, workflowResolver{}))
 
 	if strings.Count(got, `>Generate<`) < 1 {
 		t.Errorf("the section must be titled Generate:\n%s", got)
@@ -453,7 +453,7 @@ func TestGenerateSectionCombinesTheThreeRunSurfaces(t *testing.T) {
 func TestOpenInComfyStaysARealPostForm(t *testing.T) {
 	wf := &store.Workflow{ID: 3, Name: "ui", Format: store.WorkflowFormatUI, Graph: "{}",
 		Source: store.WorkflowSourceImported}
-	got := renderString(t, detailPageNode(wf, "csrf-tok", "dark", NSFWBlur, true, comfyHelperView{}, workflowResolver{}))
+	got := renderString(t, detailPageNode(wf, "csrf-tok", "dark", fullMaturityRange(), true, comfyHelperView{}, workflowResolver{}))
 
 	if !strings.Contains(got, `<form method="post" action="/workflows/3/open-in-comfyui" target="_blank"`) {
 		t.Errorf("Open in ComfyUI must be a real POST form opening a new tab:\n%s", got)
@@ -546,7 +546,7 @@ func TestGenerateSectionDegradesWhenComfyIsUnreachable(t *testing.T) {
 // -circuits the whole section (no run controls, no cloud block, no editor hand-off).
 func TestGenerateSectionGatedOffLoopback(t *testing.T) {
 	wf := &store.Workflow{ID: 3, Format: store.WorkflowFormatUI, Graph: "{}"}
-	got := renderString(t, generateSection(wf, runSnapshot{}, "csrf", false, false, NSFWBlur,
+	got := renderString(t, generateSection(wf, runSnapshot{}, "csrf", false, false, fullMaturityRange(),
 		implicitPresetView(wf, nil), true, comfyHelperView{}))
 	if !strings.Contains(got, "non-loopback") {
 		t.Errorf("the gated section must explain itself:\n%s", got)
@@ -564,7 +564,7 @@ func TestGenerateSectionGatedOffLoopback(t *testing.T) {
 // clobber a half-typed prompt.
 func TestGenerateSectionKeepsRunParamsAndRunStatusSiblings(t *testing.T) {
 	wf := &store.Workflow{ID: 3, Format: store.WorkflowFormatUI, Graph: uiGraphWithParams}
-	got := renderString(t, generateSection(wf, runSnapshot{}, "csrf", true, false, NSFWBlur,
+	got := renderString(t, generateSection(wf, runSnapshot{}, "csrf", true, false, fullMaturityRange(),
 		implicitPresetView(wf, nil), true, comfyHelperView{}))
 
 	pi := strings.Index(got, `id="`+runParamsContainerID+`"`)
@@ -694,7 +694,7 @@ func TestGraphPreviewIsPannableAndKeyboardReachable(t *testing.T) {
 	graph := `{"nodes":[{"id":1,"type":"KSampler","pos":[0,0],"size":[100,50]}],"links":[]}`
 	wf := &store.Workflow{ID: 1, Name: "w", Format: store.WorkflowFormatUI, Graph: graph,
 		Source: store.WorkflowSourceImported}
-	got := renderString(t, detailPageNode(wf, "csrf", "dark", NSFWBlur, false, comfyHelperView{}, workflowResolver{}))
+	got := renderString(t, detailPageNode(wf, "csrf", "dark", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{}))
 
 	if !strings.Contains(got, "cm-graph cm-graph-pan") {
 		t.Errorf("the graph container must carry the pan hook:\n%s", got)
@@ -731,7 +731,7 @@ func TestGraphPreviewIsPannableAndKeyboardReachable(t *testing.T) {
 func TestGraphPanScriptIsAbsentWithoutAnSVGPreview(t *testing.T) {
 	wf := &store.Workflow{ID: 1, Name: "w", Format: store.WorkflowFormatAPI,
 		Graph: `{"3":{"class_type":"KSampler","inputs":{}}}`, Source: store.WorkflowSourceImported}
-	got := renderString(t, detailPageNode(wf, "csrf", "dark", NSFWBlur, false, comfyHelperView{}, workflowResolver{}))
+	got := renderString(t, detailPageNode(wf, "csrf", "dark", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{}))
 	if strings.Contains(got, "cm-graph-pan") {
 		t.Errorf("a structured (non-SVG) graph view must not claim to be pannable:\n%s", got)
 	}

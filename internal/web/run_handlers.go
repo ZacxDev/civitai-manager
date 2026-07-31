@@ -255,7 +255,7 @@ func (s *Server) startRunNotice(wf *store.Workflow, opts runOptions) string {
 func (s *Server) renderRunStatus(w http.ResponseWriter, wfID int64, notice string) {
 	s.render(w, http.StatusOK, g.Group([]g.Node{
 		runNoticeLine(notice, false),
-		runStatusFragment(s.runJobState(), wfID, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()),
+		runStatusFragment(s.runJobState(), wfID, s.csrf, s.comfyDownloadEligible(), s.maturity()),
 	}))
 }
 
@@ -793,7 +793,7 @@ func (s *Server) handleWorkflowRunStatus(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "bad workflow id", http.StatusBadRequest)
 		return
 	}
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
+	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
 }
 
 // handleWorkflowRunStop cancels the running run and interrupts ComfyUI.
@@ -813,7 +813,7 @@ func (s *Server) handleWorkflowRunStop(w http.ResponseWriter, r *http.Request) {
 	// The stop button carries the workflow id so the terminal fragment can offer a
 	// "Run again" button; 0 (absent) simply omits it.
 	id, _ := strconv.ParseInt(r.FormValue("workflow_id"), 10, 64)
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.nsfwMode()))
+	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
 }
 
 // handleWorkflowRunView proxies a result image from ComfyUI's /view to the browser

@@ -405,7 +405,7 @@ func (s *Server) handleModelRelatedWorkflows(w http.ResponseWriter, r *http.Requ
 		BaseModel: baseModel,
 		Offered:   offered,
 		Res:       res,
-		Mode:      s.nsfwMode(),
+		MR:        s.maturity(),
 		CSRF:      s.csrf,
 		Imported:  s.importedWorkflowModels(r.Context(), modelIDsOf(res.Items)),
 	}))
@@ -421,8 +421,10 @@ type relatedWorkflowsSection struct {
 	BaseModel string            // canonical table value, display only
 	Offered   []civitai.UseCase // chip vocabulary (this model's own resolved use cases)
 	Res       *civitai.ModelSearchResult
-	Mode      string
-	CSRF      string
+	// MR is the user's maturity band. Out-of-band showcase images are OMITTED by
+	// modelCardCore, server-side — this field is not a display mode.
+	MR   maturityRange
+	CSRF string
 	// Imported maps a card's civitai model id → how many workflows the local
 	// library already holds from it. Built by ONE batched query per render.
 	Imported map[int]int
@@ -474,7 +476,7 @@ func relatedWorkflowsResults(v relatedWorkflowsSection) g.Node {
 	} else {
 		body = h.Div(h.Class("cm-cardgrid"),
 			g.Map(items, func(it civitai.ModelListItem) g.Node {
-				return modelCardCore(it, images[it.ID], v.Mode, updated[it.ID],
+				return modelCardCore(it, images[it.ID], v.MR, updated[it.ID],
 					workflowImportOrView(it.ID, v.CSRF, v.Imported[it.ID]))
 			}),
 		)

@@ -17,12 +17,10 @@ import (
 
 const searchLimit = "24"
 
-// nsfwSearchFlag maps the persisted NSFW display mode to the civitai
-// `/api/v1/models` `nsfw` boolean query param: blur/show want the NSFW models
-// AND their showcase images to come through (the client carousel then blurs or
-// shows per mode), while hide wants SFW-only results server-side. Returns true
-// for blur/show, false for hide.
-func (s *Server) nsfwSearchFlag() bool { return s.nsfwMode() != NSFWHide }
+// nsfwSearchFlag is the `/api/v1/models` `nsfw` boolean for the user's current
+// maturity range — see maturityRange.modelsNSFWFlag for why that endpoint gets a
+// boolean and not a level (it 400s on a level name).
+func (s *Server) nsfwSearchFlag() bool { return s.maturity().modelsNSFWFlag() }
 
 // setNSFWParam sets the `nsfw` query param civitai's model search honors:
 // nsfw=true includes NSFW models with their images, nsfw=false restricts to SFW.
@@ -55,7 +53,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			suggestions[i].Name = ent.Name
 		}
 	}
-	s.render(w, http.StatusOK, dashboardPage(subs, suggestions, s.csrf, s.currentTheme(), s.nsfwMode(), s.rail(r.Context())))
+	s.render(w, http.StatusOK, dashboardPage(subs, suggestions, s.csrf, s.currentTheme(), s.maturity(), s.rail(r.Context())))
 }
 
 // subscribeSuggestionLimit caps how many library-derived subscribe suggestions
@@ -159,7 +157,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q0 := r.URL.Query()
 	query := strings.TrimSpace(q0.Get("q"))
 	isHX := r.Header.Get("HX-Request") == "true"
-	mode := s.nsfwMode()
+	mr := s.maturity()
 	nsfw := s.nsfwSearchFlag()
 	sortSel := normalizeSearchSort(q0.Get("sort"))
 	// The empty-query feed defaults to Month (the cached popular default); a keyword
@@ -185,10 +183,10 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			heading = searchHeadingFor(sortSel, periodSel)
 		}
 		if isHX {
-			s.render(w, http.StatusOK, searchResults(res, subs, mode, s.csrf, heading))
+			s.render(w, http.StatusOK, searchResults(res, subs, mr, s.csrf, heading))
 			return
 		}
-		s.render(w, http.StatusOK, searchPage("", res, subs, s.csrf, s.currentTheme(), mode, heading, sortSel, periodSel, s.rail(r.Context())))
+		s.render(w, http.StatusOK, searchPage("", res, subs, s.csrf, s.currentTheme(), mr, heading, sortSel, periodSel, s.rail(r.Context())))
 		return
 	}
 
@@ -199,8 +197,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// AllTime). Period meaningfully applies to Most Downloaded/Highest Rated.
 	q.Set("sort", sortSel)
 	q.Set("period", periodSel)
-	// Tie the nsfw param to the display mode so NSFW models return WITH their
-	// showcase images (blur/show) or are excluded (hide) — see setNSFWParam.
+	// Tie the nsfw param to the maturity range so NSFW models return WITH their
+	// showcase images; the per-image band filter runs at render time (setNSFWParam).
 	setNSFWParam(q, nsfw)
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
@@ -210,14 +208,14 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			s.render(w, http.StatusOK, errorNote("Search failed: "+err.Error()))
 			return
 		}
-		s.render(w, http.StatusOK, searchPage(query, nil, subs, s.csrf, s.currentTheme(), mode, "", sortSel, periodSel, s.rail(r.Context())))
+		s.render(w, http.StatusOK, searchPage(query, nil, subs, s.csrf, s.currentTheme(), mr, "", sortSel, periodSel, s.rail(r.Context())))
 		return
 	}
 	if isHX {
-		s.render(w, http.StatusOK, searchResults(res, subs, mode, s.csrf, ""))
+		s.render(w, http.StatusOK, searchResults(res, subs, mr, s.csrf, ""))
 		return
 	}
-	s.render(w, http.StatusOK, searchPage(query, res, subs, s.csrf, s.currentTheme(), mode, "", sortSel, periodSel, s.rail(r.Context())))
+	s.render(w, http.StatusOK, searchPage(query, res, subs, s.csrf, s.currentTheme(), mr, "", sortSel, periodSel, s.rail(r.Context())))
 }
 
 // searchFeed fetches a no-query model feed for a chosen sort/period (the empty-
@@ -246,12 +244,12 @@ func (s *Server) searchFeed(parent context.Context, nsfw bool, sort, period stri
 // container. GET-only; the Subscribe action itself is a CSRF-protected POST.
 func (s *Server) handleSubscribeSearch(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
-	mode := s.nsfwMode()
+	mr := s.maturity()
 	// One ListSubscriptions query per render (not per card) → correct subscribe
 	// state on each result card.
 	subs := s.modelSubscriptions()
 	if query == "" {
-		s.render(w, http.StatusOK, subscribeSearchResults(nil, subs, mode, s.csrf))
+		s.render(w, http.StatusOK, subscribeSearchResults(nil, subs, mr, s.csrf))
 		return
 	}
 	q := url.Values{}
@@ -269,7 +267,7 @@ func (s *Server) handleSubscribeSearch(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusOK, errorNote("Search failed: "+err.Error()))
 		return
 	}
-	s.render(w, http.StatusOK, subscribeSearchResults(res, subs, mode, s.csrf))
+	s.render(w, http.StatusOK, subscribeSearchResults(res, subs, mr, s.csrf))
 }
 
 // popularModels returns the "recent popular" model feed (Most Downloaded, this
@@ -289,7 +287,7 @@ func (s *Server) popularModels(parent context.Context, nsfw bool) (*civitai.Mode
 	q.Set("sort", "Most Downloaded")
 	q.Set("period", "Month")
 	q.Set("limit", "24")
-	// Include NSFW models + their showcase images unless the user is in hide mode
+	// Include NSFW models + their showcase images unless the range tops out at PG
 	// (see setNSFWParam) — without this, NSFW models return with images withheld
 	// and their cards show "No showcase images".
 	setNSFWParam(q, nsfw)
@@ -364,7 +362,7 @@ func (s *Server) handleModelVersionStatus(w http.ResponseWriter, r *http.Request
 // GetModel on a miss/stale, served from cache otherwise) — so an already-cached
 // model renders its carousel with ZERO network calls. It parses the showcase
 // images from the SAME inline-image path the model detail page uses and renders
-// modelCardCarousel, honoring the persisted NSFW mode (hide/blur/show) exactly as
+// modelCardCarousel, honoring the persisted maturity range exactly as
 // the search cards do. GET-only, read-only (no CSRF), same outbound-proxy posture
 // as its sibling /models/{id}/{version-status,title,community} GETs. On any error
 // or a model with no images it renders an EMPTY node — never an error box — so the
@@ -385,7 +383,7 @@ func (s *Server) handleModelCardImages(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusOK, g.Text("")) // no images → no carousel (not an error)
 		return
 	}
-	s.render(w, http.StatusOK, modelCardCarousel(id, images, s.nsfwMode()))
+	s.render(w, http.StatusOK, modelCardCarousel(id, images, s.maturity()))
 }
 
 func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
@@ -405,7 +403,7 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 		}
 		// railData{} — an error page skips the outputs rail rather than paying its
 		// two extra queries to decorate a "Not found".
-		s.render(w, status, page("Not found", s.currentTheme(), s.csrf, s.nsfwMode(), railData{}, errNode))
+		s.render(w, status, page("Not found", s.currentTheme(), s.csrf, s.maturity(), railData{}, errNode))
 		return
 	}
 	// Mark which of this model's versions the user already has locally, so the
@@ -448,57 +446,61 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 // (fail-open); this only decides when to PREFER a fresh fetch.
 const communityCacheTTL = time.Hour
 
-// communityImagesNSFWLevel is the CivitAI `nsfw` value the community feed asks
-// for. It is a CONSTANT, and both halves of that are deliberate.
-//
-// WHY A LEVEL AT ALL. /api/v1/images' `nsfw` is a BROWSING LEVEL, not a ceiling,
-// and OMITTING it is equivalent to asking for SFW only. Live-probed 2026-07-30
-// on modelVersionId=3112728 (limit=20), counting the returned nsfwLevel labels:
-//
-//	(absent)     None 20        <- what this endpoint used to send: SFW only
-//	nsfw=None    None 20
-//	nsfw=Soft    Soft 16, None 4
-//	nsfw=Mature  Mature 15, Soft 3, X 1, None 1
-//	nsfw=X       X 17, Mature 3     <- NO SFW items at all
-//	nsfw=true    X 17, Mature 3     <- identical to X
-//	nsfw=false   None 20
-//	nsfw=bogus   HTTP 400           <- unlike `tag`, this one fails LOUDLY
-//
-// So the section could never show an NSFW post, on any model.
-//
-// WHY `Mature` AND NOT `X`/`true`. Mature is the widest mix that STILL RETURNS
-// SFW items, so a SFW model's feed cannot be emptied by the change; X and true
-// drop level-None entirely and would have blanked exactly the models that work
-// today. Re-probed across 17 model versions (NSFW checkpoints, base models,
-// Workflows-type models, SFW LoRAs): `Mature` never returned FEWER items than
-// the no-param request, and returned more on 7 of them.
-//
-// WHY IT DOES NOT FOLLOW THE NSFW TOGGLE. The app's NSFW state is TWO-state
-// (blur ⇄ show) and `blur` is a browser-side CSS filter — the bytes go over the
-// wire either way — so neither state means "fetch less". Deriving a browsing
-// level from it would invent a THIRD NSFW concept the toggle cannot express, and
-// would make `blur` silently act as an access control it explicitly is not. The
-// per-mode treatment already happens where it belongs: communityImageTile blurs
-// or shows each tile by its own nsfwLevel.
-//
-// It is part of the cache KEY (see store 0017), so changing this line
-// self-invalidates every cached body rather than serving the old level's mix.
-const communityImagesNSFWLevel = "Mature"
+// communityPageSize is how many community tiles the section RENDERS.
+const communityPageSize = 12
 
-// communityImagesNSFWSFWLevel is the level used when nsfwSearchFlag() is false —
-// i.e. only if a real `hide` mode is ever restored (it is normalized away today,
-// so this is currently unreachable). "None" is the API's SFW-only browsing level,
-// live-probed: it returns nsfwLevel None exclusively. Sending it rather than
-// omitting the param keeps the request shape identical in both branches, and the
-// cache key still carries the level so the two can never serve each other's body.
-const communityImagesNSFWSFWLevel = "None"
+// communityFetchLimit is how many items the section FETCHES — 4x the page.
+//
+// WHY OVER-FETCH. /api/v1/images' `nsfw` param is a CEILING that returns a mix at
+// and below it (see maturityRange.imagesNSFWCeiling), and the maturity range is a
+// BAND inside that mix. Asking for 12 and then filtering would leave a short page
+// whenever the band is not the whole response.
+//
+// WHY 4x, MEASURED. The ceiling always tracks the range MAX, so the band is
+// normally the large majority of what comes back — from the 2026-07-31 probe
+// (modelVersionId=3112728, limit=100, one request per ceiling):
+//
+//	range PG..PG13 -> ceiling Soft   -> Soft 63 + None 37            = 100% in band
+//	range PG..R    -> ceiling Mature -> Mature 77 + Soft 17 + None 5 = 99%
+//	range R..XXX   -> ceiling X      -> 4:15 + 8:41 + 16:40          = 96%
+//
+// The WORST case is a single-level band at the top, where the ceiling `X` returns
+// BOTH X and XXX and the band takes only one of them:
+//
+//	range X..X     -> ceiling X      -> browsingLevel 8  = 41/100 = 41%
+//	range XXX..XXX -> ceiling X      -> browsingLevel 16 = 40/100 = 40%
+//
+// 4x (48 fetched) yields ~19 in-band items at that worst measured ratio — 1.6x the
+// page — in ONE request, well inside the API's limit ceiling of 200 (`limit=201`
+// is an HTTP 400, probed the same day). A larger factor buys margin nobody needs
+// and makes every cold community feed slower; a smaller one (2x) leaves the two
+// top-of-scale bands right at the edge.
+//
+// 🔴 READ "~19" AS A TYPICAL CASE, NOT A FLOOR. The 40% figure is the worst ratio
+// measured on ONE sampled version; the real floor is ZERO. Counter-example found
+// by audit: modelVersion 2983680 under ceiling X returns {1:17, 2:8, 4:11, 16:12}
+// and NOTHING at level 8, so an x:x band renders an EMPTY feed on a model with 48
+// images available. Per-version distributions are arbitrary — a band can be empty
+// however large the over-fetch, so no factor makes a full page guaranteed.
+//
+// It is NOT possible to guarantee a full page: a version may simply not HAVE 12
+// images in the band. That case renders short, which is honest, rather than
+// paginating a feed whose upstream cursor does not respect the filter.
+//
+// 🔴 This value shapes the CACHED body but is not part of the cache key. Changing
+// it needs a cache invalidation like store migration 0018.
+const communityFetchLimit = communityPageSize * 4
 
 // handleModelCommunity backs the LAZY-loaded community feed at the bottom of the
 // model page: recent-popular civitai images that use the selected model version.
 // It is a GET fragment (no state change, no CSRF) that makes AT MOST ONE bounded
 // outbound SearchImages proxy call — the same egress posture as /models — and
 // NEVER breaks the page. It is CACHE-FIRST + FAIL-OPEN, keyed on
-// (modelID, versionId, communityImagesNSFWLevel):
+// (modelID, versionId, CEILING) — where the ceiling is derived from the user's
+// maturity range MAX. That key is what stops a body fetched for one range from
+// being served to another: two ranges that resolve to the SAME ceiling see the
+// same body (correct — the band filter runs at render time), two that resolve to
+// DIFFERENT ceilings can never share one.
 //
 //  1. A FRESH cached entry (within communityCacheTTL) with items is served with
 //     NO fetch at all.
@@ -517,7 +519,8 @@ func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	versionID := strings.TrimSpace(r.URL.Query().Get("versionId"))
-	mode := s.nsfwMode()
+	mr := s.maturity()
+	ceiling := mr.imagesNSFWCeiling()
 	// Validate versionId is a positive integer before spending an upstream round
 	// trip on it (a malformed value would only earn a rejection from civitai).
 	vid, verr := strconv.Atoi(versionID)
@@ -527,10 +530,10 @@ func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Cache-first: a fresh cached entry with items serves without any fetch.
-	cached, _ := s.store.GetCommunityCache(modelID, vid, communityImagesNSFWLevel)
+	cached, _ := s.store.GetCommunityCache(modelID, vid, ceiling)
 	if cached != nil && time.Since(cached.FetchedAt) < communityCacheTTL {
-		if res, derr := civitai.DecodeImageSearch(cached.Raw); derr == nil && res != nil && len(res.Items) > 0 {
-			s.render(w, http.StatusOK, s.communityFeedFragment(res.Items, mode))
+		if res, derr := civitai.DecodeLeveledImageSearch(cached.Raw); derr == nil && res != nil && len(res.Items) > 0 {
+			s.render(w, http.StatusOK, s.communityFeedFragment(res.Items, mr))
 			return
 		}
 	}
@@ -540,35 +543,36 @@ func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
 	q.Set("modelVersionId", versionID)
 	q.Set("sort", "Most Reactions")
 	q.Set("period", "Month")
-	q.Set("limit", "12")
-	// REQUIRED: without this the response is SFW-only (see communityImagesNSFWLevel).
+	q.Set("limit", strconv.Itoa(communityFetchLimit))
+	// REQUIRED: omitting `nsfw` is equivalent to asking for SFW only. The value is
+	// the CEILING covering the range MAX — never the range itself, which the API
+	// cannot express — and imagesNSFWCeiling only ever emits a value the API
+	// accepts (an invalid one is an HTTP 400, not a silent no-op).
 	//
-	// Gated on nsfwSearchFlag() like EVERY other outbound path (search, discover,
-	// related-workflows). Today that flag is always true — `hide` is normalized away
-	// — so this is the constant in practice. It exists for the open decision in
-	// CLAUDE.md to restore a real `hide`: without the gate, restoring it would keep
-	// fetching Mature, communityImageTile would then omit every NSFW tile, and the
-	// section would silently vanish WHILE a raw body full of NSFW image URLs was
-	// still written to the local DB. Fail-safe for display is not fail-safe at rest.
-	level := communityImagesNSFWLevel
-	if !s.nsfwSearchFlag() {
-		level = communityImagesNSFWSFWLevel
-	}
-	q.Set("nsfw", level)
+	// The egress narrows with the range, not just the render: a PG-only range asks
+	// for `None`, so no NSFW image URL is ever written to the local cache. Fail-safe
+	// for display is not fail-safe at rest.
+	q.Set("nsfw", ceiling)
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
 	res, err := s.reader.SearchImages(ctx, q)
-	if err == nil && res != nil && len(res.Items) > 0 {
-		// Only cache a successful, non-empty response (never poison with empty/error).
-		// Skip caching when the raw body is absent (nothing to re-decode later).
-		if len(res.Raw) > 0 {
-			if perr := s.store.PutCommunityCache(modelID, vid, communityImagesNSFWLevel, res.Raw); perr != nil {
+	// The RAW body is the only source of per-item browsingLevel: the SDK's typed
+	// ImageItem carries just the string label, which cannot separate X from XXX. A
+	// result with no raw body is therefore UNUSABLE here, not merely uncacheable —
+	// rendering it would mean guessing every item's maturity.
+	if err == nil && res != nil && len(res.Raw) > 0 {
+		lev, derr := civitai.DecodeLeveledImageSearch(res.Raw)
+		if derr != nil {
+			s.log.Warn("community feed decode failed", "versionId", versionID, "err", derr)
+		} else if len(lev.Items) > 0 {
+			// Only cache a successful, non-empty response (never poison with empty/error).
+			if perr := s.store.PutCommunityCache(modelID, vid, ceiling, res.Raw); perr != nil {
 				s.log.Warn("cache community feed", "model", modelID, "versionId", vid, "err", perr)
 			}
+			s.render(w, http.StatusOK, s.communityFeedFragment(lev.Items, mr))
+			return
 		}
-		s.render(w, http.StatusOK, s.communityFeedFragment(res.Items, mode))
-		return
 	}
 	if err != nil {
 		s.log.Warn("community feed fetch failed", "versionId", versionID, "err", err)
@@ -576,8 +580,8 @@ func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Fail-open: fall back to the last cached entry (even if stale) with items.
 	if cached != nil {
-		if sres, derr := civitai.DecodeImageSearch(cached.Raw); derr == nil && sres != nil && len(sres.Items) > 0 {
-			s.render(w, http.StatusOK, s.communityFeedFragment(sres.Items, mode))
+		if sres, derr := civitai.DecodeLeveledImageSearch(cached.Raw); derr == nil && sres != nil && len(sres.Items) > 0 {
+			s.render(w, http.StatusOK, s.communityFeedFragment(sres.Items, mr))
 			return
 		}
 	}
@@ -685,13 +689,23 @@ func (s *Server) handleModelDownload(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, downloadFeedback(id, versionID, fileID, "Queued ✓", true))
 }
 
-// nsfwMode returns the persisted global NSFW display mode (default blur).
-func (s *Server) nsfwMode() string {
-	v, err := s.store.GetSettingDefault(nsfwSettingKey, NSFWBlur)
+// maturity returns the persisted app-wide PG..XXX maturity range.
+//
+// It defaults to the FULL range on an absent row, a store error, or a malformed
+// value. That is deliberately fail-OPEN, and it is the one place in this feature
+// that is: the range is a user preference, not an access control, and silently
+// narrowing it on a bad read would make content the user chose to see vanish with
+// no explanation. Fail-CLOSED lives one layer down, on the per-item level
+// (maturityUnknown), where an unrated item really is omitted.
+func (s *Server) maturity() maturityRange {
+	v, err := s.store.GetSettingDefault(maturitySettingKey, "")
 	if err != nil {
-		return NSFWBlur
+		return fullMaturityRange()
 	}
-	return normalizeNSFWMode(v)
+	if r, ok := parseMaturityRange(v); ok {
+		return r
+	}
+	return fullMaturityRange()
 }
 
 // loadModelView fetches and assembles the rich model-detail view: model detail
@@ -714,7 +728,7 @@ func (s *Server) loadModelView(parent context.Context, id, versionParam string) 
 	view := modelDetailView{
 		Model:       m,
 		Description: parseModelDescription(raw),
-		NSFWMode:    s.nsfwMode(),
+		Maturity:    s.maturity(),
 		// Newest publishedAt across all versions → header "Updated X ago".
 		LastUpdated: newestVersionPublishedAt(raw),
 		// Per-version publish times, keyed by version ID → the version tabs' date
@@ -769,18 +783,24 @@ func (s *Server) loadModelView(parent context.Context, id, versionParam string) 
 	// present in the model/version JSON fetched above. This deliberately does NOT
 	// make a separate GET /api/v1/images (SearchImages) call: that call was slow
 	// (20s+, frequently timing out) and its error was silently swallowed into an
-	// empty gallery. The render mode decides what is shown/blurred/omitted.
+	// empty gallery. The maturity range decides which tiles are emitted at all.
 	view.Images = parseVersionImages(versionRaw, raw, selVID)
 	return view, nil
 }
 
-// handleSetNSFWDisplay persists the global NSFW display mode (set from the
-// navbar's 3-state cycling toggle) and asks htmx to refresh so the CURRENT page
-// re-renders under the new mode — whichever page it is (its galleries then
-// hide/blur/show accordingly). This mirrors the theme toggle's HX-Refresh
-// pattern, so the one control works everywhere rather than only on the model
-// page. CSRF-protected like every other state-changing POST.
-func (s *Server) handleSetNSFWDisplay(w http.ResponseWriter, r *http.Request) {
+// handleSetMaturity persists the app-wide PG..XXX maturity range (set from the
+// navbar's two-ended control) and asks htmx to refresh so the CURRENT page
+// re-renders under the new band — whichever page it is. This mirrors the theme
+// toggle's HX-Refresh pattern, so the one control works everywhere rather than
+// only on the model page. CSRF-protected like every other state-changing POST.
+//
+// An INVALID or INVERTED submission (min > max) is REJECTED with 400 and NOTHING
+// is persisted. It is deliberately not normalized: silently swapping the ends
+// would grant a band the user did not ask for, and clamping to an empty band
+// would blank every gallery in a way that reads as a fetch failure. The control
+// itself cannot produce one (see maturityControl), so a 400 here means a
+// hand-made request, not a user mistake.
+func (s *Server) handleSetMaturity(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
@@ -788,9 +808,19 @@ func (s *Server) handleSetNSFWDisplay(w http.ResponseWriter, r *http.Request) {
 	if !s.verifyCSRF(w, r) {
 		return
 	}
-	mode := normalizeNSFWMode(r.FormValue("mode"))
-	if err := s.store.SetSetting(nsfwSettingKey, mode); err != nil {
-		s.renderError(w, "save nsfw setting", err)
+	lo, okLo := maturityFromSlug(r.FormValue("min"))
+	hi, okHi := maturityFromSlug(r.FormValue("max"))
+	if !okLo || !okHi {
+		http.Error(w, "unknown maturity level", http.StatusBadRequest)
+		return
+	}
+	mr := maturityRange{Min: lo, Max: hi}
+	if !mr.valid() {
+		http.Error(w, "inverted maturity range", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.SetSetting(maturitySettingKey, mr.String()); err != nil {
+		s.renderError(w, "save maturity range", err)
 		return
 	}
 	w.Header().Set("HX-Refresh", "true")
@@ -808,13 +838,13 @@ func (s *Server) handleCreator(w http.ResponseWriter, r *http.Request) {
 	res, err := s.reader.SearchModels(ctx, q)
 	if err != nil {
 		// railData{} — see handleModel: error pages skip the rail's queries.
-		s.render(w, http.StatusBadGateway, page("@"+username, s.currentTheme(), s.csrf, s.nsfwMode(), railData{}, errorNote("Could not load creator: "+err.Error())))
+		s.render(w, http.StatusBadGateway, page("@"+username, s.currentTheme(), s.csrf, s.maturity(), railData{}, errorNote("Could not load creator: "+err.Error())))
 		return
 	}
 	// One ListSubscriptions query per render → each model card reflects real
 	// subscribe state (the creator-subscribe button in the header is separate).
 	subs := s.modelSubscriptions()
-	s.render(w, http.StatusOK, creatorPage(username, res, subs, s.csrf, s.currentTheme(), s.nsfwMode(), s.rail(r.Context())))
+	s.render(w, http.StatusOK, creatorPage(username, res, subs, s.csrf, s.currentTheme(), s.maturity(), s.rail(r.Context())))
 }
 
 func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
