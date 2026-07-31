@@ -9,10 +9,14 @@ import (
 )
 
 // TestModelDetailSectionOrder proves the model detail page renders sections in
-// the new order: Header → version tabs → showcase → files/metadata → community →
-// Description → Tags. Specifically: the version tabs come before the showcase,
-// and both the showcase and the files/metadata block come BEFORE the Description
-// heading (the reorder that moved the version region above the description).
+// the current order: header actions (download) → version tabs → version metadata
+// → showcase → community → Description → Tags.
+//
+// It changed with the download-in-header rework: the download used to be a
+// standalone CARD between the showcase and the community feed. It is now the
+// FIRST thing in the header's action group, above the version tabs, and the
+// version-metadata disclosure it used to carry sits directly under those tabs.
+// Everything below the version region is unmoved.
 func TestModelDetailSectionOrder(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
 	body := getModelPage(t, srv, "/models/7")
@@ -25,21 +29,29 @@ func TestModelDetailSectionOrder(t *testing.T) {
 		return i
 	}
 
+	download := idx("cm-dl-menu") // the header's download control
 	tabs := idx("cm-version-tabs")
+	meta := idx("cm-meta-reveal") // the version-metadata disclosure
 	showcase := idx("cm-showcase-lg")
-	files := idx(">Download</h2>") // the download card heading
 	community := idx(`id="community-feed"`)
 	desc := idx(">Description<")
 	tags := idx("cm-tag-chip")
 
-	if !(tabs < showcase) {
-		t.Errorf("version tabs (%d) should render before the showcase (%d)", tabs, showcase)
+	// The retired card's heading must be gone from the page body entirely.
+	if strings.Contains(body, ">Download</h2>") {
+		t.Errorf("the standalone download card heading must be gone from the page body")
 	}
-	if !(showcase < files) {
-		t.Errorf("showcase (%d) should render before files/metadata (%d)", showcase, files)
+	if !(download < tabs) {
+		t.Errorf("the header download control (%d) should render before the version tabs (%d)", download, tabs)
 	}
-	if !(files < community) {
-		t.Errorf("files/metadata (%d) should render before the community feed (%d)", files, community)
+	if !(tabs < meta) {
+		t.Errorf("version tabs (%d) should render before the version metadata (%d)", tabs, meta)
+	}
+	if !(meta < showcase) {
+		t.Errorf("version metadata (%d) should render before the showcase (%d)", meta, showcase)
+	}
+	if !(showcase < community) {
+		t.Errorf("showcase (%d) should render before the community feed (%d)", showcase, community)
 	}
 	if !(community < desc) {
 		t.Errorf("community feed (%d) should render before the Description (%d)", community, desc)
@@ -157,8 +169,12 @@ func TestModelVersionTabsEscaping(t *testing.T) {
 		SelectedVersionID: verID,
 		Version: &civitai.ModelVersionDetail{
 			ID: verID, ModelID: 7, BaseModel: "SDXL",
+			// TWO files: file names are only PRINTED by the header download control's
+			// multi-file menu shape (one file renders a bare "Download" button), so a
+			// single-file fixture would make the escaping assertion below vacuous.
 			Files: []civitai.ModelVersionFile{
 				{ID: 1, Name: "<script>alert('file')</script>.safetensors", Type: "Model", SizeKB: 1024},
+				{ID: 2, Name: "<script>alert('file2')</script>.vae.pt", Type: "VAE", SizeKB: 512},
 			},
 		},
 	}
@@ -171,7 +187,8 @@ func TestModelVersionTabsEscaping(t *testing.T) {
 		t.Error("version name should appear HTML-escaped")
 	}
 
-	files := renderString(t, versionDownloadCard(view, "csrf-token"))
+	// The file list now renders inside the header's download menu, not a card.
+	files := renderString(t, headerDownloadControl(view, "csrf-token"))
 	if strings.Contains(files, "<script>alert('file')") {
 		t.Errorf("file name must be escaped in the file list:\n%s", files)
 	}

@@ -615,7 +615,16 @@ func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, ba
 		// card lives in the swapped container. Selecting a version htmx-swaps this
 		// container's innerHTML so the URL updates (hx-push-url) and scroll is
 		// preserved, without a full reload.
-		h.Div(h.ID(versionRegionID), versionRegionInner(v, sub, csrf, baseURL)),
+		// space-y-6 is the SECTION GUTTER, and it lives HERE rather than on the
+		// cards. <main> already spaces its own direct children by space-y-6, but
+		// #version-region is ONE of those children wrapping four stacked cards, so
+		// everything inside it rendered flush against its neighbours. Fixing it at
+		// the container keeps ONE spacing mechanism: a per-card margin would double
+		// up against <main>'s gutter wherever a card is a direct child of <main>
+		// instead (workflowUsageCard, the description card, …), and every future card
+		// added here would have to remember to carry it. Pinned by
+		// TestSectionCardsAreSpacedAtTheContainer.
+		h.Div(h.ID(versionRegionID), h.Class("space-y-6"), versionRegionInner(v, sub, csrf, baseURL)),
 		// The two workflow-linkage sections sit OUTSIDE #version-region: both are
 		// per-MODEL facts, so a version tab click must not re-render (or re-fetch)
 		// them. Each returns nil when it has nothing, so neither can leave an empty
@@ -639,20 +648,22 @@ func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, ba
 const versionRegionID = "version-region"
 
 // versionRegionInner renders the version-DEPENDENT content of the model page: the
-// combined header + version-tabs card, the showcase carousel for the selected
-// version, the download card, and the lazy community-feed container keyed to the
-// selected version. It is rendered both inside #version-region on the full page
+// combined header + version-tabs + metadata card, the showcase carousel for the
+// selected version, and the lazy community-feed container keyed to the selected
+// version. (There is no longer a download card — the download action lives in the
+// header's action group; see headerDownloadControl.)
+//
+// It is rendered both inside #version-region on the full page
 // AND standalone as the HX-swap response (handleModel's HX path), so a version
 // change re-renders exactly this content — including the active tab highlight and
 // the community feed's lazy `revealed` trigger for the new version id.
 func versionRegionInner(v modelDetailView, sub *store.Subscription, csrf, baseURL string) g.Node {
 	m := v.Model
 	mode := normalizeNSFWMode(v.NSFWMode)
-	// Order: header+tabs (one card) → larger showcase → download → community.
+	// Order: header+tabs+download (one card) → larger showcase → community.
 	return g.Group([]g.Node{
 		modelHeaderCard(v, sub, csrf, baseURL),
 		showcaseCard(m.ID, v.Images, mode),
-		versionDownloadCard(v, csrf),
 		// Workflows-type models are zips of ComfyUI workflow .json — offer a one-click
 		// import into the local workflow library (Discover D2). Other model types are
 		// unaffected.
@@ -830,18 +841,114 @@ func modelHeaderCard(v modelDetailView, sub *store.Subscription, csrf, baseURL s
 						verName, verDate)),
 				),
 			),
-			// Reflect the real subscription state (subscribed → "Subscribed ✓ /
-			// Unsubscribe", not-subscribed → collapsed "Subscribe") and a secondary
-			// "View on CivitAI" link out to the model's civitai.com page.
+			// The header's ACTION group, most-primary first: the selected version's
+			// download (moved here from the retired standalone download card — see
+			// headerDownloadControl), the real subscription state (subscribed →
+			// "Subscribed ✓ / Unsubscribe", not-subscribed → collapsed "Subscribe"),
+			// and a secondary "View on CivitAI" link out to the model's civitai.com
+			// page.
 			h.Div(
 				h.Class("flex flex-col items-end gap-2"),
+				headerDownloadControl(v, csrf),
 				subscribeControl(m.ID, sub, csrf),
 				viewOnCivitaiLink(modelCivitaiURL(baseURL, m.ID)),
 			),
 		),
 		// The version tabs sit on the same card, along its bottom edge.
 		h.Div(h.Class("mt-4"), modelVersionTabs(v)),
+		// …and DIRECTLY under them, the selected version's metadata disclosure.
+		//
+		// WHY HERE. It used to sit at the bottom of the download card, which this
+		// change retires. Base model / publish date / trigger words are facts about
+		// the SELECTED VERSION, and the control that selects that version is the tab
+		// strip immediately above — so "which version, and what is it" stays one
+		// unit. It also has to stay inside #version-region (this card already is), or
+		// a version swap would leave stale metadata on screen. Parking it on the
+		// showcase card instead would have attached version facts to images.
+		//
+		// Still a native <details>: click / Enter / Space, announced as a disclosure,
+		// zero JS. Nil when the version carries none of those facts.
+		headerVersionMetadata(v),
 	)
+}
+
+// headerVersionMetadata is versionMetadataReveal guarded for a nil selected
+// version. It exists because g.If evaluates its node argument EAGERLY — writing
+// g.If(v.Version != nil, versionMetadataReveal(v, v.Version)) inline would
+// dereference a nil version before the condition is ever consulted.
+func headerVersionMetadata(v modelDetailView) g.Node {
+	if v.Version == nil {
+		return nil
+	}
+	return versionMetadataReveal(v, v.Version)
+}
+
+// headerDownloadControl renders the selected version's DOWNLOAD affordance inside
+// the model header's action group. It replaces the standalone download card
+// (versionDownloadCard, retired): the page's primary action now sits with the
+// other header actions instead of a scroll below them.
+//
+// TWO SHAPES, decided purely by file count — the header is a fixed-width action
+// column and has to stay one no matter how many files a version ships:
+//
+//   - EXACTLY ONE file → the direct Download button. ONE click, no menu, no
+//     intermediate step; a menu here would add a step to the common case for
+//     nothing.
+//   - MORE THAN ONE → a single trigger opening a popover that lists every file
+//     with its size and type. That bounds the header's width at any file count
+//     (some versions ship a dozen files).
+//
+// ZERO files → NO control at all, not an empty menu. That deliberately covers the
+// "version carries a DownloadURL but no file list" case as well: POST
+// /models/{id}/download REQUIRES a fileId > 0 (handleModelDownload answers
+// "Invalid request" for fileID <= 0), so a version-level URL with no file rows is
+// NOT actionable through this endpoint. A button that could only ever fail would
+// be a lie; rendering nothing is the honest degradation.
+func headerDownloadControl(v modelDetailView, csrf string) g.Node {
+	ver := v.Version
+	if ver == nil || v.Model == nil || len(ver.Files) == 0 {
+		return nil
+	}
+	modelID := v.Model.ID
+
+	if len(ver.Files) == 1 {
+		f := ver.Files[0]
+		return downloadFileButton(modelID, ver.ID, f.ID, csrf,
+			fileHasDownloadURL(f, ver.DownloadURL), "filled")
+	}
+
+	// A native <details>, matching versionMetadataReveal / versionTabsOlder in this
+	// same file rather than inventing a second popover mechanism. Deliberately NOT
+	// the shared .cm-updated HOVER popover: this panel holds real buttons, and a
+	// hover-scoped surface that closes when the pointer strays is hostile to
+	// clicking one. <details> opens on click AND on Enter/Space with the summary
+	// focused, exposes an expanded state to AT, and needs no JS at all.
+	return h.Details(
+		h.Class("cm-dl-menu"),
+		h.Summary(
+			h.Class("cm-dl-menu-sum"),
+			// The civitai button CSS is attribute-driven, so it styles a <summary>
+			// exactly as it styles a <button> — no NEW coloured pair enters
+			// contrast_web_test.go's table.
+			dataAttr("civitai-ui", "button"),
+			dataAttr("variant", "filled"),
+			dataAttr("size", "sm"),
+			// The count is IN the visible label (not only in an aria-label), so the
+			// affordance says how much it is hiding — same rule as versionTabsOlder.
+			g.Text(fmt.Sprintf("Download (%d files)", len(ver.Files))),
+			h.Span(h.Class("cm-dl-menu-chevron"), g.Attr("aria-hidden", "true"), g.Text("›")),
+		),
+		h.Div(
+			h.Class("cm-dl-menu-pop"),
+			fileList(modelID, ver.ID, ver.Files, ver.DownloadURL, csrf),
+		),
+	)
+}
+
+// fileHasDownloadURL reports whether a file can be enqueued at all: it has its own
+// downloadUrl, or the version-level one handleModelDownload falls back to.
+func fileHasDownloadURL(f civitai.ModelVersionFile, versionDownloadURL string) bool {
+	return strings.TrimSpace(f.DownloadURL) != "" || strings.TrimSpace(versionDownloadURL) != ""
 }
 
 // viewOnCivitaiLink renders the header's secondary "View on CivitAI" affordance:
@@ -1261,35 +1368,15 @@ func modelVersionTabs(v modelDetailView) g.Node {
 	)
 }
 
-// versionDownloadCard is the selected version's DOWNLOAD card (formerly the
-// "Files & metadata" card). The primary action stays obvious: the file rows and
-// their Download buttons render first and are always visible. Everything that is
-// merely descriptive — base model, publish date, trigger words — is demoted into a
-// disclosure that is COLLAPSED by default (a plain <details>, so it works with no
-// JS at all and the download action is present whether it is open or shut).
-func versionDownloadCard(v modelDetailView, csrf string) g.Node {
-	ver := v.Version
-	if ver == nil {
-		return card(
-			sectionTitle("Download"),
-			h.P(h.Class("text-sm text-slate-500"), g.Text("Select a version to see its files.")),
-		)
-	}
-	return card(
-		h.Div(
-			h.Class("mb-3 flex flex-wrap items-center justify-between gap-2"),
-			h.H2(h.Class("text-lg font-semibold text-slate-100"), g.Text("Download")),
-			g.If(ver.BaseModel != "", badge(ver.BaseModel, "blue")),
-		),
-		fileList(v.Model.ID, ver.ID, ver.Files, ver.DownloadURL, csrf),
-		versionMetadataReveal(v, ver),
-	)
-}
-
-// versionMetadataReveal is the collapsed-by-default metadata disclosure at the
-// bottom of the download card: base model, publish date, and the copy-able
-// trigger-word chips. Rendered as a native <details> (no JS, keyboard-operable,
-// announced as a disclosure by AT); the open/close motion is CSS in
+// versionMetadataReveal is the collapsed-by-default metadata disclosure carrying
+// the selected version's base model, publish date, and copy-able trigger-word
+// chips. It used to sit at the bottom of the standalone download card; that card
+// is retired (its action moved into the header — see headerDownloadControl) and
+// this disclosure now renders directly under the version tab strip in
+// modelHeaderCard. See the WHY-HERE note there.
+//
+// Rendered as a native <details> (no JS, keyboard-operable, announced as a
+// disclosure by AT); the open/close motion is CSS in
 // .cm-meta-reveal and is disabled under prefers-reduced-motion.
 //
 // It returns nil when the version carries none of those facts, so an empty
@@ -1313,7 +1400,7 @@ func versionMetadataReveal(v modelDetailView, ver *civitai.ModelVersionDetail) g
 		return nil
 	}
 	return h.Details(
-		h.Class("cm-meta-reveal mt-3"),
+		h.Class("cm-meta-reveal mt-4"),
 		h.Summary(
 			h.Class("cm-meta-summary"),
 			h.Span(h.Class("cm-meta-chevron"), g.Attr("aria-hidden", "true"), g.Text("›")),
@@ -1356,15 +1443,20 @@ func triggerWordChips(words []string) g.Node {
 // enqueues the file into the app's download queue (POST /models/{id}/download,
 // CSRF-protected). versionDownloadURL is the version-level fallback used when a
 // file carries no own downloadUrl.
+//
+// It is the body of the header download MENU (headerDownloadControl's >1-file
+// shape). The single-file shape never reaches here — it renders the bare button —
+// and the zero-file case is refused by the caller, so the nil return below is a
+// defensive floor, not a rendered "No files." state.
 func fileList(modelID, versionID int, files []civitai.ModelVersionFile, versionDownloadURL, csrf string) g.Node {
 	if len(files) == 0 {
-		return h.P(h.Class("text-sm text-slate-500"), g.Text("No files."))
+		return nil
 	}
 	var rows []g.Node
 	for i, f := range files {
-		hasURL := strings.TrimSpace(f.DownloadURL) != "" || strings.TrimSpace(versionDownloadURL) != ""
+		hasURL := fileHasDownloadURL(f, versionDownloadURL)
 		// The FIRST file is the version's primary artifact — its Download is the
-		// card's primary action and gets the filled treatment; the rest stay outline
+		// menu's primary action and gets the filled treatment; the rest stay outline
 		// so there is exactly one visually-primary control.
 		variant := "outline"
 		if i == 0 {
@@ -1372,7 +1464,13 @@ func fileList(modelID, versionID int, files []civitai.ModelVersionFile, versionD
 		}
 		rows = append(rows, h.Li(
 			h.Class("cm-dl-file"),
-			h.Span(h.Class("truncate text-sm text-slate-200"), g.Text(f.Name)),
+			// min-w-0 is REQUIRED alongside truncate, not decoration: this is a flex
+			// item, and a flex item's min-width:auto keeps its min-content width (the
+			// whole unbroken filename) as a floor, so truncate alone would blow the
+			// row — and the menu — past the viewport. Pinned by
+			// TestLongUntrustedStringsCanBreak, which accepts `truncate` only paired
+			// with `min-w-0`.
+			h.Span(h.Class("min-w-0 truncate text-sm text-slate-200"), h.Title(f.Name), g.Text(f.Name)),
 			h.Span(h.Class("flex shrink-0 items-center gap-2 text-xs text-slate-500"),
 				g.If(f.Type != "", badge(f.Type, "slate")),
 				g.Text(humanBytes(int64(f.SizeKB*1024))),

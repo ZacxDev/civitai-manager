@@ -41,8 +41,11 @@ func TestModelVersionSwapHXFragment(t *testing.T) {
 		"cm-version-tabs",       // the version tab bar re-renders inside the region
 		"cm-version-tab-active", // an active tab is present after the swap
 		"Showcase images",
-		"cm-showcase-lg",          // the enlarged detail showcase
-		">Download</h2>",          // the download card heading
+		"cm-showcase-lg", // the enlarged detail showcase
+		// The standalone download CARD is retired; the action lives in the header's
+		// action group (headerDownloadControl) and must re-render with the region,
+		// since its files are version-dependent.
+		"cm-dl-menu",              // the multi-file download trigger, in the header
 		"great-model.safetensors", // the selected version's file list
 		`id="community-feed"`,
 		"versionId=11", // community feed keyed to the swapped version

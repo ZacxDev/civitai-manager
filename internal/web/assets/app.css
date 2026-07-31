@@ -1280,11 +1280,92 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 }
 
 /*
- * Model DOWNLOAD card (.cm-dl-file / .cm-meta-reveal) — see versionDownloadCard +
- * versionMetadataReveal in model_pages.go. The card's primary job is the download,
- * so each file is a full-width row (name left, type/size/Download right) that
- * lifts subtly on hover, and everything descriptive is folded into a
- * collapsed-by-default <details>.
+ * Model HEADER download menu (.cm-dl-menu*) — see headerDownloadControl in
+ * model_pages.go. The standalone download card is retired; the action now lives in
+ * the header's action group. One file renders a bare button (no markup here at
+ * all); MORE than one renders this <details>: a summary styled as the civitai
+ * filled button, plus an absolutely-positioned panel holding the .cm-dl-file rows.
+ *
+ * 🔴 STACKING — read the ledger in the APP SHELL block before touching z-index.
+ * The panel sits at the popover tier (50), the same value .cm-updated-pop /
+ * .cm-vstatus-pop use, and that is only SAFE because nothing between it and the
+ * root creates a stacking context: the model header is a plain
+ * [data-civitai-ui=card] (no transform / filter / opacity / isolation, and NOT
+ * .cm-lift, whose hover transform would trap it — see the POPOVER ESCAPE block).
+ * Hit-tested with elementFromPoint in a real browser over the showcase card below
+ * it, whose escaping in-card decoration (video badge 4, carousel button 5, tile
+ * overlay 10/20) is what a lower value would lose to. The UPPER bound matters just
+ * as much: 50 is the tier ceiling, and the panel opens DOWNWARD from the header,
+ * so it never reaches the sticky nav (30) it would otherwise paint over.
+ *
+ * Deliberately a <details>, not the shared .cm-updated HOVER popover: the panel
+ * holds real buttons, and a hover-scoped surface that closes when the pointer
+ * strays between trigger and target is hostile to clicking one.
+ *
+ * Colours are the civitai button tokens (the summary carries
+ * data-civitai-ui=button) plus surface/border/text — no NEW coloured pair, so
+ * contrast_web_test.go's table is unchanged and both data-theme paths render.
+ */
+.cm-dl-menu {
+  position: relative;
+}
+.cm-dl-menu-sum {
+  /* The civitai button rule sets display:inline-flex; these kill the native
+   * disclosure marker in both engines (Blink/WebKit need the pseudo-element
+   * rule, Gecko honours list-style on the summary box). */
+  list-style: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cm-dl-menu-sum::-webkit-details-marker {
+  display: none;
+}
+.cm-dl-menu-chevron {
+  display: inline-block;
+  font-size: 0.95rem;
+  line-height: 1;
+  transition: transform 0.18s ease;
+}
+.cm-dl-menu[open] > .cm-dl-menu-sum .cm-dl-menu-chevron {
+  transform: rotate(90deg);
+}
+.cm-dl-menu-pop {
+  position: absolute;
+  z-index: 50;
+  top: 100%;
+  /* The header action group is `items-end`, so the trigger hugs the card's right
+   * edge — anchoring the panel there keeps it inside the card at every width. */
+  right: 0;
+  margin-top: 0.35rem;
+  /* Bounded on BOTH ends: wide enough for a filename + its size/type/action, and
+   * never wider than the viewport on a phone (the panel is the only thing on the
+   * page that could overflow horizontally, since the rows themselves truncate). */
+  min-width: 18rem;
+  width: max-content;
+  max-width: min(30rem, calc(100vw - 2rem));
+  /* A version can ship many files; scroll rather than run off the page. */
+  max-height: min(24rem, 60vh);
+  overflow-y: auto;
+  padding: 0.5rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--civitai-color-border);
+  background: var(--civitai-color-surface);
+  color: var(--civitai-color-text);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-dl-menu-chevron {
+    transition: none;
+  }
+}
+
+/*
+ * Model version FILE ROWS (.cm-dl-file) + version-metadata disclosure
+ * (.cm-meta-reveal) — see fileList + versionMetadataReveal in model_pages.go.
+ * .cm-dl-file is the body of the header download menu above (name left, type/size/
+ * Download right, lifting subtly on hover); .cm-meta-reveal is the
+ * collapsed-by-default <details> that moved to the bottom of the header card when
+ * the download card was retired.
  *
  * Both the row hover and the disclosure's open motion are pure CSS and are turned
  * off under prefers-reduced-motion. All colors resolve from --civitai-* tokens so
@@ -1667,7 +1748,8 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  *   30  .cm-nav (sticky header)              - above page content
  *   44  .cm-rail-scrim / 45 .cm-rail (mobile drawer) - above the nav, so the
  *       sticky header can never cover an open drawer
- *   50  .cm-vstatus-pop / .cm-updated-pop / the run Fix popover, and the
+ *   50  .cm-vstatus-pop / .cm-updated-pop / .cm-dl-menu-pop (the model header's
+ *       multi-file download menu) / the run Fix popover, and the
  *       #cm-lightbox overlay                 - above everything else
  * The sticky nav therefore sits above page content but BELOW every popover, the
  * lightbox, and the rail drawer.
