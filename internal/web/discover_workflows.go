@@ -23,6 +23,11 @@ type workflowDiscoverView struct {
 	CSRF    string
 	Heading string // section heading above the grid ("" = none)
 	Res     *civitai.ModelSearchResult
+	// Imported maps a card's civitai model id → how many workflows the local
+	// library already holds from it (>0 flips that card's action from Import to
+	// View). Built by ONE batched query for the whole page — never per card, see
+	// Server.importedWorkflowsFn.
+	Imported map[int]int
 }
 
 // handleDiscoverWorkflows backs the "Discover workflows" page: the model search
@@ -78,6 +83,12 @@ func (s *Server) handleDiscoverWorkflows(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// "Already imported?" for the whole page in ONE batched query, before either
+	// render path — the fragment and the full page draw the same grid.
+	if v.Res != nil {
+		v.Imported = s.importedWorkflowModels(r.Context(), modelIDsOf(v.Res.Items))
+	}
+
 	if isHX {
 		s.render(w, http.StatusOK, workflowDiscoverResults(v))
 		return
@@ -108,7 +119,18 @@ func workflowDiscoverPage(v workflowDiscoverView, theme string, rail ...railData
 	return page("Discover workflows", theme, v.CSRF, v.Mode, railOf(rail),
 		browseSurface(browseSurfaceSpec{
 			Title: "Discover workflows",
-			Blurb: "Browse ComfyUI workflows on CivitAI by ecosystem, use case, or keyword. Your search is sent to civitai.com. Importing downloads the workflow zip with your token and stores each workflow locally.",
+			// ⚠ EGRESS DISCLOSURE — READ BEFORE EDITING EITHER HALF.
+			// "Your search is sent to civitai.com" is now the ONLY egress statement
+			// on this surface. The import half — "Importing downloads the workflow
+			// zip with your token and stores each workflow locally." — was removed
+			// here by explicit request, and workflowImportAction deliberately
+			// carries no note of its own (per-card it was noise on a grid of cards,
+			// see its comment block). Consequence, accepted knowingly:
+			// /workflows/discover no longer discloses the IMPORT egress anywhere.
+			// The model DETAIL page's related-workflows section still carries the
+			// sentence, and it is that surface's only egress statement — do not
+			// remove it as "duplicate copy".
+			Blurb: "Browse ComfyUI workflows on CivitAI by ecosystem, use case, or keyword. Your search is sent to civitai.com.",
 			Controls: browseFilterForm("/workflows/discover", "discover-results", "discover",
 				v.Query, "Search workflows by name, tag, …", v.Sort, v.Period,
 				// Carry the selected facets through a sort/period/query change, so
@@ -167,7 +189,8 @@ func workflowDiscoverGrid(v workflowDiscoverView) g.Node {
 	grid := h.Div(
 		h.Class("cm-cardgrid"),
 		g.Map(v.Res.Items, func(it civitai.ModelListItem) g.Node {
-			return modelCardCore(it, images[it.ID], v.Mode, updated[it.ID], workflowImportAction(it.ID, v.CSRF))
+			return modelCardCore(it, images[it.ID], v.Mode, updated[it.ID],
+				workflowImportOrView(it.ID, v.CSRF, v.Imported[it.ID]))
 		}),
 	)
 	if v.Heading == "" {

@@ -370,6 +370,37 @@ func EcosystemsForBaseModel(baseModel string) []Ecosystem {
 	return out
 }
 
+// CanonicalBaseModel resolves one CivitAI `baseModel` string against THIS
+// ecosystem's member list and returns the TABLE's spelling of it.
+//
+// It exists so a base-model name can be DISPLAYED without ever echoing caller
+// text. The "Workflows for Illustrious · SDXL family" heading names two things —
+// the selected version's own base model and the family actually being searched —
+// and the first half reaches the fragment handler as a URL parameter. Echoing
+// that parameter would reflect arbitrary text into the page; returning the table
+// value instead means the heading can only say something the curated table
+// contains.
+//
+// It is scoped to ONE ecosystem on purpose: a base model that resolves to a
+// DIFFERENT family than the `eco` being queried is a mismatched (hand-edited)
+// pair, and ok=false makes the caller fall back to the family label alone rather
+// than print a base model the outgoing query does not cover.
+//
+// Comparison is case-insensitive on a trimmed value; the returned string is
+// always the table's own casing.
+func (e Ecosystem) CanonicalBaseModel(baseModel string) (string, bool) {
+	bm := strings.ToLower(strings.TrimSpace(baseModel))
+	if bm == "" {
+		return "", false
+	}
+	for _, v := range e.BaseModels {
+		if strings.ToLower(v) == bm {
+			return v, true
+		}
+	}
+	return "", false
+}
+
 // EcosystemsForBaseModels is the multi-membership answer for a whole model: the
 // union of the ecosystems of each of its versions' baseModels, in TABLE order
 // (stable and independent of the input order), deduped.

@@ -366,6 +366,65 @@ func (s *Store) CountWorkflowsByModel(ctx context.Context, modelID int) (int, er
 	return n, nil
 }
 
+// CountWorkflowsByModels is the BATCHED form of CountWorkflowsByModel: given the
+// civitai model ids of one rendered PAGE, it returns model id → how many
+// workflows the library holds from that model, omitting ids with none.
+//
+// 🔴 IT MUST STAY ONE QUERY. Its whole reason to exist is the Discover grid,
+// which renders up to `searchLimit` cards per page; asking "is this one imported?"
+// per card would put a DB round-trip on every card of every browse render. The
+// SQL is a single statement:
+//
+//	SELECT model_id, COUNT(*) FROM workflows
+//	WHERE model_id IN (?,?,…) GROUP BY model_id
+//
+// with exactly one placeholder per DISTINCT positive id, so the parameter count is
+// bounded by the page size and can never approach SQLITE_MAX_VARIABLE_NUMBER.
+// Duplicate and non-positive ids are dropped before the query is built, and an
+// empty input set returns an empty map WITHOUT touching the DB (an `IN ()` is a
+// syntax error in SQLite).
+//
+// It carries the IDENTICAL `model_id` predicate as CountWorkflowsByModel and
+// ListWorkflowsByModel — and as the /library?tab=workflows&model=<id> filter — so
+// a card that says "in library" and the list it links to can never disagree.
+// The same honest false-negative applies: see CountWorkflowsByModel's note on why
+// this is the model_id linkage and NOT the graph content hash.
+func (s *Store) CountWorkflowsByModels(ctx context.Context, modelIDs []int) (map[int]int, error) {
+	out := map[int]int{}
+	seen := make(map[int]bool, len(modelIDs))
+	args := make([]any, 0, len(modelIDs))
+	var ph strings.Builder
+	for _, id := range modelIDs {
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if len(args) > 0 {
+			ph.WriteByte(',')
+		}
+		ph.WriteByte('?')
+		args = append(args, id)
+	}
+	if len(args) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT model_id, COUNT(*) FROM workflows
+		 WHERE model_id IN (`+ph.String()+`) GROUP BY model_id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
+
 // ListWorkflowsByModel returns AT MOST `limit` workflows imported from this
 // civitai model id, newest first. It is the list companion to
 // CountWorkflowsByModel and carries the IDENTICAL `model_id = ?` predicate, so

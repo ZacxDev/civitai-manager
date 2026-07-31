@@ -89,9 +89,13 @@ func TestFacetsResolveFromTheSelectedVersionNotTheMajority(t *testing.T) {
 			"ALL versions labels the section 'Workflows for SDXL family' while the user is "+
 			"looking at a Krea 2 version.", lustifyKreaVersionID, got.Eco)
 	}
-	if h := relatedWorkflowsHeading(got); h != "Workflows for Krea 2" {
+	// The Krea version's OWN base model IS the ecosystem label, so the two halves
+	// of the heading collapse to one: "Workflows for Krea 2", never "… Krea 2 ·
+	// Krea 2".
+	if h := relatedWorkflowsHeading(got, "Krea 2"); h != "Workflows for Krea 2" {
 		t.Errorf("heading = %q, want %q — the heading must name the SELECTED version's "+
-			"ecosystem", h, "Workflows for Krea 2")
+			"ecosystem, and must COLLAPSE when the version's base model IS the ecosystem "+
+			"label", h, "Workflows for Krea 2")
 	}
 
 	// …and the SDXL versions still resolve to SDXL. The Krea version is FIRST in the
@@ -102,19 +106,31 @@ func TestFacetsResolveFromTheSelectedVersionNotTheMajority(t *testing.T) {
 		t.Fatalf("with version %d (SDXL 1.0) selected the ecosystem = %v, want sdxl",
 			lustifySDXLVersionID, sdxl.Eco)
 	}
-	if h := relatedWorkflowsHeading(sdxl); h != "Workflows for SDXL family" {
-		t.Errorf("heading = %q, want %q", h, "Workflows for SDXL family")
+	// Here the two halves DIFFER — the version is SDXL 1.0, the family being
+	// searched is the whole SDXL union — so both are named.
+	if h := relatedWorkflowsHeading(sdxl, "SDXL 1.0"); h != "Workflows for SDXL 1.0 · SDXL family" {
+		t.Errorf("heading = %q, want %q", h, "Workflows for SDXL 1.0 · SDXL family")
+	}
+	// No resolvable base model → the family label alone, never a dangling separator.
+	if h := relatedWorkflowsHeading(sdxl, ""); h != "Workflows for SDXL family" {
+		t.Errorf("heading with no base model = %q, want %q", h, "Workflows for SDXL family")
 	}
 }
 
 // TestFacetsAreStableAcrossSameEcosystemVersions: switching between versions that
-// share an ecosystem must produce IDENTICAL facets — which is what makes the
-// re-render free (same hx-get URL → same facetFeed cache key → zero outbound
-// requests). Only an ecosystem CHANGE may cost a fetch.
+// share an ecosystem must produce the IDENTICAL facetFeed CACHE KEY — which is
+// what makes the re-render free (zero outbound requests). Only an ecosystem
+// CHANGE may cost a fetch.
+//
+// It asserts the CACHE KEY, not the fragment URL. The URL now also carries `bm=`
+// (the selected version's own base model, for the heading), which legitimately
+// differs between two SDXL versions — "SDXL 1.0" vs "SDXL Lightning" — while the
+// outbound request and its cache key are byte-identical. Asserting URL equality
+// here would forbid the heading from naming the version at all.
 func TestFacetsAreStableAcrossSameEcosystemVersions(t *testing.T) {
 	m := lustifyShapedModel()
 
-	var want string
+	var want, wantKey string
 	for _, vid := range []int{lustifySDXLVersionID, 2808677, 2875936, 2155386, 1569593, 1094291, 938628} {
 		f := modelWorkflowFacets(m, vid)
 		if f.Eco == nil || f.Eco.Slug != "sdxl" {
@@ -122,22 +138,31 @@ func TestFacetsAreStableAcrossSameEcosystemVersions(t *testing.T) {
 				"in the SDXL family too — the community fine-tune lineages are architecturally "+
 				"SDXL, see the curated table)", vid, f.Eco)
 		}
-		got := relatedWorkflowsPath(m.ID, f)
-		if want == "" {
-			want = got
+		key := facetFeedKey(false, relatedWorkflowsSort, relatedWorkflowsPeriod, f)
+		if wantKey == "" {
+			wantKey = key
+			want = relatedWorkflowsPath(m.ID, f, "", nil)
 			continue
 		}
-		if got != want {
-			t.Fatalf("version %d produced the fragment URL %q, want %q — a same-ecosystem "+
-				"switch must reuse the URL so the facetFeed cache answers it without an "+
-				"outbound request", vid, got, want)
+		if key != wantKey {
+			t.Fatalf("version %d produced the facet cache key %q, want %q — a same-ecosystem "+
+				"switch must hit the facetFeed cache without an outbound request", vid, key, wantKey)
+		}
+		// The request-determining half of the URL (everything but the display-only
+		// `bm`) must also be identical.
+		if got := relatedWorkflowsPath(m.ID, f, "", nil); got != want {
+			t.Fatalf("version %d produced the fragment URL %q, want %q", vid, got, want)
 		}
 	}
 
-	// The Krea version must NOT share that URL, or an ecosystem change would be
+	// The Krea version must NOT share that key, or an ecosystem change would be
 	// served the previous ecosystem's cached feed.
-	krea := relatedWorkflowsPath(m.ID, modelWorkflowFacets(m, lustifyKreaVersionID))
-	if krea == want {
+	kf := modelWorkflowFacets(m, lustifyKreaVersionID)
+	if key := facetFeedKey(false, relatedWorkflowsSort, relatedWorkflowsPeriod, kf); key == wantKey {
+		t.Fatalf("the Krea 2 version produced the same facet cache key as the SDXL versions "+
+			"(%q) — a DIFFERENT ecosystem must miss the cache and refetch", key)
+	}
+	if krea := relatedWorkflowsPath(m.ID, kf, "", nil); krea == want {
 		t.Fatalf("the Krea 2 version produced the same fragment URL as the SDXL versions "+
 			"(%q) — a DIFFERENT ecosystem must miss the cache and refetch", krea)
 	}
@@ -192,13 +217,19 @@ func TestVersionSwapRerendersTheSectionWithTheSelectedEcosystem(t *testing.T) {
 	srv := newTestServer(t)
 	srv.reader = r
 
+	// The fragment URL now also carries `bm=` — the SELECTED version's own base
+	// model, for the heading — so the assertions name the WHOLE query string. That
+	// is the point of this pair: the Krea version must ask for bm=Krea 2 + eco=krea
+	// and the SDXL one for bm=SDXL 1.0 + eco=sdxl. url.Values.Encode sorts keys, so
+	// `bm` precedes `eco`. This model's tags resolve to no use case, hence no
+	// `uses=` chip vocabulary.
 	cases := []struct {
 		version int
 		wantEco string
 		badEco  string
 	}{
-		{lustifyKreaVersionID, "eco=krea", "eco=sdxl"},
-		{lustifySDXLVersionID, "eco=sdxl", "eco=krea"},
+		{lustifyKreaVersionID, "bm=Krea+2&amp;eco=krea", "eco=sdxl"},
+		{lustifySDXLVersionID, "bm=SDXL+1.0&amp;eco=sdxl", "eco=krea"},
 	}
 	for _, c := range cases {
 		full := get(t, srv, pathWithVersion(c.version)).Body.String()
@@ -224,7 +255,7 @@ func TestVersionSwapRerendersTheSectionWithTheSelectedEcosystem(t *testing.T) {
 
 	// And the rendered heading actually names it. The fragment handler re-validates
 	// ?eco= through the same whitelist, so this also covers the round trip.
-	body := get(t, srv, "/models/573152/related-workflows?eco=krea").Body.String()
+	body := get(t, srv, "/models/573152/related-workflows?eco=krea&bm=Krea+2").Body.String()
 	if !strings.Contains(body, "Workflows for Krea 2") {
 		t.Errorf("the fragment heading must name the selected version's ecosystem; body = %q",
 			firstN(body, 600))

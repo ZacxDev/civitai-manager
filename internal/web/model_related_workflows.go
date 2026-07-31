@@ -43,7 +43,7 @@ import (
 //	                           repeated `tag=` is HTTP 400, and the three
 //	                           `inpaint` synonyms returned three DIFFERENT sets —
 //	                           which is exactly why the fan-out exists.
-//	sort=Most Downloaded, period=AllTime, nsfw=<from the maturity range>
+//	sort=Most Downloaded, period=AllTime, nsfw=<display mode>
 //
 // THE SIGNAL IS THE ECOSYSTEM OF THE SELECTED VERSION, and it is REQUIRED. Each
 // version carries its own CivitAI `baseModel` string, which maps through the
@@ -120,11 +120,15 @@ func selectedVersionBaseModel(m *civitai.ModelDetail, selectedVersionID int) str
 //   - Eco: from the SELECTED version's `baseModel` string through the curated
 //     table. Exactly one base model is consulted, so the answer is the ecosystem
 //     of the thing the user is looking at.
-//   - Use: from the model's own tags, but only insofar as they hit the curated
-//     use-case vocabulary; the first match in table order. No match simply means
-//     no tag is sent (one broader request), never a guessed one. Tags are a
-//     MODEL-level fact on CivitAI (there is no per-version tag list), so this half
-//     is genuinely version-independent.
+//   - Use: NOT derived here. It used to be auto-picked as the FIRST of the
+//     model's tag-resolved use cases in table order, which is a table-order vote,
+//     not relevance: /models/1386234 carries `controlnet`, `ip adapter`,
+//     `regional prompting`, `upscale` and `detail`, and the section silently
+//     filtered to "Upscaling" purely because `upscale` sits above `detailer` and
+//     `controlnet` in the curated table. The user could neither see why nor change
+//     it. The resolved use cases are now OFFERED as a chip row
+//     (modelUseCaseChoices) with "All" selected by default, so the filter is
+//     chosen and visible rather than guessed.
 //
 // WHY NOT THE UNION OF ALL VERSIONS. It used to be
 // EcosystemsForBaseModels(every version's baseModel) with ecos[0] taken in table
@@ -149,26 +153,106 @@ func modelWorkflowFacets(m *civitai.ModelDetail, selectedVersionID int) workflow
 	if len(ecos) == 0 {
 		return workflowFacets{}
 	}
-	f := workflowFacets{Eco: &ecos[0]}
-	if uses := civitai.UseCasesForTags(m.Tags); len(uses) > 0 {
-		f.Use = &uses[0]
-	}
-	return f
+	// Use is deliberately left nil — "All" is the default. See the note above.
+	return workflowFacets{Eco: &ecos[0]}
 }
 
-// relatedWorkflowsPath builds the lazy fragment's URL. It carries only the
-// resolved facet SLUGS — curated table values, never model text — and the handler
-// re-validates them through the same whitelist anyway, so a hand-edited URL can
-// reach the outbound request with nothing the table does not contain.
-func relatedWorkflowsPath(modelID int, f workflowFacets) string {
+// modelUseCaseChoices is the chip VOCABULARY for one model: the curated use cases
+// that this model's OWN tags resolve to, in table order.
+//
+// Only the model's own resolved use cases are offered — not the whole table.
+// A model with no matching tag gets NO chip row at all (rather than twelve chips
+// that are mostly meaningless for it), and the section then behaves exactly as it
+// does today with no use case selected.
+//
+// Tags are a MODEL-level fact on CivitAI (there is no per-version tag list), so
+// this is version-independent — unlike the ecosystem half.
+func modelUseCaseChoices(m *civitai.ModelDetail) []civitai.UseCase {
+	if m == nil {
+		return nil
+	}
+	return civitai.UseCasesForTags(m.Tags)
+}
+
+// relatedWorkflowsPath builds the lazy fragment's URL.
+//
+// Everything it carries is a CURATED TABLE VALUE, never model text, and the
+// handler re-validates every one of them through the same whitelist anyway:
+//
+//	eco  — the ecosystem slug (drives the outbound baseModels union).
+//	bm   — the SELECTED VERSION's own baseModel, but only when it is a member of
+//	       that ecosystem, and written in the TABLE's casing
+//	       (Ecosystem.CanonicalBaseModel). DISPLAY ONLY: it never reaches
+//	       civitai.com — the outgoing query is the whole family's union either
+//	       way — it only lets the heading name the version the user is looking at
+//	       ("Workflows for Illustrious · SDXL family").
+//	use   — the SELECTED use case, or absent for "All" (the default).
+//	uses  — the use cases OFFERED as chips, i.e. the ones this model's own tags
+//	        resolve to. Slugs only, comma-joined, and re-validated one by one; a
+//	        chip list is a display vocabulary, so an unknown entry is dropped
+//	        rather than rendered.
+func relatedWorkflowsPath(modelID int, f workflowFacets, baseModel string, offered []civitai.UseCase) string {
 	q := url.Values{}
 	if s := f.ecoSlug(); s != "" {
 		q.Set("eco", s)
 	}
+	if f.Eco != nil {
+		// Only a member of THIS ecosystem may be named — see CanonicalBaseModel.
+		if bm, ok := f.Eco.CanonicalBaseModel(baseModel); ok {
+			q.Set("bm", bm)
+		}
+	}
 	if s := f.useSlug(); s != "" {
 		q.Set("use", s)
 	}
+	if s := useCaseSlugList(offered); s != "" {
+		q.Set("uses", s)
+	}
 	return fmt.Sprintf("/models/%d/related-workflows?%s", modelID, q.Encode())
+}
+
+// useCaseSlugList joins use-case slugs for the ?uses= chip vocabulary.
+// A comma join is safe HERE and only here: this value is parsed by US, never
+// forwarded to civitai.com (where a comma-joined `tag` is silently dropped and
+// the UNFILTERED feed comes back).
+func useCaseSlugList(uses []civitai.UseCase) string {
+	if len(uses) == 0 {
+		return ""
+	}
+	slugs := make([]string, 0, len(uses))
+	for _, u := range uses {
+		slugs = append(slugs, u.Slug)
+	}
+	return strings.Join(slugs, ",")
+}
+
+// parseOfferedUseCases resolves the ?uses= chip vocabulary back through the
+// curated table, in TABLE order and deduped, dropping anything unknown.
+//
+// It is a WHITELIST just like ?use=, for a subtly different reason: ?use= must
+// be whitelisted because it reaches the wire, while ?uses= must be whitelisted
+// because it is RENDERED — an un-validated entry would put caller text in a
+// chip's label, and clicking that chip would then hand the same text to ?use=.
+func parseOfferedUseCases(raw string) []civitai.UseCase {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	want := map[string]bool{}
+	for _, s := range strings.Split(raw, ",") {
+		if u, ok := civitai.UseCaseBySlug(s); ok {
+			want[u.Slug] = true
+		}
+	}
+	if len(want) == 0 {
+		return nil
+	}
+	var out []civitai.UseCase
+	for _, u := range civitai.UseCases() {
+		if want[u.Slug] {
+			out = append(out, u)
+		}
+	}
+	return out
 }
 
 // relatedWorkflowsID is the stable container id. It is stable because a version
@@ -227,18 +311,43 @@ func relatedWorkflowsContainer(v modelDetailView, oob bool) g.Node {
 		// No ecosystem for the SELECTED version → render nothing, fetch nothing.
 		return h.Div(append(attrs, g.Attr("hidden"))...)
 	}
+	// selectedVersionBaseModel is the ONE resolution of "which base model is the
+	// user looking at" — modelWorkflowFacets above maps its result to an ecosystem,
+	// and the heading names the value itself. There is no second path.
+	bm := selectedVersionBaseModel(m, v.SelectedVersionID)
 	return h.Div(append(attrs,
-		hx("get", relatedWorkflowsPath(m.ID, f)),
+		hx("get", relatedWorkflowsPath(m.ID, f, bm, modelUseCaseChoices(m))),
 		hx("trigger", "revealed"),
 		hx("swap", "innerHTML"),
 	)...)
 }
 
 // relatedWorkflowsHeading names the ACTUAL filter that produced the grid, so the
-// section can never be a filter the user cannot see ("Workflows for Flux.1 ·
-// Inpainting"). Both parts are curated table labels.
-func relatedWorkflowsHeading(f workflowFacets) string {
-	head := "Workflows for " + f.Eco.Label
+// section can never be a filter the user cannot see.
+//
+// It names BOTH the selected version's own base model and the family actually
+// being searched: "Workflows for Illustrious · SDXL family". The two differ
+// because the curated table deliberately groups the SDXL fine-tune lineages
+// (Illustrious / Pony / NoobAI) into one family — CivitAI's `baseModels` filter
+// unions them and returns far more genuinely-compatible workflows — so the query
+// really is the family's while the version really is one member of it. Naming
+// only the family read as wrong to a user on an Illustrious page; naming only the
+// base model would misdescribe the query. The outgoing request is UNCHANGED by
+// this: it is still the repeated-`baseModels=` union of the whole family.
+//
+// COLLAPSED when the two halves are the same thing. A Krea 2 version sits in the
+// "Krea 2" ecosystem, and "Workflows for Krea 2 · Krea 2" is noise; a base model
+// that is (case-insensitively) the family label prints once.
+//
+// baseModel is a value already resolved through Ecosystem.CanonicalBaseModel, so
+// it is a table string; "" (nothing resolved) falls back to the family label
+// alone. A selected use case is appended as before.
+func relatedWorkflowsHeading(f workflowFacets, baseModel string) string {
+	what := f.Eco.Label
+	if bm := strings.TrimSpace(baseModel); bm != "" && !strings.EqualFold(bm, f.Eco.Label) {
+		what = bm + " · " + f.Eco.Label
+	}
+	head := "Workflows for " + what
 	if f.Use != nil {
 		head += " · " + f.Use.Label
 	}
@@ -268,13 +377,19 @@ func (s *Server) handleModelRelatedWorkflows(w http.ResponseWriter, r *http.Requ
 	// Re-validate the facets against the curated table. normalizeWorkflowFacets
 	// DROPS anything unknown, so this is the whitelist gate: nothing from the URL
 	// can reach civitai.com except a table value.
-	f := normalizeWorkflowFacets(r.URL.Query())
+	q := r.URL.Query()
+	f := normalizeWorkflowFacets(q)
 	if f.Eco == nil {
 		// No ecosystem → the request would be the unfiltered popular feed. Render
 		// nothing rather than a section pretending to be about this model.
 		s.render(w, http.StatusOK, relatedWorkflowsAbsent())
 		return
 	}
+	// Display-only, whitelisted through the same curated table: the version's own
+	// base model (heading) and the use cases this model offers as chips. Neither
+	// changes the outbound request.
+	baseModel, _ := f.Eco.CanonicalBaseModel(q.Get("bm"))
+	offered := parseOfferedUseCases(q.Get("uses"))
 
 	// facetFeed is the SHARED TTL cache the Discover page uses (keyed by
 	// nsfw|sort|period|eco|use), so browsing several models of the same ecosystem
@@ -284,7 +399,35 @@ func (s *Server) handleModelRelatedWorkflows(w http.ResponseWriter, r *http.Requ
 		s.render(w, http.StatusOK, relatedWorkflowsAbsent())
 		return
 	}
-	s.render(w, http.StatusOK, relatedWorkflowsResults(modelID, f, res, s.maturity(), s.csrf))
+	s.render(w, http.StatusOK, relatedWorkflowsResults(relatedWorkflowsSection{
+		ModelID:   modelID,
+		Facets:    f,
+		BaseModel: baseModel,
+		Offered:   offered,
+		Res:       res,
+		MR:        s.maturity(),
+		CSRF:      s.csrf,
+		Imported:  s.importedWorkflowModels(r.Context(), modelIDsOf(res.Items)),
+	}))
+}
+
+// relatedWorkflowsSection is one render of the fragment. It is threaded whole
+// because the heading, the chip row and the card grid all need the same
+// facet + base-model + model-id tuple, and a chip that dropped one of them would
+// silently re-render a different section.
+type relatedWorkflowsSection struct {
+	ModelID   int
+	Facets    workflowFacets
+	BaseModel string            // canonical table value, display only
+	Offered   []civitai.UseCase // chip vocabulary (this model's own resolved use cases)
+	Res       *civitai.ModelSearchResult
+	// MR is the user's maturity band. Out-of-band showcase images are OMITTED by
+	// modelCardCore, server-side — this field is not a display mode.
+	MR   maturityRange
+	CSRF string
+	// Imported maps a card's civitai model id → how many workflows the local
+	// library already holds from it. Built by ONE batched query per render.
+	Imported map[int]int
 }
 
 // relatedWorkflowsResults renders the fragment body: the heading, the capped card
@@ -298,10 +441,11 @@ func (s *Server) handleModelRelatedWorkflows(w http.ResponseWriter, r *http.Requ
 // and go through modelCardCore, which is the same renderer the audited
 // /workflows/discover grid uses — including its sanitizer and NSFW handling. No
 // field is interpolated here.
-func relatedWorkflowsResults(modelID int, f workflowFacets, res *civitai.ModelSearchResult, mr maturityRange, csrf string) g.Node {
+func relatedWorkflowsResults(v relatedWorkflowsSection) g.Node {
+	res, f := v.Res, v.Facets
 	items := make([]civitai.ModelListItem, 0, len(res.Items))
 	for _, it := range res.Items {
-		if it.ID == modelID {
+		if it.ID == v.ModelID {
 			continue
 		}
 		items = append(items, it)
@@ -309,10 +453,14 @@ func relatedWorkflowsResults(modelID int, f workflowFacets, res *civitai.ModelSe
 			break
 		}
 	}
-	if len(items) == 0 {
+	if len(items) == 0 && f.Use == nil {
 		// Quiet empty state. An empty first page is NOT proof there is nothing —
 		// CivitAI's period post-filter can under-fill a page — so this says nothing
 		// about the ecosystem, it just shows nothing.
+		//
+		// Only when NO use case is selected. With one selected the section MUST stay
+		// on screen: the chip row is the only way back to "All", and vanishing the
+		// whole section would strand the user on a filter they cannot see or clear.
 		return relatedWorkflowsAbsent()
 	}
 
@@ -321,10 +469,23 @@ func relatedWorkflowsResults(modelID int, f workflowFacets, res *civitai.ModelSe
 	images := parseSearchImages(res.Raw)
 	updated := newestVersionInfoByModel(res.Raw)
 
+	var body g.Node
+	if len(items) == 0 {
+		body = h.P(h.Class("text-xs text-slate-500"),
+			g.Text("No "+f.Use.Label+" workflows in this feed. Pick another filter, or All."))
+	} else {
+		body = h.Div(h.Class("cm-cardgrid"),
+			g.Map(items, func(it civitai.ModelListItem) g.Node {
+				return modelCardCore(it, images[it.ID], v.MR, updated[it.ID],
+					workflowImportOrView(it.ID, v.CSRF, v.Imported[it.ID]))
+			}),
+		)
+	}
+
 	return card(
 		h.Div(h.Class("mb-2 flex flex-wrap items-center justify-between gap-2"),
 			h.H2(h.Class("text-sm font-semibold text-slate-300"),
-				g.Text(relatedWorkflowsHeading(f))),
+				g.Text(relatedWorkflowsHeading(f, v.BaseModel))),
 			h.A(
 				h.Href(discoverHref("", relatedWorkflowsSort, relatedWorkflowsPeriod, f.ecoSlug(), f.useSlug())),
 				h.Class("text-xs text-indigo-400 hover:text-indigo-300"),
@@ -334,10 +495,79 @@ func relatedWorkflowsResults(modelID int, f workflowFacets, res *civitai.ModelSe
 		h.P(h.Class("mb-3 text-xs text-slate-400"),
 			g.Text("ComfyUI workflows on CivitAI built for this model's base-model family. "+
 				"Importing downloads the workflow zip with your token and stores each workflow locally.")),
-		h.Div(h.Class("cm-cardgrid"),
-			g.Map(items, func(it civitai.ModelListItem) g.Node {
-				return modelCardCore(it, images[it.ID], mr, updated[it.ID], workflowImportAction(it.ID, csrf))
-			}),
-		),
+		relatedWorkflowsUseChips(v),
+		body,
 	)
+}
+
+// relatedWorkflowsUseChips renders the use-case PICKER: "All" plus one chip per
+// use case this model's own tags resolve to.
+//
+// Why it exists: the section used to auto-pick the first tag-resolved use case in
+// TABLE ORDER and filter by it silently — on /models/1386234 that showed
+// "· Upscaling" because `upscale` outranks `controlnet` and `detailer` in the
+// table, not because it was the most relevant. The filter is now chosen and
+// visible, and "All" is the default.
+//
+// Each chip is a real <button> (not an <a>): the fragment is loaded by htmx into
+// a container, so there is no page URL to link to, and a button is keyboard-
+// operable and focusable without any of the role/tabindex scaffolding a clickable
+// <a href="#"> would need. Selection is carried by aria-pressed as well as by the
+// .cm-facet-chip-on class, so it is never colour-only. Every chip re-requests the
+// SAME read-only GET endpoint, which re-validates the slug through the curated
+// table — a chip cannot smuggle a value the whitelist would refuse.
+//
+// Rendered only when the model resolves to at least one use case; a chip row of
+// one option ("All") would be a control that does nothing.
+func relatedWorkflowsUseChips(v relatedWorkflowsSection) g.Node {
+	if len(v.Offered) == 0 {
+		return nil
+	}
+	sel := v.Facets.useSlug()
+	chips := []g.Node{relatedWorkflowsUseChip(v, "", "All", sel == "")}
+	for _, u := range v.Offered {
+		chips = append(chips, relatedWorkflowsUseChip(v, u.Slug, u.Label, sel == u.Slug))
+	}
+	return h.Div(
+		h.Class("mb-3 flex flex-wrap items-center gap-1"),
+		g.Attr("role", "group"),
+		g.Attr("aria-label", "Filter these workflows by use case"),
+		h.Span(h.Class("mr-1 text-xs uppercase tracking-wide text-slate-500"), g.Text("Use case")),
+		g.Group(chips),
+	)
+}
+
+// relatedWorkflowsUseChip is one picker chip. It reuses the .cm-chip /
+// .cm-facet-chip / .cm-facet-chip-on vocabulary the Discover chip row already
+// ships, so no new CSS and no new Tailwind utility is introduced.
+func relatedWorkflowsUseChip(v relatedWorkflowsSection, slug, label string, selected bool) g.Node {
+	f := v.Facets
+	if u, ok := civitai.UseCaseBySlug(slug); ok {
+		f.Use = &u
+	} else {
+		f.Use = nil // the "All" chip
+	}
+	class := "cm-chip cm-facet-chip inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs text-slate-200"
+	attrs := []g.Node{
+		h.Type("button"),
+		hx("get", relatedWorkflowsPath(v.ModelID, f, v.BaseModel, v.Offered)),
+		hx("target", "#"+relatedWorkflowsID),
+		hx("swap", "innerHTML"),
+		g.Attr("aria-pressed", boolAttr(selected)),
+	}
+	if selected {
+		class += " cm-facet-chip-on"
+	}
+	attrs = append(attrs, h.Class(class), g.Text(label))
+	return h.Button(attrs...)
+}
+
+// boolAttr renders a boolean as the "true"/"false" strings ARIA states require
+// (aria-pressed="false" is meaningful — omitting it makes the control read as a
+// plain button rather than an unpressed toggle).
+func boolAttr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }

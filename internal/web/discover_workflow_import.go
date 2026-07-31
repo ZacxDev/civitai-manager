@@ -366,6 +366,125 @@ func workflowImportAction(modelID int, csrf string) g.Node {
 	)
 }
 
+// modelIDsOf extracts the model ids of a result page — the input to the ONE
+// batched "already imported?" lookup per render.
+func modelIDsOf(items []civitai.ModelListItem) []int {
+	out := make([]int, 0, len(items))
+	for _, it := range items {
+		out = append(out, it.ID)
+	}
+	return out
+}
+
+// importedWorkflowModels answers, for ONE rendered page of result cards, which of
+// their civitai model ids already have workflows in the local library — model id →
+// how many.
+//
+// ---------------------------------------------------------------------------
+// WHY model_id AND NOT THE GRAPH CONTENT HASH
+// ---------------------------------------------------------------------------
+// The importer dedups by canonical GRAPH HASH (store.WorkflowExistsByGraphHash),
+// which is the authoritative "do I already have this exact workflow" key. It is
+// the wrong key HERE for two independent reasons:
+//
+//  1. A CARD REPRESENTS A MODEL, NOT A GRAPH. One CivitAI Workflows model unpacks
+//     into many workflows (22 for one real post), so "is this card's model in my
+//     library" is a model-level question with no single hash to ask about.
+//  2. IT IS NOT COMPUTABLE AT RENDER TIME. Getting a REMOTE model's graph hashes
+//     means downloading and unzipping its archive — exactly what the import does.
+//     A browse page must not do that, per card, to decide a button label.
+//
+// model_id is the importer's own linkage (it stamps it on every row it inserts)
+// AND the predicate behind /library?tab=workflows&model=<id>, so the card's label
+// and the page its link lands on are the same set by construction.
+//
+// The honest false-negative is inherited from CountWorkflowsByModel: if the same
+// graph was already imported from a DIFFERENT model, this reads 0 and the card
+// offers Import — which then truthfully reports "0 imported, N already present".
+// That is a spurious Import, never a spurious View.
+//
+// ONE query for the whole page. Never per card — see importedWorkflowsFn.
+func (s *Server) importedWorkflowModels(ctx context.Context, modelIDs []int) map[int]int {
+	if len(modelIDs) == 0 {
+		return nil
+	}
+	if s.importedWorkflowsFn != nil {
+		return s.importedWorkflowsFn(ctx, modelIDs)
+	}
+	n, err := s.store.CountWorkflowsByModels(ctx, modelIDs)
+	if err != nil {
+		// Fail SOFT toward Import. A failed lookup must not claim "already in your
+		// library" (which would hide the import behind a link to an empty list);
+		// offering the import is safe because the import is idempotent.
+		s.log.Warn("imported-workflow lookup", "err", err)
+		return nil
+	}
+	return n
+}
+
+// workflowImportOrView is the per-card action for a Workflows model: the import
+// CTA when the library holds nothing from that model, and a VIEW link into the
+// library when it does.
+//
+// Why the flip: re-importing a model already in the library can only report
+// "0 imported, N already present" — a dead end dressed as a primary action. The
+// model DETAIL page has drawn this same distinction since v0.1.88
+// (workflowImportDetailCard); this brings the card grids in line with it, keyed on
+// the same model_id predicate.
+//
+// PARTIALLY IMPORTED MODELS. Nothing here can tell "all 22 imported" from "3 of
+// 22 imported" — that needs the remote archive's contents (see
+// importedWorkflowModels). So the imported state does NOT hide importing: it
+// shows the count ("3 in library"), makes View the primary action, and keeps a
+// de-emphasised "Import again" beside it. That control re-runs the SAME audited,
+// CSRF-protected, idempotent endpoint; on a fully-imported model it truthfully
+// reports "0 imported, N already present", and on a partial one it fetches the
+// missing workflows. Removing it outright would have made "import the rest"
+// unreachable from any surface in the app.
+func workflowImportOrView(modelID int, csrf string, imported int) g.Node {
+	if imported <= 0 {
+		return workflowImportAction(modelID, csrf)
+	}
+	id := workflowImportContainerID(modelID)
+	return h.Div(
+		h.ID(id),
+		h.Class("flex flex-col gap-1"),
+		h.A(
+			// The SAME destination the import RESULT lands on
+			// (workflowImportResult) — one library deep link, not two.
+			h.Href(workflowsLibraryHref(modelID)),
+			dataAttr("civitai-ui", "button"),
+			dataAttr("variant", "filled"),
+			dataAttr("size", "sm"),
+			h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("→ ")),
+			// The count is what makes the state legible AND is the only honest
+			// thing we can say: it is how many are HERE, not how many exist there.
+			g.Text(fmt.Sprintf("View %d in library", imported)),
+		),
+		// Secondary, deliberately not a button: the primary action is View, but a
+		// partially-imported model must keep a way to fetch the rest.
+		civButton("subtle", "sm", []g.Node{
+			h.Type("button"),
+			hx("post", fmt.Sprintf("/workflows/discover/%d/import", modelID)),
+			hx("vals", fmt.Sprintf(`{"csrf_token":%q}`, csrf)),
+			hx("target", "#"+id),
+			hx("swap", "innerHTML"),
+			hx("disabled-elt", "this"),
+			h.Title("Fetch any workflows from this model that are not in your library yet"),
+		}, g.Text("Import again")),
+	)
+}
+
+// workflowsLibraryHref is the ONE library deep link for "the workflows imported
+// from this civitai model". Both the import RESULT and the already-imported card
+// action call it, so the two can never drift to different destinations.
+func workflowsLibraryHref(modelID int) string {
+	if modelID <= 0 {
+		return "/library?tab=workflows"
+	}
+	return fmt.Sprintf("/library?tab=workflows&model=%d", modelID)
+}
+
 // workflowImportResult renders the inline outcome that replaces the import button
 // after the POST: the counts line (green on success, amber on failure) plus a
 // "View in library" link.
@@ -385,10 +504,7 @@ func workflowImportResult(modelID int, msg string, ok bool, workflowID int64) g.
 	if ok {
 		cls = "text-xs font-medium cm-ok"
 	}
-	href := "/library?tab=workflows"
-	if modelID > 0 {
-		href = fmt.Sprintf("/library?tab=workflows&model=%d", modelID)
-	}
+	href := workflowsLibraryHref(modelID)
 	if workflowID > 0 {
 		href += fmt.Sprintf("#wf-%d", workflowID)
 	}
