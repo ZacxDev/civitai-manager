@@ -328,7 +328,7 @@ func workflowImportContainerID(modelID int) string {
 	return fmt.Sprintf("wf-import-%d", modelID)
 }
 
-// workflowImportAction renders the "Import workflow(s)" affordance for a Workflows
+// workflowImportAction renders the "Import workflows" affordance for a Workflows
 // model (used on both the discover cards and the model detail page). The button
 // POSTs the import endpoint (CSRF via hx-vals) and swaps its own container with
 // the result.
@@ -353,7 +353,16 @@ func workflowImportAction(modelID int, csrf string) g.Node {
 			hx("target", "#"+id),
 			hx("swap", "innerHTML"),
 			hx("disabled-elt", "this"),
-		}, g.Text("Import workflow(s)")),
+		},
+			// ＋ is the app's ADD glyph (workflow_pages.go's "Add a workflow"), and
+			// importing into your library IS adding. Deliberately not ⤓: the cm-cta-icon
+			// vocabulary is → ＋ ↗ ▶ and nothing else, so a download-arrow would be the
+			// only one of its kind and would read as "download a file" rather than
+			// "put this in my library".
+			h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("＋ ")),
+			// "workflow(s)" hedged about a count the user cannot know yet, and the
+			// result line reports the real number a moment later anyway.
+			g.Text("Import workflows")),
 	)
 }
 

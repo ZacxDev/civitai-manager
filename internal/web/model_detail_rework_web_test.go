@@ -522,7 +522,7 @@ func TestWorkflowImportSectionStates(t *testing.T) {
 			name:     "not imported → the import CTA",
 			imported: 0,
 			want: []string{
-				"Import workflow(s)",
+				"Import workflows",
 				`hx-post="/workflows/discover/7/import"`,
 				"csrf_token&#34;:&#34;csrf-token", // hx-vals JSON is HTML-escaped
 			},
@@ -542,7 +542,7 @@ func TestWorkflowImportSectionStates(t *testing.T) {
 				"cm-carousel-card",
 				`href="/workflows/1"`,
 			},
-			banned: []string{"Import workflow(s)", "hx-post=", "/workflows/discover/7/import"},
+			banned: []string{"Import workflows", "hx-post=", "/workflows/discover/7/import"},
 		},
 		{
 			name:     "singular copy for exactly one",
@@ -615,7 +615,7 @@ func TestImportButtonCarriesNoEgressNoteAnywhere(t *testing.T) {
 				}
 			}
 			// The control itself must still work.
-			for _, want := range []string{`hx-post="/workflows/discover/7/import"`, "Import workflow(s)"} {
+			for _, want := range []string{`hx-post="/workflows/discover/7/import"`, "Import workflows"} {
 				if !strings.Contains(out, want) {
 					t.Errorf("import control missing %q:\n%s", want, out)
 				}
@@ -641,7 +641,7 @@ func TestWorkflowsModelPageDetectsImport(t *testing.T) {
 	t.Run("not imported", func(t *testing.T) {
 		srv := newWorkflowsServer(t)
 		body := getModelPage(t, srv, "/models/7")
-		if !strings.Contains(body, "Import workflow(s)") {
+		if !strings.Contains(body, "Import workflows") {
 			t.Errorf("an un-imported Workflows model should offer the import CTA")
 		}
 		if strings.Contains(body, "View in library") {
@@ -663,7 +663,7 @@ func TestWorkflowsModelPageDetectsImport(t *testing.T) {
 		if !strings.Contains(body, "View in library") {
 			t.Errorf("an imported Workflows model should offer 'View in library':\n%s", body)
 		}
-		if strings.Contains(body, "Import workflow(s)") {
+		if strings.Contains(body, "Import workflows") {
 			t.Errorf("an imported Workflows model should not re-offer the import CTA")
 		}
 	})
@@ -671,7 +671,7 @@ func TestWorkflowsModelPageDetectsImport(t *testing.T) {
 	t.Run("non-workflows models have no import section at all", func(t *testing.T) {
 		srv := newModelServer(t, newModelReader(t)) // Checkpoint
 		body := getModelPage(t, srv, "/models/7")
-		for _, banned := range []string{"Import workflow(s)", "View in library"} {
+		for _, banned := range []string{"Import workflows", "View in library"} {
 			if strings.Contains(body, banned) {
 				t.Errorf("a Checkpoint model page must not carry %q", banned)
 			}

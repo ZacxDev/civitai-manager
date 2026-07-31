@@ -242,7 +242,7 @@ func TestDiscoverHXPartialReturnsFragmentOnly(t *testing.T) {
 }
 
 // TestDiscoverCardsHaveImportControlOnly proves the D2 discover card carries the
-// "Import workflow(s)" control (a CSRF-bearing POST to the import endpoint) but
+// "Import workflows" control (a CSRF-bearing POST to the import endpoint) but
 // still NOT the model-search Subscribe/Download controls — import is the only
 // state-changing affordance on a discover card. It asserts against the HX results
 // FRAGMENT (pure cards) so navbar chrome cannot mask what leaks in.
@@ -264,7 +264,7 @@ func TestDiscoverCardsHaveImportControlOnly(t *testing.T) {
 	// The import control's POST target + CSRF must be present.
 	for _, want := range []string{
 		"/workflows/discover/1818841/import", // import POST target
-		"Import workflow(s)",                 // import button label
+		"Import workflows",                   // import button label
 		"csrf_token",                         // import is CSRF-protected
 	} {
 		if !strings.Contains(body, want) {

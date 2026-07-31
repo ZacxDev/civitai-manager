@@ -711,7 +711,7 @@ func versionRegionInner(v modelDetailView, sub *store.Subscription, csrf, baseUR
 func workflowImportDetailCard(modelID int, csrf string, imported int, wfs []store.Workflow) g.Node {
 	if imported > 0 {
 		return card(
-			h.H2(h.Class("text-sm font-semibold text-slate-300 mb-2"), g.Text("Workflows")),
+			h.H2(h.Class("text-sm font-semibold text-slate-300 mb-2"), g.Text(workflowImportCardHeading)),
 			h.P(h.Class("mb-2 text-xs text-slate-400"),
 				g.Text(fmt.Sprintf("Already imported — %s from this model %s in your workflow library.",
 					pluralWorkflows(imported), isAre(imported)))),
@@ -730,11 +730,33 @@ func workflowImportDetailCard(modelID int, csrf string, imported int, wfs []stor
 			),
 		)
 	}
+	// Heading LEFT, action RIGHT — the same header row showcaseCard and the related-
+	// workflows card already use, so this cannot drift into a one-off. The action
+	// container stays INSIDE the row on purpose: it is the hx-swap target, so after
+	// the import the result line lands beside the stable heading rather than under a
+	// heading that has just stopped describing the card.
 	return card(
-		h.H2(h.Class("text-sm font-semibold text-slate-300 mb-2"), g.Text("Import workflows")),
-		workflowImportAction(modelID, csrf),
+		h.Div(
+			h.Class("mb-2 flex flex-wrap items-center justify-between gap-2"),
+			h.H2(h.Class("text-sm font-semibold text-slate-300"), g.Text(workflowImportCardHeading)),
+			workflowImportAction(modelID, csrf),
+		),
 	)
 }
+
+// workflowImportCardHeading names the workflows this model POST unpacks into your
+// library. It is ONE constant used by both states on purpose.
+//
+// It used to be "Import workflows" before importing and "Workflows" after, so the
+// card appeared to rename itself; the verb now lives on the button, where a verb
+// belongs, and the heading is a stable noun.
+//
+// "from this model" is not padding. A model page now carries THREE sections whose
+// headings begin with "Workflows" — "Workflows that use this model" (local library,
+// matched by file) and "Workflows for <ecosystem>" (remote, by base model) both
+// landed in v0.1.88 — so a bare "Workflows" would be the ambiguous one of three
+// siblings rather than the clearest.
+const workflowImportCardHeading = "Workflows from this model"
 
 // importedWorkflowsCap bounds how many imported-workflow cards the model detail
 // page paints. A single Workflows model routinely ships a pack of dozens of

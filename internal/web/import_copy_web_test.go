@@ -8,7 +8,7 @@ import (
 )
 
 // importButtonNote is the paragraph that used to render directly beneath the
-// "Import workflow(s)" button, once per card.
+// "Import workflows" button, once per card.
 const importButtonNote = "Downloads the workflow zip from civitai.com using your token"
 
 // TestImportButtonHasNoTrailingCopy — the note under the button is gone from every
@@ -21,7 +21,7 @@ func TestImportButtonHasNoTrailingCopy(t *testing.T) {
 		t.Errorf("the copy under the import button should be gone:\n%s", action)
 	}
 	for _, want := range []string{
-		"Import workflow(s)",
+		"Import workflows",
 		"/workflows/discover/1818841/import",
 		"csrf_token",
 		`id="wf-import-1818841"`,
@@ -38,7 +38,7 @@ func TestImportButtonHasNoTrailingCopy(t *testing.T) {
 	if strings.Contains(detail, importButtonNote) {
 		t.Errorf("the copy under the import button should be gone from the detail card:\n%s", detail)
 	}
-	for _, want := range []string{"Import workflows", "Import workflow(s)"} {
+	for _, want := range []string{workflowImportCardHeading, "Import workflows"} {
 		if !strings.Contains(detail, want) {
 			t.Errorf("import detail card missing %q:\n%s", want, detail)
 		}
@@ -57,7 +57,7 @@ func TestDiscoverCardsDropTheImportNoteButKeepThePageBlurb(t *testing.T) {
 		t.Fatalf("GET = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "Import workflow(s)") {
+	if !strings.Contains(body, "Import workflows") {
 		t.Fatal("no import button on the page — the assertion below would false-pass")
 	}
 	if strings.Contains(body, importButtonNote) {
