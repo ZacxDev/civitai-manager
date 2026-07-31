@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"path"
+	"sort"
 	"strings"
 )
 
@@ -112,6 +113,61 @@ type WorkflowUsage struct {
 // truncated (newest first) rather than the query getting slower.
 const workflowUsageScanCap = 200
 
+// basenameChunk is how many basenames ONE narrowing statement may carry.
+//
+// 🔴 IT EXISTS BECAUSE SQLite HAS AN EXPRESSION-DEPTH LIMIT, NOT A PARAMETER
+// LIMIT. Both queries below narrow with a chain of OR'd LIKEs, and SQLite parses
+// `a OR b OR c …` into a LEFT-DEEP tree whose depth grows with the number of
+// operands. Past `SQLITE_MAX_EXPR_DEPTH` (1000 in the modernc build) the whole
+// statement fails with:
+//
+//	SQL logic error: Expression tree is too large (maximum depth 1000)
+//
+// Measured on this build, unchunked (the exact thresholds this constant retires):
+//
+//	UnambiguousModelFileBasenames  last OK 490,  first failure 500
+//	ListWorkflowsUsingFiles        last OK 980,  first failure 1000
+//
+// THE TWO NUMBERS DIFFER BY 2× BECAUSE THE STATEMENTS DIFFER, not because of
+// anything about the data: the ambiguity probe emits TWO OR-operands per
+// basename (a `(path LIKE ? OR path = ?)` group for POSIX paths plus a
+// `path LIKE ?` for Windows-style ones), while the workflow query emits ONE
+// (`resources LIKE ?`). So the ambiguity probe hits the ceiling at half as many
+// basenames, and any chunk size must be sized for THAT one.
+//
+// Why 100 and not something near the measured cliff: the limit is on DEPTH, so
+// it moves the moment anyone adds another clause per basename — sizing at the
+// threshold would make a one-line future edit silently re-introduce the bug. At
+// 100 the worst statement is 200 deep (5× headroom), and even a hypothetical
+// four-clauses-per-basename rewrite would only reach 400.
+//
+// The failure mode this prevents is nasty precisely because it is quiet: the
+// caller (Server.workflowsUsingModel) is fail-soft, so a model with ≥500 locally
+// indexed basenames would just lose its "Workflows that use this model" section
+// on every render, forever, with nothing but a log line to say why.
+const basenameChunk = 100
+
+// chunkStrings splits s into consecutive runs of at most n, preserving order. A
+// non-positive n (or an empty input) yields the input as a single chunk / nil, so
+// a caller can never accidentally produce an unbounded loop.
+func chunkStrings(s []string, n int) [][]string {
+	if len(s) == 0 {
+		return nil
+	}
+	if n <= 0 {
+		return [][]string{s}
+	}
+	out := make([][]string, 0, (len(s)+n-1)/n)
+	for i := 0; i < len(s); i += n {
+		end := i + n
+		if end > len(s) {
+			end = len(s)
+		}
+		out = append(out, s[i:end])
+	}
+	return out
+}
+
 // UnambiguousModelFileBasenames returns the basenames of this model's LOCALLY
 // INDEXED files, minus any basename that another model also claims locally.
 //
@@ -166,42 +222,52 @@ func (s *Store) UnambiguousModelFileBasenames(ctx context.Context, modelID int) 
 
 	// (B) does any OTHER model claim one of these basenames locally? If so that
 	// basename cannot identify this model and is dropped — never guessed at.
-	var (
-		clauses []string
-		args    []any
-	)
-	args = append(args, modelID)
-	for _, low := range order {
-		name := byLower[low]
-		clauses = append(clauses, "(path LIKE ? OR path = ?)")
-		args = append(args, "%/"+name, name)
-		// Windows-style paths are stored verbatim, so the suffix must be probed
-		// with both separators.
-		clauses = append(clauses, "path LIKE ?")
-		args = append(args, `%\`+name)
-	}
-	q := `SELECT path FROM local_files
-		WHERE model_id IS NOT NULL AND model_id <> ? AND (` + strings.Join(clauses, " OR ") + `)`
-	orows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer orows.Close()
+	//
+	// CHUNKED — see basenameChunk. Each basename contributes TWO OR-operands here,
+	// so this statement hits SQLITE_MAX_EXPR_DEPTH at twice the rate of the one in
+	// ListWorkflowsUsingFiles.
 	ambiguous := map[string]bool{}
-	for orows.Next() {
-		var p string
-		if err := orows.Scan(&p); err != nil {
+	for _, chunk := range chunkStrings(order, basenameChunk) {
+		var (
+			clauses []string
+			args    []any
+		)
+		args = append(args, modelID)
+		for _, low := range chunk {
+			name := byLower[low]
+			clauses = append(clauses, "(path LIKE ? OR path = ?)")
+			args = append(args, "%/"+name, name)
+			// Windows-style paths are stored verbatim, so the suffix must be probed
+			// with both separators.
+			clauses = append(clauses, "path LIKE ?")
+			args = append(args, `%\`+name)
+		}
+		q := `SELECT path FROM local_files
+			WHERE model_id IS NOT NULL AND model_id <> ? AND (` + strings.Join(clauses, " OR ") + `)`
+		orows, err := s.db.QueryContext(ctx, q, args...)
+		if err != nil {
 			return nil, err
 		}
-		// The LIKE only narrowed; this exact compare is the gate, so
-		// "myvae.safetensors" cannot poison "vae.safetensors".
-		low := strings.ToLower(ResourceBasename(p))
-		if _, ours := byLower[low]; ours {
-			ambiguous[low] = true
+		for orows.Next() {
+			var p string
+			if err := orows.Scan(&p); err != nil {
+				orows.Close()
+				return nil, err
+			}
+			// The LIKE only narrowed; this exact compare is the gate, so
+			// "myvae.safetensors" cannot poison "vae.safetensors". It is checked
+			// against the FULL basename set (byLower), not just this chunk, so a
+			// cross-chunk hit is still recorded.
+			low := strings.ToLower(ResourceBasename(p))
+			if _, ours := byLower[low]; ours {
+				ambiguous[low] = true
+			}
 		}
-	}
-	if err := orows.Err(); err != nil {
-		return nil, err
+		if err := orows.Err(); err != nil {
+			orows.Close()
+			return nil, err
+		}
+		orows.Close()
 	}
 
 	out := make([]string, 0, len(order))
@@ -219,7 +285,7 @@ func (s *Store) UnambiguousModelFileBasenames(ctx context.Context, modelID int) 
 // ListWorkflowsUsingFiles returns the workflows whose `resources` reference any
 // of the given basenames, newest first.
 //
-// ONE query, no N+1 and no per-render full scan of the graph column:
+// No N+1 and no per-render full scan of the graph column:
 //
 //	SELECT id, name, source, model_id, version_id, resources
 //	FROM workflows
@@ -232,77 +298,110 @@ func (s *Store) UnambiguousModelFileBasenames(ctx context.Context, modelID int) 
 // both are corrected by the exact case-insensitive basename compare in Go below.
 // The values are bound parameters, so no filename can alter the statement.
 //
+// It is normally ONE statement, and becomes one per basenameChunk past 100
+// basenames — see basenameChunk for why the OR chain cannot grow unbounded. Three
+// things make chunking SAFE rather than merely non-erroring, and all three matter:
+//
+//   - the exact-compare gate uses the FULL `want` set, never the chunk's, so a
+//     row's Matched list is identical regardless of which chunk found it;
+//   - rows are deduped by workflow id across chunks (a workflow referencing files
+//     from two different chunks would otherwise be listed twice);
+//   - the per-statement LIMIT cannot decide the final ordering, so the merged set
+//     is re-sorted by id DESC and capped once at the end. Capping per chunk would
+//     let an early chunk's OLDER rows crowd out a later chunk's newer ones.
+//
 // An empty basename list returns nil WITHOUT querying: an unbounded "match
 // everything" would be exactly the full-table scan this is shaped to avoid.
 func (s *Store) ListWorkflowsUsingFiles(ctx context.Context, basenames []string) ([]WorkflowUsage, error) {
+	// The full deduped set, used BOTH to build the chunks and — critically — as the
+	// exact-compare gate for every row in every chunk.
 	want := map[string]bool{}
-	var (
-		clauses []string
-		args    []any
-	)
+	var uniq []string
 	for _, b := range basenames {
-		low := strings.ToLower(strings.TrimSpace(b))
+		b = strings.TrimSpace(b)
+		low := strings.ToLower(b)
 		if low == "" || want[low] {
 			continue
 		}
 		want[low] = true
-		clauses = append(clauses, "resources LIKE ?")
-		args = append(args, "%"+b+"%")
+		uniq = append(uniq, b)
 	}
-	if len(clauses) == 0 {
+	if len(uniq) == 0 {
 		return nil, nil
 	}
-	args = append(args, workflowUsageScanCap)
-
-	q := `SELECT id, name, source, model_id, version_id, resources
-		FROM workflows
-		WHERE resources IS NOT NULL AND (` + strings.Join(clauses, " OR ") + `)
-		ORDER BY id DESC LIMIT ?`
-	rows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 
 	var out []WorkflowUsage
-	for rows.Next() {
-		var (
-			u         WorkflowUsage
-			modelID   sql.NullInt64
-			versionID sql.NullInt64
-			resources sql.NullString
-		)
-		if err := rows.Scan(&u.ID, &u.Name, &u.Source, &modelID, &versionID, &resources); err != nil {
+	seen := map[int64]bool{}
+	for _, chunk := range chunkStrings(uniq, basenameChunk) {
+		clauses := make([]string, 0, len(chunk))
+		args := make([]any, 0, len(chunk)+1)
+		for _, b := range chunk {
+			clauses = append(clauses, "resources LIKE ?")
+			args = append(args, "%"+b+"%")
+		}
+		args = append(args, workflowUsageScanCap)
+
+		q := `SELECT id, name, source, model_id, version_id, resources
+			FROM workflows
+			WHERE resources IS NOT NULL AND (` + strings.Join(clauses, " OR ") + `)
+			ORDER BY id DESC LIMIT ?`
+		rows, err := s.db.QueryContext(ctx, q, args...)
+		if err != nil {
 			return nil, err
 		}
-		if !resources.Valid || resources.String == "" {
-			continue
-		}
-		var list []string
-		if json.Unmarshal([]byte(resources.String), &list) != nil {
-			// A malformed resources column must not fail the whole read — the same
-			// stance scanWorkflow takes. It simply contributes no usage.
-			continue
-		}
-		for _, res := range list {
-			if want[strings.ToLower(ResourceBasename(res))] {
-				u.Matched = append(u.Matched, res)
+		for rows.Next() {
+			var (
+				u         WorkflowUsage
+				modelID   sql.NullInt64
+				versionID sql.NullInt64
+				resources sql.NullString
+			)
+			if err := rows.Scan(&u.ID, &u.Name, &u.Source, &modelID, &versionID, &resources); err != nil {
+				rows.Close()
+				return nil, err
 			}
+			if seen[u.ID] || !resources.Valid || resources.String == "" {
+				continue
+			}
+			var list []string
+			if json.Unmarshal([]byte(resources.String), &list) != nil {
+				// A malformed resources column must not fail the whole read — the same
+				// stance scanWorkflow takes. It simply contributes no usage.
+				continue
+			}
+			for _, res := range list {
+				if want[strings.ToLower(ResourceBasename(res))] {
+					u.Matched = append(u.Matched, res)
+				}
+			}
+			if len(u.Matched) == 0 {
+				continue // a LIKE false positive, rejected by the exact compare
+			}
+			if modelID.Valid {
+				v := int(modelID.Int64)
+				u.ModelID = &v
+			}
+			if versionID.Valid {
+				v := int(versionID.Int64)
+				u.VersionID = &v
+			}
+			seen[u.ID] = true
+			out = append(out, u)
 		}
-		if len(u.Matched) == 0 {
-			continue // a LIKE false positive, rejected by the exact compare
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
 		}
-		if modelID.Valid {
-			v := int(modelID.Int64)
-			u.ModelID = &v
-		}
-		if versionID.Valid {
-			v := int(versionID.Int64)
-			u.VersionID = &v
-		}
-		out = append(out, u)
+		rows.Close()
 	}
-	return out, rows.Err()
+
+	// Newest first ACROSS chunks, then one final cap. Both are no-ops in the
+	// single-chunk case, which is every realistic library.
+	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	if len(out) > workflowUsageScanCap {
+		out = out[:workflowUsageScanCap]
+	}
+	return out, nil
 }
 
 // ListWorkflowsUsingModel is the model-page entry point: the workflows in the
