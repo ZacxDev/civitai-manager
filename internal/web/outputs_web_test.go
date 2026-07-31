@@ -80,9 +80,14 @@ func TestOutputsGalleryEmptyState(t *testing.T) {
 	if !strings.Contains(body, "No generations yet") {
 		t.Error("empty gallery missing empty-state message")
 	}
-	// Nav shows the Outputs entry.
-	if !strings.Contains(body, `href="/outputs"`) {
-		t.Error("nav missing Outputs entry")
+	// The nav no longer carries an "Outputs" entry — the nav rework moved that
+	// destination onto the recent-outputs rail's heading (see navbar). This test
+	// fixture has NO generations, so the rail is not visible either, which is
+	// exactly the reachability edge documented on navbar and guarded by
+	// TestOutputsStaysReachableFromTheRail in nav_reachability_web_test.go.
+	// What must still hold HERE is that the empty page tells the user where to go.
+	if !strings.Contains(body, `href="/library?tab=workflows"`) {
+		t.Error("the empty gallery must offer its Library CTA")
 	}
 }
 

@@ -89,7 +89,9 @@ func disksCapacityCard(rows []diskRow, gated bool) g.Node {
 	nodes = append(nodes, h.P(h.Class("mt-3 text-xs text-slate-400"),
 		g.Text("Figures describe the FILESYSTEM each directory lives on, not the size of its "+
 			"contents — two directories on the same disk report the same totals.")))
-	return h.Div(h.Class("cm-disks"), g.Group(nodes))
+	// No wrapper class: the rows carry their own (.cm-disk-row), so a class here
+	// would have no rule and the class-coverage guard would (correctly) flag it.
+	return h.Div(g.Group(nodes))
 }
 
 // diskRowNode renders one capacity row. An unknown Usage renders the label, the

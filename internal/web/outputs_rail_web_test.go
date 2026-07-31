@@ -47,7 +47,9 @@ func TestRailRendersOnEveryPage(t *testing.T) {
 		"/",
 		"/search?q=x",
 		"/library",
-		"/trash",
+		// /trash is now a 302 into /disks (handleTrashRedirect), so the rail is
+		// asserted on the page that actually renders.
+		"/disks",
 		"/outputs",
 		"/outputs/" + strconv.FormatInt(genID, 10),
 		"/workflows/" + strconv.FormatInt(wf, 10),

@@ -216,7 +216,11 @@ func TestWorkflowDetailAPIStructured(t *testing.T) {
 	id := seedWorkflow(t, srv, store.WorkflowFormatAPI,
 		`{"3":{"class_type":"KSampler","inputs":{"model":["4",0]}},"4":{"class_type":"CheckpointLoaderSimple","inputs":{}}}`)
 
-	body := get(t, srv, "/workflows/"+id).Body.String()
+	// Scoped to <main>: the app SHELL now carries an inline <svg> of its own (the
+	// nav's brand mark), so an unscoped search would match the logo on every page
+	// and this assertion could never fail again. pageMain keeps it pointed at the
+	// page body, which is what "the detail view renders no graph" means.
+	body := pageMain(get(t, srv, "/workflows/"+id).Body.String())
 	if strings.Contains(body, "<svg") {
 		t.Errorf("API workflow detail should not render an SVG")
 	}
