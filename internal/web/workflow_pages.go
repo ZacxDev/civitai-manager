@@ -631,6 +631,44 @@ func workflowRunDeepLink(id string) string {
 // .cm-wf-item (workflowListItem), so this leaves the client-side controls +
 // deep-link untouched.
 func workflowCard(wf store.Workflow, csrf string, resolver workflowResolver) g.Node {
+	return workflowCardWith(wf, csrf, resolver, false)
+}
+
+// workflowCardCompact is the SAME card renderer in its compact variant — a
+// VARIANT of the shared component, deliberately not a second card. Every
+// surface that shows a workflow as a card goes through workflowCardWith, so the
+// two can never drift in naming, badge vocabulary or the Run deep link.
+//
+// It exists for the imported-workflows carousel on a Workflows-type model detail
+// page (see importedWorkflowsCarousel), where three of the full card's parts are
+// actively WRONG rather than merely large:
+//
+//   - The showcase strip is dropped. Every workflow in that carousel was
+//     imported from the model whose page this is, so the strip would repeat, once
+//     per card, the exact images already shown full-size in the showcase card
+//     above — and it would nest a scroll-snap image carousel (with its own
+//     prev/next buttons, NSFW reveal overlays and video badges, i.e. the whole
+//     z-4/5/10/20 escaping-decoration family) inside another horizontal strip.
+//     Dropping it removes that stacking hazard by construction, not by z-index.
+//   - The model-linkage / version meta and the resources popover are dropped.
+//     "from <model>" is tautological on that model's own page, and both need a
+//     workflowResolver — which is exactly the per-card cached-model lookup this
+//     surface must not pay for. The popover is also the documented .cm-lift
+//     stacking trap, so it stays out of a horizontally scrolling strip.
+//   - The secondary action row is dropped, Delete above all: a browse strip on
+//     a model page is not where a destructive, CSRF-bearing library mutation
+//     belongs. That is why this variant takes NO csrf token — it cannot render a
+//     state-changing control even by accident.
+//
+// What remains is what the carousel is for: the name (linking to the workflow),
+// the identity badges, and the primary Run CTA.
+func workflowCardCompact(wf store.Workflow) g.Node {
+	return workflowCardWith(wf, "", workflowResolver{}, true)
+}
+
+// workflowCardWith is the one renderer behind workflowCard and
+// workflowCardCompact. See workflowCardCompact for what `compact` drops and why.
+func workflowCardWith(wf store.Workflow, csrf string, resolver workflowResolver, compact bool) g.Node {
 	id := strconv.FormatInt(wf.ID, 10)
 
 	name := wf.Name
@@ -651,13 +689,13 @@ func workflowCard(wf store.Workflow, csrf string, resolver workflowResolver) g.N
 	// present, else lazy-loaded via the existing /models/{id}/title endpoint
 	// (cache-first, one civitai fetch when uncached). Navigating to the post is the
 	// "View post" button's job now, so this is no longer a bare link.
-	if wf.ModelID != nil {
+	if wf.ModelID != nil && !compact {
 		meta = append(meta, h.Span(h.Class("text-xs text-slate-400"),
 			g.Text("from "), workflowModelNameText(*wf.ModelID, resolver)))
 	}
 	// Version: the resolved version name (parsed from the cached model's raw
 	// detail) when available, else the bare "version {id}" fallback.
-	if wf.VersionID != nil {
+	if wf.VersionID != nil && !compact {
 		label := "version " + strconv.Itoa(*wf.VersionID)
 		if wf.ModelID != nil {
 			if vn, ok := resolver.versionName(*wf.ModelID, *wf.VersionID); ok {
@@ -669,7 +707,7 @@ func workflowCard(wf store.Workflow, csrf string, resolver workflowResolver) g.N
 	// Referenced resources: a hover/click popover of chips, reusing the page's ONE
 	// popover mechanism (see workflowResourcesPopover) instead of the old inline
 	// <details>, which pushed every following card down when opened.
-	if len(wf.Resources) > 0 {
+	if len(wf.Resources) > 0 && !compact {
 		meta = append(meta, workflowResourcesPopover(wf.Resources, resolver))
 		// The reverse link-back, in its compact list form. It reads "uses <model>" —
 		// never "from <model>", which two entries above means the workflow was
@@ -682,14 +720,38 @@ func workflowCard(wf store.Workflow, csrf string, resolver workflowResolver) g.N
 	// PRIMARY CTA — Run. It is an anchor styled as a button (not a <button> inside
 	// an <a>, which is invalid) deep-linking to the detail page's Generate section,
 	// which hosts the live run panel against the local ComfyUI.
+	ctaSize := "md"
+	if compact {
+		ctaSize = "sm"
+	}
 	runCTA := h.A(
 		h.Href(workflowRunDeepLink(id)),
-		dataAttr("civitai-ui", "button"), dataAttr("variant", "filled"), dataAttr("size", "md"),
+		dataAttr("civitai-ui", "button"), dataAttr("variant", "filled"), dataAttr("size", ctaSize),
 		g.Attr("title", "Run on your local ComfyUI"),
 		g.Attr("aria-label", "Run "+name+" on your local ComfyUI"),
 		h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("▶ ")),
 		g.Text("Run"),
 	)
+
+	if compact {
+		// Compact layout: name, badges, then the Run CTA on its own row. The full
+		// card's side-by-side header would leave the name ~8rem inside a
+		// fixed-width carousel card.
+		//
+		// The name is `truncate min-w-0` (the pairing TestLongUntrustedStringsCanBreak
+		// requires) with the full name in title=: a card in a fixed-width horizontal
+		// strip has no room to wrap an arbitrary 90-char workflow name, and letting it
+		// wrap would grow the strip's row height for every card.
+		return card(
+			h.Class("cm-lift"),
+			h.A(h.Href("/workflows/"+id),
+				h.Class("block truncate min-w-0 text-base font-semibold text-slate-100 hover:text-indigo-300"),
+				g.Attr("title", name),
+				g.Text(name)),
+			h.Div(h.Class("flex flex-wrap items-center gap-2 mt-2"), g.Group(meta)),
+			h.Div(h.Class("mt-3"), runCTA),
+		)
+	}
 
 	// Secondary actions, lowest emphasis last.
 	var actions []g.Node
