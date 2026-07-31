@@ -2022,6 +2022,14 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  * The sticky nav therefore sits above page content but BELOW every popover, the
  * lightbox, and the rail drawer.
  *
+ * ABOVE ALL OF IT, AND OUTSIDE THIS BUDGET ENTIRELY: the TOP LAYER. The nav's
+ * Library menu (.cm-navmenu-panel) carries the `popover` attribute, so while it
+ * is open the browser paints it above every stacking context in the document —
+ * 50 included — and no ancestor's `overflow` can clip it. It therefore declares
+ * NO z-index at all: one would be inert here, and writing a number would imply
+ * it competes with the values above when it does not. A z-index is only worth
+ * spending on something that is NOT in the top layer.
+ *
  * NOTHING IS MISSING FROM THIS LEDGER — and "a popover is covered" is NOT
  * automatically a z-index problem. The version-date popover on /models/{id} was
  * reported as painting too low; hit-testing it in a real browser named the
@@ -3015,57 +3023,57 @@ a.cm-res-chip .cm-res-name {
   letter-spacing: -0.01em;
 }
 
-/* --- Nav "Library" dropdown (<details>/<summary>) --------------------------
+/* --- Nav "Library" dropdown (a `popover`) ----------------------------------
  *
- * 🔴 THE PANEL'S POSITIONING IS TWO-MODE BECAUSE OF A CLIPPING TRAP, not for
- * looks. Its parent .cm-navlinks is `overflow-x: auto`, and per CSS Overflow a
- * non-`visible` overflow-x computes overflow-y to `auto` too — so the strip is a
- * scroll container in BOTH axes and would clip an absolutely-positioned panel at
- * the bar's bottom edge. (Same rule that forced .cm-version-tabs to stop being
- * `overflow-x: auto` when it grew a popover.)
+ * 🔴 THE PANEL IS A POPOVER, SO IT LIVES IN THE TOP LAYER, AND THAT IS WHAT
+ * SOLVED THE CLIPPING TRAP THIS BLOCK USED TO WORK AROUND. .cm-navlinks is
+ * `overflow-x: auto`, and per CSS Overflow a non-`visible` overflow-x computes
+ * overflow-y to `auto` too — so the strip is a scroll container in BOTH axes and
+ * would clip an ordinary absolutely-positioned panel at the bar's bottom edge.
+ * (Same rule that forced .cm-version-tabs to stop being `overflow-x: auto` when
+ * it grew a popover.) A top-layer box is outside that flow entirely: NO ancestor
+ * overflow can clip it, at any width.
  *
- *   < 1024px: the panel is `position: fixed`, a full-width sheet pinned under
- *             the bar. A fixed box's containing block is the viewport, so an
- *             ancestor's overflow cannot clip it. (This holds only because no
- *             ancestor sets transform/filter/perspective/will-change/contain —
- *             .cm-nav is `position: sticky`, which does NOT create a containing
- *             block for fixed descendants. If a transform is ever added to the
- *             nav, this breaks and the panel starts being clipped again.)
+ * THE `overflow: visible` OVERRIDE ON .cm-navlinks IS THEREFORE GONE. It existed
+ * for exactly one reason — letting the desktop panel escape the clip — and the
+ * top layer does that unconditionally. .cm-navlinks now keeps its Tailwind
+ * `overflow-x: auto` at every width, which is what it wants anyway.
  *
- *  >= 1024px: .cm-navlinks switches to `overflow: visible` — at that width the
- *             five short links cannot overflow, so the scroll behaviour it gives
- *             up was already unreachable — and the panel becomes a normal
- *             absolute box anchored under its summary.
+ * ⚠ THE PROMOTION HAS A COST, AND IT IS THE NON-OBVIOUS PART: A TOP-LAYER
+ * ELEMENT'S CONTAINING BLOCK IS THE VIEWPORT. The old desktop rule
+ * (`position: absolute; top: calc(100% + 0.625rem); left: 0`) therefore stops
+ * anchoring under the summary and resolves 100% against the VIEWPORT HEIGHT,
+ * dropping the panel a full screen below the fold. Measured in Brave at 1440px,
+ * not deduced. Manual CSS cannot express "under that button" for a top-layer
+ * box, so the desktop anchor is CSS anchor positioning — behind @supports,
+ * because Firefox and Safari have not shipped it. Where it is missing the panel
+ * stays the full-width sheet, which is exactly what every viewport under 1024px
+ * already gets: a degradation, not a break.
  *
- * STACKING: `z-index: 1` here is LOCAL to the nav's own stacking context
- * (.cm-nav is sticky at z-30) and spends nothing from the global budget in the
- * STACKING ORDER ledger. The whole nav subtree paints at 30 — above page content
- * and .cm-lift's 25, below the rail drawer (44/45) and the popover tier (50),
- * which is where an app-chrome menu belongs. Do NOT promote this to a global
- * value; it would not help (a descendant cannot escape its context) and would
- * misrepresent the budget.
+ * STACKING: the panel spends NOTHING from the budget and declares NO z-index.
+ * The top layer paints above every stacking context in the document — including
+ * the sticky nav's 30 — so a z-index here would be inert AND would misdescribe
+ * the ledger. Do not add one back. See the STACKING ORDER ledger in the APP
+ * SHELL section.
  */
 .cm-navmenu {
   position: relative;
 }
+/* The trigger is a real <button>, so the reset is button chrome rather than the
+ * old <summary> disclosure marker. */
 .cm-navmenu-summary {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
   white-space: nowrap;
   font-size: 0.875rem;
+  font-family: inherit;
   color: var(--civitai-color-text);
+  background: none;
+  border: none;
+  padding: 0;
   cursor: pointer;
-  list-style: none;
   user-select: none;
-}
-/* Suppress the UA disclosure triangle in both engine families; the caret span
- * is the affordance, so two markers would be one too many. */
-.cm-navmenu-summary::-webkit-details-marker {
-  display: none;
-}
-.cm-navmenu-summary::marker {
-  content: "";
 }
 .cm-navmenu-summary:hover {
   color: var(--civitai-color-primary-text);
@@ -3081,7 +3089,10 @@ a.cm-res-chip .cm-res-name {
   color: var(--civitai-color-text-dimmed);
   transition: transform 120ms ease;
 }
-.cm-navmenu[open] .cm-navmenu-caret {
+/* :has() rather than the old [open]: a popover has no open ATTRIBUTE, only the
+ * :popover-open state. Top-layer promotion changes painting, not the DOM tree,
+ * so the panel is still a descendant here and :has() still matches. */
+.cm-navmenu:has(.cm-navmenu-panel:popover-open) .cm-navmenu-caret {
   transform: rotate(180deg);
 }
 @media (prefers-reduced-motion: reduce) {
@@ -3090,19 +3101,40 @@ a.cm-res-chip .cm-res-name {
   }
 }
 
+/*
+ * 🔴 THE BASE RULE MUST NOT DECLARE `display`. The UA sheet closes a popover
+ * with `[popover]:not(:popover-open) { display: none }`, and an AUTHOR `display`
+ * beats a UA one at any specificity — so `display: flex` here would pin the
+ * panel permanently open and visible, on every page, at every width. This is the
+ * same trap that shipped as the `hidden` .cm-vgroup panel still at
+ * `display: flex` (see the .cm-version-tabs[hidden] block). The flex layout
+ * lives on the :popover-open rule below instead.
+ *
+ * The rest of this rule undoes the [popover] UA sheet, which centres a
+ * fit-content, bordered box in the middle of the viewport: inset: 0 +
+ * margin: auto + width/height: fit-content + border: solid + padding: 0.25em.
+ */
 .cm-navmenu-panel {
   position: fixed;
   top: var(--cm-nav-h);
   left: 0;
   right: 0;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
+  bottom: auto;
+  width: auto;
+  height: auto;
+  margin: 0;
+  border: none;
+  overflow: visible;
   padding: 0.25rem;
   border-top: 1px solid var(--civitai-color-border);
   border-bottom: 1px solid var(--civitai-color-border);
   background: var(--civitai-color-surface);
+  color: var(--civitai-color-text);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.cm-navmenu-panel:popover-open {
+  display: flex;
+  flex-direction: column;
 }
 .cm-navmenu-item {
   padding: 0.625rem 0.75rem;
@@ -3141,22 +3173,35 @@ a.cm-res-chip .cm-res-name {
 }
 
 @media (min-width: 1024px) {
-  /* Five short links cannot overflow at this width, so the scroll container is
-   * unnecessary here — and dropping it is what lets the panel escape the clip.
-   * Below this breakpoint .cm-navlinks keeps `overflow-x: auto` (set by the
-   * Tailwind utility in layout.go) and the panel stays `position: fixed`. */
-  .cm-navlinks {
-    overflow: visible;
-  }
-  .cm-navmenu-panel {
-    position: absolute;
-    top: calc(100% + 0.625rem);
-    left: 0;
-    right: auto;
-    min-width: 12rem;
-    padding: 0.25rem;
-    border: 1px solid var(--civitai-color-border);
-    border-radius: 0.5rem;
+  /*
+   * The desktop panel anchors under its trigger instead of spanning the bar.
+   *
+   * 🔴 @supports IS LOAD-BEARING, NOT DEFENSIVE DECORATION. CSS anchor
+   * positioning is Chromium-only at time of writing (Firefox and Safari have not
+   * shipped it), and `anchor()` in an unsupported engine makes the whole
+   * declaration invalid — `top: calc(anchor(bottom) + 0.625rem)` would simply
+   * drop, leaving the panel at the base rule's `top: var(--cm-nav-h)`. That
+   * happens to be a survivable place to land, but only by luck; the guard makes
+   * the fallback the DELIBERATE full-width sheet, identical to the <1024px
+   * layout, rather than a half-applied mixture of the two.
+   *
+   * `position: fixed` is inherited from the base rule and stays: a top-layer
+   * box's containing block is the viewport either way, so fixed and absolute
+   * would resolve identically here — fixed just says so honestly.
+   */
+  @supports (anchor-name: --cm-navmenu-anchor) {
+    .cm-navmenu-summary {
+      anchor-name: --cm-navmenu-anchor;
+    }
+    .cm-navmenu-panel {
+      position-anchor: --cm-navmenu-anchor;
+      top: calc(anchor(bottom) + 0.625rem);
+      left: anchor(left);
+      right: auto;
+      min-width: 12rem;
+      border: 1px solid var(--civitai-color-border);
+      border-radius: 0.5rem;
+    }
   }
 }
 

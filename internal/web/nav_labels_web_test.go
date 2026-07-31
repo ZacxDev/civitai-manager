@@ -47,7 +47,7 @@ func TestNavbarLabels(t *testing.T) {
 	// top-level "Workflows" link — searching the whole fragment would confuse the
 	// two and make the check unsatisfiable. Removing the panel is what keeps
 	// ">Workflows<" a meaningful assertion about the top-level strip.
-	menu := sliceBetween(t, body, `<details class="cm-navmenu`, "</details>")
+	menu := navMenuFragment(t, body)
 	topLevel := strings.Replace(body, menu, "", 1)
 	if strings.Contains(topLevel, "cm-navmenu-item") {
 		t.Fatalf("the menu panel was not removed from the fixture; the absence checks below would be meaningless")
@@ -77,28 +77,75 @@ func TestNavbarLabels(t *testing.T) {
 	}
 }
 
-// TestNavLibraryDropdown pins the Library disclosure: it must be a native
-// <details>/<summary> (no JS anywhere in it) carrying both Library surfaces.
+// navMenuFragment slices the Library menu out of a rendered navbar.
+//
+// The wrapper is a plain <div>, so it cannot be bounded by "</div>" — the panel
+// inside it closes one first. `</div></div>` is the panel's close followed by the
+// wrapper's, which is unambiguous here because the panel is the wrapper's LAST
+// child. sliceBetween fails the test when either marker is absent, so a
+// restructure reports itself instead of silently returning an empty fragment
+// that would make every "must not contain" check below pass for free.
+func navMenuFragment(t *testing.T, body string) string {
+	t.Helper()
+	return sliceBetween(t, body, `<div class="cm-navmenu `, "</div></div>")
+}
+
+// TestNavLibraryDropdown pins the Library menu: a `popover` (no JS anywhere in
+// it) carrying both Library surfaces.
+//
+// 🔴 THE `auto` STATE IS THE WHOLE REASON THIS STOPPED BEING <details>, SO IT IS
+// ASSERTED DIRECTLY. <details> gives activation and keyboard operation but
+// neither light-dismiss nor Escape; `popover` in its default `auto` state gives
+// both. `popover="manual"` gives NEITHER — it is a one-word edit that silently
+// reverts the entire change while every other assertion here stays green, which
+// is exactly why the value is pinned rather than merely the attribute's
+// presence.
 //
 // WHY "WORKS WITHOUT JS" IS ASSERTED STRUCTURALLY. There is no way to prove
-// "JavaScript is not required" from rendered HTML directly, so this asserts the
-// two things that would make it FALSE: the element is <details> (which the
-// browser opens natively on click and on Enter/Space), and the fragment carries
-// no script, no inline handler and no htmx attribute that could be doing the
-// opening instead.
+// "JavaScript is not required" from rendered HTML, so this asserts the things
+// that would make it FALSE: the trigger is wired by popovertarget (which the
+// browser honours natively on click and on Enter/Space), and the fragment
+// carries no script, no inline handler and no htmx attribute that could be doing
+// the opening instead.
+//
+// Live-verified in Brave at 1198px: click opens, click-outside closes, Escape
+// closes and returns focus to the trigger. No markup assertion can see any of
+// that — this guards the WIRING those behaviours depend on.
 func TestNavLibraryDropdown(t *testing.T) {
 	body := renderString(t, navbar("dark", "csrf-token", fullMaturityRange(), railData{}))
 
-	menu := sliceBetween(t, body, `<details class="cm-navmenu`, "</details>")
+	menu := navMenuFragment(t, body)
 
-	if !strings.Contains(menu, "<summary") {
-		t.Errorf("the Library menu must use <summary> as its trigger:\n%s", menu)
+	// The trigger: a real focusable <button>, explicitly type=button (the default
+	// is submit), pointing at the panel.
+	if !strings.Contains(menu, `<button type="button" class="cm-navmenu-summary"`) {
+		t.Errorf("the trigger must be a <button type=\"button\"> — a <div> would not be focusable and "+
+			"would not activate on Enter/Space:\n%s", menu)
 	}
-	// Emitted CLOSED. Every page render is a fresh document, so a menu that
-	// rendered with `open` would greet the user expanded on every navigation.
-	if strings.Contains(body, "<details class=\"cm-navmenu shrink-0\" open") {
-		t.Errorf("the Library menu must render closed:\n%s", menu)
+	if !strings.Contains(menu, `popovertarget="`+libraryMenuPanelID+`"`) {
+		t.Errorf("the trigger must carry popovertarget=%q; without it the button does nothing at all, "+
+			"silently:\n%s", libraryMenuPanelID, menu)
 	}
+	// The panel: the SAME id, and the popover attribute in its auto state.
+	if !strings.Contains(menu, `<div id="`+libraryMenuPanelID+`" popover class="cm-navmenu-panel">`) {
+		t.Errorf("the panel must be <div id=%q popover class=\"cm-navmenu-panel\"> — a valueless "+
+			"`popover` IS the auto state:\n%s", libraryMenuPanelID, menu)
+	}
+	// 🔴 The states that would silently remove light-dismiss and Escape.
+	for _, dead := range []string{`popover="manual"`, `popover="hint"`} {
+		if strings.Contains(menu, dead) {
+			t.Errorf("the panel declares %s — that state has NO light-dismiss and NO Escape, which "+
+				"is the entire reason this stopped being a <details>:\n%s", dead, menu)
+		}
+	}
+	// The old disclosure must be gone, not merely joined by a popover.
+	for _, gone := range []string{"<details", "<summary"} {
+		if strings.Contains(menu, gone) {
+			t.Errorf("the Library menu still renders %s — <details> cannot light-dismiss or "+
+				"Escape:\n%s", gone, menu)
+		}
+	}
+
 	for _, c := range []struct{ label, href string }{
 		{"Model files", "/library?tab=files"},
 		{"Workflows", "/library?tab=workflows"},
@@ -108,12 +155,11 @@ func TestNavLibraryDropdown(t *testing.T) {
 			t.Errorf("the Library menu is missing %q -> %s:\n%s", c.label, c.href, menu)
 		}
 	}
-	// No JS of any kind inside the disclosure: no <script>, no on* handler, no
-	// htmx attribute. Any of the three would mean the open/close behaviour is not
-	// actually native.
+	// No JS of any kind: no <script>, no on* handler, no htmx attribute. Any of
+	// the three would mean the open/close behaviour is not actually native.
 	for _, forbidden := range []string{"<script", "onclick", "onkeydown", "hx-"} {
 		if strings.Contains(menu, forbidden) {
-			t.Errorf("the Library menu must be JS-free (<details> is native), found %q:\n%s", forbidden, menu)
+			t.Errorf("the Library menu must be JS-free (popover is native), found %q:\n%s", forbidden, menu)
 		}
 	}
 }

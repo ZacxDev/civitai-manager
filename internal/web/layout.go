@@ -235,69 +235,75 @@ const (
 	libraryWorkflowsHref  = "/library?tab=workflows"
 )
 
-// libraryMenu renders the nav's "Library" dropdown as a native <details>
-// disclosure over the two Library tabs.
+// libraryMenuPanelID is the popover's id. The trigger's popovertarget and the
+// panel's id are the ENTIRE wiring of this control, so they come from one
+// constant — a typo in either would render a button that does nothing at all,
+// silently, with no console error.
+const libraryMenuPanelID = "cm-library-menu"
+
+// libraryMenu renders the nav's "Library" dropdown as a `popover`, still with
+// NO JAVASCRIPT.
 //
-// 🔴 IT IS <details>/<summary>, NOT A JS CONTROLLER, AND THAT IS DELIBERATE.
-// The app ships htmx and a couple of tiny page scripts, nothing more, and a
-// bespoke dropdown would need a click-outside handler, Escape handling, focus
-// management, aria-expanded bookkeeping and a re-open guard after every htmx
-// swap.
+// 🔴 IT USED TO BE <details>/<summary>, AND THE SWAP BOUGHT TWO THINGS <details>
+// CANNOT DO AT ALL:
 //
-// WHAT <details> ACTUALLY GIVES, AND WHAT IT DOES NOT — the earlier version of
-// this comment claimed it provides "all of that natively", which is wrong and
-// worth stating precisely because it is the reason someone might reach for JS
-// later:
+//	LIGHT-DISMISS  a click anywhere outside closes it. <details> has no such
+//	               behaviour, so below 1024px — where the panel is a full-width
+//	               sheet under the bar — the only way to dismiss it without
+//	               navigating was to find the summary again.
+//	ESCAPE         <details> does no key handling whatsoever.
 //
-//	GIVES     opens on click AND on Enter/Space; exposes its expanded state to
-//	          assistive tech without any aria-expanded bookkeeping; fully
-//	          operable with JavaScript disabled; closes itself on navigation for
-//	          free, since every page render emits it WITHOUT `open`, so
-//	          following an item leaves a closed menu with no state to reset.
-//	DOES NOT  light-dismiss (a click anywhere else leaves it open) and Escape
-//	          (no key handling at all). Nor does it move focus into the panel.
+// Both come from the `popover` attribute in its default `auto` state, which is
+// why the state matters: 🔴 `popover="manual"` HAS NEITHER, and swapping the
+// value would silently return the control to exactly the behaviour this change
+// removed. Everything <details> did give — activation on click and on
+// Enter/Space, an expanded state exposed to assistive tech (the invoker gets
+// implicit aria-expanded/aria-details from popovertarget), a closed initial
+// state on every render, and no JS — the popover gives too.
 //
-// The missing light-dismiss is felt most BELOW 1024px, where the panel is a
-// full-width `position: fixed` sheet under the bar: the only way to dismiss it
-// without navigating is to find the summary again. Accepted for now — it is one
-// extra click on a menu with two items, in a single-user local app.
+// 🔴 A POPOVER RENDERS IN THE TOP LAYER, WHICH ANCESTOR `overflow` CANNOT CLIP.
+// That is a direct fix for the trap the old CSS worked around rather than a
+// bonus: .cm-navlinks is `overflow-x: auto`, and per CSS Overflow a non-visible
+// overflow-x forces overflow-y to `auto` too, so a plain absolute panel hanging
+// below the bar was cut off at the bar's bottom edge. The old fix needed BOTH a
+// `position: fixed` sheet below 1024px AND an `overflow: visible` override on
+// .cm-navlinks at >=1024px. The top layer removes the need for the override
+// entirely — see the NAV MENU block of app.css, where it has been deleted.
 //
-// THE DETERMINISTIC UPGRADE, IF THAT BECOMES ANNOYING, IS `popover`, NOT JS. A
-// popover attribute plus popovertarget gives light-dismiss and Escape natively
-// and keeps the no-JS property, so it is a strictly better version of the same
-// trade. It is not done here because it is a real interaction change to the app's
-// primary navigation and would need browser verification at both breakpoints,
-// which is out of scope for an audit-fix pass.
+// ⚠ THE SAME PROMOTION BREAKS ANCHORING, WHICH IS THE NON-OBVIOUS COST. A
+// top-layer element's containing block is the VIEWPORT, not its nearest
+// positioned ancestor — so the old desktop rule (`position: absolute; top:
+// calc(100% + 0.625rem)`) resolves 100% against the viewport height and drops
+// the panel far below the fold. Measured live, not deduced: see the CSS. The
+// replacement is CSS anchor positioning behind an @supports guard; browsers
+// without it keep the full-width sheet, which is what every narrow viewport
+// already gets.
 //
-// 🔴 THE PANEL WOULD BE CLIPPED IF IT WERE A PLAIN ABSOLUTE BOX. Its parent
-// .cm-navlinks is `overflow-x: auto`, and per CSS Overflow a non-visible
-// overflow-x forces overflow-y to `auto` as well — the same rule that made the
-// version tab strip clip its popover (see the .cm-version-tabs note in
-// app.css). So a panel hanging below the bar would be cut off at the bar's
-// bottom edge at narrow widths. The CSS answers that WITHOUT touching the
-// scroll strip: below 1024px the panel is `position: fixed` (fixed boxes are
-// laid out against the viewport and are not clipped by an ancestor's overflow),
-// rendering as a full-width sheet under the bar; at >=1024px, where five short
-// links cannot overflow, .cm-navlinks switches to `overflow: visible` and the
-// panel anchors under its summary. Both live in the NAV MENU block of app.css.
-//
-// STACKING: the panel spends NOTHING from the app's global z-index budget. The
-// whole nav is one stacking context at z-index 30 (.cm-nav is `position: sticky` with
-// a z-index), so every descendant paints inside it — above page content and
-// below the rail drawer (44/45) and the popover tier (50), which is exactly
-// where a nav menu belongs. The panel's own z-index is a local 1, meaningful
-// only against its nav siblings. See the STACKING ORDER ledger in app.css.
+// STACKING: the panel now spends NOTHING from the app's z-index budget and
+// carries no z-index at all — the top layer paints above every stacking context
+// in the document, including the sticky nav's 30. Its old local `z-index: 1`
+// would be inert; keeping it would misdescribe the budget. See the STACKING
+// ORDER ledger in app.css.
 func libraryMenu() g.Node {
-	return h.Details(
+	return h.Div(
 		h.Class("cm-navmenu shrink-0"),
-		h.Summary(
+		h.Button(
+			// A real <button type=button>: focusable, and activated by click AND by
+			// Enter/Space with no key handling of our own. type=button is load-bearing
+			// — the default is `submit`, and this control does sit inside a nav that
+			// carries forms.
+			h.Type("button"),
 			h.Class("cm-navmenu-summary"),
+			g.Attr("popovertarget", libraryMenuPanelID),
 			g.Text("Library"),
-			// aria-hidden: the caret is pure affordance. <summary> already exposes its
-			// open/closed state, so announcing "down triangle" would be noise.
+			// aria-hidden: the caret is pure affordance. The invoker already exposes
+			// its expanded state, so announcing "down triangle" would be noise.
 			h.Span(h.Class("cm-navmenu-caret"), g.Attr("aria-hidden", "true"), g.Text("▾")),
 		),
 		h.Div(
+			h.ID(libraryMenuPanelID),
+			// VALUELESS = `auto` = light-dismiss + Escape. Do not give it a value.
+			g.Attr("popover"),
 			h.Class("cm-navmenu-panel"),
 			h.A(h.Href(libraryModelFilesHref), h.Class("cm-navmenu-item"), g.Text("Model files")),
 			h.A(h.Href(libraryWorkflowsHref), h.Class("cm-navmenu-item"), g.Text("Workflows")),
