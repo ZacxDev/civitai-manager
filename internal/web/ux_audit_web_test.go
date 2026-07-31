@@ -686,6 +686,20 @@ func TestEmptyStatesGuideTheUser(t *testing.T) {
 			renderString(t, trashPage(nil, "csrf", "dark", fullMaturityRange())),
 			"Nothing in the trash", "/library?tab=files",
 		},
+		// /disks is where that quarantine table now LIVES (trashPage's own route
+		// is a 302 into it). Added rather than swapped so the shared builder stays
+		// covered too — the empty state must survive on the surface a user can
+		// actually reach.
+		"disks quarantine": {
+			renderString(t, disksPage(nil, nil, false, "csrf", "dark", fullMaturityRange())),
+			"Nothing in the trash", "/library?tab=files",
+		},
+		// The capacity half has its OWN empty state — an unconfigured install must
+		// be told what a "model directory" is, not shown a blank card.
+		"disks capacity": {
+			renderString(t, disksCapacityCard(nil, false)),
+			"No model directories configured", "/library?tab=files",
+		},
 		"outputs": {
 			renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", "dark", fullMaturityRange())),
 			"No generations yet", "/library?tab=workflows",
