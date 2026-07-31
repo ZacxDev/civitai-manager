@@ -282,8 +282,10 @@ func workflowResourcesPopover(resources []string, resolver workflowResolver) g.N
 		h.Class("cm-updated cm-res-trigger"),
 		g.Attr("tabindex", "0"),
 		g.Attr("role", "button"),
+		// No title= beside the popover — the native tooltip would render on top of
+		// it (see updatedPopBody's "one hover affordance per element"). role=button
+		// with no inner text of its own means the aria-label IS the accessible name.
 		g.Attr("aria-label", label+" referenced by this workflow"),
-		h.Title(label+" referenced by this workflow"),
 		g.Text(label),
 		h.Span(
 			h.Class("cm-updated-pop cm-res-pop"),

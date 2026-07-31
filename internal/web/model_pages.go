@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -530,6 +531,16 @@ func isoDatePrefix(s string) string {
 // deeplink to that version's detail page (/models/{id}?version={vid}); otherwise it
 // is plain text. The link stops click propagation so it navigates even though it
 // lives inside the JS-hover-controlled popover wrapper.
+//
+// ONE HOVER AFFORDANCE PER ELEMENT. An element that owns a custom popover must
+// NOT also carry `title=`: the browser renders its native tooltip ON TOP of the
+// popover after the OS hover delay, so the user gets two overlapping tooltips
+// saying the same thing. Every `.cm-updated` / `.cm-vstatus` trigger in this app
+// is therefore title-less, and each keeps an accessible name by other means — its
+// own visible text, or an aria-label where the trigger is an icon (role=img). A
+// `title=` is still RIGHT on an element with NO custom popover (a truncated path
+// cell, a rail tile, an icon-only button): the rule is about the collision, not
+// about title= being bad.
 func updatedPopBody(modelID, versionID int, absDate, versionName, versionDate string) g.Node {
 	rows := []g.Node{
 		h.Div(h.Class("cm-updated-title"), g.Text("Updated "+absDate)),
@@ -554,12 +565,14 @@ func updatedPopBody(modelID, versionID int, absDate, versionName, versionDate st
 
 // updatedHeaderStat renders the model header's "Updated: X ago" stat as a
 // hover/focus popover trigger (mirroring statInline's look) carrying updatedPopBody.
-// A plain title= tooltip is kept as a harmless fallback for AT / non-hover users.
+//
+// NO title= HERE — see the "one hover affordance per element" note on
+// updatedPopBody. The element's accessible name is its own visible text
+// ("Updated: X ago"); the absolute date lives in the popover.
 func updatedHeaderStat(modelID, versionID int, rel, absDate, versionName, versionDate string) g.Node {
 	return h.Div(
 		h.Class("cm-updated"),
 		g.Attr("tabindex", "0"),
-		h.Title("Updated "+absDate),
 		h.Span(h.Class("text-slate-500"), g.Text("Updated: ")),
 		h.Span(h.Class("font-medium text-slate-200"), g.Text(rel)),
 		updatedPopBody(modelID, versionID, absDate, versionName, versionDate),
@@ -567,12 +580,14 @@ func updatedHeaderStat(modelID, versionID int, rel, absDate, versionName, versio
 }
 
 // updatedCardLine renders a search card's "Updated X ago" line as a hover/focus
-// popover trigger carrying updatedPopBody, with a title= fallback.
+// popover trigger carrying updatedPopBody.
+//
+// NO title= HERE — see the "one hover affordance per element" note on
+// updatedPopBody. Accessible name = the visible "Updated X ago" text.
 func updatedCardLine(modelID, versionID int, rel, absDate, versionName, versionDate string) g.Node {
 	return h.Div(
 		h.Class("cm-updated text-xs text-slate-500"),
 		g.Attr("tabindex", "0"),
-		h.Title("Updated "+absDate),
 		h.Span(g.Text("Updated "+rel)),
 		updatedPopBody(modelID, versionID, absDate, versionName, versionDate),
 	)
@@ -900,6 +915,137 @@ func modelTagChips(tags []string) g.Node {
 // flat scroll strip renders unchanged.
 const versionGroupThreshold = 8
 
+// versionTabVisibleN is how many version tabs render as a plain strip before the
+// remainder folds into ONE "N older" disclosure.
+//
+// WHY 6. Measured on the real /models/4384 (31 versions) in a browser at a
+// 1121px-wide tab strip: a tab is 107px at its narrowest, 250px at its widest,
+// mean 181px. 1121 / (181 + 4px gap) ≈ 6.0, so six average tabs are exactly one
+// row at a normal desktop width, and the strip degrades to two rows — not seven,
+// which is what 31 tabs actually produced — when the names run long or the window
+// is narrow. Anything below ~4 stops showing enough recent history to be useful
+// as a strip; anything above ~8 is back to wrapping by default.
+const versionTabVisibleN = 6
+
+// splitVersionTabs decides which of a version list renders as plain tabs and
+// which folds behind the "N older" disclosure.
+//
+// 🔴 NEWEST IS A DATE QUESTION, NOT A POSITION ONE. modelVersions[] is ordered by
+// the creator's `index` — primary/featured FIRST — not by publish date, so
+// vers[0] is the version the detail page defaults to and says nothing about
+// recency. Reading recency positionally is a documented ship-then-revert in this
+// repo (see the CivitAI data gotcha in CLAUDE.md). Ranking therefore reads
+// VersionPublishedAt, which is keyed by version ID. A version with no parseable
+// date ranks LAST — we cannot claim it is recent — with the array order as a
+// stable tiebreak so the output is deterministic.
+//
+// THE SELECTED VERSION IS ALWAYS VISIBLE, even when it is genuinely old: a
+// collapsed disclosure that swallowed the active tab would leave the strip with
+// no highlighted tab at all, and the user would have no idea where they are. It
+// DISPLACES the oldest otherwise-visible version rather than growing the strip,
+// so the row length stays put.
+//
+// Both slices keep the ORIGINAL array order — only membership is date-decided —
+// so the strip still reads in the order the creator arranged it, as before.
+func splitVersionTabs(v modelDetailView, vers []civitai.ModelVersionSummary) (visible, older []civitai.ModelVersionSummary) {
+	if len(vers) <= versionTabVisibleN {
+		return vers, nil
+	}
+
+	dateOf := func(i int) (time.Time, bool) {
+		t, ok := v.VersionPublishedAt[vers[i].ID]
+		return t, ok && !t.IsZero()
+	}
+
+	// Rank positions newest-first. SliceStable keeps the array order for equal
+	// dates and for the undated tail.
+	rank := make([]int, len(vers))
+	for i := range rank {
+		rank[i] = i
+	}
+	sort.SliceStable(rank, func(a, b int) bool {
+		ta, oka := dateOf(rank[a])
+		tb, okb := dateOf(rank[b])
+		if oka != okb {
+			return oka // dated versions outrank undated ones
+		}
+		if !oka {
+			return false // both undated → leave in array order
+		}
+		return ta.After(tb)
+	})
+
+	keep := make(map[int]bool, versionTabVisibleN)
+	for _, i := range rank[:versionTabVisibleN] {
+		keep[vers[i].ID] = true
+	}
+	// Force the selected version in (only if it is actually in THIS list — the
+	// grouped path calls us per base-model group, and the selection lives in
+	// exactly one of them).
+	if v.SelectedVersionID != 0 && !keep[v.SelectedVersionID] {
+		for _, ver := range vers {
+			if ver.ID != v.SelectedVersionID {
+				continue
+			}
+			// rank[versionTabVisibleN-1] is the OLDEST version we were keeping.
+			delete(keep, vers[rank[versionTabVisibleN-1]].ID)
+			keep[v.SelectedVersionID] = true
+			break
+		}
+	}
+
+	for _, ver := range vers {
+		if keep[ver.ID] {
+			visible = append(visible, ver)
+		} else {
+			older = append(older, ver)
+		}
+	}
+	return visible, older
+}
+
+// versionTabNodes renders one version list as tab nodes, folding everything past
+// versionTabVisibleN into the trailing "N older" disclosure. Shared by BOTH the
+// flat and the grouped layout so the two can never diverge.
+func versionTabNodes(v modelDetailView, vers []civitai.ModelVersionSummary) []g.Node {
+	visible, older := splitVersionTabs(v, vers)
+	nodes := make([]g.Node, 0, len(visible)+1)
+	for _, ver := range visible {
+		nodes = append(nodes, versionTab(v, ver))
+	}
+	if len(older) > 0 {
+		nodes = append(nodes, versionTabsOlder(v, older))
+	}
+	return nodes
+}
+
+// versionTabsOlder is the ONE disclosure holding every version that did not make
+// the visible strip.
+//
+// A plain <details>/<summary>: it opens on click AND on Enter/Space with the
+// element focused, it is exposed to AT as a disclosure with an expanded state,
+// and it needs ZERO JavaScript — matching versionMetadataReveal's idiom in this
+// same file rather than inventing a second mechanism. The count is IN the summary
+// text (not only in an aria-label) so the affordance says how much it is hiding.
+func versionTabsOlder(v modelDetailView, older []civitai.ModelVersionSummary) g.Node {
+	tabs := make([]g.Node, 0, len(older))
+	for _, ver := range older {
+		tabs = append(tabs, versionTab(v, ver))
+	}
+	label := fmt.Sprintf("%d older", len(older))
+	return h.Details(
+		h.Class("cm-vmore"),
+		h.Summary(
+			h.Class("cm-vmore-sum"),
+			// Same chevron idiom as .cm-meta-summary; the CSS rotates it when open.
+			h.Span(h.Class("cm-vmore-chevron"), g.Attr("aria-hidden", "true"), g.Text("›")),
+			g.Attr("aria-label", fmt.Sprintf("Show %d older version%s", len(older), plural(len(older)))),
+			g.Text(label),
+		),
+		h.Div(h.Class("cm-vmore-tabs"), g.Group(tabs)),
+	)
+}
+
 // versionTab renders ONE version as the tab <a>. It is the single source of the
 // per-version markup shared by BOTH the flat and grouped tab paths, so every tab
 // keeps the IDENTICAL htmx contract (an <a> that innerHTML-swaps #version-region,
@@ -976,9 +1122,10 @@ func versionDatePopover(pub time.Time) g.Node {
 		h.Class("cm-updated cm-vdate"),
 		g.Attr("role", "img"),
 		// The date is also exposed as text for AT / non-hover users, since the icon
-		// itself carries no words.
+		// itself carries no words. role=img means aria-label IS the accessible name,
+		// so there is nothing left for a title= to contribute — and adding one would
+		// stack the NATIVE tooltip on top of this popover (see updatedPopBody).
 		g.Attr("aria-label", "Published "+rel),
-		h.Title("Published "+rel),
 		g.Raw(clockIconSVG),
 		h.Span(
 			h.Class("cm-updated-pop"),
@@ -1020,10 +1167,7 @@ func modelVersionTabs(v modelDetailView) g.Node {
 
 	// Flat strip (unchanged) unless MANY versions AND > 1 distinct base model.
 	if len(m.ModelVersions) <= versionGroupThreshold || len(order) <= 1 {
-		var tabs []g.Node
-		for _, ver := range m.ModelVersions {
-			tabs = append(tabs, versionTab(v, ver))
-		}
+		tabs := versionTabNodes(v, m.ModelVersions)
 		// A wrapping row of tabs — see .cm-version-tabs in app.css. Marked as a
 		// tablist for AT, and labeled since the "Versions" heading is gone.
 		return h.Div(
@@ -1073,10 +1217,7 @@ func modelVersionTabs(v modelDetailView) g.Node {
 			h.Span(h.Class("cm-vgroup-pill-count"), g.Text(strconv.Itoa(len(vers)))),
 		))
 
-		var tabs []g.Node
-		for _, ver := range vers {
-			tabs = append(tabs, versionTab(v, ver))
-		}
+		tabs := versionTabNodes(v, vers)
 		panelAttrs := []g.Node{
 			h.Class("cm-version-tabs cm-vgroup"),
 			dataAttr("cm-vgroup", key),
