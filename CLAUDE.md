@@ -227,12 +227,15 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
     with `type: "Workflows"`, `/search` sets no `types` param, and every rendered
     card carries Subscribe with **auto-download pre-checked**.
     🔴 **Type-check at the point of ACTION, not just at the point of RENDER.**
-    `poller.Candidate.ModelType` is already carried into `enqueueCandidate` and
-    **never read for a decision** — that is the load-bearing guard, and it covers
-    the CLI and the creator-subscription path that no render-layer fix reaches.
-    Four sites open-code this predicate in three spellings (`EqualFold` at
-    `handlers.go`, `discover_workflow_import.go`, `model_pages.go`; a raw `!=` at
-    `pages.go`) — route them through one helper.
+    FIXED v0.1.96: the guard lives in `enqueueCandidate`, which already carried
+    `poller.Candidate.ModelType` and had never read it for a decision. That one
+    site covers the **CLI** and the **creator-subscription** path — neither of
+    which any render-layer fix reaches — so put a guard of this class there, not
+    in a handler. `handleModelDownload` refuses server-side too: a button that
+    stops rendering is not a defence.
+    The predicate is `civitai.IsWorkflowPost` (with `IsKnownNonWorkflowPost` for
+    the fail-open case). It replaced **four** open-codings in **three** spellings
+    — if you find a fifth, route it through the helper rather than adding one.
     ⚠ The import gate at `discover_workflow_import.go` **fails OPEN on an empty
     type**, which is the correct shape (same lesson as the LoCon install refusal).
     Do not tighten it: **94 of the top 100 `types=Other` models carry an Archive
