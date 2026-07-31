@@ -106,9 +106,11 @@ const shellMeasure = "max-w-[1800px]"
 //     entry that is also about models and workflows. They are RENAMED
 //     "Find models"/"Find workflows" — the routes (/search,
 //     /workflows/discover) are unchanged.
-//   - "Library" became a <details> DISCLOSURE over its two real surfaces
-//     (libraryMenu), because /library has always been a two-tab page and the tab
-//     was invisible from the nav.
+//   - "Library" became a DROPDOWN over its two real surfaces (libraryMenu),
+//     because /library has always been a two-tab page and the tab was invisible
+//     from the nav. It shipped as a <details> disclosure and is now a `popover`
+//     — see libraryMenu for why (light-dismiss and Escape, which <details> has
+//     neither of).
 //   - "Outputs" left the strip. /outputs is STILL ROUTED and still linked — from
 //     the recent-outputs rail's heading and its foot link (outputs_rail.go). The
 //     rail is app chrome on every page, so the destination did not lose its
