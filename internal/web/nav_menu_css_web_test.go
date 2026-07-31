@@ -104,11 +104,27 @@ func TestNavMenuPanelEscapesTheScrollStrip(t *testing.T) {
 		t.Errorf("the desktop panel must not use `position: absolute` — a top-layer box resolves it "+
 			"against the VIEWPORT, which measured a full screen below the fold. Got:\n%s", desktop)
 	}
-	if strings.Contains(desktop, ".cm-navlinks {") {
-		t.Errorf("the `overflow: visible` override on .cm-navlinks was DELETED because the top layer "+
-			"cannot be clipped by ancestor overflow (verified live: the open sheet extends 111px "+
-			"below the strip and still hit-tests as itself at all four corners). Re-adding it "+
-			"restores a workaround for a trap that no longer exists. Got:\n%s", desktop)
+	// 🔴 The override must STAY — but for the focus rings, not the panel.
+	//
+	// This assertion was inverted once. It originally FORBADE the override, on the
+	// correct reasoning that the top layer cannot be clipped by ancestor overflow —
+	// so the panel no longer needs it. That was right about the panel and wrong
+	// about the rest of the strip: `.cm-navlinks` is `overflow-x: auto`, so
+	// `overflow-y` computes to `auto` and the strip clips INK OVERFLOW, which is
+	// where a focus ring lives. Measured at 1198px: 0.5px of headroom for the links
+	// and 0px for the Library trigger, against a 2px outline at 2px offset plus a
+	// 4px glow — the trigger's ring rendered as left/right brackets with no top or
+	// bottom edge. The forbidding version of this test made that one-line fix fail
+	// CI, which is how a guard turns an accessibility regression into a rule.
+	//
+	// The panel's independence from it is asserted separately above (no
+	// `position: absolute`, anchor rules behind `@supports`, no z-index) — those
+	// are the checks that stop the workaround creeping back for the WRONG reason.
+	if !strings.Contains(desktop, ".cm-navlinks {") || !strings.Contains(desktop, "overflow: visible;") {
+		t.Errorf("the desktop block must keep `.cm-navlinks { overflow: visible }` — the strip's "+
+			"`overflow-x: auto` computes overflow-y to auto and CLIPS THE FOCUS RINGS of every "+
+			"nav control (measured: 0.5px headroom for the links, 0px for the Library trigger). "+
+			"It is not a panel workaround; the panel is in the top layer and needs nothing. Got:\n%s", desktop)
 	}
 
 	// --- the stacking claim --------------------------------------------------

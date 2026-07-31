@@ -3034,10 +3034,13 @@ a.cm-res-chip .cm-res-name {
  * it grew a popover.) A top-layer box is outside that flow entirely: NO ancestor
  * overflow can clip it, at any width.
  *
- * THE `overflow: visible` OVERRIDE ON .cm-navlinks IS THEREFORE GONE. It existed
- * for exactly one reason — letting the desktop panel escape the clip — and the
- * top layer does that unconditionally. .cm-navlinks now keeps its Tailwind
- * `overflow-x: auto` at every width, which is what it wants anyway.
+ * THE PANEL THEREFORE NEEDS NO `overflow` HELP. The desktop `overflow: visible`
+ * override on .cm-navlinks was deleted on exactly that reasoning — and then put
+ * back, because the reasoning was right about the panel and wrong about the rest
+ * of the strip: the same computed `overflow-y: auto` clips the FOCUS RINGS of
+ * every nav control (measured 0.5px / 0px of headroom at 1198px). The override
+ * survives at >=1024px for the rings alone; see its own comment down in the
+ * desktop block. Nothing about the panel depends on it.
  *
  * ⚠ THE PROMOTION HAS A COST, AND IT IS THE NON-OBVIOUS PART: A TOP-LAYER
  * ELEMENT'S CONTAINING BLOCK IS THE VIEWPORT. The old desktop rule
@@ -3202,6 +3205,28 @@ a.cm-res-chip .cm-res-name {
       border: 1px solid var(--civitai-color-border);
       border-radius: 0.5rem;
     }
+  }
+
+  /* 🔴 THIS OVERRIDE IS FOR THE FOCUS RINGS, NOT THE PANEL — do not delete it
+   * again on the grounds that the top layer made it unnecessary.
+   *
+   * It WAS deleted for exactly that reason, and the reasoning was right about
+   * the panel and wrong about everything else in the strip. `.cm-navlinks` is
+   * `overflow-x: auto`, so per CSS Overflow `overflow-y` computes to `auto` and
+   * the strip clips INK OVERFLOW to its padding box — which is where a focus
+   * ring lives. Measured headroom at 1198px: 0.5px for the nav links and 0px
+   * for the Library trigger, against `outline: 2px` at `outline-offset: 2px`
+   * plus the 4px glow (see the focus block near the top of this file). Live
+   * result without this line: the links' rings collapse to hairlines and the
+   * trigger's ring renders as left/right brackets only, with no top or bottom.
+   *
+   * Safe here because five short links cannot overflow at >=1024px (measured:
+   * scrollWidth == clientWidth), so nothing loses scrollability. Below 1024px
+   * the strip keeps `overflow-x: auto` and the rings stay clipped — accepted,
+   * and unchanged from before this branch.
+   */
+  .cm-navlinks {
+    overflow: visible;
   }
 }
 
