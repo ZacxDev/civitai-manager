@@ -171,6 +171,15 @@ type Server struct {
 	// or nil before the first workflow scan is triggered.
 	workflowScanJob *workflowScanJob
 
+	// importedWorkflowsFn answers "which of these civitai model ids already have
+	// workflows in the local library" for ONE rendered page of cards. Nil
+	// (production) uses store.CountWorkflowsByModels — a single batched query.
+	//
+	// 🔴 It is a seam so a test can COUNT the invocations. A browse grid renders up
+	// to searchLimit cards, and the obvious wrong implementation — asking per card
+	// — puts a DB round-trip on every card of every render. The bound this seam
+	// exists to guard is ONE call per render, regardless of card count.
+	importedWorkflowsFn func(ctx context.Context, modelIDs []int) map[int]int
 	// runFn performs a workflow run against ComfyUI. Nil (production) uses realRun
 	// (load workflow → convert if UI → preflight → submit → poll history/queue).
 	// Tests inject a seam to drive job phases deterministically without a ComfyUI.

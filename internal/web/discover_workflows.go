@@ -23,6 +23,11 @@ type workflowDiscoverView struct {
 	CSRF    string
 	Heading string // section heading above the grid ("" = none)
 	Res     *civitai.ModelSearchResult
+	// Imported maps a card's civitai model id → how many workflows the local
+	// library already holds from it (>0 flips that card's action from Import to
+	// View). Built by ONE batched query for the whole page — never per card, see
+	// Server.importedWorkflowsFn.
+	Imported map[int]int
 }
 
 // handleDiscoverWorkflows backs the "Discover workflows" page: the model search
@@ -76,6 +81,12 @@ func (s *Server) handleDiscoverWorkflows(w http.ResponseWriter, r *http.Request)
 		} else {
 			v.Res = res
 		}
+	}
+
+	// "Already imported?" for the whole page in ONE batched query, before either
+	// render path — the fragment and the full page draw the same grid.
+	if v.Res != nil {
+		v.Imported = s.importedWorkflowModels(r.Context(), modelIDsOf(v.Res.Items))
 	}
 
 	if isHX {
@@ -167,7 +178,8 @@ func workflowDiscoverGrid(v workflowDiscoverView) g.Node {
 	grid := h.Div(
 		h.Class("cm-cardgrid"),
 		g.Map(v.Res.Items, func(it civitai.ModelListItem) g.Node {
-			return modelCardCore(it, images[it.ID], v.Mode, updated[it.ID], workflowImportAction(it.ID, v.CSRF))
+			return modelCardCore(it, images[it.ID], v.Mode, updated[it.ID],
+				workflowImportOrView(it.ID, v.CSRF, v.Imported[it.ID]))
 		}),
 	)
 	if v.Heading == "" {
