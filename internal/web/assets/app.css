@@ -1342,7 +1342,13 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
    * page that could overflow horizontally, since the rows themselves truncate). */
   min-width: 18rem;
   width: max-content;
-  max-width: min(30rem, calc(100vw - 2rem));
+  /* 36rem, not 30: a version's files routinely share a long identical stem and
+   * differ only in the EXTENSION (measured on model 573152 — seven files all
+   * reading "lustifyNSFWCheckpoint_v10Krea2.{safetensors,gguf}"), and `truncate`
+   * clips the END, i.e. exactly the discriminating part. 30rem clipped every one
+   * of them to the same string; 36rem shows them whole. The row's title= is the
+   * fallback for anything longer still. */
+  max-width: min(36rem, calc(100vw - 2rem));
   /* A version can ship many files; scroll rather than run off the page. */
   max-height: min(24rem, 60vh);
   overflow-y: auto;
