@@ -45,13 +45,16 @@ import (
 //	                           which is exactly why the fan-out exists.
 //	sort=Most Downloaded, period=AllTime, nsfw=<display mode>
 //
-// THE SIGNAL IS THE ECOSYSTEM, and it is REQUIRED. A model's versions carry
-// CivitAI `baseModel` strings; those map through the curated table
-// (civitai.EcosystemsForBaseModels) to a family, and a workflow built for that
-// family is genuinely runnable with this model. If NO ecosystem resolves, this
-// section renders NOTHING — an unfiltered `types=Workflows` feed is the popular
-// feed, and presenting that as "workflows for this model" would be a section
-// that lies.
+// THE SIGNAL IS THE ECOSYSTEM OF THE SELECTED VERSION, and it is REQUIRED. Each
+// version carries its own CivitAI `baseModel` string, which maps through the
+// curated table (civitai.EcosystemsForBaseModel) to a family, and a workflow
+// built for that family is genuinely runnable with that version. It is resolved
+// PER VERSION, not per model: a model's versions can sit on different base models
+// (LUSTIFY!'s newest is Krea 2 while its other 16 are SDXL), and unioning them
+// labelled the section with a version the user was not looking at — see
+// modelWorkflowFacets. If NO ecosystem resolves, this section renders NOTHING —
+// an unfiltered `types=Workflows` feed is the popular feed, and presenting that
+// as "workflows for this model" would be a section that lies.
 //
 // THE MODEL NAME IS DELIBERATELY NOT USED as a free-text `query=`. Two reasons,
 // both concrete: (a) a model name is arbitrary untrusted text ("wai NSFW
