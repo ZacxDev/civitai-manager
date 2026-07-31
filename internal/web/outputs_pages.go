@@ -57,15 +57,20 @@ func generationImgURL(imageID int64) string {
 //  3. It would need a schema change to link poster→video, for a fact the video
 //     element already knows.
 //
-// preload="metadata" instead lets the browser fetch only the container metadata and
-// enough of the first sample to paint frame 0, which it then uses as the poster for
-// free. There is NO autoplay, NO loop and NO controls here: a grid of N autoplaying
-// videos is exactly the bandwidth blowup this avoids. The tile stays a still image
-// that happens to be a <video>, and clicking it goes to the detail page through the
-// existing full-bleed overlay anchor — identical to an image tile.
+// Instead the <video> paints its OWN frame 0 as a poster once its src is attached,
+// which costs no extra request and needs no extra column. There is NO autoplay, NO
+// loop and NO controls here: the tile is a still image that happens to be a
+// <video>, and clicking it goes to the detail page through the existing full-bleed
+// overlay anchor — identical to an image tile.
 //
-// (This is why handleOutputsImage must keep serving through http.ServeContent: a
-// VHS mp4 is not faststart, so preload="metadata" is a tail Range request.)
+// 🔴 preload="metadata" ALONE DOES NOT BOUND THE FETCH — do not re-add a bare src.
+// It is a hint, and it was measured being ignored: with src set, Chrome transferred
+// 472,055 bytes for a 471,755-byte clip to render one thumbnail. The src is
+// therefore withheld until intersection (see lazyVideoScript below).
+//
+// (handleOutputsImage must still serve through http.ServeContent: a VHS mp4 is not
+// faststart — moov at the END — so metadata is a tail Range request, and seeking in
+// the detail page's player needs Range regardless.)
 //
 // The ▶ badge is returned as a SIBLING of the media (absolutely positioned,
 // .cm-video-badge, already in app.css and already used by the model page's
@@ -100,8 +105,24 @@ func generationThumb(gen store.Generation, label string) g.Node {
 	}
 	return g.Group([]g.Node{
 		h.Video(
-			h.Src(url),
-			// metadata, NOT auto: fetch the container header + first frame, not the
+			// 🔴 data-src, NOT src — the URL is attached by cmLazyVideo when the tile
+			// scrolls near the viewport. <video> has NO loading="lazy" (the attribute
+			// is img/iframe only), and preload="metadata" is a HINT the browser is
+			// free to ignore.
+			//
+			// MEASURED, not assumed: with src set and preload="metadata", Chrome
+			// transferred 472,055 bytes for a 471,755-byte clip on /outputs — the
+			// WHOLE file, for a tile the size of a thumbnail. A short clip is small
+			// enough that ranging for the moov atom (which VHS writes at the END of
+			// the file, so metadata needs a tail read) costs about as much as just
+			// taking it all, so the browser takes it all. At outputsPageSize = 48
+			// that is ~22 MB of eager fetch for one scroll-free page.
+			//
+			// So the bound is enforced HERE instead of being wished for. Attaching
+			// src on intersection is what loading="lazy" does for an <img>, done by
+			// hand for the element that cannot express it.
+			dataAttr("src", url),
+			// Still metadata once attached: an in-view tile wants frame 0, not the
 			// clip. muted+playsinline keep the element inert and stop iOS taking it
 			// fullscreen; no autoplay/loop/controls — this is a poster, not a player.
 			g.Attr("preload", "metadata"),
@@ -111,7 +132,7 @@ func generationThumb(gen store.Generation, label string) g.Node {
 			// <img> branch puts in alt so the tile is not unlabelled to a screen
 			// reader. The overlay anchor is separately labelled.
 			g.Attr("aria-label", label),
-			h.Class(generationThumbClass),
+			h.Class(generationThumbClass+" "+lazyVideoClass),
 		),
 		h.Span(
 			h.Class("cm-video-badge"),
@@ -119,6 +140,68 @@ func generationThumb(gen store.Generation, label string) g.Node {
 			g.Text("▶"),
 		),
 	})
+}
+
+// lazyVideoClass marks a thumbnail <video> whose src is attached on intersection.
+const lazyVideoClass = "cm-lazy-video"
+
+// lazyVideoScript attaches a thumbnail video's src when it scrolls near the
+// viewport, and detaches it again when it scrolls far away.
+//
+// It is the <video> equivalent of loading="lazy" — see generationThumb for the
+// measurement that made it necessary. Vendored inline, no CDN, no framework, in
+// keeping with every other script in this package.
+//
+// Three properties are deliberate:
+//
+//   - rootMargin 300px: start the fetch just before the tile is visible, so a
+//     normal scroll never shows an empty box, without reaching the whole page.
+//   - It DETACHES (src="" + load()) once a tile is well out of view. A long
+//     gallery scroll would otherwise accumulate every decoded clip it passed,
+//     which is the same unbounded cost by a slower route.
+//   - It DEGRADES, it does not break. With no JS (or no IntersectionObserver) the
+//     tile shows the themed background plus the ▶ badge and stays fully clickable
+//     through its overlay anchor — the detail page renders its <video> with a real
+//     src server-side, so the output is always reachable. An <img> tile is
+//     untouched by any of this.
+func lazyVideoScript() g.Node {
+	const js = `
+(function(){
+  var SEL = '.` + lazyVideoClass + `';
+  function attach(v){
+    var s = v.getAttribute('data-src');
+    if (s && v.getAttribute('src') !== s){ v.setAttribute('src', s); }
+  }
+  function detach(v){
+    if (v.getAttribute('src')){ v.removeAttribute('src'); v.load(); }
+  }
+  function init(){
+    var vids = document.querySelectorAll(SEL);
+    if (!vids.length){ return; }
+    if (!('IntersectionObserver' in window)){
+      // No observer: attach everything rather than show empty tiles. Same cost as
+      // before this script existed, and only on a browser that predates it.
+      for (var i=0;i<vids.length;i++){ attach(vids[i]); }
+      return;
+    }
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if (e.isIntersecting){ attach(e.target); } else { detach(e.target); }
+      });
+    }, {rootMargin: '300px'});
+    for (var j=0;j<vids.length;j++){ io.observe(vids[j]); }
+  }
+  if (document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+  // htmx swaps tiles in without a page load (pagination, the rail refresh), so
+  // re-scan after a swap. Re-observing an already-observed element is a no-op.
+  document.body.addEventListener('htmx:afterSwap', init);
+})();
+`
+	return h.Script(g.Raw(js))
 }
 
 // batchHref is the browse URL for one batch. It returns "" for a generation that
@@ -265,10 +348,13 @@ func outputsGalleryPage(gens []store.Generation, wfRefs []store.GenerationWorkfl
 	body := []g.Node{
 		header,
 		h.P(h.Class("text-sm text-slate-400"),
-			g.Text("Images captured from your successful workflow runs. These are your own local generations and render plain.")),
+			// "Images and videos", not "Images": a VHS_VideoCombine run captures an
+			// mp4/webm here just like a save-image node captures a PNG, and this line
+			// is the page's own description of what it holds.
+			g.Text("Images and videos captured from your successful workflow runs. These are your own local generations and render plain.")),
 		card(generationGrid(gens, emptyState(
 			"No generations yet",
-			"Every image a workflow run produces is captured here automatically, with the "+
+			"Every image and video a workflow run produces is captured here automatically, with the "+
 				"parameters it was made with, so you can re-run or delete it later. Run a "+
 				"workflow from your library and its outputs will appear on this page.",
 			"/library?tab=workflows", "Go to your workflows"))),

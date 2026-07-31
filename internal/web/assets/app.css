@@ -2032,6 +2032,21 @@ html {
   color: var(--civitai-color-text-dimmed);
 }
 /*
+ * Lazily-attached thumbnail video (.cm-lazy-video) — see lazyVideoScript in
+ * outputs_pages.go. <video> has no loading="lazy", and preload="metadata" is only
+ * a hint the browser may ignore (measured: Chrome pulled a whole 471 KB clip for a
+ * thumbnail), so the src is attached on intersection instead.
+ *
+ * Until it is attached the element has no frame to paint, and a bare <video> with
+ * no src renders TRANSPARENT — the tile would flash the page through. The tinted
+ * background is what makes the un-attached state read as a deliberate placeholder
+ * behind the ▶ badge, including for a no-JS visitor, who keeps this state
+ * permanently and reaches the video through the tile's overlay anchor.
+ */
+.cm-lazy-video {
+  background: color-mix(in srgb, var(--civitai-color-body) 88%, var(--civitai-color-text) 12%);
+}
+/*
  * The ▶ badge is sized for a full-width card tile; the rail is a narrow column
  * where 2.25rem would swallow the thumbnail. Scale it down there only.
  */

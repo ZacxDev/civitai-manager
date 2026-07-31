@@ -603,9 +603,27 @@ func TestVideoGridDoesNotEagerlyLoadVideos(t *testing.T) {
 		t.Fatalf("rendered %d <video> elements, want %d — the fixture does not reach "+
 			"the case this test guards", got, n)
 	}
+	// 🔴 THE decisive assertion, and it is about src, not preload.
+	//
+	// preload="metadata" is only a HINT. Measured in a real browser against the
+	// live app: with src set, Chrome transferred 472,055 bytes for a 471,755-byte
+	// clip — the ENTIRE file — to render one thumbnail. At outputsPageSize = 48
+	// that is ~22 MB fetched before the user scrolls. So a grid <video> must ship
+	// with NO src at all; lazyVideoScript attaches it on intersection.
+	if strings.Contains(out, `<video src=`) {
+		t.Errorf("a grid <video> must NOT carry src — it would be fetched eagerly " +
+			"(preload=metadata does not prevent it). Use data-src + lazyVideoScript.")
+	}
+	if got := strings.Count(out, "data-src="); got != n {
+		t.Errorf("data-src on %d of %d tiles — every grid video must defer its fetch", got, n)
+	}
+	if got := strings.Count(out, "cm-lazy-video"); got != n {
+		t.Errorf("the lazy marker class is on %d of %d tiles — an unmarked video is "+
+			"never observed, so its src is never attached and the tile stays blank", got, n)
+	}
 	if got := strings.Count(out, `preload="metadata"`); got != n {
-		t.Errorf(`preload="metadata" on %d of %d tiles — every grid video must bound `+
-			`its fetch to container metadata`, got, n)
+		t.Errorf(`preload="metadata" on %d of %d tiles — once attached, an in-view `+
+			`tile must still ask for metadata rather than the clip`, got, n)
 	}
 	for _, banned := range []string{"autoplay", `preload="auto"`, "<source"} {
 		if strings.Contains(out, banned) {

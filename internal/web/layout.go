@@ -69,6 +69,11 @@ func page(title, theme, csrf, nsfwMode string, rail railData, body ...g.Node) g.
 			// The rail is a SIBLING of <main>, never inside it, so it can never
 			// interfere with an htmx poll target in the page body.
 			outputsRail(rail, csrf, nsfwMode),
+			// Lazy-attach thumbnail video sources. It lives in the SHARED layout
+			// because the recent-outputs rail renders on EVERY page, so a video
+			// thumbnail can appear on any of them — not only /outputs. It is a
+			// no-op on a page with no video tile.
+			lazyVideoScript(),
 		),
 	)
 }
