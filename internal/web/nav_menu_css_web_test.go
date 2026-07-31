@@ -79,6 +79,71 @@ func TestNavMenuPanelEscapesTheScrollStrip(t *testing.T) {
 	}
 }
 
+// TestLightThemeInvisibleSurfacesStayFixed guards the TWO fixes that were found
+// by looking at the app in a real browser, and that nothing else in the suite
+// can see.
+//
+// 🔴 THE SHARED ROOT CAUSE, MEASURED LIVE IN BRAVE: on the LIGHT theme
+// --civitai-color-surface-2, --civitai-color-surface and --civitai-color-body
+// are ALL #FEFEFE. (Dark: #25262B / #1A1B1E / #1A1B1E — three distinct values.)
+// So the obvious `background: var(--civitai-color-surface-2)` is correct in dark
+// and COMPLETELY INVISIBLE in light, on every surface that reaches for it:
+//
+//	.cm-navmenu-item:hover  a dropdown item that does not react to the pointer
+//	.cm-meter               a capacity bar with no track — the fill floats with
+//	                        no scale behind it, so the reader loses "of what"
+//
+// Both are pure-appearance defects on ONE theme. No markup assertion can see
+// them (the class is present either way), contrast_web_test.go cannot (it pins
+// the ratio of a token pair, not which token a rule uses), and the dark theme
+// hides them from a casual look. Mutating either back to surface-2 left the
+// entire suite green, which is why this guard exists.
+//
+// It asserts the CHOSEN token, not merely "not surface-2": a third value would
+// be someone re-litigating a decision that was made against measured numbers.
+func TestLightThemeInvisibleSurfacesStayFixed(t *testing.T) {
+	raw, err := os.ReadFile("assets/app.css")
+	if err != nil {
+		t.Fatalf("read app.css: %v", err)
+	}
+	css := string(raw)
+
+	for _, c := range []struct{ name, selector, want, why string }{
+		{
+			"nav menu item hover",
+			".cm-navmenu-item:hover,",
+			"background: color-mix(in srgb, var(--civitai-color-primary) 12%, transparent);",
+			"a brand tint is the only wash that is visible on BOTH themes; surface-2 " +
+				"equals the surface it sits on in light, so the hover does nothing at all. " +
+				"12% is @civitai/components' own light-button tint",
+		},
+		{
+			"capacity meter track",
+			".cm-meter {",
+			"background: var(--civitai-color-border);",
+			"`border` is the one neutral token that differs from the card surface in " +
+				"BOTH themes (#CED4DA light / #373A40 dark); a surface-2 track is invisible " +
+				"in light and the meter degrades to a floating stub with no scale",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			// cssRuleIn fails the test when the selector is absent, so a renamed rule
+			// reports itself rather than passing vacuously.
+			rule := cssRuleIn(t, css, c.selector)
+			if !strings.Contains(rule, c.want) {
+				t.Errorf("%s must declare `%s` — %s. Got:\n%s", c.selector, c.want, c.why, rule)
+			}
+			// The specific regression: surface-2 is the token both of these were
+			// written with, and it is invisible on light.
+			if strings.Contains(rule, "--civitai-color-surface-2") {
+				t.Errorf("%s reaches for --civitai-color-surface-2, which on the LIGHT theme is "+
+					"the same #FEFEFE as the surface it sits on — this is the exact defect the "+
+					"rule was changed to fix. Got:\n%s", c.selector, rule)
+			}
+		})
+	}
+}
+
 // cssRuleIn returns the text of the rule opened by selector WITHIN the css slice
 // it is handed, from the selector through its closing brace. It fails the test when
 // the selector is absent — an empty body would make every "must contain" check

@@ -3122,8 +3122,17 @@ a.cm-res-chip .cm-res-name {
  * markup assertion can see, and one the dark theme hides from a casual look.
  *
  * 12% is not arbitrary: it is the exact tint @civitai/components' light BUTTON
- * variant uses, so this pair is already pinned in contrast_web_test.go as
- * "brand text in a light button" and needs no new table row.
+ * variant uses, so the resulting foreground/background pair is one
+ * contrast_web_test.go ALREADY resolves ("brand text in a light button") and
+ * needs no new table row.
+ *
+ * ⚠ THAT IS A CLAIM ABOUT THE RATIO, NOT ABOUT THIS RULE. contrast_web_test.go
+ * pins the CONTRAST of the token pair; it does not know this rule exists, so it
+ * cannot notice if the background here reverts to surface-2 — the ratio it
+ * measures would be unchanged while the hover went invisible again. An earlier
+ * version of this comment said the pair "is already pinned", which read as
+ * "this rule is guarded" and it was not. The rule itself is guarded by
+ * TestLightThemeInvisibleSurfacesStayFixed in nav_menu_css_web_test.go.
  */
 .cm-navmenu-item:hover,
 .cm-navmenu-item:focus-visible {
