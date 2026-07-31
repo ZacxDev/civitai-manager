@@ -1,7 +1,9 @@
 # Proposal — turn "Import workflows" into an icon+text button
 
-**Status: PROPOSAL ONLY. Nothing here is implemented.** Pick one and a follow-up
-builds it.
+**Status: RESOLVED and SHIPPED in v0.1.89.** Option C was chosen, with three
+amendments made after checking the proposal against the code. Kept for the
+reasoning; see the amendments at the bottom before treating any markup here as
+what shipped.
 
 Surface: `internal/web/model_pages.go` → `workflowImportDetailCard`, the
 `imported == 0` branch. Screenshots were taken against a real model page
@@ -161,3 +163,42 @@ One thing to decide alongside whichever you pick: the button's label is currentl
 workflows` reads better than `Import workflow(s)`** — the parenthetical plural is
 hedging about a count the user cannot know yet, and the result line reports the
 real number afterwards anyway. All three mock-ups above use `Import workflows`.
+
+
+---
+
+## RESOLUTION (v0.1.89) — Option C, amended
+
+Shipped, with three corrections to what is written above:
+
+1. **The heading is `Workflows from this model`, not a bare `Workflows`.** This
+   proposal was written in PARALLEL with the workflow-discovery branch, so it could
+   not see that a model page now carries THREE sections whose headings begin with
+   "Workflows": `Workflows that use this model` (local library, matched by file) and
+   `Workflows for <ecosystem>` (remote, by base model) both landed in v0.1.88. A bare
+   "Workflows" would have been the ambiguous one of three siblings — verified live on
+   `/models/1386234`, which renders "Workflows from this model" directly alongside
+   "Workflows for SDXL family".
+2. **The glyph is `＋`, not `⤓`.** The proposal argues against its own Option B partly
+   because "`⤓` has no precedent in this UI to make it self-evident" — then uses `⤓`
+   in Options A and C. It appears **zero** times in the codebase; the `cm-cta-icon`
+   vocabulary is `→` (navigate ×4), `＋` (add ×2), `↗` (external), `▶` (run). Importing
+   into your library IS adding, and `＋` is already the "Add a workflow" glyph.
+3. **The header row keeps `mb-2`.** Both existing uses of that class string carry it;
+   the markup above dropped it. If the argument is "reuses an established pattern
+   rather than inventing one", reuse it verbatim.
+
+Accepted as written: Option C over A (the card sits among siblings that all have
+headings, and A leaves the section unnamed while the imported state has a name),
+Option B rejected (only one needing an `aria-label` to be usable, smallest hit area
+for the page's most network-consequential control), and `Import workflow(s)` →
+`Import workflows`.
+
+**One consequence the proposal did not call out:** `workflowImportAction` is SHARED
+with the discover cards, so the label and glyph changed on that surface too. That is
+consistent rather than a regression, but it was not a model-detail-only change.
+
+Guarded by `internal/web/import_button_web_test.go` — the stable heading across both
+states, the anti-collision check on the heading, the `＋`-not-`⤓` glyph, and the
+hx-swap contract surviving the move into the header row. The first two were
+mutation-verified.
