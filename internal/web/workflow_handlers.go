@@ -48,9 +48,17 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load workflow", err)
 		return
 	}
-	// NOTE: there is no per-workflow "Recent outputs" card here any more — the
-	// GLOBAL recent-outputs rail (rendered by the app shell on every page)
-	// supersedes it. Per-workflow browsing lives at /outputs?workflow=<id>.
+	// This workflow's own recent outputs (per-workflow provenance — the global rail is
+	// CROSS-workflow and does not answer "what has THIS one made"). ONE bounded read
+	// through the existing per-workflow filter; a store error degrades to no strip
+	// rather than failing the page, exactly like the rail.
+	recent, err := s.store.ListGenerations(r.Context(), store.ListGenerationsOpts{
+		WorkflowID: &id, Limit: workflowOutputsStripLimit,
+	})
+	if err != nil {
+		s.log.Warn("workflow detail: list recent outputs failed", "workflow_id", id, "err", err)
+		recent = nil
+	}
 	//
 	// generateSection is the ONE run surface: the local-ComfyUI CTA, the "Open in
 	// ComfyUI" editor hand-off, the parameters/preset panel, the run status, and the
@@ -62,7 +70,7 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 		s.buildPresetView(r.Context(), wf, 0, nil, true),
 		comfyConfigured, s.comfyHelperState())
 	s.render(w, http.StatusOK, workflowDetailPage(wf,
-		s.csrf, s.currentTheme(), s.nsfwMode(), generate, s.workflowResolver(),
+		s.csrf, s.currentTheme(), s.nsfwMode(), generate, recent, s.workflowResolver(),
 		s.rail(r.Context())))
 }
 

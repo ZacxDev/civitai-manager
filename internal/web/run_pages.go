@@ -189,8 +189,10 @@ func comfyStatusIcon(v comfyStatusView) g.Node {
 		h.Class("cm-updated"),
 		g.Attr("tabindex", "0"),
 		g.Attr("role", "img"),
+		// No title= beside the popover — the native tooltip would render on top of
+		// it (see updatedPopBody's "one hover affordance per element"). role=img
+		// means the aria-label above IS the accessible name.
 		g.Attr("aria-label", headline+". "+detail),
-		h.Title(headline),
 		h.Span(h.Class("cm-status-ico"), dataAttr("state", state),
 			g.Attr("aria-hidden", "true"), g.Text(glyph)),
 		h.Span(h.Class("cm-updated-pop"), g.Attr("role", "tooltip"),

@@ -103,6 +103,10 @@ func ExtractResources(apiGraph json.RawMessage) ([]string, error) {
 type uiNode struct {
 	Type          string            `json:"type"`
 	WidgetsValues []json.RawMessage `json:"widgets_values"`
+	// Mode is the litegraph node mode (0 normal, 2 muted, 4 bypassed). It is read
+	// ONLY by the active-only extraction path (ExtractActiveResources); the advisory
+	// full scan deliberately ignores it — see extractResourcesUI.
+	Mode int `json:"mode"`
 }
 
 // uiGraph is the ui-format top-level shape we care about: the nodes array.
@@ -120,16 +124,52 @@ func ExtractResourcesAny(format string, graph json.RawMessage) ([]string, error)
 	case FormatAPI:
 		return ExtractResources(graph)
 	case FormatUI:
-		return extractResourcesUI(graph)
+		return extractResourcesUI(graph, false)
 	default:
 		return nil, ErrUnknownFormat
 	}
 }
 
-// extractResourcesUI scans all nodes' widgets_values for model-filename strings.
-// It is deliberately permissive: an unparseable graph or odd widget shapes yield
-// whatever could be recovered, never an error (advisory pre-flight aid).
-func extractResourcesUI(graph json.RawMessage) ([]string, error) {
+// ExtractActiveResources is ExtractResourcesAny restricted to the nodes that would
+// ACTUALLY RUN: bypassed (mode 4) and muted (mode 2) nodes are skipped.
+//
+// 🔴 Why this exists as a separate entry point rather than a change to
+// ExtractResourcesAny: the two answer DIFFERENT questions and both are wanted.
+//
+//   - ExtractResourcesAny answers "what does this workflow reference" — the list
+//     shown on the workflow page and stored in workflows.resources. A template pack
+//     ships N pipelines with all but one bypassed, and a user looking at it wants to
+//     know every model the template can need, not just the currently-enabled one.
+//   - ExtractActiveResources answers "what did THIS RUN use" — a provenance claim.
+//     Including a bypassed pipeline's checkpoint there asserts a model ran that
+//     demonstrably did not.
+//
+// Both share ONE implementation (extractResourcesUI) so the collection rules — which
+// widget values count as a model filename, the dedup, the first-seen ordering —
+// cannot drift between them.
+//
+// The API path is identical to ExtractResources: an api graph carries no modes at
+// all (conversion has already dropped bypassed nodes), so "active" and "referenced"
+// are the same set there by construction.
+func ExtractActiveResources(format string, graph json.RawMessage) ([]string, error) {
+	switch format {
+	case FormatAPI:
+		return ExtractResources(graph)
+	case FormatUI:
+		return extractResourcesUI(graph, true)
+	default:
+		return nil, ErrUnknownFormat
+	}
+}
+
+// extractResourcesUI scans nodes' widgets_values for model-filename strings. It is
+// deliberately permissive: an unparseable graph or odd widget shapes yield whatever
+// could be recovered, never an error (advisory pre-flight aid).
+//
+// activeOnly skips bypassed/muted nodes. It is the ONLY difference between the two
+// exported entry points (ExtractResourcesAny / ExtractActiveResources) — everything
+// about WHAT counts as a resource lives here, once.
+func extractResourcesUI(graph json.RawMessage, activeOnly bool) ([]string, error) {
 	var g uiGraph
 	if err := json.Unmarshal(graph, &g); err != nil {
 		return nil, nil
@@ -139,6 +179,9 @@ func extractResourcesUI(graph json.RawMessage) ([]string, error) {
 		seen = map[string]bool{}
 	)
 	for _, n := range g.Nodes {
+		if activeOnly && isInactiveMode(n.Mode) {
+			continue // bypassed/muted — it will not run, so it referenced nothing
+		}
 		for _, raw := range n.WidgetsValues {
 			var s string
 			if err := json.Unmarshal(raw, &s); err != nil {
