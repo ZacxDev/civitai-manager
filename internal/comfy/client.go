@@ -520,16 +520,39 @@ func (e *HistoryEntry) AllImages() []ImageRef {
 	return out
 }
 
-// lessNodeKey orders two ComfyUI node keys: numerically when both are integers
-// (the real-world case), lexically otherwise. Equal numbers fall back to the string
-// compare so the ordering stays a strict weak ordering for keys like "07" vs "7".
+// lessNodeKey orders two ComfyUI node keys: all-numeric keys first, by value, then
+// every other key lexically.
+//
+// 🔴 THE PARTITION IS NOT COSMETIC — it is what makes this a STRICT WEAK ORDERING.
+// An earlier version compared numerically when both parsed and fell through to a
+// string compare otherwise, which is INTRANSITIVE: for {"9","10","5x"} it gives
+// 9 < 10 (numeric), "5x" < "9" (string), and "10" < "5x" (string) — a cycle.
+// `sort.Slice` on an inconsistent comparator produces an arbitrary permutation, so
+// AllImages went back to being non-deterministic — measured at THREE distinct
+// orders over 300 decodes — which is the exact bug the sort was added to fix,
+// because the resulting position becomes the persisted generation_images.idx that
+// picks the gallery thumbnail.
+//
+// Mixed keys are reachable, not theoretical: this package's own subgraph expander
+// mints ids as `prefix + ":" + interiorID` (convert_subgraph.go), so a VHS output
+// inside a subgraph alongside a top-level output node produces exactly that key
+// set. Pinned by TestAllImagesIsDeterministicAcrossNodes.
 func lessNodeKey(a, b string) bool {
 	ai, aerr := strconv.Atoi(a)
 	bi, berr := strconv.Atoi(b)
-	if aerr == nil && berr == nil && ai != bi {
-		return ai < bi
+	switch {
+	case aerr == nil && berr == nil:
+		if ai != bi {
+			return ai < bi
+		}
+		return a < b // "07" vs "7" — equal values, stable by string
+	case aerr == nil:
+		return true // every numeric key sorts before every non-numeric one
+	case berr == nil:
+		return false
+	default:
+		return a < b
 	}
-	return a < b
 }
 
 // --- /queue ---

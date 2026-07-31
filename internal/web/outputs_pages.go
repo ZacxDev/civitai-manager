@@ -175,6 +175,17 @@ func lazyVideoScript() g.Node {
   function detach(v){
     if (v.getAttribute('src')){ v.removeAttribute('src'); v.load(); }
   }
+  // ONE observer for the page, disconnected and rebuilt on each re-scan.
+  //
+  // 🔴 Do NOT construct the observer inside init(). init() runs on every
+  // htmx:afterSwap, and runPoller re-arms hx-trigger="load delay:1s" for the whole
+  // duration of a run — plus the rail re-renders on every page — so a per-call
+  // observer leaks one instance PER SWAP, each still watching every .cm-lazy-video.
+  // Measured before this was hoisted: 10 swaps produced 10 observers and 0
+  // disconnects; a 10-minute batch would reach several hundred, every one firing
+  // attach/detach on every tile on every scroll. "Re-observing an already-observed
+  // element is a no-op" is true PER OBSERVER and says nothing across instances.
+  var io = null;
   function init(){
     var vids = document.querySelectorAll(SEL);
     if (!vids.length){ return; }
@@ -184,7 +195,8 @@ func lazyVideoScript() g.Node {
       for (var i=0;i<vids.length;i++){ attach(vids[i]); }
       return;
     }
-    var io = new IntersectionObserver(function(entries){
+    if (io){ io.disconnect(); }
+    io = new IntersectionObserver(function(entries){
       entries.forEach(function(e){
         if (e.isIntersecting){ attach(e.target); } else { detach(e.target); }
       });
