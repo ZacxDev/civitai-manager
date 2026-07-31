@@ -342,8 +342,17 @@ func TestModelWorkflowFacetsAreDerivedFromTheWhitelist(t *testing.T) {
 	if f.Eco == nil || f.Eco.Slug != "flux1" {
 		t.Fatalf("ecosystem = %v, want flux1 (derived from the versions' baseModels)", f.Eco)
 	}
-	if f.Use == nil || f.Use.Slug != "inpaint" {
-		t.Fatalf("use case = %v, want inpaint (the only model tag in the curated vocabulary)", f.Use)
+	// "All" is the DEFAULT: no use case is auto-applied any more (it used to be the
+	// first tag-resolved one in table order, which is a table-order vote, not
+	// relevance). The resolved use cases are OFFERED as chips instead.
+	if f.Use != nil {
+		t.Fatalf("use case = %v, want nil — the section must not auto-apply a filter the "+
+			"user did not pick", f.Use)
+	}
+	offered := modelUseCaseChoices(fluxModel())
+	if len(offered) != 1 || offered[0].Slug != "inpaint" {
+		t.Fatalf("offered use cases = %v, want exactly [inpaint] (the only model tag in the "+
+			"curated vocabulary)", offered)
 	}
 
 	// A model on an unrecognized base model resolves to NO ecosystem, and the
@@ -373,8 +382,8 @@ func TestModelWorkflowFacetsAreDerivedFromTheWhitelist(t *testing.T) {
 		Tags:          []string{"tool", "comfyui", "anime girl"},
 		ModelVersions: []civitai.ModelVersionSummary{{ID: 81, BaseModel: "Flux.1 D"}},
 	}
-	if got := modelWorkflowFacets(noisy, 81); got.Use != nil {
-		t.Errorf("stopword/noise tags must yield NO use case, got %v", got.Use)
+	if got := modelUseCaseChoices(noisy); len(got) != 0 {
+		t.Errorf("stopword/noise tags must yield NO use case chips, got %v", got)
 	}
 }
 
@@ -395,7 +404,11 @@ func TestRelatedWorkflowsSectionIsLazyAndSwappedOutOfBand(t *testing.T) {
 		t.Error("the section must be lazily fetched, not rendered inline — a cache miss costs " +
 			"up to MaxUseCaseTagQueries outbound requests")
 	}
-	if !strings.Contains(body, "/models/42/related-workflows?eco=flux1") {
+	// The container carries every DERIVED, whitelisted value: the ecosystem slug,
+	// the selected version's base model (heading only) and the model's own
+	// use-case chip vocabulary. url.Values.Encode sorts the keys, and gomponents
+	// escapes the ampersands.
+	if !strings.Contains(body, "/models/42/related-workflows?bm=Flux.1+D&amp;eco=flux1&amp;uses=inpaint") {
 		t.Errorf("the container must carry the derived facet slugs; body = %q", firstN(body, 1200))
 	}
 	// The PAGE render itself issued no SearchModels call at all.
