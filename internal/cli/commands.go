@@ -332,6 +332,12 @@ func backfillReasonMessage(bf poller.BackfillOutcome) string {
 		return fmt.Sprintf("Latest version skipped: base model does not match filter %q.", bf.Detail)
 	case poller.BackfillFilteredSize:
 		return fmt.Sprintf("Latest version skipped: %s.", bf.Detail)
+	case poller.BackfillFilteredWorkflowPost:
+		// Not a failure: it is a CivitAI Workflows post, whose Archive .zip would
+		// land outside the library entirely. Point at the action that does work.
+		return "Latest version skipped: that model is a CivitAI workflow post, and " +
+			"workflow posts are imported, not downloaded. Import it from the model " +
+			"page (Workflows from this model) or /workflows/discover."
 	case poller.BackfillNoDownloadableFile:
 		return "Latest version has no downloadable file."
 	case poller.BackfillNoCandidates:
