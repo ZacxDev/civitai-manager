@@ -165,6 +165,22 @@ type Scanner struct {
 	moveFn func(src, dst, expectedSHA string) error
 }
 
+// ResolveTrashDir applies the quarantine directory's default: an unset trash_dir
+// means <modelRoot>/.trash. It returns "" only when neither is set.
+//
+// IT IS EXPORTED BECAUSE THE RULE HAS A SECOND READER. Quarantine writes to the
+// resolved directory, but /disks has to REPORT the same one, and `trash_dir` is
+// unset on essentially every install — so a surface that read the raw config
+// value showed no trash row at all (that shipped). Restating the default in the
+// second caller would be worse: the two could drift and the page would name a
+// directory quarantine never touches. There is one rule and both callers call it.
+func ResolveTrashDir(trashDir, modelRoot string) string {
+	if trashDir == "" && modelRoot != "" {
+		return filepath.Join(modelRoot, ".trash")
+	}
+	return trashDir
+}
+
 // NewScanner builds a Scanner. A nil logger discards output; a nil reader is
 // allowed only with Options.NoRemote.
 func NewScanner(st *store.Store, reader civitai.Reader, opts Options, log *slog.Logger) *Scanner {
@@ -174,9 +190,7 @@ func NewScanner(st *store.Store, reader civitai.Reader, opts Options, log *slog.
 	if opts.Extensions == nil {
 		opts.Extensions = ExtensionSet(nil)
 	}
-	if opts.TrashDir == "" && opts.ModelRoot != "" {
-		opts.TrashDir = filepath.Join(opts.ModelRoot, ".trash")
-	}
+	opts.TrashDir = ResolveTrashDir(opts.TrashDir, opts.ModelRoot)
 	if len(opts.Paths) == 0 && opts.ModelRoot != "" {
 		opts.Paths = []string{opts.ModelRoot}
 	}

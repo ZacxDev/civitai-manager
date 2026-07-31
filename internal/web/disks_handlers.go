@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/ZacxDev/civitai-manager/internal/diskusage"
+	"github.com/ZacxDev/civitai-manager/internal/library"
 )
 
 // handleDisks renders /disks: filesystem capacity for every configured model
@@ -29,7 +30,16 @@ import (
 // was never gated. Gating the whole page would therefore have REMOVED a working
 // capability from a non-loopback bind (restore) to protect data that half of the
 // page does not carry. Off-loopback: no path, no capacity, no probe — the
-// syscalls are not even issued, because the rows are never collected.
+// syscalls are not even issued, because the rows are never collected. That last
+// claim is pinned by TestDisksRowsAreNotEvenProbedOffLoopback, which counts at
+// Server.diskStatFn rather than inspecting the markup.
+//
+// CAVEAT, PRE-EXISTING AND SHARED WITH /library/browse: extraPathsAllowed keys
+// on the server's own BIND ADDRESS, not on the peer. A loopback-bound instance
+// behind a reverse proxy therefore looks local to every remote caller the proxy
+// forwards, and this page's paths are exposed. Deploying that way is outside the
+// app's single-user-local design; do not "fix" it here in isolation, since the
+// predicate governs several endpoints at once.
 //
 // GET, read-only, no state change -> no CSRF.
 func (s *Server) handleDisks(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +106,19 @@ func (s *Server) diskRows() []diskRow {
 			add("Scan directory", p)
 		}
 	}
-	add("Trash", s.cfg.TrashDir)
+	// 🔴 THE TRASH DIR MUST BE RESOLVED, NOT READ RAW. `trash_dir` is unset on
+	// essentially every install, and the real quarantine target is derived
+	// (<ModelRoot>/.trash) inside library.NewScanner — so `add("Trash",
+	// s.cfg.TrashDir)` silently contributed NO row on a default config while this
+	// doc claimed the set included "the quarantine (trash) directory".
+	// library.ResolveTrashDir is that derivation, called rather than restated, so
+	// the row can never name a directory quarantine would not actually use.
+	add("Trash", library.ResolveTrashDir(s.cfg.TrashDir, s.cfg.ModelRoot))
+
+	statFn := s.diskStatFn
+	if statFn == nil {
+		statFn = diskusage.Stat
+	}
 
 	rows := make([]diskRow, 0, len(entries))
 	// Dedupe on the CLEANED path so "/models" and "/models/" are one row. This is
@@ -112,7 +134,7 @@ func (s *Server) diskRows() []diskRow {
 		}
 		seen[clean] = true
 		row := diskRow{Label: e.label, Path: e.path}
-		u, err := diskusage.Stat(clean)
+		u, err := statFn(clean)
 		if err != nil {
 			row.Err = diskErrText(err)
 		} else {

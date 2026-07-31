@@ -4,11 +4,14 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ZacxDev/civitai-manager/internal/diskusage"
+	"github.com/ZacxDev/civitai-manager/internal/library"
 	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
@@ -111,23 +114,115 @@ func TestDisksHidesPathsOffLoopback(t *testing.T) {
 	}
 }
 
+// countProbes swaps in a counting diskStatFn and returns the counter. The
+// substitute answers with a REAL-LOOKING Usage rather than an error, so a
+// probe-then-hide handler produces a fully populated page and is caught by the
+// count rather than by some downstream symptom.
+func countProbes(srv *Server) *atomic.Int64 {
+	var n atomic.Int64
+	srv.diskStatFn = func(string) (diskusage.Usage, error) {
+		n.Add(1)
+		return diskusage.Usage{Total: 1000, Free: 250, Used: 750}, nil
+	}
+	return &n
+}
+
 // TestDisksRowsAreNotEvenProbedOffLoopback proves the gate stops the SYSCALLS,
-// not just the markup. diskRows is what issues them, and handleDisks must not
-// call it at all off-loopback — a version that probed and then hid the output
-// would still stat every configured path on behalf of a remote caller.
+// not just the markup: off-loopback handleDisks must issue ZERO filesystem
+// probes, because a version that probed and then hid the output would still stat
+// every configured path on behalf of a remote caller.
+//
+// 🔴 IT DRIVES THE REAL HANDLER AND COUNTS AT THE SYSCALL. The first version of
+// this test asserted only that extraPathsAllowed() was false and that diskRows()
+// returned rows on loopback — it never called handleDisks at all, so rewriting
+// the handler into exactly the shape this comment forbids
+// (`rows := s.diskRows(); if gated { rows = nil }`) left it GREEN. The counter
+// lives on Server.diskStatFn, one level BELOW diskRows, precisely so that shape
+// cannot dodge it: whichever route the handler takes to a Usage, it is counted.
 func TestDisksRowsAreNotEvenProbedOffLoopback(t *testing.T) {
-	srv, _, _ := newDisksServer(t, "0.0.0.0:8787")
-	// The predicate the handler branches on. Asserting it here ties the "no
-	// probe" claim to the same condition the handler uses, rather than to a
-	// re-derived one.
+	// --- the control: on loopback the SAME request probes every directory ------
+	// Without this the "0 probes" assertion below would be satisfied by a page
+	// that never probes anywhere, which proves nothing about the gate.
+	loopback, _, _ := newDisksServer(t, "127.0.0.1:8787")
+	lp := countProbes(loopback)
+	if rec := get(t, loopback, "/disks"); rec.Code != http.StatusOK {
+		t.Fatalf("loopback GET /disks = %d, want 200", rec.Code)
+	}
+	// The fixture configures a model root, a library path and (derived) a trash
+	// dir. An exact count, not >0: it also pins that the gated case below is
+	// suppressing a probe per directory rather than a single one.
+	const wantProbes = 3
+	if got := lp.Load(); got != wantProbes {
+		t.Fatalf("fixture is wrong: a loopback GET /disks issued %d probes, want %d — "+
+			"the gated assertion below would not be measuring anything", got, wantProbes)
+	}
+
+	// --- the gate: off-loopback, not one probe --------------------------------
+	srv, _, _ := newDisksServer(t, "0.0.0.0:8787") // LAN-exposed
 	if srv.extraPathsAllowed() {
 		t.Fatal("fixture is wrong: 0.0.0.0 must not count as loopback")
 	}
-	// And on a loopback bind the same call DOES produce rows — otherwise "no
-	// rows" would prove nothing about the gate.
-	loopback, _, _ := newDisksServer(t, "127.0.0.1:8787")
-	if len(loopback.diskRows()) == 0 {
-		t.Fatal("fixture is wrong: diskRows returned nothing even on loopback")
+	gp := countProbes(srv)
+	if rec := get(t, srv, "/disks"); rec.Code != http.StatusOK {
+		t.Fatalf("gated GET /disks = %d; the page must still render", rec.Code)
+	}
+	if got := gp.Load(); got != 0 {
+		t.Errorf("a non-loopback GET /disks issued %d filesystem probes, want 0 — "+
+			"the gate must skip the collection entirely, not collect and then hide it", got)
+	}
+}
+
+// TestDisksReportsTheDerivedTrashDir pins the DEFAULT-config case, which is the
+// one that shipped broken: `trash_dir` is unset on essentially every install, so
+// reading s.cfg.TrashDir raw contributed no row at all and /disks silently
+// omitted the quarantine directory its own doc comment promises.
+//
+// The row must name the SAME directory quarantine actually writes to — the
+// derivation is library.ResolveTrashDir, shared with library.NewScanner, and the
+// expected path below is built from that shared helper rather than restated.
+func TestDisksReportsTheDerivedTrashDir(t *testing.T) {
+	srv, root, _ := newDisksServer(t, "127.0.0.1:8787")
+	// The fixture must actually be in the default state, or this proves nothing.
+	if srv.cfg.TrashDir != "" {
+		t.Fatalf("fixture is wrong: TrashDir = %q, but the case under test is the UNSET default", srv.cfg.TrashDir)
+	}
+	want := library.ResolveTrashDir("", root)
+	if want == filepath.Clean(root) {
+		t.Fatalf("fixture is wrong: the derived trash dir %q is the model root, so a row for it "+
+			"would be indistinguishable from the model root's own row", want)
+	}
+
+	var probed []string
+	srv.diskStatFn = func(p string) (diskusage.Usage, error) {
+		probed = append(probed, p)
+		return diskusage.Usage{Total: 1000, Free: 250, Used: 750}, nil
+	}
+	body := get(t, srv, "/disks").Body.String()
+
+	if !strings.Contains(body, want) {
+		t.Errorf("/disks has no row for the derived trash dir %q:\n%s", want, firstN(body, 2000))
+	}
+	if !strings.Contains(body, ">Trash<") {
+		t.Errorf("/disks has no row LABELLED Trash:\n%s", firstN(body, 2000))
+	}
+	// And it is a real probe target, not just a string in the markup.
+	if !slices.Contains(probed, want) {
+		t.Errorf("the trash dir %q was never probed; probed = %v", want, probed)
+	}
+
+	// An EXPLICIT trash_dir must still win over the derivation.
+	explicit := filepath.Join(t.TempDir(), "elsewhere")
+	srv2, _, _ := newDisksServer(t, "127.0.0.1:8787")
+	srv2.cfg.TrashDir = explicit
+	srv2.diskStatFn = func(string) (diskusage.Usage, error) {
+		return diskusage.Usage{Total: 1000, Free: 250, Used: 750}, nil
+	}
+	body2 := get(t, srv2, "/disks").Body.String()
+	if !strings.Contains(body2, explicit) {
+		t.Errorf("an explicitly configured trash_dir %q must be the row's path:\n%s", explicit, firstN(body2, 2000))
+	}
+	if strings.Contains(body2, library.ResolveTrashDir("", srv2.cfg.ModelRoot)) {
+		t.Errorf("the derived default leaked into the page even though trash_dir was set:\n%s", firstN(body2, 2000))
 	}
 }
 
