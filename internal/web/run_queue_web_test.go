@@ -226,64 +226,17 @@ func TestQueueQuickPickStartsBatch(t *testing.T) {
 	}
 }
 
-// TestQueueCountInputCarriesABatchDefault pins the fix for the silent single run:
-// the plain Queue button sends only CSRF in hx-vals, so an EMPTY count input made it
-// post count="" → clampBatchCount → 1 → a control labelled "Queue ×N" quietly doing
-// an ordinary Run. The input must ship a real batch count.
-func TestQueueCountInputCarriesABatchDefault(t *testing.T) {
-	if defaultBatchCount < 2 {
-		t.Fatalf("defaultBatchCount = %d — an untouched Queue click would run once",
-			defaultBatchCount)
-	}
-	srv := newTestServer(t)
-	id := seedWorkflow(t, srv, store.WorkflowFormatUI, queueSeedGraph)
-	body := get(t, srv, "/workflows/"+id).Body.String()
+// (TestQueueCountInputCarriesABatchDefault moved to run_zone_web_test.go as
+// TestCountSegmentDefaultsAreNotSilentlyOne — the field it pinned is now the count
+// segment's Custom input, and the property it pinned is unchanged: an untouched
+// Custom pick must not silently mean one run.)
 
-	i := strings.Index(body, `id="cm-batch-count"`)
-	if i < 0 {
-		t.Fatalf("the custom count input is not rendered: %s", body)
-	}
-	end := i + 300
-	if end > len(body) {
-		end = len(body)
-	}
-	input := body[i:end]
-	if !strings.Contains(input, `value="`+strconv.Itoa(defaultBatchCount)+`"`) {
-		t.Errorf("the count input has no batch default: %s", input)
-	}
-	if strings.Contains(input, `value=""`) {
-		t.Errorf("the count input is still empty: %s", input)
-	}
-}
-
-// TestQueueWithoutACountSaysItRanOnce pins the backstop: the empty count is still
-// reachable (a cleared field, a hand-built request), and when it happens the user
-// must be TOLD that one run started and nothing was queued — otherwise the response
-// is byte-indistinguishable from Run's and the click looks like it did nothing.
-func TestQueueWithoutACountSaysItRanOnce(t *testing.T) {
-	srv := newTestServer(t)
-	id := seedWorkflow(t, srv, store.WorkflowFormatUI, queueSeedGraph)
-	release := make(chan struct{})
-	var calls int32
-	srv.runFn = blockingRunFn(&calls, release)
-
-	rec := postQueue(t, srv, id, url.Values{"csrf_token": {srv.csrf}})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "Started a single run — nothing was queued.") {
-		t.Errorf("an empty count started a run and said nothing: %s", body)
-	}
-	if snap := srv.runJobState(); snap.BatchTotal != 1 {
-		t.Errorf("BatchTotal = %d, want 1", snap.BatchTotal)
-	}
-	close(release)
-	waitBatchDone(t, srv)
-	if n := atomic.LoadInt32(&calls); n != 1 {
-		t.Errorf("runFn calls = %d, want 1", n)
-	}
-}
+// (TestQueueWithoutACountSaysItRanOnce is superseded by
+// TestSingleRunThroughTheQueueEndpointSaysNothing in run_zone_web_test.go. It pinned
+// a "Started a single run — nothing was queued" scold that was correct while this
+// endpoint was only reachable from a block labelled "Queue ×N"; `1` is now a
+// visible, selectable option on the ONE run control, so the correct behaviour
+// inverted. The successor pins BOTH halves — silence at 1, an announcement at 4.)
 
 // ── the no-seed offer ────────────────────────────────────────────────────────
 
@@ -713,41 +666,9 @@ func TestStoppedFragmentCarriesBatchSummary(t *testing.T) {
 	}
 }
 
-// TestQueueControlRendersOutsideRunStatus pins the structural invariant: the Queue
-// control (and the whole tab strip) lives in #run-params, a SIBLING of #run-status,
-// so the 1 s poller cannot clobber a half-typed prompt.
-func TestQueueControlRendersOutsideRunStatus(t *testing.T) {
-	srv := newTestServer(t)
-	id := seedWorkflow(t, srv, store.WorkflowFormatUI, queueSeedGraph)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/workflows/"+id, nil)
-	srv.Handler().ServeHTTP(rec, req)
-	body := rec.Body.String()
-
-	if !strings.Contains(body, "Queue ×N") {
-		t.Fatalf("the Queue control is not rendered: %s", body)
-	}
-	for _, n := range batchQuickPicks {
-		if !strings.Contains(body, "×"+strconv.Itoa(n)) {
-			t.Errorf("quick pick ×%d missing", n)
-		}
-	}
-	if !strings.Contains(body, `max="`+strconv.Itoa(maxBatchCount)+`"`) {
-		t.Error("the custom count input does not carry the cap")
-	}
-	if !strings.Contains(body, "/run/queue") {
-		t.Error("the Queue control does not post to the queue endpoint")
-	}
-
-	params := strings.Index(body, `id="run-params"`)
-	status := strings.Index(body, `id="run-status"`)
-	queue := strings.Index(body, "Queue ×N")
-	if params < 0 || status < 0 || queue < 0 {
-		t.Fatalf("containers missing: params=%d status=%d queue=%d", params, status, queue)
-	}
-	if !(params < queue && queue < status) {
-		t.Errorf("the Queue control must sit inside #run-params, BEFORE #run-status "+
-			"(params=%d queue=%d status=%d)", params, queue, status)
-	}
-}
+// (TestQueueControlRendersOutsideRunStatus moved to run_zone_web_test.go as
+// TestRunZoneSitsBetweenParamsAndStatus. The STRUCTURAL property it guarded is
+// unchanged and still guarded — the run controls are nested in neither #run-params
+// nor #run-status, so the 1 s poller cannot clobber a half-typed prompt — only the
+// element carrying them moved, and the quick picks are now values on the one
+// control instead of four buttons.)

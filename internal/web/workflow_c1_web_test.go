@@ -487,11 +487,17 @@ func TestGenerateSectionDegradesWhenComfyIsUnreachable(t *testing.T) {
 		notWanted []string
 	}{
 		{
+			// canQueue false — an API-format workflow, which the batch endpoint
+			// refuses — so the ONE primary control posts to the params endpoint.
 			name: "reachable",
 			view: comfyStatusView{configured: true, reachable: true, version: "0.27.1"},
 			want: []string{
 				`data-state="ok"`, "ComfyUI reachable", "0.27.1",
-				`hx-post="/workflows/5/run"`, ">Generate<", "cm-generate-cta",
+				`hx-post="/workflows/5/run-with-params"`, ">Generate<", "cm-generate-cta",
+				// 🔴 The include is the whole point of the consolidation: this button
+				// used to carry ONLY #run-modes and silently drop every edit in the
+				// Parameters panel it sits under.
+				`hx-include="` + runZoneInclude + `"`,
 			},
 			// `type="button" disabled` is the discriminator — hx-disabled-elt (which
 			// disables the button only for the duration of its own request) is expected
@@ -515,6 +521,17 @@ func TestGenerateSectionDegradesWhenComfyIsUnreachable(t *testing.T) {
 			view:      comfyStatusView{},
 			want:      []string{`data-state="off"`, "not configured"},
 			notWanted: []string{`hx-post="/workflows/5/run"`, "Recheck"},
+		},
+		{
+			// canQueue true — a UI-format workflow, so the SAME button carries the
+			// count segment's value to the batch endpoint. One button, both jobs.
+			name: "reachable and queueable",
+			view: comfyStatusView{configured: true, reachable: true, canQueue: true},
+			want: []string{
+				`hx-post="/workflows/5/run/queue"`,
+				`hx-include="` + runZoneInclude + `"`,
+			},
+			notWanted: []string{`hx-post="/workflows/5/run-with-params"`},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

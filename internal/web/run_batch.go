@@ -61,7 +61,40 @@ const defaultBatchCount = 2
 const (
 	batchCountField         = "count"
 	batchConfirmNoSeedField = "confirm_no_seed"
+	// batchCountCustomField carries the count when the segment's "Custom" pill is
+	// selected. It is a SEPARATE name on purpose: two inputs both named `count`
+	// would both submit and r.FormValue would silently return whichever came first
+	// in the DOM — the radio — so a custom count would be discarded without a trace.
+	batchCountCustomField = "count_custom"
+	// batchCountCustom is the sentinel the "Custom" radio submits in `count`.
+	batchCountCustom = "custom"
 )
+
+// batchCountFromForm resolves the requested count out of the ONE run control's
+// two-field count segment: `count` is a literal number, except for the "Custom"
+// sentinel, where the real value lives in `count_custom`.
+//
+// It returns the RAW string; clampBatchCount remains the single authority on range
+// and on what an unparseable value means. Two consequences are deliberate:
+//
+//   - `count=custom` with a blank/absent `count_custom` falls through to
+//     clampBatchCount("") == 1, i.e. one run. That is the conservative reading of a
+//     half-filled control, and it matches the pre-existing behaviour of an empty
+//     number field.
+//   - a hand-built request may still post a bare numeric `count`, exactly as the old
+//     quick-pick buttons did. Nothing about the endpoint's contract narrowed.
+func batchCountFromForm(form map[string][]string) string {
+	get := func(k string) string {
+		if v, ok := form[k]; ok && len(v) > 0 {
+			return v[0]
+		}
+		return ""
+	}
+	if strings.TrimSpace(get(batchCountField)) == batchCountCustom {
+		return get(batchCountCustomField)
+	}
+	return get(batchCountField)
+}
 
 // clampBatchCount parses and CLAMPS a requested count to [1, maxBatchCount]. The
 // SERVER-SIDE clamp is the authority: the UI's own input can never produce an

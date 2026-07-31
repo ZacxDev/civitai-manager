@@ -276,11 +276,20 @@ func runPresetNameField(activeID int64, v presetTabView) g.Node {
 	)
 }
 
-// runPresetActions renders Run / Reset / Save / Adopt / Delete.
+// runPresetActions renders the PRESET actions — Reset / Save / Adopt / Delete.
+//
+// The "Run with these parameters" submit that used to lead this row is gone. It was
+// one of two buttons that started a run, and the other one (the big "Generate"
+// above) both looked more primary AND ignored these fields, so the page had two
+// primary actions with different behaviour. Running now happens in exactly one
+// place — the run zone below — and this row is only about the preset.
+//
+// The form KEEPS its hx-post to /run-with-params: pressing Enter in a text field
+// still runs, which is the behaviour a form-shaped panel promises, and that endpoint
+// is exactly what a count of 1 does.
 func runPresetActions(wfID, csrf string, v presetTabView) g.Node {
 	activeID := v.ActiveID()
 	actions := []g.Node{
-		civButton("filled", "sm", []g.Node{h.Type("submit")}, g.Text("Run with these parameters")),
 		// A native form reset restores every control to its pre-filled value.
 		civButton("subtle", "sm", []g.Node{h.Type("reset")}, g.Text("Reset")),
 	}
@@ -320,15 +329,14 @@ func runPresetActions(wfID, csrf string, v presetTabView) g.Node {
 	return runPresetActionsRow(wfID, csrf, actions)
 }
 
-// runPresetActionsRow lays out the preset actions and, BELOW them, the Queue ×N
-// control. Queue is a separate row on purpose: it is the one action here that can
-// consume the GPU for hours and multiply output eviction, so it does not sit in a
-// line of same-weight buttons where it can be hit by muscle memory for "Run".
-func runPresetActionsRow(wfID, csrf string, actions []g.Node) g.Node {
-	return h.Div(
-		h.Div(h.Class("flex flex-wrap items-center gap-2 pt-1"), g.Group(actions)),
-		runQueueControl(wfID, csrf),
-	)
+// runPresetActionsRow lays out the preset actions on one wrapping row.
+//
+// The Queue ×N control used to hang below them, deliberately separated so a
+// GPU-hours action could not be hit by muscle memory aimed at "Run". That separation
+// is now STRUCTURAL rather than positional: this row contains no action that starts a
+// run at all, and the count lives on the single run control below.
+func runPresetActionsRow(_, _ string, actions []g.Node) g.Node {
+	return h.Div(h.Class("flex flex-wrap items-center gap-2 pt-1"), g.Group(actions))
 }
 
 // runPresetDriftBanner names EVERY value the reconciler refused to apply and every

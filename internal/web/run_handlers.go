@@ -767,14 +767,23 @@ func (s *Server) handleWorkflowRunComfyStatus(w http.ResponseWriter, r *http.Req
 		http.Error(w, "bad workflow id", http.StatusBadRequest)
 		return
 	}
+	// The workflow's FORMAT decides which endpoint the ONE primary control posts to
+	// (the batch endpoint refuses an API graph), so it has to be resolved here rather
+	// than assumed. A workflow that has gone missing since the page rendered degrades
+	// to the non-batch endpoint rather than 404-ing a health probe.
+	canQueue := false
+	if wf, werr := s.store.GetWorkflow(r.Context(), id); werr == nil && wf != nil {
+		canQueue = wf.Format == store.WorkflowFormatUI
+	}
 	client := s.comfy()
 	if client == nil {
-		s.render(w, http.StatusOK, runComfyStatusFragment(id, s.csrf, comfyStatusView{configured: false}))
+		s.render(w, http.StatusOK, runComfyStatusFragment(id, s.csrf,
+			comfyStatusView{configured: false, canQueue: canQueue}))
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), comfyStatusTimeout)
 	defer cancel()
-	view := comfyStatusView{configured: true, comfyURL: s.cfg.ComfyURL}
+	view := comfyStatusView{configured: true, comfyURL: s.cfg.ComfyURL, canQueue: canQueue}
 	if stats, serr := client.SystemStats(ctx); serr == nil && stats != nil {
 		view.reachable = true
 		view.version = stats.ComfyUIVersion
