@@ -111,6 +111,48 @@ func TestPrimaryRunControlCarriesTheParametersAndTheCount(t *testing.T) {
 	}
 }
 
+// divExtent returns the [start, end) byte range of the <div> carrying idAttr,
+// balancing nested <div>/</div> so `end` is that element's OWN closing tag.
+//
+// 🔴 It exists because the obvious check is VACUOUS. The first version of
+// TestRunZoneSitsBetweenParamsAndStatus compared strings.Index positions —
+// params < zone < status — and that ordering holds just as well when the zone is
+// nested INSIDE #run-params, which is exactly the arrangement the invariant
+// forbids. The mutation (moving runZone into the #run-params div) left the test
+// GREEN. Index ordering cannot distinguish "sibling after" from "child of"; only
+// the extents can.
+func divExtent(t *testing.T, html, idAttr string) (start, end int) {
+	t.Helper()
+	i := strings.Index(html, idAttr)
+	if i < 0 {
+		t.Fatalf("no element carrying %s", idAttr)
+	}
+	start = strings.LastIndex(html[:i], "<div")
+	if start < 0 {
+		t.Fatalf("%s is not on a <div>", idAttr)
+	}
+	depth := 0
+	for p := start; p < len(html); {
+		open := strings.Index(html[p:], "<div")
+		clos := strings.Index(html[p:], "</div>")
+		if clos < 0 {
+			t.Fatalf("unterminated <div> for %s", idAttr)
+		}
+		if open >= 0 && open < clos {
+			depth++
+			p += open + len("<div")
+			continue
+		}
+		depth--
+		p += clos + len("</div>")
+		if depth == 0 {
+			return start, p
+		}
+	}
+	t.Fatalf("unbalanced markup around %s", idAttr)
+	return 0, 0
+}
+
 // TestRunZoneSitsBetweenParamsAndStatus replaces
 // TestQueueControlRendersOutsideRunStatus. The structural property is unchanged and
 // is what keeps the 1 s poller from clobbering a half-typed prompt: the run zone is
@@ -120,15 +162,23 @@ func TestRunZoneSitsBetweenParamsAndStatus(t *testing.T) {
 	id := seedWorkflow(t, srv, store.WorkflowFormatUI, queueSeedGraph)
 	body := get(t, srv, "/workflows/"+id).Body.String()
 
-	params := strings.Index(body, `id="run-params"`)
-	zone := strings.Index(body, `id="`+runZoneID+`"`)
-	status := strings.Index(body, `id="`+runStatusContainerID+`"`)
-	if params < 0 || zone < 0 || status < 0 {
-		t.Fatalf("containers missing: params=%d zone=%d status=%d", params, zone, status)
+	_, paramsEnd := divExtent(t, body, `id="`+runParamsContainerID+`"`)
+	zoneStart, zoneEnd := divExtent(t, body, `id="`+runZoneID+`"`)
+	statusStart, _ := divExtent(t, body, `id="`+runStatusContainerID+`"`)
+
+	// STRICTLY after #run-params closes: inside it, a preset-tab swap (which
+	// replaces that container's innerHTML) would delete the run controls.
+	if zoneStart < paramsEnd {
+		t.Errorf("the run zone is INSIDE #run-params (zone starts at %d, #run-params "+
+			"closes at %d) — a preset-tab swap would delete the run controls",
+			zoneStart, paramsEnd)
 	}
-	if !(params < zone && zone < status) {
-		t.Errorf("the run zone must sit AFTER #run-params and BEFORE #run-status "+
-			"(params=%d zone=%d status=%d)", params, zone, status)
+	// …and strictly before #run-status opens: inside it, the 1 s poller would
+	// replace the run controls on every tick.
+	if statusStart < zoneEnd {
+		t.Errorf("the run zone overlaps #run-status (zone closes at %d, #run-status "+
+			"opens at %d) — the poller would replace the run controls",
+			zoneEnd, statusStart)
 	}
 	// Every quick pick the old block offered is still one click away, now as a
 	// value on the one control rather than a button of its own.
