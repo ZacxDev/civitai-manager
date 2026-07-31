@@ -488,7 +488,7 @@ func TestServeRefusesNonWhitelistedStoredType(t *testing.T) {
 					"whitelist must never reach the header", ct, outputMediaTypeRefused)
 			}
 			if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
-				t.Error("nosniff must be kept for a refused type — it is what stops the "+
+				t.Error("nosniff must be kept for a refused type — it is what stops the " +
 					"browser sniffing the bytes back into something renderable")
 			}
 		})
