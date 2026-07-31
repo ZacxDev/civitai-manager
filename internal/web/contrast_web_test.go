@@ -258,6 +258,14 @@ func uiPairs() []pair {
 		// Body text.
 		{"body text on the page", "--civitai-color-text", plain("--civitai-color-body"), wcagAANormal, nil},
 		{"body text on surface-2", "--civitai-color-text", plain("--civitai-color-surface-2"), wcagAANormal, nil},
+		// The nav bar and its Library dropdown panel both paint
+		// --civitai-color-surface (bg-slate-900 == surface, see tailwind.config.js).
+		// The nav LINKS (text-slate-300 == --civitai-color-text) and the panel's
+		// items sit on it. This pair was already shipping — the nav links have
+		// always been text-on-surface — but nothing pinned it; the dropdown adds a
+		// second surface painting the same pair, so it is added here rather than
+		// left unguarded.
+		{"nav link / dropdown item on surface", "--civitai-color-text", plain("--civitai-color-surface"), wcagAANormal, nil},
 
 		// The app's most-used secondary text (text-slate-400 / text-slate-500).
 		{"dimmed text on the page", "--civitai-color-text-dimmed", plain("--civitai-color-body"), wcagAANormal, nil},

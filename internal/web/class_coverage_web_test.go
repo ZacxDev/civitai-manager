@@ -371,6 +371,18 @@ func TestShellMeasureIsInTheBuiltCSS(t *testing.T) {
 		// so the coverage moves here rather than disappearing.
 		".cm-maturity {", ".cm-maturity-select {", ".cm-maturity-legend {",
 		".cm-cardgrid {",
+		// The nav rework's hand-written CSS, here for the same purge-proofing
+		// reason as everything above it. The two positioning rules are called out
+		// individually because they are the load-bearing halves of one fix: the
+		// panel is `position: fixed` below 1024px (a fixed box escapes
+		// .cm-navlinks' overflow clip) and switches to an anchored absolute box at
+		// >=1024px, where .cm-navlinks stops clipping at all. Losing either half
+		// silently clips the menu at one breakpoint only.
+		".cm-brand-mark {", ".cm-navmenu {", ".cm-navmenu-summary {",
+		".cm-navmenu-panel {", "position: fixed", ".cm-navlinks {\n    overflow: visible;",
+		".cm-rail-title-link {",
+		// /disks: the capacity rows and their meter.
+		".cm-disk-row {", ".cm-disk-path {", ".cm-meter {", ".cm-meter-fill {",
 	} {
 		if !strings.Contains(string(app), want) {
 			t.Errorf("app.css missing %q", want)
