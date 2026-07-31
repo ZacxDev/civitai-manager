@@ -372,15 +372,13 @@ func TestShellMeasureIsInTheBuiltCSS(t *testing.T) {
 		".cm-maturity {", ".cm-maturity-select {", ".cm-maturity-legend {",
 		".cm-cardgrid {",
 		// The nav rework's hand-written CSS, here for the same purge-proofing
-		// reason as everything above it. The two positioning rules are called out
-		// individually because they are the load-bearing halves of one fix: the
-		// panel is `position: fixed` below 1024px (a fixed box escapes
-		// .cm-navlinks' overflow clip) and switches to an anchored absolute box at
-		// >=1024px, where .cm-navlinks stops clipping at all. Losing either half
-		// silently clips the menu at one breakpoint only.
+		// reason as everything above it. These are PRESENCE checks only — the
+		// panel's two-mode POSITIONING (the load-bearing part) is guarded by
+		// TestNavMenuPanelEscapesTheScrollStrip in nav_menu_css_web_test.go, which
+		// slices out the individual rule bodies. A bare "position: fixed" here
+		// would have been satisfied by .cm-rail's own rule ~900 lines away.
 		".cm-brand-mark {", ".cm-navmenu {", ".cm-navmenu-summary {",
-		".cm-navmenu-panel {", "position: fixed", ".cm-navlinks {\n    overflow: visible;",
-		".cm-rail-title-link {",
+		".cm-navmenu-panel {", ".cm-rail-title-link {",
 		// /disks: the capacity rows and their meter.
 		".cm-disk-row {", ".cm-disk-path {", ".cm-meter {", ".cm-meter-fill {",
 	} {
