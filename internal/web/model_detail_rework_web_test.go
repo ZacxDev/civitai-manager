@@ -480,10 +480,18 @@ func TestDownloadCardDegradesWithoutVersionOrFiles(t *testing.T) {
 
 // TestWorkflowImportSectionStates proves the two states of the import section and
 // that the explanatory paragraph under the button is gone from BOTH.
+//
+// The "already imported" case additionally pins the CAROUSEL that replaced the
+// bare CTA: the link through to the library is still there (it is no longer the
+// ONLY affordance), and the imported workflows now render as cards beside it.
+// The case list therefore carries the workflows too — see
+// importedWorkflowsCarousel — and the dedicated coverage lives in
+// imported_workflows_carousel_web_test.go.
 func TestWorkflowImportSectionStates(t *testing.T) {
 	cases := []struct {
 		name     string
 		imported int
+		wfs      []store.Workflow
 		want     []string
 		banned   []string
 	}{
@@ -495,29 +503,44 @@ func TestWorkflowImportSectionStates(t *testing.T) {
 				`hx-post="/workflows/discover/7/import"`,
 				"csrf_token&#34;:&#34;csrf-token", // hx-vals JSON is HTML-escaped
 			},
-			banned: []string{"View in library", "/library?tab=workflows"},
+			banned: []string{"View in library", "/library?tab=workflows", "cm-carousel"},
 		},
 		{
-			name:     "already imported → View in library, no import CTA",
+			name:     "already imported → the cards + View in library, no import CTA",
 			imported: 3,
+			wfs:      importedWorkflowFixtures(3),
 			want: []string{
 				"View in library",
 				`href="/library?tab=workflows&amp;model=7"`,
 				"Already imported",
 				"3 workflows",
+				// The cards themselves, in the shared carousel.
+				"cm-carousel-wrap",
+				"cm-carousel-card",
+				`href="/workflows/1"`,
 			},
 			banned: []string{"Import workflow(s)", "hx-post=", "/workflows/discover/7/import"},
 		},
 		{
 			name:     "singular copy for exactly one",
 			imported: 1,
+			wfs:      importedWorkflowFixtures(1),
 			want:     []string{"1 workflow from this model is in your workflow library"},
 			banned:   []string{"1 workflows"},
+		},
+		{
+			// The count and the list are two queries: a failed list must degrade to
+			// the sentence + link, never to an empty strip.
+			name:     "counted but the list failed → no empty carousel",
+			imported: 3,
+			wfs:      nil,
+			want:     []string{"Already imported", "View in library"},
+			banned:   []string{"cm-carousel"},
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			out := renderString(t, workflowImportDetailCard(7, "csrf-token", c.imported))
+			out := renderString(t, workflowImportDetailCard(7, "csrf-token", c.imported, c.wfs))
 			for _, want := range c.want {
 				if !strings.Contains(out, want) {
 					t.Errorf("import section missing %q:\n%s", want, out)
@@ -556,7 +579,7 @@ func TestImportButtonCarriesNoEgressNoteAnywhere(t *testing.T) {
 		node g.Node
 	}{
 		{"discover card", workflowImportAction(7, "csrf")},
-		{"detail card", workflowImportDetailCard(7, "csrf", 0)},
+		{"detail card", workflowImportDetailCard(7, "csrf", 0, nil)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			out := renderString(t, c.node)

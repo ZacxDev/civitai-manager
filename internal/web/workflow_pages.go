@@ -738,16 +738,28 @@ func workflowCardWith(wf store.Workflow, csrf string, resolver workflowResolver,
 		// card's side-by-side header would leave the name ~8rem inside a
 		// fixed-width carousel card.
 		//
-		// The name is `truncate min-w-0` (the pairing TestLongUntrustedStringsCanBreak
-		// requires) with the full name in title=: a card in a fixed-width horizontal
-		// strip has no room to wrap an arbitrary 90-char workflow name, and letting it
-		// wrap would grow the strip's row height for every card.
+		// The name anchor is `truncate min-w-0` — the pairing
+		// TestLongUntrustedStringsCanBreak requires. A workflow name comes from a zip
+		// entry inside someone else's archive, and a fixed-width strip card has nowhere
+		// to wrap 90 unbreakable characters; letting it wrap would also grow the row
+		// height of every card in the strip.
+		//
+		// The full name is in title= on the WRAPPER, never on the anchor, and that
+		// placement is load-bearing rather than stylistic: TestLongUntrustedStringsCanBreak
+		// EXEMPTS any element carrying `title=`, so a title on the anchor would silently
+		// exempt the very element whose truncation is the thing under guard. Verified by
+		// mutation — with title= on the anchor, deleting `truncate` stayed GREEN; with it
+		// out here the same deletion goes red naming this anchor. The tooltip still works
+		// (the anchor is inside the wrapper) and TestEveryTruncatedTextHasATitle still
+		// sees an h.Title beside the truncate.
 		return card(
 			h.Class("cm-lift"),
-			h.A(h.Href("/workflows/"+id),
-				h.Class("block truncate min-w-0 text-base font-semibold text-slate-100 hover:text-indigo-300"),
-				g.Attr("title", name),
-				g.Text(name)),
+			h.Div(
+				h.Class("min-w-0"),
+				h.Title(name),
+				h.A(h.Href("/workflows/"+id), h.Class("block truncate min-w-0 text-base font-semibold text-slate-100 hover:text-indigo-300"),
+					g.Text(name)),
+			),
 			h.Div(h.Class("flex flex-wrap items-center gap-2 mt-2"), g.Group(meta)),
 			h.Div(h.Class("mt-3"), runCTA),
 		)

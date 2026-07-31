@@ -311,6 +311,13 @@ type modelDetailView struct {
 	// FROM this model (store.CountWorkflowsByModel). >0 flips the import section to
 	// its "already in your library" state. Only populated for Workflows-type models.
 	ImportedWorkflows int
+	// ImportedWorkflowList is the newest-first, CAPPED (importedWorkflowsCap) slice
+	// of those same rows (store.ListWorkflowsByModel), rendered as the section's
+	// carousel of cards. It is the same model_id predicate as the count, so the two
+	// always describe one set — but it is a SEPARATE query, so it can legitimately
+	// be empty while ImportedWorkflows is not (a failed list); the carousel then
+	// renders nothing rather than an empty strip.
+	ImportedWorkflowList []store.Workflow
 	// UsedByWorkflows are the library workflows that REFERENCE a file belonging to
 	// this model (store.ListWorkflowsUsingModel). It is a DIFFERENT relation from
 	// ImportedWorkflows above — that one counts workflows imported FROM this model —
@@ -657,7 +664,7 @@ func versionRegionInner(v modelDetailView, sub *store.Subscription, csrf, baseUR
 		// import into the local workflow library (Discover D2). Other model types are
 		// unaffected.
 		g.If(strings.EqualFold(m.Type, "Workflows"),
-			workflowImportDetailCard(m.ID, csrf, v.ImportedWorkflows)),
+			workflowImportDetailCard(m.ID, csrf, v.ImportedWorkflows, v.ImportedWorkflowList)),
 		communityFeedContainer(m.ID, v.SelectedVersionID),
 	})
 }
@@ -666,20 +673,31 @@ func versionRegionInner(v modelDetailView, sub *store.Subscription, csrf, baseUR
 // model's detail page in ONE of its two states:
 //
 //   - imported (imported > 0): the model's workflows are already in the local
-//     library, so the state-changing import CTA is REPLACED by a "View in library"
+//     library, so the state-changing import CTA is REPLACED by the imported
+//     workflows THEMSELVES — a carousel of their cards — plus a "View in library"
 //     link into the workflows tab filtered to this model. Re-importing would only
 //     report "0 imported, N already present", so offering it is a dead end.
 //   - not imported: the import CTA. The old explanatory paragraph under the button
 //     is deliberately gone here (the discover cards keep it — see
 //     workflowImportAction); the egress it described is carried by the button's own
 //     title/aria-label instead.
-func workflowImportDetailCard(modelID int, csrf string, imported int) g.Node {
+//
+// `wfs` is the CAPPED (importedWorkflowsCap) newest-first slice; `imported` stays
+// the TRUE total, so the sentence keeps telling the truth when the carousel is
+// showing a subset. The two come from one predicate (store.CountWorkflowsByModel
+// / store.ListWorkflowsByModel), so they cannot describe different sets.
+func workflowImportDetailCard(modelID int, csrf string, imported int, wfs []store.Workflow) g.Node {
 	if imported > 0 {
 		return card(
 			h.H2(h.Class("text-sm font-semibold text-slate-300 mb-2"), g.Text("Workflows")),
 			h.P(h.Class("mb-2 text-xs text-slate-400"),
 				g.Text(fmt.Sprintf("Already imported — %s from this model %s in your workflow library.",
 					pluralWorkflows(imported), isAre(imported)))),
+			importedWorkflowsCarousel(wfs),
+			importedWorkflowsOverflowNote(imported, len(wfs)),
+			// The link through to the library SURVIVES the carousel — it is no longer
+			// the only affordance, but it is still the way to the full, filterable,
+			// mutable list, and the only way to the ones past the cap.
 			h.A(
 				h.Href(fmt.Sprintf("/library?tab=workflows&model=%d", modelID)),
 				dataAttr("civitai-ui", "button"),
@@ -694,6 +712,52 @@ func workflowImportDetailCard(modelID int, csrf string, imported int) g.Node {
 		h.H2(h.Class("text-sm font-semibold text-slate-300 mb-2"), g.Text("Import workflows")),
 		workflowImportAction(modelID, csrf),
 	)
+}
+
+// importedWorkflowsCap bounds how many imported-workflow cards the model detail
+// page paints. A single Workflows model routinely ships a pack of dozens of
+// .json files and every one becomes a row; this section is a "here is what you
+// already have" glance, not the library. Past the cap the "View in library" link
+// (plus importedWorkflowsOverflowNote) carries the user to the full list. It is
+// also the SQL LIMIT — see loadModelView — so the rows past it are never
+// fetched, let alone rendered.
+const importedWorkflowsCap = 8
+
+// importedWorkflowsCarousel renders the imported workflows as compact cards in
+// the shared card carousel.
+//
+// It renders NOTHING for an empty slice — no heading, no empty strip, no stray
+// wrapper — and returns a nil node so gomponents skips it entirely. That is
+// reachable in production even when imported > 0: the count and the list are two
+// queries, and a failed list leaves the sentence with no rows behind it.
+//
+// The cards are workflowCardCompact — the shared renderer's compact variant; see
+// its doc for what it drops and why. Notably it carries NO image tiles, so this
+// strip has none of the NSFW-reveal / video-badge / inner-carousel-button
+// decoration that escapes `.cm-carousel-wrap` (which is `position: relative;
+// z-index: auto`, deliberately NOT a stacking context) and paints over a
+// neighbouring transformed .cm-lift card. The v0.1.82 hazard is absent here by
+// construction rather than by z-index.
+func importedWorkflowsCarousel(wfs []store.Workflow) g.Node {
+	if len(wfs) == 0 {
+		return nil
+	}
+	cards := make([]g.Node, 0, len(wfs))
+	for _, wf := range wfs {
+		cards = append(cards, workflowCardCompact(wf))
+	}
+	return cardCarousel(cards)
+}
+
+// importedWorkflowsOverflowNote states, honestly and only when true, that the
+// carousel is a subset — so 8 cards under a sentence reading "23 workflows"
+// never looks like a bug. Nil when nothing was withheld.
+func importedWorkflowsOverflowNote(total, shown int) g.Node {
+	if shown <= 0 || total <= shown {
+		return nil
+	}
+	return h.P(h.Class("mb-2 text-xs text-slate-500"),
+		g.Text(fmt.Sprintf("Showing the %d most recent.", shown)))
 }
 
 // pluralWorkflows renders "1 workflow" / "N workflows".

@@ -654,11 +654,23 @@ func (s *Server) loadModelView(parent context.Context, id, versionParam string) 
 	}
 
 	// "Already imported?" for the workflow-import section. Only Workflows-type
-	// models have one, so nothing else pays for the query.
+	// models pay for these queries — and only TWO of them, both keyed on model_id:
+	// the total (for the sentence) and at most importedWorkflowsCap rows (for the
+	// carousel of cards). Never one query per card. The list is skipped entirely
+	// when the count is zero, so the common "not imported yet" page is unchanged.
 	if strings.EqualFold(m.Type, "Workflows") {
 		if mid, aerr := strconv.Atoi(id); aerr == nil {
 			if n, cerr := s.store.CountWorkflowsByModel(ctx, mid); cerr == nil {
 				view.ImportedWorkflows = n
+				if n > 0 {
+					if wfs, lerr := s.store.ListWorkflowsByModel(ctx, mid, importedWorkflowsCap); lerr == nil {
+						view.ImportedWorkflowList = wfs
+					} else {
+						// Degrade to the sentence + library link rather than failing the
+						// page: the count already proved the workflows are there.
+						s.log.Warn("list imported workflows", "model", id, "err", lerr)
+					}
+				}
 			} else {
 				s.log.Warn("count imported workflows", "model", id, "err", cerr)
 			}
