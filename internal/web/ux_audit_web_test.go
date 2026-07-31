@@ -400,6 +400,15 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 		"structured graph listing": renderString(t, workflowGraphSection(
 			[]byte(`{"nodes":[{"id":1,"type":"`+long+`","inputs":[{"name":"`+long+`"}]}]}`),
 			store.WorkflowFormatAPI)),
+		// The model detail page's imported-workflows carousel. A workflow NAME comes
+		// from the zip entry inside someone else's model archive, so it is exactly as
+		// untrusted and unbounded as a filename — and here it sits in a FIXED-WIDTH
+		// carousel card (.cm-carousel-card), the worst case for an unbreakable string:
+		// with no truncate the card's min-content width becomes the whole string and
+		// the strip's parent card blows past the viewport.
+		"imported workflows carousel": renderString(t, workflowImportDetailCard(7, "csrf", 1,
+			[]store.Workflow{{ID: 1, Name: long, Format: store.WorkflowFormatAPI,
+				Source: store.WorkflowSourceCivitai}})),
 	}
 	for name, html := range cases {
 		// Every element that prints the long string must be able to break it.

@@ -366,6 +366,26 @@ func (s *Store) CountWorkflowsByModel(ctx context.Context, modelID int) (int, er
 	return n, nil
 }
 
+// ListWorkflowsByModel returns AT MOST `limit` workflows imported from this
+// civitai model id, newest first. It is the list companion to
+// CountWorkflowsByModel and carries the IDENTICAL `model_id = ?` predicate, so
+// the count a page prints and the cards it shows can never describe different
+// sets.
+//
+// The limit is MANDATORY and enforced in SQL rather than by slicing in the
+// caller: this feeds a model-detail page render, and a library holding hundreds
+// of workflows imported from one pack must not stream hundreds of rows into a
+// request that will only paint a handful. A non-positive limit or model id
+// yields nil without touching the DB.
+func (s *Store) ListWorkflowsByModel(ctx context.Context, modelID, limit int) ([]Workflow, error) {
+	if modelID <= 0 || limit <= 0 {
+		return nil, nil
+	}
+	return s.queryWorkflows(ctx,
+		`SELECT `+workflowCols+` FROM workflows WHERE model_id = ? ORDER BY id DESC LIMIT ?`,
+		modelID, limit)
+}
+
 func (s *Store) queryWorkflows(ctx context.Context, q string, args ...any) ([]Workflow, error) {
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {

@@ -685,6 +685,38 @@ func modelCardCarouselW(modelID int, images []galleryImage, mode string, tileWid
 	)
 }
 
+// cardCarousel renders arbitrary CARDS in the same horizontal scroll-snap
+// carousel the image strips use — same .cm-carousel-wrap, same .cm-carousel
+// strip, same .cm-carousel-btn controls, same cmCarouselScroll helper. Only the
+// per-item box differs (.cm-carousel-card, a fixed-WIDTH box, vs
+// .cm-carousel-item, a fixed-HEIGHT image tile); see the CSS block in app.css.
+//
+// It follows modelCardCarouselW's two rules exactly: nothing at all for an empty
+// input (never an empty strip or a stray wrapper), and the prev/next buttons
+// only once there is something to scroll TO.
+//
+// The caller is responsible for emitting libraryCarouselScript() once on the
+// page — every page that already renders an image carousel does.
+func cardCarousel(cards []g.Node) g.Node {
+	if len(cards) == 0 {
+		return nil
+	}
+	items := make([]g.Node, 0, len(cards))
+	for _, c := range cards {
+		items = append(items, h.Div(h.Class("cm-carousel-card"), c))
+	}
+	strip := h.Div(h.Class("cm-carousel cm-carousel-cards"), g.Group(items))
+	if len(cards) <= 1 {
+		return h.Div(h.Class("cm-carousel-wrap"), strip)
+	}
+	return h.Div(
+		h.Class("cm-carousel-wrap"),
+		strip,
+		carouselButton("prev", "‹"),
+		carouselButton("next", "›"),
+	)
+}
+
 // carouselButton renders a prev/next scroll control for the carousel; the tiny
 // cmCarouselScroll helper (libraryCarouselScript) scrolls the sibling strip.
 func carouselButton(dir, glyph string) g.Node {

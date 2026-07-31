@@ -573,6 +573,76 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 }
 
 /*
+ * CARD carousel (.cm-carousel-cards / .cm-carousel-card) — see
+ * cardCarousel in model_card_pages.go. This is the SAME carousel: the same
+ * .cm-carousel-wrap, the same .cm-carousel scroll-snap strip, the same
+ * .cm-carousel-btn controls and the same cmCarouselScroll helper. Only the ITEM
+ * box is new, and it has to be: .cm-carousel-item is a fixed-HEIGHT image tile
+ * that derives its WIDTH from the tile's aspect ratio, which is meaningless for
+ * a card whose height follows its content. So the item is fixed-WIDTH instead
+ * and lets the row height come from the tallest card.
+ *
+ * `> *` stretching to height:100% makes every card in a row the same height
+ * (flex's default align-items:stretch sizes the ITEM; the card inside it needs
+ * telling), so the Run CTAs line up instead of stepping with each name's length.
+ *
+ * The extra vertical padding on the strip is load-bearing, not cosmetic: the
+ * cards are .cm-lift, whose hover state adds `translateY(-2px)` AND a 20px blur
+ * box-shadow, and a box with `overflow-x: auto` computes `overflow-y` to `auto`
+ * too — so with no padding the lift is clipped and can flicker a vertical
+ * scrollbar on hover. Theme-agnostic: no colour is set here.
+ */
+.cm-carousel-cards {
+  padding-top: 0.35rem;
+  padding-bottom: 0.85rem;
+  /*
+   * THE GUTTER IS LOAD-BEARING, and it is a LAYOUT fix, not a z-index one.
+   * `.cm-carousel-btn` is `position: absolute; z-index: 5` inside
+   * `.cm-carousel-wrap`, which is `position: relative; z-index: auto` — NOT a
+   * stacking context — so the buttons escape into the shared parent context and
+   * paint over the strip's contents, which sit at z-index auto/0. Over an IMAGE
+   * tile that is fine and intended. Over a CARD the buttons landed squarely on
+   * the first and last visible card's PRIMARY "Run" CTA — found in a real
+   * browser by hit-testing the CTA's own pixels, which returned
+   * `cm-carousel-btn cm-carousel-btn-prev`.
+   *
+   * Raising the CARD's z-index above 5 is the WRONG fix here: it would bury the
+   * scroll buttons behind the cards and cost the strip its only non-drag scroll
+   * control. The cards are inset into a gutter the buttons occupy instead, so
+   * paint order is left completely alone. (See also the STACKING ORDER ledger —
+   * this deliberately spends none of that budget.)
+   *
+   * scroll-padding is required ALONGSIDE padding, not instead of it. The strip
+   * is `scroll-snap-type: x mandatory`, so with padding alone the browser snaps
+   * the first item's `scroll-snap-align: start` edge to the CONTENT box and
+   * scrolls the left gutter straight back off (measured live: scrollLeft settled
+   * at 44px and the CTA was still covered). scroll-padding insets the SNAPPORT to
+   * match, making scrollLeft 0 itself a valid snap position.
+   *
+   * 2.75rem = the button's 0.25rem offset + its 2.25rem width + 0.25rem of air.
+   * Re-hit-tested at four scroll positions (0 / 400 / 900 / end): zero covered
+   * CTAs, and both buttons still win hit-testing at their own centres.
+   */
+  padding-left: 2.75rem;
+  padding-right: 2.75rem;
+  scroll-padding-left: 2.75rem;
+  scroll-padding-right: 2.75rem;
+}
+.cm-carousel-card {
+  flex: 0 0 auto;
+  width: 15rem;
+  scroll-snap-align: start;
+}
+.cm-carousel-card > * {
+  height: 100%;
+}
+@media (min-width: 640px) {
+  .cm-carousel-card {
+    width: 17rem;
+  }
+}
+
+/*
  * Model version TAB BAR (.cm-version-tabs) — see modelVersionTabs in
  * model_pages.go. A row of version tabs along the bottom edge of the combined
  * model header card. Colors come from the --civitai-* theme tokens so both
