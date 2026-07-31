@@ -250,9 +250,11 @@ Read these before you decide the tool is broken.
 - **Duplicate detection on import isn't uniform.** CivitAI imports are deduped by
   canonical graph hash; disk scans are idempotent per file path; pasting the same
   JSON twice will create two entries.
-- **NSFW previews are blurred by default, not withheld.** Blur is a browser-side
-  CSS filter — the image bytes are still sent. It's a shoulder-surfing control,
-  not a privacy boundary.
+- **Maturity is a PG..XXX range, and it defaults to the whole range.** The nav
+  control filters CivitAI previews server-side — anything outside the band is
+  never sent — but the default band is everything, so narrowing it is something
+  you do, not something the app does for you. It does not touch your own
+  generations in the outputs gallery: those carry no rating and always render.
 - **The web UI has no login.** It binds loopback by default and its only
   protection is a per-process CSRF token. Binding a LAN address exposes an
   unauthenticated UI — *and your output gallery*. Read the
