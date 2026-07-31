@@ -391,7 +391,12 @@ func (s *Server) applyItemOutcomeLocked(job *runJob, res *runResult, err error) 
 			job.promptID = res.PromptID
 		}
 		if len(res.Images) == 0 {
-			job.message = "Run complete (no images returned)."
+			// "outputs", not "images": res.Images now carries BOTH the history's
+			// `images` and its `gifs` (video). A successful VHS_VideoCombine run used
+			// to land here and report "no images returned" while an mp4 sat on disk —
+			// the visible symptom of the harvest bug. It is now reachable only when a
+			// run genuinely produced nothing, and it must not name one media kind.
+			job.message = "Run complete (no outputs returned)."
 		} else {
 			job.message = "Run complete."
 		}

@@ -90,8 +90,8 @@ func TestRunSuccessAndStopOmitOpenInComfyUI(t *testing.T) {
 		"success": {Started: true, WorkflowID: 9, UIFormat: true, Phase: runPhaseDone,
 			Message: "Run complete.",
 			Images:  []comfy.ImageRef{{Filename: "o.png", Type: "output"}}},
-		"success, no images": {Started: true, WorkflowID: 9, UIFormat: true, Phase: runPhaseDone,
-			Message: "Run complete (no images returned)."},
+		"success, no outputs": {Started: true, WorkflowID: 9, UIFormat: true, Phase: runPhaseDone,
+			Message: "Run complete (no outputs returned)."},
 		"stopped by the user": {Started: true, WorkflowID: 9, UIFormat: true,
 			Phase: runPhaseFailed, Stopped: true},
 	} {

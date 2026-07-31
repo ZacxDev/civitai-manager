@@ -476,11 +476,15 @@ func (s *Server) captureGeneration(wf *store.Workflow, opts runOptions, res *run
 			s.log.Warn("output capture: write failed", "prompt", res.PromptID, "rel", relPath, "err", err)
 			continue
 		}
-		// The comfy server is untrusted: constrain a non-image content-type so a
-		// hostile server cannot get an html/JS type persisted + served in our origin.
-		if !strings.HasPrefix(ct, "image/") {
-			ct = "application/octet-stream"
-		}
+		// The comfy server is untrusted: resolve the stored type through the
+		// whitelist so a hostile server cannot get an html/JS type persisted +
+		// served in our origin — and so a VIDEO gets a real, playable type instead
+		// of being flattened to application/octet-stream (which is what the old
+		// bare `image/` prefix check did to every mp4).
+		//
+		// ref.Format is passed in ONLY so the whitelist can refuse it explicitly;
+		// it is never echoed. See outputs_media.go.
+		ct = outputMediaType(ref.Filename, ref.Format, ct)
 		basename, _ := safePathSegment(ref.Filename)
 		images = append(images, store.GenerationImage{
 			Idx:         i,

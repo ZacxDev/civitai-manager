@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -406,16 +408,44 @@ func (c *Client) ObjectInfo(ctx context.Context) (ObjectInfo, error) {
 
 // --- /history ---
 
-// ImageRef locates one output image on the ComfyUI server (fetchable via /view).
+// ImageRef locates one output MEDIUM on the ComfyUI server (fetchable via /view).
+// Despite the name it covers video too — see NodeOutput.Gifs.
+//
+// 🔴 The (filename, subfolder, type) triple is the ONLY addressing this type
+// carries, and that is deliberate. A VideoHelperSuite entry additionally ships a
+// `fullpath` absolute path on the ComfyUI host; it is NOT decoded here, so no code
+// path can accidentally read it. ComfyUI is an untrusted upstream — a `fullpath` of
+// "/etc/shadow" must be structurally unreachable, not merely unused. Do not add it.
 type ImageRef struct {
 	Filename  string `json:"filename"`
 	Subfolder string `json:"subfolder"`
 	Type      string `json:"type"`
+
+	// Format is VideoHelperSuite's self-reported media format, e.g. the REAL
+	// observed value "video/h264-mp4".
+	//
+	// 🔴 IT IS NOT A MIME TYPE. `video/h264-mp4` does not exist in the IANA
+	// registry and no browser will play a response labelled with it. It is
+	// untrusted upstream text and must NEVER be written into a Content-Type
+	// header. Resolve a real type through the web package's whitelist
+	// (outputMediaType) instead, which prefers our own sanitized filename
+	// extension and only maps a KNOWN-bogus format string onto a real type.
+	Format string `json:"format,omitempty"`
 }
 
-// NodeOutput is one node's outputs in a history entry (we care about images).
+// NodeOutput is one node's outputs in a history entry.
+//
+// 🔴 There are TWO keys, not one. A save-image node writes `images`; the
+// VideoHelperSuite family (VHS_VideoCombine — by far the most common way to get a
+// video out of ComfyUI) writes `gifs`, and that key holds mp4/webm just as often as
+// an actual GIF. The name is a legacy artifact of VHS's origins and upstream has
+// never renamed it. Harvesting only `images` silently captured NOTHING for a
+// video-only workflow — no generation row at all — which made the entire output
+// gallery inert for a library whose workflows save via VHS. Do not "clean up" the
+// key name and do not assume `.gif`.
 type NodeOutput struct {
 	Images []ImageRef `json:"images"`
+	Gifs   []ImageRef `json:"gifs"`
 }
 
 // HistoryStatus is a history entry's status block.
@@ -458,17 +488,71 @@ func (c *Client) History(ctx context.Context, promptID string) (*HistoryEntry, e
 	return &entry, nil
 }
 
-// AllImages flattens every output node's images, in node-key-sorted order for a
-// stable gallery.
+// AllImages flattens every output node's media — BOTH `images` and `gifs` (see
+// NodeOutput: `gifs` is where VideoHelperSuite puts mp4/webm) — in node-key-sorted
+// order for a stable gallery. Within one node, `images` come before `gifs`; a node
+// may legitimately emit both (e.g. a PreviewImage beside a VHS_VideoCombine).
+//
+// 🔴 The sort is load-bearing and used to be MISSING: the doc comment claimed
+// "node-key-sorted" while the body ranged over e.Outputs, a Go map, whose iteration
+// order is deliberately randomized. With one output node nobody noticed; with two
+// the gallery's first thumbnail — and the capture's idx numbering, which is
+// persisted — flipped between runs of the SAME prompt. Node keys are numeric
+// strings in every real graph, so they are compared numerically when both parse
+// (otherwise "10" sorts before "9"), falling back to a plain string compare so the
+// order is total and deterministic for any key ComfyUI might invent.
 func (e *HistoryEntry) AllImages() []ImageRef {
 	if e == nil {
 		return nil
 	}
+	keys := make([]string, 0, len(e.Outputs))
+	for k := range e.Outputs {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return lessNodeKey(keys[i], keys[j]) })
+
 	var out []ImageRef
-	for _, node := range e.Outputs {
+	for _, k := range keys {
+		node := e.Outputs[k]
 		out = append(out, node.Images...)
+		out = append(out, node.Gifs...)
 	}
 	return out
+}
+
+// lessNodeKey orders two ComfyUI node keys: all-numeric keys first, by value, then
+// every other key lexically.
+//
+// 🔴 THE PARTITION IS NOT COSMETIC — it is what makes this a STRICT WEAK ORDERING.
+// An earlier version compared numerically when both parsed and fell through to a
+// string compare otherwise, which is INTRANSITIVE: for {"9","10","5x"} it gives
+// 9 < 10 (numeric), "5x" < "9" (string), and "10" < "5x" (string) — a cycle.
+// `sort.Slice` on an inconsistent comparator produces an arbitrary permutation, so
+// AllImages went back to being non-deterministic — measured at THREE distinct
+// orders over 300 decodes — which is the exact bug the sort was added to fix,
+// because the resulting position becomes the persisted generation_images.idx that
+// picks the gallery thumbnail.
+//
+// Mixed keys are reachable, not theoretical: this package's own subgraph expander
+// mints ids as `prefix + ":" + interiorID` (convert_subgraph.go), so a VHS output
+// inside a subgraph alongside a top-level output node produces exactly that key
+// set. Pinned by TestAllImagesIsDeterministicAcrossNodes.
+func lessNodeKey(a, b string) bool {
+	ai, aerr := strconv.Atoi(a)
+	bi, berr := strconv.Atoi(b)
+	switch {
+	case aerr == nil && berr == nil:
+		if ai != bi {
+			return ai < bi
+		}
+		return a < b // "07" vs "7" — equal values, stable by string
+	case aerr == nil:
+		return true // every numeric key sorts before every non-numeric one
+	case berr == nil:
+		return false
+	default:
+		return a < b
+	}
 }
 
 // --- /queue ---

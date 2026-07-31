@@ -31,9 +31,189 @@ func generationLabel(gen store.Generation) string {
 	return "workflow #" + strconv.FormatInt(*gen.WorkflowID, 10)
 }
 
-// generationImgURL is the app-owned byte-serving URL for one stored image.
+// generationImgURL is the app-owned byte-serving URL for one stored output. The
+// route is named /outputs/img/ for historical reasons and now serves video too;
+// renaming it would break every already-rendered page and bookmark for no gain.
 func generationImgURL(imageID int64) string {
 	return "/outputs/img/" + strconv.FormatInt(imageID, 10)
+}
+
+// generationThumb renders ONE generation's first output as a grid/rail thumbnail —
+// an <img> for an image, a <video> for a video, or a placeholder when there is
+// nothing to show. Shared by the masonry tile (and, through it, the batch page) and
+// the rail, so the three surfaces cannot drift on how a video looks.
+//
+// 🔴 WHY A <video> AND NOT A POSTER IMAGE. VideoHelperSuite does write a companion
+// PNG beside each video (the history entry's `workflow` field), and it really is
+// frame 0 — verified against the user's live ComfyUI: 480x640, pixel-identical to
+// `ffmpeg -vframes 1`, carrying the API prompt in a tEXt chunk. It was still
+// REJECTED as a poster, for three reasons:
+//
+//  1. It is not cheaper. That PNG is 355 KB against the video's 471 KB — a lossless
+//     still of a compressed video is nearly the size of the whole clip. Fetching it
+//     to "save bandwidth" costs a second request for 75% of the payload.
+//  2. It is not guaranteed. `workflow` is VHS-specific and disappears when the user
+//     turns off save_metadata, so half the grid would silently lose its poster.
+//  3. It would need a schema change to link poster→video, for a fact the video
+//     element already knows.
+//
+// Instead the <video> paints its OWN frame 0 as a poster once its src is attached,
+// which costs no extra request and needs no extra column. There is NO autoplay, NO
+// loop and NO controls here: the tile is a still image that happens to be a
+// <video>, and clicking it goes to the detail page through the existing full-bleed
+// overlay anchor — identical to an image tile.
+//
+// 🔴 preload="metadata" ALONE DOES NOT BOUND THE FETCH — do not re-add a bare src.
+// It is a hint, and it was measured being ignored: with src set, Chrome transferred
+// 472,055 bytes for a 471,755-byte clip to render one thumbnail. The src is
+// therefore withheld until intersection (see lazyVideoScript below).
+//
+// (handleOutputsImage must still serve through http.ServeContent: a VHS mp4 is not
+// faststart — moov at the END — so metadata is a tail Range request, and seeking in
+// the detail page's player needs Range regardless.)
+//
+// The ▶ badge is returned as a SIBLING of the media (absolutely positioned,
+// .cm-video-badge, already in app.css and already used by the model page's
+// remote-video tiles) rather than wrapping it, so the caller's existing layout box
+// is untouched.
+//
+// The classes are package-level CONSTS, not parameters. Both call sites want the
+// identical "fill the square box, object-cover" treatment — the masonry tile spelled
+// it as Tailwind utilities and the rail as .cm-rail-thumb, which resolved to exactly
+// the same declarations — so there was nothing to parameterize. Taking them as
+// arguments also put three h.Class sites beyond the reach of
+// TestEveryTemplateClassExistsInAStylesheet (the scan cannot resolve a parameter),
+// i.e. it would have bought duplication AND a styling blind spot.
+const (
+	generationThumbClass   = "cm-out-thumb"
+	generationNoThumbClass = "cm-out-nothumb"
+)
+
+func generationThumb(gen store.Generation, label string) g.Node {
+	if gen.FirstImageID <= 0 {
+		return h.Div(h.Class(generationNoThumbClass), g.Text("no output"))
+	}
+	url := generationImgURL(gen.FirstImageID)
+
+	if !isVideoOutput(gen.FirstImageContentType) {
+		return h.Img(
+			h.Src(url),
+			h.Alt(label),
+			g.Attr("loading", "lazy"),
+			h.Class(generationThumbClass),
+		)
+	}
+	return g.Group([]g.Node{
+		h.Video(
+			// 🔴 data-src, NOT src — the URL is attached by cmLazyVideo when the tile
+			// scrolls near the viewport. <video> has NO loading="lazy" (the attribute
+			// is img/iframe only), and preload="metadata" is a HINT the browser is
+			// free to ignore.
+			//
+			// MEASURED, not assumed: with src set and preload="metadata", Chrome
+			// transferred 472,055 bytes for a 471,755-byte clip on /outputs — the
+			// WHOLE file, for a tile the size of a thumbnail. A short clip is small
+			// enough that ranging for the moov atom (which VHS writes at the END of
+			// the file, so metadata needs a tail read) costs about as much as just
+			// taking it all, so the browser takes it all. At outputsPageSize = 48
+			// that is ~22 MB of eager fetch for one scroll-free page.
+			//
+			// So the bound is enforced HERE instead of being wished for. Attaching
+			// src on intersection is what loading="lazy" does for an <img>, done by
+			// hand for the element that cannot express it.
+			dataAttr("src", url),
+			// Still metadata once attached: an in-view tile wants frame 0, not the
+			// clip. muted+playsinline keep the element inert and stop iOS taking it
+			// fullscreen; no autoplay/loop/controls — this is a poster, not a player.
+			g.Attr("preload", "metadata"),
+			g.Attr("muted", ""),
+			g.Attr("playsinline", ""),
+			// <video> has no alt attribute; aria-label carries the same name the
+			// <img> branch puts in alt so the tile is not unlabelled to a screen
+			// reader. The overlay anchor is separately labelled.
+			g.Attr("aria-label", label),
+			h.Class(generationThumbClass+" "+lazyVideoClass),
+		),
+		h.Span(
+			h.Class("cm-video-badge"),
+			g.Attr("aria-hidden", "true"),
+			g.Text("▶"),
+		),
+	})
+}
+
+// lazyVideoClass marks a thumbnail <video> whose src is attached on intersection.
+const lazyVideoClass = "cm-lazy-video"
+
+// lazyVideoScript attaches a thumbnail video's src when it scrolls near the
+// viewport, and detaches it again when it scrolls far away.
+//
+// It is the <video> equivalent of loading="lazy" — see generationThumb for the
+// measurement that made it necessary. Vendored inline, no CDN, no framework, in
+// keeping with every other script in this package.
+//
+// Three properties are deliberate:
+//
+//   - rootMargin 300px: start the fetch just before the tile is visible, so a
+//     normal scroll never shows an empty box, without reaching the whole page.
+//   - It DETACHES (src="" + load()) once a tile is well out of view. A long
+//     gallery scroll would otherwise accumulate every decoded clip it passed,
+//     which is the same unbounded cost by a slower route.
+//   - It DEGRADES, it does not break. With no JS (or no IntersectionObserver) the
+//     tile shows the themed background plus the ▶ badge and stays fully clickable
+//     through its overlay anchor — the detail page renders its <video> with a real
+//     src server-side, so the output is always reachable. An <img> tile is
+//     untouched by any of this.
+func lazyVideoScript() g.Node {
+	const js = `
+(function(){
+  var SEL = '.` + lazyVideoClass + `';
+  function attach(v){
+    var s = v.getAttribute('data-src');
+    if (s && v.getAttribute('src') !== s){ v.setAttribute('src', s); }
+  }
+  function detach(v){
+    if (v.getAttribute('src')){ v.removeAttribute('src'); v.load(); }
+  }
+  // ONE observer for the page, disconnected and rebuilt on each re-scan.
+  //
+  // 🔴 Do NOT construct the observer inside init(). init() runs on every
+  // htmx:afterSwap, and runPoller re-arms hx-trigger="load delay:1s" for the whole
+  // duration of a run — plus the rail re-renders on every page — so a per-call
+  // observer leaks one instance PER SWAP, each still watching every .cm-lazy-video.
+  // Measured before this was hoisted: 10 swaps produced 10 observers and 0
+  // disconnects; a 10-minute batch would reach several hundred, every one firing
+  // attach/detach on every tile on every scroll. "Re-observing an already-observed
+  // element is a no-op" is true PER OBSERVER and says nothing across instances.
+  var io = null;
+  function init(){
+    var vids = document.querySelectorAll(SEL);
+    if (!vids.length){ return; }
+    if (!('IntersectionObserver' in window)){
+      // No observer: attach everything rather than show empty tiles. Same cost as
+      // before this script existed, and only on a browser that predates it.
+      for (var i=0;i<vids.length;i++){ attach(vids[i]); }
+      return;
+    }
+    if (io){ io.disconnect(); }
+    io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if (e.isIntersecting){ attach(e.target); } else { detach(e.target); }
+      });
+    }, {rootMargin: '300px'});
+    for (var j=0;j<vids.length;j++){ io.observe(vids[j]); }
+  }
+  if (document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+  // htmx swaps tiles in without a page load (pagination, the rail refresh), so
+  // re-scan after a swap. Re-observing an already-observed element is a no-op.
+  document.body.addEventListener('htmx:afterSwap', init);
+})();
+`
+	return h.Script(g.Raw(js))
 }
 
 // batchHref is the browse URL for one batch. It returns "" for a generation that
@@ -96,20 +276,7 @@ func generationTile(gen store.Generation) g.Node {
 	detailHref := "/outputs/" + strconv.FormatInt(gen.ID, 10)
 	label := generationLabel(gen)
 
-	var thumb g.Node
-	if gen.FirstImageID > 0 {
-		thumb = h.Img(
-			h.Src(generationImgURL(gen.FirstImageID)),
-			h.Alt(label),
-			g.Attr("loading", "lazy"),
-			h.Class("absolute inset-0 h-full w-full object-cover"),
-		)
-	} else {
-		thumb = h.Div(
-			h.Class("absolute inset-0 flex items-center justify-center text-xs text-slate-500"),
-			g.Text("no image"),
-		)
-	}
+	thumb := generationThumb(gen, label)
 
 	// Right-side caption: [partial · ][×N · ]relative-time. Kept in the bottom bar
 	// (rather than corner badges) so only already-purged utility classes are used.
@@ -193,10 +360,13 @@ func outputsGalleryPage(gens []store.Generation, wfRefs []store.GenerationWorkfl
 	body := []g.Node{
 		header,
 		h.P(h.Class("text-sm text-slate-400"),
-			g.Text("Images captured from your successful workflow runs. These are your own local generations and render plain.")),
+			// "Images and videos", not "Images": a VHS_VideoCombine run captures an
+			// mp4/webm here just like a save-image node captures a PNG, and this line
+			// is the page's own description of what it holds.
+			g.Text("Images and videos captured from your successful workflow runs. These are your own local generations and render plain.")),
 		card(generationGrid(gens, emptyState(
 			"No generations yet",
-			"Every image a workflow run produces is captured here automatically, with the "+
+			"Every image and video a workflow run produces is captured here automatically, with the "+
 				"parameters it was made with, so you can re-run or delete it later. Run a "+
 				"workflow from your library and its outputs will appear on this page.",
 			"/library?tab=workflows", "Go to your workflows"))),
@@ -355,21 +525,15 @@ func generationDetailPage(gen *store.Generation, images []store.GenerationImage,
 
 	id := strconv.FormatInt(gen.ID, 10)
 
-	// Full images, each opening the shared lightbox.
+	// Full outputs: images open the shared lightbox; videos play in place.
 	var imgNodes []g.Node
 	for _, img := range images {
-		url := generationImgURL(img.ID)
-		imgNodes = append(imgNodes, h.Img(
-			h.Src(url),
-			h.Alt(img.Filename),
-			g.Attr("loading", "lazy"),
-			dataAttr("full", url),
-			g.Attr("onclick", "cmOpenLightbox(this.getAttribute('data-full'), '', false)"),
-			h.Class("w-full h-auto cursor-zoom-in rounded border border-slate-800 bg-slate-900"),
-		))
+		imgNodes = append(imgNodes, generationDetailMedia(img))
 	}
 	imagesCard := card(
-		sectionTitle("Images"),
+		// "Outputs", not "Images" — a video-only generation has no images at all,
+		// and this is the heading over the media itself.
+		sectionTitle("Outputs"),
 		h.Div(h.Class("grid grid-cols-2 sm:grid-cols-3 gap-3"), g.Group(imgNodes)),
 	)
 
@@ -393,6 +557,59 @@ func generationDetailPage(gen *store.Generation, images []store.GenerationImage,
 		modelPageScript(),
 	}
 	return page("Output "+id, theme, csrf, nsfwMode, railOf(rail), body...)
+}
+
+// generationDetailMedia renders ONE stored output at full size on the detail page.
+//
+// The three branches are the three things a captured output can be:
+//
+//   - an IMAGE → an <img> that opens the shared lightbox, exactly as before.
+//   - a VIDEO → a <video controls> that plays IN PLACE. Not the lightbox: this is
+//     the page the user navigated to in order to look at this one generation, and
+//     the lightbox's video path is built around a tile grid where the click target
+//     is a poster. preload="metadata" keeps a many-output generation from fetching
+//     every clip up front; the browser paints frame 0 and fetches the rest only on
+//     play.
+//   - anything else → an honest placeholder plus a download link. A type outside
+//     the whitelist (a ProRes .mov, a corrupted row) is served as
+//     application/octet-stream, so putting it in a <video> would render a black box
+//     that can never play. Saying so, and offering the bytes, is the truthful
+//     rendering. This branch is also what a hostile content_type collapses to.
+func generationDetailMedia(img store.GenerationImage) g.Node {
+	url := generationImgURL(img.ID)
+
+	switch {
+	case isVideoOutput(img.ContentType):
+		return h.Video(
+			h.Src(url),
+			g.Attr("controls", ""),
+			g.Attr("preload", "metadata"),
+			g.Attr("playsinline", ""),
+			g.Attr("aria-label", img.Filename),
+			h.Class("w-full h-auto rounded border border-slate-800 bg-slate-900"),
+		)
+	case isImageOutput(img.ContentType):
+		return h.Img(
+			h.Src(url),
+			h.Alt(img.Filename),
+			g.Attr("loading", "lazy"),
+			dataAttr("full", url),
+			g.Attr("onclick", "cmOpenLightbox(this.getAttribute('data-full'), '', false)"),
+			h.Class("w-full h-auto cursor-zoom-in rounded border border-slate-800 bg-slate-900"),
+		)
+	default:
+		return h.Div(
+			h.Class("flex w-full flex-col items-start gap-1 rounded border border-slate-800 bg-slate-900 p-3 text-xs text-slate-400"),
+			// min-w-0 + truncate: the filename is untrusted comfy-supplied text with
+			// no guaranteed break opportunity. See TestLongUntrustedStringsCanBreak —
+			// a title= tooltip is NOT an acceptable substitute, it does not change
+			// layout.
+			h.Span(h.Class("min-w-0 max-w-full truncate"), g.Text(img.Filename)),
+			h.Span(g.Text("This output type cannot be previewed in the browser.")),
+			h.A(h.Href(url), g.Attr("download", ""),
+				h.Class("text-indigo-400 hover:text-indigo-300"), g.Text("Download")),
+		)
+	}
 }
 
 // promptNotRecordedNote is what a generation captured BEFORE prompt capture existed
@@ -772,7 +989,7 @@ const workflowOutputsStripLimit = 8
 // TILE RENDERER: it reuses generationTile (the gallery/batch tile), NOT railTile.
 // generationTile is self-contained — aspect-square, its own overlay anchor, its own
 // caption — and inherits nothing from its parent, so it drops into any grid.
-// railTile's .cm-rail-item/.cm-rail-thumb/.cm-rail-cap rules are defined only under
+// railTile's .cm-rail-item/.cm-rail-cap rules are defined only under
 // the .cm-rail column (and vary with its collapsed/drawer states), so lifting it into
 // the page body would import the rail's geometry along with it. Its markup contract
 // is pinned byte-for-byte by batch_gallery_web_test.go and is NOT touched here.

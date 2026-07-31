@@ -57,6 +57,16 @@ type Generation struct {
 	// grid thumbnail. Populated by ListGenerations; 0 when the generation has no
 	// images. Not persisted — a derived convenience field.
 	FirstImageID int64
+	// FirstImageContentType is that same first output's stored content_type, so a
+	// grid/rail tile can pick <img> vs <video> WITHOUT a second query per tile. It
+	// rides the same correlated subquery as FirstImageID and is populated by exactly
+	// the same callers; "" when there is no image (or for a pre-video row whose
+	// column is NULL, which the render side treats as an image).
+	//
+	// This is why the feature needed NO migration: generation_images.content_type has
+	// existed since 0012, and "is this a video" is derivable from it. A separate
+	// `kind` column would be a second source of truth for the same fact.
+	FirstImageContentType string
 }
 
 // GenerationImage is one output image belonging to a Generation. rel_path is
@@ -85,6 +95,23 @@ type ListGenerationsOpts struct {
 const generationCols = `id, workflow_id, workflow_name, prompt_id, base_model,
 	graph_hash, params, preset_id, preset_name, batch_id, batch_index, batch_total,
 	status, image_count, created_at`
+
+// generationThumbCols are the trailing columns every LIST query appends: the first
+// output's id and its content_type, so a tile can choose <img> vs <video> without a
+// per-tile lookup.
+//
+// The two correlated subqueries MUST keep the SAME `ORDER BY gi.idx, gi.id LIMIT 1`
+// — they are two reads of what has to be ONE row, and if they ever diverged a tile
+// would render output A's bytes with output B's media kind. Kept as one shared
+// const for that reason (it also de-duplicates what was already copied into both
+// list queries).
+const generationThumbCols = `
+	COALESCE((SELECT gi.id FROM generation_images gi
+	          WHERE gi.generation_id = generations.id
+	          ORDER BY gi.idx, gi.id LIMIT 1), 0) AS first_image_id,
+	COALESCE((SELECT gi.content_type FROM generation_images gi
+	          WHERE gi.generation_id = generations.id
+	          ORDER BY gi.idx, gi.id LIMIT 1), '') AS first_image_content_type`
 
 // genNulls is the set of landing pads for a generation row's NULLable columns.
 //
@@ -241,10 +268,7 @@ func (s *Store) InsertGeneration(ctx context.Context, gen *Generation, images []
 // FirstImageID is populated via a correlated subquery so the grid can render a
 // thumbnail without a second round-trip.
 func (s *Store) ListGenerations(ctx context.Context, opts ListGenerationsOpts) ([]Generation, error) {
-	q := `SELECT ` + generationCols + `,
-		COALESCE((SELECT gi.id FROM generation_images gi
-		          WHERE gi.generation_id = generations.id
-		          ORDER BY gi.idx, gi.id LIMIT 1), 0) AS first_image_id
+	q := `SELECT ` + generationCols + `,` + generationThumbCols + `
 		FROM generations`
 	var args []any
 	if opts.WorkflowID != nil {
@@ -270,9 +294,9 @@ func (s *Store) ListGenerations(ctx context.Context, opts ListGenerationsOpts) (
 	return scanGenerationsWithThumb(rows)
 }
 
-// scanGenerationsWithThumb drains rows of `generationCols, first_image_id`. Both
-// list queries (the gallery/rail list and the per-batch list) go through it, so
-// they can never disagree about column order.
+// scanGenerationsWithThumb drains rows of `generationCols, generationThumbCols`.
+// Both list queries (the gallery/rail list and the per-batch list) go through it,
+// so they can never disagree about column order.
 func scanGenerationsWithThumb(rows *sql.Rows) ([]Generation, error) {
 	var out []Generation
 	for rows.Next() {
@@ -280,12 +304,14 @@ func scanGenerationsWithThumb(rows *sql.Rows) ([]Generation, error) {
 			gen      Generation
 			n        genNulls
 			firstImg int64
+			firstCT  string
 		)
-		if err := rows.Scan(append(n.dest(&gen), &firstImg)...); err != nil {
+		if err := rows.Scan(append(n.dest(&gen), &firstImg, &firstCT)...); err != nil {
 			return nil, err
 		}
 		n.apply(&gen)
 		gen.FirstImageID = firstImg
+		gen.FirstImageContentType = firstCT
 		out = append(out, gen)
 	}
 	return out, rows.Err()
@@ -336,10 +362,7 @@ func (s *Store) ListGenerationsByBatch(ctx context.Context, batchID string) ([]G
 	if !ValidBatchID(batchID) {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT `+generationCols+`,
-		COALESCE((SELECT gi.id FROM generation_images gi
-		          WHERE gi.generation_id = generations.id
-		          ORDER BY gi.idx, gi.id LIMIT 1), 0) AS first_image_id
+	rows, err := s.db.QueryContext(ctx, `SELECT `+generationCols+`,`+generationThumbCols+`
 		FROM generations
 		WHERE batch_id = ?
 		ORDER BY batch_index ASC, id ASC`, batchID)

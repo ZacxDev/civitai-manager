@@ -188,16 +188,22 @@ func (s *Server) handleOutputsImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Restrict the served content-type to images (the stored bytes come from an
-	// untrusted comfy server); forbid sniffing. The file is immutable once written,
+	// Restrict the served content-type to the WHITELIST (images + the video types a
+	// browser can actually play); forbid sniffing. The stored bytes came from an
+	// untrusted comfy server and the stored content_type is re-derived here rather
+	// than trusted, so a corrupted or older row can never widen what this origin
+	// serves. Anything outside the whitelist is served as application/octet-stream —
+	// still downloadable, just not renderable. The file is immutable once written,
 	// so a real long cache is safe (unlike the live /view proxy).
-	ct := img.ContentType
-	if !strings.HasPrefix(ct, "image/") {
-		ct = "application/octet-stream"
-	}
-	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Content-Type", servableOutputContentType(img.ContentType))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	// ServeContent (not io.Copy) is load-bearing for VIDEO: it implements HTTP Range.
+	// A ComfyUI/VHS mp4 is NOT written faststart — the moov atom sits at the END of
+	// the file (measured on a real 471 KB capture: mdat at offset 40, moov at
+	// 464497) — so a <video preload="metadata"> must issue a tail Range request to
+	// find the metadata at all. Without Range support the browser would download the
+	// whole file just to render a poster frame, and seeking would not work.
 	http.ServeContent(w, r, "", fi.ModTime(), f)
 }
 

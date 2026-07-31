@@ -323,17 +323,9 @@ func railTile(gr railGroup) g.Node {
 	gen := gr.Rep
 	label := generationLabel(gen)
 
-	var thumb g.Node
-	if gen.FirstImageID > 0 {
-		thumb = h.Img(
-			h.Src(generationImgURL(gen.FirstImageID)),
-			h.Alt(label),
-			g.Attr("loading", "lazy"),
-			h.Class("cm-rail-thumb"),
-		)
-	} else {
-		thumb = h.Span(h.Class("cm-rail-nothumb"), g.Text("no image"))
-	}
+	// Shared with the masonry tile (generationThumb): a video output renders as an
+	// inert preload="metadata" <video> plus the ▶ badge, never a broken <img>.
+	thumb := generationThumb(gen, label)
 
 	href := "/outputs/" + strconv.FormatInt(gen.ID, 10)
 	title := label + " · " + humanSince(gen.CreatedAt)
