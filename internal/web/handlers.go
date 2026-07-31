@@ -476,6 +476,13 @@ const communityPageSize = 12
 // and makes every cold community feed slower; a smaller one (2x) leaves the two
 // top-of-scale bands right at the edge.
 //
+// 🔴 READ "~19" AS A TYPICAL CASE, NOT A FLOOR. The 40% figure is the worst ratio
+// measured on ONE sampled version; the real floor is ZERO. Counter-example found
+// by audit: modelVersion 2983680 under ceiling X returns {1:17, 2:8, 4:11, 16:12}
+// and NOTHING at level 8, so an x:x band renders an EMPTY feed on a model with 48
+// images available. Per-version distributions are arbitrary — a band can be empty
+// however large the over-fetch, so no factor makes a full page guaranteed.
+//
 // It is NOT possible to guarantee a full page: a version may simply not HAVE 12
 // images in the band. That case renders short, which is honest, rather than
 // paginating a feed whose upstream cursor does not respect the filter.

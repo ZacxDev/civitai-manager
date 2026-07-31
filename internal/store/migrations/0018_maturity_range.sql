@@ -17,9 +17,19 @@
 -- EVERY old value maps to the FULL range, "pg:xxx" — hide included.
 --
 --   Why not map hide -> a narrow band? Because nothing the user can currently
---   SEE may disappear on upgrade. blur and show both rendered every level (blur
---   merely smeared it), and hide was unreachable in production, so the only
---   mapping that preserves what is on screen is "everything". The consequence —
+--   SEE should disappear on upgrade. blur and show both rendered every level
+--   (blur merely smeared it), and hide was unreachable in production, so the only
+--   mapping that preserves what is on screen is "everything".
+--
+--   ⚠ ONE EXCEPTION, measured rather than assumed: browsingLevel 32 (Blocked) is
+--   NOT one of the five scale values, so maturityFromBrowsingLevel maps it to
+--   maturityUnknown and it is omitted at EVERY band, full range included. An
+--   audit found 8 of 13,853 sampled showcase images at level 32 (0.06%, across 6
+--   of 100 models — e.g. 6424, 341353); the old blur/show code DID render those.
+--   So they do disappear, deliberately: fail-closed on a level CivitAI itself
+--   marks Blocked is the right default, and TestModelUnknownLevelFailsClosed
+--   pins it. Do not "fix" this by widening the range to include unknown levels.
+--   The consequence —
 --   that previously-blurred content now renders in the clear — is deliberate and
 --   was accepted explicitly: blur was never an access control, and the user
 --   picks a narrower band from the nav control the moment they want one.
