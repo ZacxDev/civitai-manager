@@ -38,7 +38,7 @@ func TestNavMenuPanelEscapesTheScrollStrip(t *testing.T) {
 	css := string(raw)
 
 	// --- the base (mobile / <1024px) rule -----------------------------------
-	base := cssRuleBody(t, css, ".cm-navmenu-panel {")
+	base := cssRuleIn(t, css, ".cm-navmenu-panel {")
 	if !strings.Contains(base, "position: fixed;") {
 		t.Errorf("the base .cm-navmenu-panel rule must be `position: fixed` — an absolute box is "+
 			"clipped by .cm-navlinks' overflow. Got:\n%s", base)
@@ -79,11 +79,18 @@ func TestNavMenuPanelEscapesTheScrollStrip(t *testing.T) {
 	}
 }
 
-// cssRuleBody returns the text of the rule opened by selector, from the selector
-// through its closing brace. It fails the test when the selector is absent — an
-// empty body would make every "must contain" check below it fail confusingly and
-// every "must not contain" check pass for free.
-func cssRuleBody(t *testing.T, css, selector string) string {
+// cssRuleIn returns the text of the rule opened by selector WITHIN the css slice
+// it is handed, from the selector through its closing brace. It fails the test when
+// the selector is absent — an empty body would make every "must contain" check
+// below it fail confusingly and every "must not contain" check pass for free.
+//
+// Distinct from cssRuleBody (library_status_card_web_test.go), which reads the whole
+// shipped sheet itself and matches an EXACT selector list. This one takes the css as
+// a parameter precisely so it can be pointed at a slice — e.g. the @media block
+// returned by cssMediaBlock — which is the scoping that stopped the panel assertion
+// below from matching .cm-rail's `position: fixed` ~900 lines away. Do not merge the
+// two: the parameter is the whole point.
+func cssRuleIn(t *testing.T, css, selector string) string {
 	t.Helper()
 	i := strings.Index(css, selector)
 	if i < 0 {
