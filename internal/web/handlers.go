@@ -742,7 +742,7 @@ func (s *Server) loadModelView(parent context.Context, id, versionParam string) 
 	// the total (for the sentence) and at most importedWorkflowsCap rows (for the
 	// carousel of cards). Never one query per card. The list is skipped entirely
 	// when the count is zero, so the common "not imported yet" page is unchanged.
-	if strings.EqualFold(m.Type, "Workflows") {
+	if civitai.IsWorkflowPost(m.Type) {
 		if mid, aerr := strconv.Atoi(id); aerr == nil {
 			if n, cerr := s.store.CountWorkflowsByModel(ctx, mid); cerr == nil {
 				view.ImportedWorkflows = n

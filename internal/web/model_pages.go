@@ -655,7 +655,7 @@ func versionRegionInner(v modelDetailView, sub *store.Subscription, csrf, baseUR
 		// Workflows-type models are zips of ComfyUI workflow .json — offer a one-click
 		// import into the local workflow library (Discover D2). Other model types are
 		// unaffected.
-		g.If(strings.EqualFold(m.Type, "Workflows"),
+		g.If(civitai.IsWorkflowPost(m.Type),
 			workflowImportDetailCard(m.ID, csrf, v.ImportedWorkflows, v.ImportedWorkflowList)),
 		communityFeedContainer(m.ID, v.SelectedVersionID),
 	})

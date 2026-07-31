@@ -637,7 +637,7 @@ func modelCardCore(it civitai.ModelListItem, images []galleryImage, mr maturityR
 			h.Class("flex items-center gap-2 text-xs text-slate-400"),
 			// The redundant "Workflows" chip is dropped on discover-workflow cards;
 			// the useful Checkpoint/LORA/etc. badge stays on model-search cards.
-			g.If(it.Type != "Workflows", badge(it.Type, "indigo")),
+			g.If(!civitai.IsWorkflowPost(it.Type), badge(it.Type, "indigo")),
 			g.If(it.NSFW, badge("NSFW", "red")),
 			g.If(creator != "", h.A(h.Href("/creators/"+creator), h.Class("hover:underline"), g.Text("@"+creator))),
 		),
