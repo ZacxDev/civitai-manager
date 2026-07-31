@@ -228,6 +228,55 @@ func TestImportedWorkflowsCarouselUsesTheSharedCardRenderer(t *testing.T) {
 	}
 }
 
+// TestCardCarouselKeepsAGutterForItsScrollButtons pins the .cm-carousel-cards
+// gutter, which NO markup assertion can see and which a live browser caught.
+//
+// `.cm-carousel-btn` is `position: absolute; z-index: 5` inside
+// `.cm-carousel-wrap` (`position: relative; z-index: auto` — not a stacking
+// context), so the buttons escape into the shared parent context and paint over
+// the strip's contents. Over an image tile that is intended; over a CARD it
+// landed on the first and last visible card's primary "Run" CTA (hit-tested in
+// Brave: the CTA's own pixels returned `cm-carousel-btn cm-carousel-btn-prev`).
+//
+// BOTH declarations are required and neither is redundant. With `padding` alone,
+// `scroll-snap-type: x mandatory` snaps the first item's start edge to the
+// CONTENT box and scrolls the left gutter away immediately (measured live:
+// scrollLeft settled at 44px and the CTA was still covered). `scroll-padding`
+// insets the snapport to match so scrollLeft 0 is itself a snap position.
+//
+// This is a LAYOUT fix on purpose: raising the card's z-index above 5 would bury
+// the scroll buttons behind the cards and cost the strip its only non-drag
+// control. If you delete the gutter, you must solve that instead — do not
+// "simplify" this to a z-index.
+func TestCardCarouselKeepsAGutterForItsScrollButtons(t *testing.T) {
+	css := appCSS(t)
+	i := strings.Index(css, ".cm-carousel-cards {")
+	if i < 0 {
+		t.Fatal("app.css must define .cm-carousel-cards (the card-strip variant)")
+	}
+	block := css[i:]
+	if j := strings.Index(block, "}"); j >= 0 {
+		block = block[:j]
+	}
+	for _, want := range []string{
+		"padding-left: 2.75rem",
+		"padding-right: 2.75rem",
+		"scroll-padding-left: 2.75rem",
+		"scroll-padding-right: 2.75rem",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("the card strip must keep its scroll-button gutter (%q missing) — "+
+				"without it the prev/next buttons paint over the first/last card's Run CTA:\n%s",
+				want, block)
+		}
+	}
+	// The gutter must clear the button box: 0.25rem offset + 2.25rem wide = 2.5rem.
+	if !strings.Contains(css, "left: 0.25rem") || !strings.Contains(css, "width: 2.25rem") {
+		t.Error("the .cm-carousel-btn geometry the 2.75rem gutter is derived from has moved — " +
+			"re-derive the gutter (offset + width + air) rather than leaving it stale")
+	}
+}
+
 // TestWorkflowsModelPageRendersTheImportedCarousel drives the REAL handler: a
 // Workflows-type model with rows in the store paints the cards on the page, so
 // the loadModelView → view → renderer wiring is covered end to end and not only
