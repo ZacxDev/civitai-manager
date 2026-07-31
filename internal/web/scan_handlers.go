@@ -244,7 +244,7 @@ func (s *Server) renderScanStatus(w http.ResponseWriter) {
 		return
 	}
 	tv := s.annotateLibrary(buildLibraryView(files))
-	s.render(w, http.StatusOK, filesTabBody(scanResults(tv, snap, s.csrf), s.csrf, s.matchRemoteEnabled(), hasResults(tv)))
+	s.render(w, http.StatusOK, filesTabBody(scanResults(tv, snap, s.csrf), s.csrf, s.matchRemoteEnabled(), libraryHasModels(tv)))
 }
 
 // handleScanStatus is polled by the scanning fragment. GET (no state change, so

@@ -409,18 +409,32 @@ input[type="radio"] {
 .lib-tabs::-webkit-scrollbar {
   display: none;
 }
+/*
+ * .lib-tab is worn by BOTH tab elements in the app and must look identical on each:
+ * the PAGE strip's <a href="/library?tab=…"> (libraryTabStrip — a real navigation,
+ * because each page tab renders a different server-side panel) and the in-card
+ * matched/unmatched strip's <button> (matchedFilesCard — both panels are already in
+ * the DOM, so a round trip would be pure latency). Hence the UA-button reset below:
+ * without it the <button> arrives with a border, a grey background and the system
+ * font, and the two strips visibly fork. `border: 0` comes BEFORE `border-bottom`
+ * so the underline survives the reset.
+ */
 .lib-tab {
   display: inline-block;
   flex: 0 0 auto; /* never shrink/wrap inside the scrolling strip */
   white-space: nowrap;
   padding: 0.5rem 0.125rem;
   margin-bottom: -1px; /* overlap the strip's 1px border so the active underline sits on it */
+  font-family: inherit;
   font-size: 0.875rem;
   font-weight: 500;
   line-height: 1.25rem;
   color: var(--civitai-color-text-dimmed);
   text-decoration: none;
+  background: none;
+  border: 0;
   border-bottom: 2px solid transparent;
+  cursor: pointer;
   transition: color 0.15s ease, border-color 0.15s ease;
 }
 .lib-tab:hover {
@@ -1148,11 +1162,17 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 }
 
 /*
- * Library summary stat pills (.cm-pill*) — see statPill/summaryBanner in
- * library_pages.go. Color-coded count chips (models/duplicates/out-of-date/broken/
- * unmatched). All colors resolve from --civitai-* semantic tokens so the pills read
- * in both light and dark (data-theme) with no CDN. Kept unlayered so they win over
- * the app (Tailwind) layer without touching any @civitai/components rule.
+ * Library status chips (.cm-pill* / .cm-chip-stat / .cm-chip-zero) — see statChip /
+ * libraryStatusCard in library_pages.go. Color-coded count chips (models /
+ * duplicates / out of date / unmatched). All colors resolve from --civitai-*
+ * semantic tokens so the chips read in both light and dark (data-theme) with no
+ * CDN. Kept unlayered so they win over the app (Tailwind) layer without touching
+ * any @civitai/components rule.
+ *
+ * .cm-pill-broken is retained: "broken" is no longer a chip of its own (it folds
+ * into the duplicates chip's popover, since both populations share the
+ * deletion-candidates table), but the variant is one line and the next
+ * warning-intent chip should reuse it rather than re-derive the colour.
  */
 .cm-pill {
   display: inline-flex;
@@ -1181,6 +1201,123 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 .cm-pill-broken {
   color: var(--civitai-color-warning-text);
   border-color: var(--civitai-color-warning);
+}
+
+/*
+ * .cm-chip-stat — a .cm-pill that is ALSO a popover trigger (it carries
+ * `.cm-updated`, so it inherits position:relative, the shared hover controller and
+ * the .cm-updated-pop child).
+ *
+ * Declared AFTER .cm-pill on purpose: same specificity (0-1-0), so source order is
+ * what lets `align-items: center` beat .cm-pill's `baseline`. Baseline alignment is
+ * right for a text glyph and wrong for an inline SVG, which has no baseline of its
+ * own and hangs low against the digits.
+ *
+ * The chips are the whole content of the status card, so they are a touch smaller
+ * than a stand-alone pill — the card they replaced was a pills row PLUS a four-cell
+ * stat grid PLUS an alert.
+ */
+.cm-chip-stat {
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.6rem;
+  cursor: default;
+}
+
+/*
+ * A ZERO-COUNT chip renders DIMMED, never hidden — see statChip's comment for why
+ * the shape of the row must not depend on the data.
+ *
+ * 🔴 THIS IS A COLOUR SWAP, NOT AN `opacity`. `opacity` below 1 creates a STACKING
+ * CONTEXT (CSS Color 4 §12), which would trap this chip's own `z-index: 50` popover
+ * inside the chip and let anything painting at a higher z in the shared parent
+ * context cover it — the same trap the .cm-lift POPOVER ESCAPE block below exists
+ * for, and the same trap `filter`/`will-change`/`contain` would spring. Every
+ * "dim it" mechanism except colour creates one. Do not swap this for an opacity.
+ */
+.cm-chip-zero {
+  color: var(--civitai-color-text-dimmed);
+  border-color: var(--civitai-color-border);
+}
+
+/*
+ * Icon sizes for the dashboard glyphs (see the icon block in library_pages.go).
+ * .cm-stat-ico (14px) is shared with the search-card stat row and defined with it.
+ * These three are their own sizes because they sit in different containers: a
+ * button label, an update CTA, and an inline info affordance.
+ */
+.cm-btn-ico {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin-right: 0.4rem;
+  vertical-align: -2px;
+  display: inline-block;
+}
+.cm-upd-ico {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+.cm-info-ico {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  display: block;
+}
+/*
+ * .cm-subinfo — the ⓘ popover trigger beside the Subscribe button. Dimmed at rest,
+ * full-strength on hover/focus, so it reads as available without competing with the
+ * button it explains. It also carries `.cm-updated`, which supplies
+ * position:relative for the popover.
+ */
+.cm-subinfo {
+  color: var(--civitai-color-text-dimmed);
+  display: inline-flex;
+  align-items: center;
+  cursor: help;
+  transition: color 120ms ease;
+}
+.cm-subinfo:hover,
+.cm-subinfo:focus-visible,
+.cm-subinfo.cm-pop-open {
+  color: var(--civitai-color-primary-text);
+}
+
+/*
+ * .cm-upd-cta — the "Update available: <version>" control on a matched library card
+ * (updateAvailableCTA, model_card_pages.go).
+ *
+ * 🔴 THE FOREGROUND MUST STAY `--civitai-color-success-text`. Every intent token is
+ * SPLIT: the base token is the FILL (it is what the color-mix() tint below is made
+ * of) and the `-text` half is the AA-contrast FOREGROUND. Colouring text with the
+ * base token reintroduces exactly the WCAG failures v0.1.79 fixed — on dark the two
+ * roles are mathematically unsatisfiable by one value. The pair is pinned in
+ * contrast_web_test.go's uiPairs() ("update-available CTA (success) on its own
+ * tint"), and TestUpdateCTAUsesTheTextToken parses THIS rule so swapping in the
+ * fill token fails the build rather than shipping quietly.
+ *
+ * It replaced `.cm-fix-cta`, the amber/WARNING tint it used to borrow from the run
+ * failure "Fix" CTA. Amber is this app's "something is wrong" colour and an
+ * available update is not a fault — it is good news, so it is green. (.cm-fix-cta
+ * itself stays; the run surface still uses it.)
+ *
+ * Hand-written for the same reason .cm-fix-cta is: tailwind.config.js defines the
+ * *-950 tints as color-mix() strings, and Tailwind cannot fold an /<alpha-value>
+ * into a color-mix(), so `bg-emerald-950/30` would silently never be emitted.
+ */
+.cm-upd-cta {
+  color: var(--civitai-color-success-text);
+  border: 1px solid color-mix(in srgb, var(--civitai-color-success) 60%, transparent);
+  background: color-mix(in srgb, var(--civitai-color-success) 14%, transparent);
+  text-decoration: none;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.cm-upd-cta:hover,
+.cm-upd-cta:focus-visible {
+  background: color-mix(in srgb, var(--civitai-color-success) 24%, transparent);
+  border-color: var(--civitai-color-success);
 }
 
 /*

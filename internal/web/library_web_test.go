@@ -111,7 +111,9 @@ func TestLibraryAndTrashPagesRender(t *testing.T) {
 	// Tab B ("Model files") holds the scan control + results; a non-empty selection
 	// avoids the empty state so the Summary/candidates render.
 	out := renderString(t, libraryPage(buildLibraryView(files), "csrf-tok", true, []string{"/data/models"}, "dark", "files", nil, false, nil, fullMaturityRange(), libraryWorkflowsView{}))
-	for _, want := range []string{"Library", "Scan for model files", "Summary", "Deletion candidates", "superseded", "Reclaimable"} {
+	// "cm-chip-stat" is the combined status card (it replaced the "Summary" card);
+	// "reclaimable" is the duplicates chip's popover detail line.
+	for _, want := range []string{"Library", "Scan for model files", "cm-chip-stat", "Deletion candidates", "superseded", "reclaimable"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("library page (files tab) missing %q", want)
 		}
@@ -442,8 +444,8 @@ func TestLibraryScanNonLoopbackDisablesExtraPaths(t *testing.T) {
 	if rec.Code != http.StatusOK || rec.Header().Get("HX-Redirect") != "/library?tab=files" {
 		t.Fatalf("model_root-only scan should start and redirect, got status=%d redirect=%q", rec.Code, rec.Header().Get("HX-Redirect"))
 	}
-	if term := pollScanUntilDone(t, srv); !strings.Contains(term, "Summary") {
-		t.Fatalf("model_root-only scan should still produce a Summary:\n%s", term)
+	if term := pollScanUntilDone(t, srv); !strings.Contains(term, "cm-chip-stat") {
+		t.Fatalf("model_root-only scan should still produce the status card:\n%s", term)
 	}
 }
 
