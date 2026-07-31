@@ -380,6 +380,15 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 				Resources: []string{long}},
 			"csrf", "dark", NSFWBlur, false, comfyHelperView{}, workflowResolver{})),
 		"run preflight missing list": renderString(t, missingList("Missing", []string{long})),
+		// The model header's download MENU prints civitai's file names, which are
+		// arbitrary and routinely unbreakable. TWO files, because the single-file
+		// shape is a bare "Download" button that prints no filename at all — one file
+		// would make this entry vacuous. The rows use `truncate`, which this checker
+		// accepts ONLY paired with min-w-0: the row is a flex container and the name
+		// is a flex ITEM, so without min-w-0 its min-content width (the whole
+		// filename) is a floor and the menu blows past the viewport instead.
+		"model header download menu": renderString(t, headerDownloadControl(
+			headerDLView(dlFile(1, long, "Model", 2048), dlFile(2, "b."+long, "VAE", 512)), "csrf")),
 		// The batch page's h1 prints an untrusted label (a preset name is clamped to
 		// 80 bytes; a WORKFLOW name is not) at text-2xl in a flex row.
 		// pageMain scopes to <main>: the document <title> also carries the label but

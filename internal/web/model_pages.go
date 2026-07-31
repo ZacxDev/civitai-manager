@@ -1464,13 +1464,18 @@ func fileList(modelID, versionID int, files []civitai.ModelVersionFile, versionD
 		}
 		rows = append(rows, h.Li(
 			h.Class("cm-dl-file"),
+			// The full name as the ROW's tooltip, so a truncated one is still
+			// recoverable. It sits on the <li>, NOT on the name <span>, deliberately:
+			// TestLongUntrustedStringsCanBreak exempts any element carrying `title=`,
+			// so putting it on the span would silently exempt the very element whose
+			// truncate/min-w-0 pairing that test exists to enforce (verified: with the
+			// title on the span, deleting min-w-0 went completely undetected).
+			h.Title(f.Name),
 			// min-w-0 is REQUIRED alongside truncate, not decoration: this is a flex
 			// item, and a flex item's min-width:auto keeps its min-content width (the
 			// whole unbroken filename) as a floor, so truncate alone would blow the
-			// row — and the menu — past the viewport. Pinned by
-			// TestLongUntrustedStringsCanBreak, which accepts `truncate` only paired
-			// with `min-w-0`.
-			h.Span(h.Class("min-w-0 truncate text-sm text-slate-200"), h.Title(f.Name), g.Text(f.Name)),
+			// row — and the menu — past the viewport.
+			h.Span(h.Class("min-w-0 truncate text-sm text-slate-200"), g.Text(f.Name)),
 			h.Span(h.Class("flex shrink-0 items-center gap-2 text-xs text-slate-500"),
 				g.If(f.Type != "", badge(f.Type, "slate")),
 				g.Text(humanBytes(int64(f.SizeKB*1024))),
