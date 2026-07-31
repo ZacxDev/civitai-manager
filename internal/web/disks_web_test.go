@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -130,6 +131,46 @@ func countProbes(srv *Server) *atomic.Int64 {
 	return &n
 }
 
+// probeRecorder is a diskStatFn that remembers which paths it was asked about.
+//
+// It is MUTEX-GUARDED on purpose: /disks probes its directories concurrently
+// (diskProbeParallelism workers), so a plain slice append inside the stub is a
+// data race — and -race reports that as a failure of the TEST, which reads
+// exactly like a bug in the code under test. Every recording stub in this file
+// goes through here so that trap can only be fallen into once.
+type probeRecorder struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (p *probeRecorder) stat(path string) (diskusage.Usage, error) {
+	p.mu.Lock()
+	p.seen = append(p.seen, path)
+	p.mu.Unlock()
+	return diskusage.Usage{Total: 1000, Free: 250, Used: 750}, nil
+}
+
+// paths returns a COPY, so the caller can inspect it while probes are still in
+// flight without racing the recorder.
+func (p *probeRecorder) paths() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.seen)
+}
+
+// count reports how many times path was probed.
+func (p *probeRecorder) count(path string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := 0
+	for _, s := range p.seen {
+		if s == path {
+			n++
+		}
+	}
+	return n
+}
+
 // TestDisksRowsAreNotEvenProbedOffLoopback proves the gate stops the SYSCALLS,
 // not just the markup: off-loopback handleDisks must issue ZERO filesystem
 // probes, because a version that probed and then hid the output would still stat
@@ -195,11 +236,11 @@ func TestDisksReportsTheDerivedTrashDir(t *testing.T) {
 			"would be indistinguishable from the model root's own row", want)
 	}
 
-	var probed []string
-	srv.diskStatFn = func(p string) (diskusage.Usage, error) {
-		probed = append(probed, p)
-		return diskusage.Usage{Total: 1000, Free: 250, Used: 750}, nil
-	}
+	// MUTEX-GUARDED because the probes now run CONCURRENTLY (diskProbeParallelism
+	// workers). A bare `probed = append(...)` here is a real data race that -race
+	// reports as a failure of this test rather than of the code under test.
+	probed := &probeRecorder{}
+	srv.diskStatFn = probed.stat
 	body := get(t, srv, "/disks").Body.String()
 
 	if !strings.Contains(body, want) {
@@ -209,8 +250,8 @@ func TestDisksReportsTheDerivedTrashDir(t *testing.T) {
 		t.Errorf("/disks has no row LABELLED Trash:\n%s", firstN(body, 2000))
 	}
 	// And it is a real probe target, not just a string in the markup.
-	if !slices.Contains(probed, want) {
-		t.Errorf("the trash dir %q was never probed; probed = %v", want, probed)
+	if got := probed.paths(); !slices.Contains(got, want) {
+		t.Errorf("the trash dir %q was never probed; probed = %v", want, got)
 	}
 
 	// An EXPLICIT trash_dir must still win over the derivation.

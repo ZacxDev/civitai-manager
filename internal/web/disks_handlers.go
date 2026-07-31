@@ -5,11 +5,39 @@ import (
 	"io/fs"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/ZacxDev/civitai-manager/internal/diskusage"
 	"github.com/ZacxDev/civitai-manager/internal/library"
 )
+
+// The /disks capacity probe's bounds. All three are defaults written into the
+// Server in NewServer; tests override them on their own instance.
+const (
+	// defaultDiskProbeTimeout is how long ONE directory's probe may take before
+	// its row renders as unknown. Generous enough that a cold spinning disk or a
+	// healthy-but-slow network share still reports real figures, short enough that
+	// a page full of hung mounts is still a page.
+	defaultDiskProbeTimeout = 2 * time.Second
+	// defaultDiskProbeMemoTTL is how long a timed-out path is answered from the
+	// memo instead of being probed again. See Server.diskHung for why the memo,
+	// not the timeout, is what actually bounds the damage.
+	defaultDiskProbeMemoTTL = 30 * time.Second
+	// diskProbeParallelism caps concurrent probes. The directory count is
+	// USER-CONTROLLED (library_paths + the scan-dir table), so an unbounded
+	// fan-out is a goroutine/syscall multiplier the user chooses; 8 keeps healthy
+	// directories from serializing behind each other without becoming one.
+	diskProbeParallelism = 8
+)
+
+// diskProbeTimeoutText is the reason a timed-out row carries. It is DISTINCT
+// from the not-exist and unsupported wordings on purpose: "did not respond" is
+// the one failure the user can neither fix by creating a directory nor blame on
+// their platform, and it is the one that says something about the mount rather
+// than about the path.
+const diskProbeTimeoutText = "the mount did not respond — an unresponsive network share can block indefinitely"
 
 // handleDisks renders /disks: filesystem capacity for every configured model
 // directory plus the quarantine batches /trash used to show.
@@ -145,29 +173,146 @@ func (s *Server) diskRows() []diskRow {
 		statFn = diskusage.Stat
 	}
 
-	rows := make([]diskRow, 0, len(entries))
 	// Dedupe on the CLEANED path so "/models" and "/models/" are one row. This is
 	// deliberately NOT a same-filesystem dedupe: two distinct directories that
 	// happen to share a disk stay two rows (the page says so in its footnote),
 	// because merging them would need device ids that only exist on unix and would
 	// wrongly merge two identically-sized empty volumes.
+	rows := make([]diskRow, 0, len(entries))
+	clean := make([]string, 0, len(entries))
+	lazy := make([]bool, 0, len(entries))
 	seen := make(map[string]bool, len(entries))
 	for _, e := range entries {
-		clean := filepath.Clean(e.path)
-		if seen[clean] {
+		c := filepath.Clean(e.path)
+		if seen[c] {
 			continue
 		}
-		seen[clean] = true
-		row := diskRow{Label: e.label, Path: e.path}
-		u, err := statFn(clean)
-		if err != nil {
-			row.Err = diskErrText(err, e.lazy)
-		} else {
-			row.Usage = u
+		seen[c] = true
+		rows = append(rows, diskRow{Label: e.label, Path: e.path})
+		clean = append(clean, c)
+		lazy = append(lazy, e.lazy)
+	}
+
+	// 🔴 THE PROBES RUN OFF THE REQUEST GOROUTINE, BOUNDED AND WATCHDOGGED.
+	// syscall.Statfs on a hung NFS/SMB mount blocks in UNINTERRUPTIBLE SLEEP —
+	// it cannot be cancelled, so a serial loop here wedged /disks forever and a
+	// context would have bought nothing (which is why one is not plumbed through:
+	// the goroutine survives cancellation either way). Each probe is therefore
+	// given its own goroutine and abandoned after s.diskProbeTimeout, and the
+	// abandonment is REMEMBERED — see s.diskHung.
+	//
+	// Each worker writes rows[i] for an i no other worker touches, so the slice
+	// needs no lock; only the memo does.
+	n := diskProbeParallelism
+	if n > len(rows) {
+		n = len(rows)
+	}
+	if n > 0 {
+		idx := make(chan int)
+		var wg sync.WaitGroup
+		for w := 0; w < n; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := range idx {
+					u, timedOut, err := s.probeDisk(statFn, clean[i])
+					switch {
+					case timedOut:
+						rows[i].Err = diskProbeTimeoutText
+					case err != nil:
+						rows[i].Err = diskErrText(err, lazy[i])
+					default:
+						rows[i].Usage = u
+					}
+				}
+			}()
 		}
-		rows = append(rows, row)
+		for i := range rows {
+			idx <- i
+		}
+		close(idx)
+		wg.Wait()
 	}
 	return rows
+}
+
+// probeDisk measures one path, giving up after s.diskProbeTimeout and never
+// probing a path already known to be hanging.
+//
+// The middle return is "the watchdog fired" — deliberately separate from err,
+// because a timeout is not something statFn reported and must not be routed
+// through diskErrText's not-exist/unsupported classification.
+//
+// 🔴 THE RESULT CHANNEL IS BUFFERED (cap 1) AND THAT IS LOAD-BEARING. On the
+// timeout path nobody is left to receive: this function has already returned. An
+// UNBUFFERED channel would park the orphaned probe goroutine forever on its send
+// — even after the mount finally answers and the syscall returns — so the leak
+// would be permanent rather than lasting only as long as the mount is wedged,
+// and the channel would be pinned alive with it. This is the classic
+// timeout-goroutine leak; the one-slot buffer lets the late sender complete and
+// exit, and the buffer is then garbage.
+func (s *Server) probeDisk(statFn func(string) (diskusage.Usage, error), path string) (diskusage.Usage, bool, error) {
+	if s.diskIsHung(path) {
+		return diskusage.Usage{}, true, nil
+	}
+
+	type probeResult struct {
+		u   diskusage.Usage
+		err error
+	}
+	ch := make(chan probeResult, 1) // cap 1: see the doc comment above.
+	go func() { u, err := statFn(path); ch <- probeResult{u, err} }()
+
+	// A zero/negative timeout would fire the timer INSTANTLY and report every
+	// directory as hung, so a Server assembled without NewServer falls back to the
+	// package default rather than to "nothing works".
+	d := s.diskProbeTimeout
+	if d <= 0 {
+		d = defaultDiskProbeTimeout
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case r := <-ch:
+		return r.u, false, r.err
+	case <-timer.C:
+		s.markDiskHung(path)
+		return diskusage.Usage{}, true, nil
+	}
+}
+
+// diskIsHung reports whether path timed out recently enough that probing it
+// again would only leak another goroutine. An expired entry is dropped on the
+// way past, so the map cannot accumulate paths that have since been fixed (or
+// removed from the config).
+func (s *Server) diskIsHung(path string) bool {
+	s.diskProbeMu.Lock()
+	defer s.diskProbeMu.Unlock()
+	at, ok := s.diskHung[path]
+	if !ok {
+		return false
+	}
+	ttl := s.diskProbeMemoTTL
+	if ttl <= 0 {
+		ttl = defaultDiskProbeMemoTTL
+	}
+	if time.Since(at) >= ttl {
+		delete(s.diskHung, path)
+		return false
+	}
+	return true
+}
+
+// markDiskHung records that path's probe was abandoned, starting its TTL window.
+func (s *Server) markDiskHung(path string) {
+	s.diskProbeMu.Lock()
+	defer s.diskProbeMu.Unlock()
+	if s.diskHung == nil {
+		// A Server built as a bare literal (some tests) has no map. Nil-map WRITES
+		// panic, so this is not optional.
+		s.diskHung = map[string]time.Time{}
+	}
+	s.diskHung[path] = time.Now()
 }
 
 // diskErrText turns a probe failure into short human text for the row.

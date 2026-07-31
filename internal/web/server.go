@@ -250,6 +250,32 @@ type Server struct {
 	// would bypass it and the test would stay green. This one cannot be bypassed:
 	// every path to a Usage goes through it.
 	diskStatFn func(path string) (diskusage.Usage, error)
+	// diskProbeTimeout bounds how long /disks waits for ONE capacity probe before
+	// rendering that row as unknown. Set once in NewServer from
+	// defaultDiskProbeTimeout and never mutated afterwards, so the probe goroutines
+	// read it race-free; tests shorten it on their own Server instance.
+	diskProbeTimeout time.Duration
+	// diskProbeMemoTTL is how long a path that already timed out is answered from
+	// diskHung WITHOUT issuing a fresh probe. Same lifecycle rules as
+	// diskProbeTimeout.
+	diskProbeMemoTTL time.Duration
+	// diskProbeMu guards diskHung.
+	diskProbeMu sync.Mutex
+	// diskHung memoizes cleaned paths whose probe timed out, keyed to the moment
+	// the watchdog gave up.
+	//
+	// 🔴 THIS IS THE PART THAT BOUNDS THE DAMAGE, NOT THE TIMEOUT. A blocked
+	// statfs on a hung NFS/SMB mount sits in UNINTERRUPTIBLE SLEEP: the goroutine
+	// running it cannot be cancelled by a context, a deadline or anything else —
+	// it is gone until the mount answers. The watchdog only stops the REQUEST from
+	// waiting; the goroutine leaks regardless. Without this memo every reload of
+	// /disks would start another one, so a user refreshing a page they cannot read
+	// leaks a goroutine (and a kernel-side operation) per refresh. With it a hung
+	// mount costs ONE stuck goroutine per TTL window rather than one per request.
+	//
+	// The TTL exists so a mount that comes back is eventually measured again; the
+	// accepted cost is that a still-hung mount is re-probed once per window.
+	diskHung map[string]time.Time
 	// evictMu serializes output-gallery cap enforcement. Captures are NOT mutually
 	// exclusive — the run job clears `running` under runMu BEFORE the capture runs
 	// off the mutex — so two captures can enforce the cap concurrently. Without this
@@ -449,6 +475,9 @@ func NewServer(st *store.Store, reader civitai.Reader, sub Subscriber, cfg Confi
 		cloudPollInterval:  defaultCloudPollInterval,
 		nodepackPoll:       nodepackPollInterval,
 		nodepackSettleWait: nodepackMinSettle,
+		diskProbeTimeout:   defaultDiskProbeTimeout,
+		diskProbeMemoTTL:   defaultDiskProbeMemoTTL,
+		diskHung:           map[string]time.Time{},
 		popularVal:         map[bool]*civitai.ModelSearchResult{},
 		popularExp:         map[bool]time.Time{},
 		resolveVal:         map[string]*civitai.ModelSearchResult{},
