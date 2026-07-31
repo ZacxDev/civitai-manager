@@ -90,11 +90,22 @@ func (s *Server) handleTrashRedirect(w http.ResponseWriter, r *http.Request) {
 // that fails contributes no rows at all rather than failing the request — the
 // selected-scan-dirs list is an enhancement over the configured ones.
 func (s *Server) diskRows() []diskRow {
-	type entry struct{ label, path string }
+	// lazy marks a directory this app CREATES ON DEMAND rather than one the user is
+	// expected to already have. It changes nothing but the not-exist wording — see
+	// diskErrText.
+	type entry struct {
+		label, path string
+		lazy        bool
+	}
 	var entries []entry
 	add := func(label, path string) {
 		if path != "" {
-			entries = append(entries, entry{label, path})
+			entries = append(entries, entry{label: label, path: path})
+		}
+	}
+	addLazy := func(label, path string) {
+		if path != "" {
+			entries = append(entries, entry{label: label, path: path, lazy: true})
 		}
 	}
 	add("Model root", s.cfg.ModelRoot)
@@ -113,7 +124,21 @@ func (s *Server) diskRows() []diskRow {
 	// doc claimed the set included "the quarantine (trash) directory".
 	// library.ResolveTrashDir is that derivation, called rather than restated, so
 	// the row can never name a directory quarantine would not actually use.
-	add("Trash", library.ResolveTrashDir(s.cfg.TrashDir, s.cfg.ModelRoot))
+	//
+	// The DERIVED dir is created LAZILY — quarantine.go makes it on the first move —
+	// so on a fresh install it does not exist and probing it rendered a warning-shaped
+	// "⚠ Capacity unknown — the directory does not exist or is not mounted". That is
+	// wrong twice: nothing is broken, and since it sits UNDER ModelRoot it could never
+	// report a capacity the "Model root" row above does not already show. So the
+	// derived case is marked lazy and reads "not created yet" instead. An EXPLICITLY
+	// configured trash_dir stays a real warning when it is missing — the user named
+	// that directory, it may be on another filesystem, and its absence is worth
+	// surfacing.
+	if trash := library.ResolveTrashDir(s.cfg.TrashDir, s.cfg.ModelRoot); s.cfg.TrashDir != "" {
+		add("Trash", trash)
+	} else {
+		addLazy("Trash", trash)
+	}
 
 	statFn := s.diskStatFn
 	if statFn == nil {
@@ -136,7 +161,7 @@ func (s *Server) diskRows() []diskRow {
 		row := diskRow{Label: e.label, Path: e.path}
 		u, err := statFn(clean)
 		if err != nil {
-			row.Err = diskErrText(err)
+			row.Err = diskErrText(err, e.lazy)
 		} else {
 			row.Usage = u
 		}
@@ -153,11 +178,18 @@ func (s *Server) diskRows() []diskRow {
 // can act on are "the directory is not there" and "this build cannot measure it";
 // anything else falls through to the error's own text, since inventing a
 // friendly message for an unknown failure would hide the only clue.
-func diskErrText(err error) string {
+//
+// lazy flips ONLY the not-exist case. A directory this app creates on demand is
+// not a fault when it is absent, and dressing it as one trains the user to ignore
+// the warning that does matter.
+func diskErrText(err error, lazy bool) string {
 	switch {
 	case err == nil:
 		return ""
 	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOENT):
+		if lazy {
+			return "not created yet — it appears the first time something is quarantined"
+		}
 		return "the directory does not exist or is not mounted"
 	case errors.Is(err, diskusage.ErrUnsupported):
 		return "capacity reporting is not available on this platform"

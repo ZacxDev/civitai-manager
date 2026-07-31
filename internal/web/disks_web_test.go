@@ -1,8 +1,11 @@
 package web
 
 import (
+	"errors"
+	"io/fs"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -223,6 +226,63 @@ func TestDisksReportsTheDerivedTrashDir(t *testing.T) {
 	}
 	if strings.Contains(body2, library.ResolveTrashDir("", srv2.cfg.ModelRoot)) {
 		t.Errorf("the derived default leaked into the page even though trash_dir was set:\n%s", firstN(body2, 2000))
+	}
+}
+
+// TestDerivedTrashDirIsNotDressedAsAFault guards the wording of the ONE row that
+// is legitimately absent on a healthy install.
+//
+// THE REGRESSION IT GUARDS. Reporting the derived <ModelRoot>/.trash (the fix for
+// the silently-missing row) made a fresh install render "⚠ Capacity unknown — the
+// directory does not exist or is not mounted" for it. quarantine.go creates that
+// directory LAZILY, on the first move, so on the majority of installs the warning
+// is simply wrong — and a warning that is usually wrong is how a user learns to
+// ignore the one that isn't. An EXPLICIT trash_dir keeps the real warning: the
+// user named that path, it may be on another filesystem, and its absence matters.
+//
+// It counts rather than merely checking presence, because the fixture's missing
+// library path produces the real warning legitimately — a bare Contains would pass
+// while the trash row still carried it.
+func TestDerivedTrashDirIsNotDressedAsAFault(t *testing.T) {
+	const faultText = "does not exist or is not mounted"
+	const pendingText = "not created yet"
+
+	srv, root, _ := newDisksServer(t, "127.0.0.1:8787")
+	if srv.cfg.TrashDir != "" {
+		t.Fatalf("fixture is wrong: TrashDir = %q, but the case under test is the UNSET default", srv.cfg.TrashDir)
+	}
+	// FIXTURE REACH: the case only arises while the directory is genuinely absent.
+	// The real statFn is used deliberately — a stub would not prove the not-exist
+	// branch is the one that runs.
+	derived := library.ResolveTrashDir("", root)
+	if _, err := os.Stat(derived); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("fixture is wrong: %q must NOT exist for this case to arise (stat err = %v)", derived, err)
+	}
+
+	body := get(t, srv, "/disks").Body.String()
+	if !strings.Contains(body, pendingText) {
+		t.Errorf("the derived trash dir must read %q, not a fault — it is created on the first "+
+			"quarantine:\n%s", pendingText, firstN(body, 2500))
+	}
+	// Exactly one: the fixture's missing LIBRARY PATH. Two means the trash row is
+	// still dressed as a fault.
+	if n := strings.Count(body, faultText); n != 1 {
+		t.Errorf("%d rows read %q, want exactly 1 (the fixture's missing library path); "+
+			"the derived trash dir must not be one of them:\n%s", n, faultText, firstN(body, 2500))
+	}
+
+	// An EXPLICITLY configured trash dir that is missing IS a fault, and still says so.
+	explicit := filepath.Join(t.TempDir(), "gone")
+	srv2, _, _ := newDisksServer(t, "127.0.0.1:8787")
+	srv2.cfg.TrashDir = explicit
+	body2 := get(t, srv2, "/disks").Body.String()
+	if strings.Contains(body2, pendingText) {
+		t.Errorf("an explicitly configured trash_dir is not created on demand — a missing one "+
+			"must stay a real warning, not %q:\n%s", pendingText, firstN(body2, 2500))
+	}
+	if n := strings.Count(body2, faultText); n != 2 {
+		t.Errorf("%d rows read %q, want 2 (the missing library path AND the explicit missing "+
+			"trash dir):\n%s", n, faultText, firstN(body2, 2500))
 	}
 }
 
