@@ -55,6 +55,13 @@ func newRevealServer(t *testing.T, root string) (*Server, *recordingOpener) {
 	}, nil)
 	op := &recordingOpener{}
 	srv.openerFn = op.fn()
+	// 🔴 PIN THE GRAPHICAL-SESSION SEAM. The handler now refuses to launch when the
+	// server's machine has no display, and whether THIS process has DISPLAY set is
+	// a property of the shell `go test` was started from — an agent's shell often
+	// has none. Left unpinned, every argv assertion in this file would pass or fail
+	// by accident of the environment. The no-display path gets its own server (see
+	// newHeadlessRevealServer) rather than being inherited from the host.
+	srv.graphicalFn = func() bool { return true }
 	return srv, op
 }
 

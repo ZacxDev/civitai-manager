@@ -258,7 +258,7 @@ func TestWorkflowCardNestsThePopoverInsideTheLiftCard(t *testing.T) {
 		Source:    store.WorkflowSourceImported,
 		Resources: []string{"a.safetensors", "b.safetensors"},
 	}
-	got := renderString(t, workflowCard(wf, "csrf", workflowResolver{mr: fullMaturityRange()}))
+	got := renderString(t, workflowCard(wf, "csrf", workflowResolver{mr: fullMaturityRange()}, nil))
 
 	// The rendered node IS the lift card: its opening tag carries .cm-lift.
 	open := got

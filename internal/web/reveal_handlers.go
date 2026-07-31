@@ -131,6 +131,70 @@ func (s *Server) opener() func(argv []string) error {
 	return startFileManager
 }
 
+// hasGraphicalSession reports whether the machine running `serve` has a session a
+// file-manager window could appear in.
+//
+// 🔴 THIS EXISTS BECAUSE THE OPENER LIES BY OMISSION. On the free-desktop
+// platforms `xdg-open` is a shell script that falls back through a list of
+// handlers and **exits 0 even when every one of them is missing**. Measured on
+// this host with the server's own environment:
+//
+//	$ env -u DISPLAY -u XAUTHORITY xdg-open /home/zach
+//	xdg-open: line 1032: www-browser: command not found
+//	xdg-open: line 1032: links2: command not found
+//	xdg-open: line 1032: elinks: command not found
+//	  exit=0
+//
+// startFileManager does not even consult that exit code — it reports success from
+// cmd.Start(), i.e. from "a process was created". So there is no signal AFTER the
+// launch that distinguishes "a window opened" from "nothing happened", and the
+// endpoint reported a confident "Opened…" for a window that was never created.
+// That is worse than an error: the user goes looking for it.
+//
+// The one thing that CAN be established beforehand is whether a window could
+// appear at all. On X11/Wayland that is exactly DISPLAY / WAYLAND_DISPLAY: with
+// neither set, no client can connect to a display server and nothing graphical
+// can be shown, no matter which opener runs. A headless box, a systemd service
+// with a clean environment, and a plain SSH session all land here — and so does
+// this repo's own dogfood instance when it is started from a non-graphical shell.
+//
+// It is deliberately NOT a general "is a desktop running" test:
+//
+//   - darwin/windows report true unconditionally. Their openers talk to a session
+//     window server rather than to a display-server socket named by an env var,
+//     so there is no equivalent variable to read, and inventing one would refuse
+//     the control on machines where it works.
+//   - A set DISPLAY does not PROVE a reachable server (it can name a dead socket).
+//     This is a necessary condition, not a sufficient one — which is why the
+//     success wording is still hedged rather than promoted back to "Opened".
+//
+// env is injected (os.Getenv in production) so the behaviour can be tested
+// without depending on the environment the test process happens to inherit.
+func hasGraphicalSession(goos string, env func(string) string) bool {
+	if env == nil {
+		return false
+	}
+	switch goos {
+	case "darwin", "windows":
+		return true
+	}
+	for _, key := range []string{"DISPLAY", "WAYLAND_DISPLAY"} {
+		if strings.TrimSpace(env(key)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// graphical returns the configured graphical-session seam (tests) or the real
+// probe against this process's own environment.
+func (s *Server) graphical() func() bool {
+	if s.graphicalFn != nil {
+		return s.graphicalFn
+	}
+	return func() bool { return hasGraphicalSession(runtime.GOOS, os.Getenv) }
+}
+
 // revealRoots is the set of directories a revealed file is allowed to live under:
 // this app's own model root, the ComfyUI models dir it installs into, the extra
 // library paths from config, and the scan directories the user explicitly
@@ -343,18 +407,43 @@ func (s *Server) handleLibraryFileReveal(w http.ResponseWriter, r *http.Request)
 			"Opening a folder is not supported on this platform.", "error"))
 		return
 	}
+
+	// 🔴 REFUSE BEFORE LAUNCHING WHEN NO WINDOW COULD APPEAR. This check is the
+	// whole reason hasGraphicalSession exists: without it the handler shells out
+	// into a headless session, xdg-open exits 0 having done nothing, and the
+	// response claims a window opened. Say what is actually true instead, and name
+	// the folder anyway — it is the fact the user can still act on (copy the path,
+	// open a terminal there).
+	if !s.graphical()() {
+		s.render(w, http.StatusOK, s.revealResult(id, dir,
+			"The computer running civitai-manager has no graphical session "+
+				"(no DISPLAY or WAYLAND_DISPLAY), so no file-manager window can open there. "+
+				"The folder is", "error"))
+		return
+	}
+
 	if err := s.opener()(argv); err != nil {
 		s.log.Warn("open containing folder failed", "file_id", id, "opener", argv[0], "err", err)
 		s.render(w, http.StatusOK, s.revealResult(id, "",
 			"Could not start "+argv[0]+" on the computer running civitai-manager.", "error"))
 		return
 	}
+	// 🔴 THE WORDING IS HEDGED ON PURPOSE — DO NOT PROMOTE IT BACK TO "Opened".
+	// All that has happened here is that the opener PROCESS STARTED (startFileManager
+	// reports from cmd.Start() and never waits), and even its eventual exit code
+	// would not settle the question: xdg-open exits 0 with no handler installed at
+	// all. Claiming "Opened" from that is a false success, and a false success is
+	// worse than an error because the user goes hunting for a window that does not
+	// exist. What we can honestly assert is that we ASKED the desktop to open it —
+	// so that is what it says, and it still names the folder so the claim is
+	// checkable.
 	s.render(w, http.StatusOK, s.revealResult(id, dir,
-		"Opened on the computer running civitai-manager.", "ok"))
+		"Asked the desktop on the computer running civitai-manager to open this folder.", "ok"))
 }
 
-// revealResult re-renders the control with an outcome message. On success it
-// names the folder that was opened, so the statement is checkable.
+// revealResult re-renders the control with an outcome message. It names the
+// folder whenever one was resolved, so every statement it makes is checkable
+// against something the user can see.
 func (s *Server) revealResult(id int64, dir, msg, state string) g.Node {
 	if dir != "" {
 		msg = msg + " (" + dir + ")"

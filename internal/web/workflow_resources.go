@@ -114,6 +114,24 @@ func workflowResourceChips(resources []string, resolver workflowResolver) g.Node
 // reason, so this text describes the only situation in which it is offered.
 const openFolderTitle = "Show this file in the file manager — the window opens on the computer running civitai-manager, not on this device"
 
+// folderIconSVG is the "open containing folder" glyph.
+//
+// 🔴 IT IS AN INLINE SVG BECAUSE THE EMOJI WAS INVISIBLE. This button used to
+// render U+1F5C0 (FOLDER) as text — spelled here as a codepoint, never as the
+// character itself, because a literal one is indistinguishable from tofu in a
+// diff and TestNoMissingFolderGlyphInTemplates refuses it. That codepoint has NO
+// glyph in the common Linux font stacks, so the control shipped as a tofu box — a
+// missing glyph, not a broken image, which is why it read as "the button is
+// broken" rather than "the font lacks a character". (The Discover page's 📁
+// U+1F4C1 is well supported and renders fine; the inconsistency between the two
+// was the tell.) An inline SVG depends on no font at all, matches the icon
+// approach the nav/dashboard already use (brand.go, the dashboard status chips),
+// and inherits the button's colour via stroke="currentColor".
+//
+// It stays aria-hidden: the button's aria-label (openFolderTitle) is its
+// accessible name, and an icon that announced itself would duplicate that.
+const folderIconSVG = `<svg class="cm-res-open-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`
+
 // resourceOpenControl renders the "open containing folder" affordance for ONE
 // resolved local file, plus (after a click) the outcome message in place.
 //
@@ -136,8 +154,9 @@ func resourceOpenControl(fileID int64, csrf, msg, state string) g.Node {
 			hx("vals", fmt.Sprintf(`{"csrf_token":%q}`, csrf)),
 			hx("target", "closest .cm-res-open"),
 			hx("swap", "outerHTML"),
-			// A folder glyph; the accessible name is the aria-label above.
-			h.Span(g.Attr("aria-hidden", "true"), g.Text("🗀")),
+			// A folder icon; the accessible name is the aria-label above. Inline SVG,
+			// never a text glyph — see folderIconSVG.
+			g.Raw(folderIconSVG),
 		),
 	}
 	if strings.TrimSpace(msg) != "" {

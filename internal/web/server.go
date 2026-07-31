@@ -237,6 +237,21 @@ type Server struct {
 	// that runs a process, so the seam is deliberately narrow: it receives an argv
 	// the caller has already built and validated, and returns only a start error.
 	openerFn func(argv []string) error
+	// graphicalFn reports whether the machine running `serve` has a graphical
+	// session that a file-manager window could appear in. Nil (production) uses
+	// hasGraphicalSession(runtime.GOOS, os.Getenv).
+	//
+	// It exists because the opener CANNOT be asked. `xdg-open` exits 0 with no
+	// display at all (measured on this host: `env -u DISPLAY -u XAUTHORITY
+	// xdg-open /home/zach` printed "www-browser: command not found" three times
+	// and still exited 0), and startFileManager does not even wait for that exit —
+	// it reports success from cmd.Start(). So "did a window appear" is not
+	// observable after the fact, and the only honest guard is to refuse BEFORE
+	// launching when no window could possibly appear.
+	//
+	// Tests inject it so a guard's redness never depends on whether the machine
+	// running `go test` happens to have DISPLAY set.
+	graphicalFn func() bool
 	// diskStatFn probes ONE directory's filesystem for the /disks capacity card.
 	// Nil (production) uses diskusage.Stat.
 	//

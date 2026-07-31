@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -40,6 +41,17 @@ type workflowResolver struct {
 	// execs a process on the machine running `serve`, so the affordance must not
 	// even appear on a non-loopback bind.
 	openFolder bool
+	// picks is the set of workflow ids named by the request's ?pick= params — which
+	// member of a multi-workflow SOURCE group its list item is currently showing.
+	// Nil (every render path that has no request in hand) means "the first member",
+	// which is the default the group renders with anyway.
+	picks map[int64]bool
+	// pickBase is the whitelisted subset of the request's query that a source
+	// picker's GET form must carry forward so submitting it does not silently drop
+	// the tab or the active facets. It is built from a FIXED key list in
+	// libraryPickBase — never echoed wholesale — so no unknown request parameter can
+	// be reflected back into the page as a hidden input.
+	pickBase url.Values
 }
 
 // showcase returns the linked model's showcase gallery (from the LOCAL model_cache
@@ -357,9 +369,14 @@ func workflowList(wfs []store.Workflow, csrf string, extraAllowed bool, resolver
 	if len(wfs) == 0 {
 		return workflowEmptyState(extraAllowed)
 	}
-	items := make([]g.Node, 0, len(wfs))
-	for _, wf := range wfs {
-		items = append(items, workflowListItem(wf, csrf, resolver))
+	// ONE item per SOURCE (see workflow_list_groups.go). A source with a single
+	// workflow, and every source-less workflow, is a group of one and renders
+	// exactly as it did before.
+	groups := groupWorkflowsBySource(wfs, resolver.picks)
+	active := activeWorkflowPicks(groups)
+	items := make([]g.Node, 0, len(groups))
+	for _, grp := range groups {
+		items = append(items, workflowListItem(grp, csrf, resolver, otherPicks(active, grp)))
 	}
 	return h.Div(
 		h.Class("space-y-4"),
@@ -393,6 +410,10 @@ function cmWfDeeplink(){
   if(!m){ return; }
   var el = document.getElementById('wf-' + m[1]);
   if(!el){ return; }
+  // A workflow that is currently BEHIND its source group's select has an empty
+  // anchor span rather than an item of its own, so highlight the enclosing item —
+  // pulsing a zero-size span would scroll correctly and show nothing.
+  el = el.closest('.cm-wf-item') || el;
   try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
   catch(e) { el.scrollIntoView(); }
   el.classList.remove('cm-wf-highlight');
@@ -434,27 +455,47 @@ func workflowEmptyState(extraAllowed bool) g.Node {
 	return card(h.Class("cm-lift py-6 text-center"), g.Group(children))
 }
 
-// workflowListItem wraps one workflowCard in a data-attributed container the
-// client-side controls script filters, sorts, and groups. workflowCard itself is
-// unchanged. data-name carries the (unescaped-by-g.Attr) display name; data-created
-// is the CreatedAt epoch (sortable); data-base is the base model (empty → grouped
-// under "Unspecified").
-func workflowListItem(wf store.Workflow, csrf string, resolver workflowResolver) g.Node {
-	name := wf.Name
-	if strings.TrimSpace(name) == "" {
-		name = "workflow #" + strconv.FormatInt(wf.ID, 10)
+// otherPicks returns every active pick that does NOT belong to grp — the hidden
+// pick inputs grp's own picker form must carry so applying it leaves the other
+// groups' selections alone.
+func otherPicks(active []int64, grp workflowSourceGroup) []int64 {
+	own := grp.shown().ID
+	out := make([]int64, 0, len(active))
+	for _, id := range active {
+		if id != own {
+			out = append(out, id)
+		}
 	}
+	return out
+}
+
+// workflowListItem wraps ONE source group's card in a data-attributed container the
+// client-side controls script filters, sorts, and groups.
+//
+// The data-* attributes describe the member currently SHOWN — that is what the user
+// is looking at and what the sort must order by — with one addition:
+// data-alt-names carries the names of the members behind the select, so a text
+// filter still matches them (without it, typing a hidden member's name would hide
+// the very item that holds it).
+//
+// The wrapper keeps the shown member's #wf-<id> anchor exactly as before; the other
+// members' anchors are emitted as empty spans inside it (see altAnchors), so every
+// existing deep link still resolves.
+func workflowListItem(grp workflowSourceGroup, csrf string, resolver workflowResolver, other []int64) g.Node {
+	wf := grp.shown()
 	return h.Div(
 		// Stable anchor for the "View in library" deep-link (#wf-<id>): the
 		// workflows-tab deeplink script scrolls to + briefly highlights this node.
 		h.ID("wf-"+strconv.FormatInt(wf.ID, 10)),
 		h.Class("cm-wf-item"),
-		dataAttr("name", name),
+		dataAttr("name", workflowDisplayName(wf)),
+		dataAttr("alt-names", altNames(grp)),
 		dataAttr("source", wf.Source),
 		dataAttr("format", wf.Format),
 		dataAttr("base", strings.TrimSpace(wf.BaseModel)),
 		dataAttr("created", strconv.FormatInt(wf.CreatedAt.Unix(), 10)),
-		workflowCard(wf, csrf, resolver),
+		altAnchors(grp),
+		workflowCard(wf, csrf, resolver, workflowSourcePicker(grp, resolver.pickBase, other)),
 	)
 }
 
@@ -529,7 +570,11 @@ function cmWfApply(){
   items.forEach(function(it){
     var name = it.getAttribute('data-name') || '';
     var base = it.getAttribute('data-base') || '';
-    var hay = (name + ' ' + base).toLowerCase();
+    // data-alt-names holds the names of the workflows this item is NOT currently
+    // showing (its source group's other members). Without it, filtering by a hidden
+    // member's name would hide the one item that can reach it.
+    var alt = it.getAttribute('data-alt-names') || '';
+    var hay = (name + ' ' + base + ' ' + alt).toLowerCase();
     var ok = true;
     if(q && hay.indexOf(q) < 0){ ok = false; }
     if(ok && srcSel && it.getAttribute('data-source') !== srcSel){ ok = false; }
@@ -630,8 +675,10 @@ func workflowRunDeepLink(id string) string {
 // The sort/filter data-* attributes and the #wf-<id> anchor live on the wrapping
 // .cm-wf-item (workflowListItem), so this leaves the client-side controls +
 // deep-link untouched.
-func workflowCard(wf store.Workflow, csrf string, resolver workflowResolver) g.Node {
-	return workflowCardWith(wf, csrf, resolver, false)
+// picker is the source <select> for a multi-workflow source group (nil for a group
+// of one, and for every surface that is not the library list).
+func workflowCard(wf store.Workflow, csrf string, resolver workflowResolver, picker g.Node) g.Node {
+	return workflowCardWith(wf, csrf, resolver, false, picker)
 }
 
 // workflowCardCompact is the SAME card renderer in its compact variant — a
@@ -663,35 +710,42 @@ func workflowCard(wf store.Workflow, csrf string, resolver workflowResolver) g.N
 // What remains is what the carousel is for: the name (linking to the workflow),
 // the identity badges, and the primary Run CTA.
 func workflowCardCompact(wf store.Workflow) g.Node {
-	return workflowCardWith(wf, "", workflowResolver{}, true)
+	return workflowCardWith(wf, "", workflowResolver{}, true, nil)
 }
 
 // workflowCardWith is the one renderer behind workflowCard and
 // workflowCardCompact. See workflowCardCompact for what `compact` drops and why.
-func workflowCardWith(wf store.Workflow, csrf string, resolver workflowResolver, compact bool) g.Node {
+func workflowCardWith(wf store.Workflow, csrf string, resolver workflowResolver, compact bool, picker g.Node) g.Node {
 	id := strconv.FormatInt(wf.ID, 10)
+	name := workflowDisplayName(wf)
 
-	name := wf.Name
-	if strings.TrimSpace(name) == "" {
-		name = "workflow #" + id
-	}
-
-	var meta []g.Node
-	meta = append(meta, workflowFormatBadge(wf.Format))
+	// BADGES are the workflow's own identity — format, base model, source kind,
+	// golden — and they now sit BESIDE the title rather than on a row of their own,
+	// so the card opens with one line that says what this thing is instead of two.
+	var badges []g.Node
+	badges = append(badges, workflowFormatBadge(wf.Format))
 	if b := strings.TrimSpace(wf.BaseModel); b != "" {
-		meta = append(meta, badge(b, "blue"))
+		badges = append(badges, badge(b, "blue"))
 	}
-	meta = append(meta, badge(optionLabel(workflowSourceFilterOptions, wf.Source), "slate"))
+	badges = append(badges, badge(optionLabel(workflowSourceFilterOptions, wf.Source), "slate"))
 	if wf.IsGolden {
-		meta = append(meta, badge("golden ✓", "amber"))
+		badges = append(badges, badge("golden ✓", "amber"))
 	}
-	// Model linkage: the RESOLVED name as text — instantly from model_cache when
-	// present, else lazy-loaded via the existing /models/{id}/title endpoint
-	// (cache-first, one civitai fetch when uncached). Navigating to the post is the
-	// "View post" button's job now, so this is no longer a bare link.
+
+	// META is everything that is a RELATIONSHIP rather than an identity — where it
+	// came from, which version, what it references, what it uses. It stays on its own
+	// row below the title: these are sentences, not chips, and hoisting them beside
+	// the name would push the badges off the line on any narrow viewport.
+	var meta []g.Node
+	// Source linkage: the RESOLVED name — instantly from model_cache when present,
+	// else lazy-loaded via the existing /models/{id}/title endpoint (cache-first, one
+	// civitai fetch when uncached) — as an EXTERNAL link to the source's page on
+	// civitai.com. That is a different destination from the "View post" button
+	// beside it, which opens OUR page for the same id, so the two do not duplicate
+	// each other.
 	if wf.ModelID != nil && !compact {
 		meta = append(meta, h.Span(h.Class("text-xs text-slate-400"),
-			g.Text("from "), workflowModelNameText(*wf.ModelID, resolver)))
+			g.Text("from "), workflowSourceExternalLink(*wf.ModelID, resolver)))
 	}
 	// Version: the resolved version name (parsed from the cached model's raw
 	// detail) when available, else the bare "version {id}" fallback.
@@ -760,7 +814,10 @@ func workflowCardWith(wf store.Workflow, csrf string, resolver workflowResolver,
 				h.A(h.Href("/workflows/"+id), h.Class("block truncate min-w-0 text-base font-semibold text-slate-100 hover:text-indigo-300"),
 					g.Text(name)),
 			),
-			h.Div(h.Class("flex flex-wrap items-center gap-2 mt-2"), g.Group(meta)),
+			// Compact drops every relationship row, so its badges ARE the whole meta
+			// line — the same nodes, in the same place as before the identity/
+			// relationship split.
+			h.Div(h.Class("flex flex-wrap items-center gap-2 mt-2"), g.Group(badges)),
 			h.Div(h.Class("mt-3"), runCTA),
 		)
 	}
@@ -792,14 +849,59 @@ func workflowCardWith(wf store.Workflow, csrf string, resolver workflowResolver,
 		h.Div(h.Class("mb-3"), workflowCardShowcase(wf, resolver)),
 		h.Div(h.Class("flex items-start justify-between gap-4"),
 			h.Div(h.Class("min-w-0"),
-				h.A(h.Href("/workflows/"+id),
-					h.Class("text-lg font-semibold text-slate-100 hover:text-indigo-300"),
-					g.Text(name)),
-				h.Div(h.Class("flex flex-wrap items-center gap-2 mt-2"), g.Group(meta)),
+				// TITLE AND BADGES ON ONE LINE. They used to be two stacked rows, which
+				// spent a whole line of every card restating facts that fit beside the
+				// name. `flex-wrap` means a narrow viewport still breaks them onto a
+				// second line rather than squeezing the title.
+				h.Div(h.Class("flex flex-wrap items-baseline gap-2 min-w-0"),
+					h.A(h.Href("/workflows/"+id),
+						h.Class("text-lg font-semibold text-slate-100 hover:text-indigo-300"),
+						g.Text(name)),
+					g.Group(badges),
+				),
+				g.If(len(meta) > 0,
+					h.Div(h.Class("flex flex-wrap items-center gap-2 mt-2"), g.Group(meta))),
 			),
 			h.Div(h.Class("shrink-0"), runCTA),
 		),
+		// The source picker, when this item stands for several workflows from one
+		// source. It sits below the header and above the actions: it changes WHICH
+		// workflow the actions act on, so it must be read before them.
+		picker,
 		h.Div(h.Class("flex flex-wrap items-center gap-2 mt-4"), g.Group(actions)),
+	)
+}
+
+// workflowSourceExternalLink renders the linked CivitAI source's resolved NAME as
+// an EXTERNAL link to its page on civitai.com.
+//
+// 🔴 THE HREF IS BUILT FROM THE NUMERIC ID, NEVER FROM A STORED URL STRING, and it
+// is then re-validated with isSafeHTTPURL — the same guard the Apps cards and the
+// workflow detail page's "View on CivitAI" link go through. There is deliberately
+// only ONE way to make an external link in this package; this is it.
+//
+// The destination is the source POST on civitai.com. It does not duplicate the
+// "View post" button beside it, which opens OUR /models/<id> page for the same id.
+//
+// It says "from <name>", not "from <model>": CivitAI serves workflow posts from
+// /models/<id> URLs, so the id names a Workflows-type post rather than a
+// checkpoint, and the copy must not imply otherwise.
+func workflowSourceExternalLink(modelID int, resolver workflowResolver) g.Node {
+	href := fmt.Sprintf("https://civitai.com/models/%d", modelID)
+	if !isSafeHTTPURL(href) {
+		// Unreachable for an integer-built URL, and kept anyway: this is the one
+		// choke point where a future change to that format string would otherwise
+		// turn into an unvalidated href.
+		return workflowModelNameText(modelID, resolver)
+	}
+	return h.A(
+		h.Href(href),
+		h.Target("_blank"),
+		g.Attr("rel", "noopener noreferrer"),
+		h.Class("cm-wf-src-link"),
+		g.Attr("title", "Open this workflow's source post on civitai.com"),
+		workflowModelNameText(modelID, resolver),
+		h.Span(g.Attr("aria-hidden", "true"), g.Text(" ↗")),
 	)
 }
 
