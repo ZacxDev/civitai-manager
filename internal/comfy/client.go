@@ -244,8 +244,14 @@ type InputSpec struct {
 	// …); empty when the first element is a list of choices.
 	TypeName string
 	// IsCombo is true when the first element is a list of choices (a combo widget).
+	// It stays true for a NON-string combo (a numeric option list like RIFE VFI's
+	// scale_factor [0.25,0.5,1.0,2.0,4.0]) — IsWidget keys off it, so clearing it
+	// would reclassify the input as a LINK and break the converter.
 	IsCombo bool
-	// Choices is the combo's options when they are strings; nil otherwise.
+	// Choices is the combo's options ONLY when every option is a JSON string; it is
+	// nil for a numeric/mixed/empty option list. That is ALL-OR-NOTHING by design —
+	// see UnmarshalJSON — and every consumer treats "IsCombo && len(Choices) == 0"
+	// as "a combo whose options we cannot compare as strings, so do not validate it".
 	Choices []string
 	// Config is the optional second element (an object of default/min/max/…).
 	Config map[string]json.RawMessage
@@ -261,7 +267,7 @@ func (s *InputSpec) UnmarshalJSON(b []byte) error {
 	}
 	if isJSONArray(arr[0]) {
 		s.IsCombo = true
-		_ = json.Unmarshal(arr[0], &s.Choices) // best-effort (non-string choices stay nil)
+		s.Choices = stringChoices(arr[0])
 	} else {
 		_ = json.Unmarshal(arr[0], &s.TypeName)
 	}
@@ -269,6 +275,55 @@ func (s *InputSpec) UnmarshalJSON(b []byte) error {
 		_ = json.Unmarshal(arr[1], &s.Config)
 	}
 	return nil
+}
+
+// stringChoices decodes a combo's option list, ALL-OR-NOTHING: it returns the
+// options only when EVERY element is a JSON string, and nil otherwise (numeric,
+// mixed, null-bearing, or empty).
+//
+// The all-or-nothing part is the whole point, and it is not paranoia — it fixes a
+// live, user-blocking bug. The previous implementation was
+// `_ = json.Unmarshal(arr[0], &s.Choices)` with the comment "non-string choices stay
+// nil". THAT COMMENT WAS FALSE and nobody had checked it: decoding a numeric array
+// into a []string makes encoding/json ALLOCATE the slice and only THEN fail per
+// element, so it returns a type error and leaves behind a slice of N EMPTY STRINGS.
+// Against the real /object_info that turned `RIFE VFI.scale_factor`
+// ([0.25,0.5,1.0,2.0,4.0]) into Choices=["","","","",""] — len 5, matching nothing —
+// so detectBadOptions raised a BadOption the user could not dismiss, offering five
+// BLANK options, and preflight halted the run.
+//
+// A JSON `null` element is rejected explicitly because unmarshalling null into a
+// string is a silent NO-OP (no error, value untouched) — the exact mechanism by
+// which a phantom "" would sneak back in.
+//
+// Why nil rather than the numbers formatted as text: Choices is consumed as a
+// COMPARABLE, USER-SELECTABLE option set. Formatting numbers would make matching
+// depend on the printed form ("1" vs "1.0" vs "1.00" are the same value but
+// different strings) — a false-BadOption generator, i.e. the same bug in a subtler
+// costume. Worse, the repair path is string-typed end to end: ApplyOptionFixes
+// injects the chosen choice with json.Marshal(string), so "fixing" a numeric combo
+// would write `"1.0"` where ComfyUI requires the number 1.0 and rejects the graph —
+// a BadOption that cannot be fixed by the picker offered for it. Numeric combos are
+// therefore deliberately NOT validated locally (under-validating); ComfyUI's own
+// submit-time validation remains the authority for them.
+func stringChoices(raw json.RawMessage) []string {
+	var elems []json.RawMessage
+	if json.Unmarshal(raw, &elems) != nil || len(elems) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(elems))
+	for _, e := range elems {
+		e = bytes.TrimSpace(e)
+		if len(e) == 0 || e[0] != '"' { // not a JSON string (number, null, object, …)
+			return nil
+		}
+		var s string
+		if json.Unmarshal(e, &s) != nil {
+			return nil
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 // IsWidget reports whether the input is a WIDGET (a value entered in the node)
