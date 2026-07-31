@@ -1762,6 +1762,100 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 }
 
 /*
+ * .cm-wf-pick — the library workflow list's source picker. One list item now
+ * stands for every workflow imported from ONE CivitAI source post, and this
+ * <select> chooses which of them the item is showing (workflowSourcePicker in
+ * workflow_list_groups.go). It renders ONLY for a source with more than one
+ * workflow — a single-option dropdown is a control that cannot do anything.
+ *
+ * It is a real GET <form>, so the "Show" button is the mechanism and the select's
+ * onchange is only an enhancement. That is why .cm-wf-pick-go is styled as a
+ * visible, ordinary small button rather than hidden away: with JavaScript off it
+ * is the thing that applies the choice.
+ *
+ * The rule separates the picker from the card body above it, because it changes
+ * WHICH workflow the action row below it acts on.
+ */
+.cm-wf-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.85rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--civitai-color-border);
+}
+.cm-wf-pick-legend {
+  font-size: 0.7rem;
+  color: var(--civitai-color-text-dimmed);
+}
+.cm-wf-pick-select {
+  appearance: auto;
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 12rem;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  padding: 0.2rem 0.3rem;
+  border-radius: var(--civitai-radius-sm, 0.25rem);
+  border: 1px solid var(--civitai-color-border);
+  background: var(--civitai-color-surface-2);
+  color: var(--civitai-color-text);
+}
+.cm-wf-pick-select:focus-visible,
+.cm-wf-pick-go:focus-visible {
+  outline: 2px solid var(--civitai-color-primary);
+  outline-offset: 1px;
+}
+.cm-wf-pick-go {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  padding: 0.25rem 0.55rem;
+  border-radius: var(--civitai-radius-sm, 0.25rem);
+  border: 1px solid var(--civitai-color-border);
+  background: transparent;
+  color: var(--civitai-color-text-dimmed);
+  cursor: pointer;
+}
+.cm-wf-pick-go:hover {
+  border-color: var(--civitai-color-primary);
+  color: var(--civitai-color-text);
+}
+
+/*
+ * .cm-wf-alt-anchor — the empty #wf-<id> anchors of the workflows a collapsed
+ * item is NOT currently showing. They exist so every pre-existing deep link
+ * (/library?tab=workflows#wf-<id> from the model page, the import flash, the
+ * detail page's back link) still resolves to a real element and the browser's
+ * NATIVE fragment scroll lands on the group holding that workflow.
+ *
+ * They must occupy no space and paint nothing, but they must NOT be
+ * `display: none` — a display:none element is not a scroll target, which would
+ * defeat the entire purpose.
+ */
+.cm-wf-alt-anchor {
+  display: block;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+/*
+ * .cm-wf-src-link — "from <source> ↗" on a library workflow card: an EXTERNAL
+ * link to the source post on civitai.com. Colour comes from the `-text` half of
+ * the intent token (never the bare fill), per the split-token invariant.
+ */
+.cm-wf-src-link {
+  color: var(--civitai-color-primary-text);
+  text-decoration: none;
+}
+.cm-wf-src-link:hover,
+.cm-wf-src-link:focus-visible {
+  text-decoration: underline;
+}
+
+/*
  * .cm-wf-highlight — the "View in library" deep-link pulse. The workflows-tab
  * deep-link script (workflowDeeplinkScript) adds this class to the targeted
  * #wf-<id> item so it briefly glows an accent ring that fades over ~1.5s, then

@@ -366,6 +366,14 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 		Resolver:   s.workflowResolver(),
 		Facets:     normalizeLibraryWorkflowFacets(r.URL.Query()),
 	}
+	// Which member each source group is showing (?pick=), plus the whitelisted query
+	// its picker forms must carry forward. This is the ONLY render path that has a
+	// request in hand: the workflow-scan status swap re-renders the same list from
+	// s.workflowResolver() with no picks, so a list rebuilt mid-scan falls back to
+	// each group's first member. Accepted — the list is being rebuilt anyway — and
+	// stated here rather than left to be discovered.
+	lw.Resolver.picks = parseWorkflowPicks(r.URL.Query())
+	lw.Resolver.pickBase = libraryPickBase(r.URL.Query())
 	if wfs, werr := s.store.ListWorkflows(r.Context()); werr == nil {
 		// Classify ONCE against the curated taxonomy (the classifier memoizes the
 		// per-model cache reads), count every bucket over the WHOLE library, then
