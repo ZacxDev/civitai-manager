@@ -129,8 +129,14 @@ func diskRowNode(r diskRow) g.Node {
 	return h.Div(h.Class("cm-disk-row"),
 		head,
 		meter,
+		// "of the disk" is NOT filler. This percentage is Used/TOTAL, whereas
+		// `df`'s Use% column is Used/(Used+Available) — it excludes the root
+		// reserve from its denominator. On the machine this was verified against
+		// the two read 70% and 75% for the same filesystem, so an unqualified
+		// "70%" beside a terminal showing 75% looks like a bug. Naming the
+		// denominator makes the two reconcilable instead.
 		h.Div(h.Class("cm-disk-figures"), g.Text(fmt.Sprintf(
-			"%s free of %s · %s used (%.0f%%)",
+			"%s free of %s · %s used (%.0f%% of the disk)",
 			humanBytes(int64(r.Usage.Free)),
 			humanBytes(int64(r.Usage.Total)),
 			humanBytes(int64(r.Usage.Used)),

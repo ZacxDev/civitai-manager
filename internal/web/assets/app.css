@@ -2975,9 +2975,22 @@ a.cm-res-chip .cm-res-name {
   text-decoration: none;
   white-space: nowrap;
 }
+/*
+ * 🔴 THE HOVER TINT IS A BRAND MIX, NOT surface-2 — because ON THE LIGHT THEME
+ * surface-2, surface AND body are ALL #FEFEFE. Measured live in Brave:
+ *   light  surface #FEFEFE  surface-2 #FEFEFE  body #FEFEFE  border #CED4DA
+ *   dark   surface #1A1B1E  surface-2 #25262B  body #1A1B1E  border #373A40
+ * so the obvious `background: var(--civitai-color-surface-2)` is a completely
+ * INVISIBLE hover in light and a correct one in dark — a defect no server-side
+ * markup assertion can see, and one the dark theme hides from a casual look.
+ *
+ * 12% is not arbitrary: it is the exact tint @civitai/components' light BUTTON
+ * variant uses, so this pair is already pinned in contrast_web_test.go as
+ * "brand text in a light button" and needs no new table row.
+ */
 .cm-navmenu-item:hover,
 .cm-navmenu-item:focus-visible {
-  background: var(--civitai-color-surface-2);
+  background: color-mix(in srgb, var(--civitai-color-primary) 12%, transparent);
   color: var(--civitai-color-primary-text);
 }
 
@@ -3077,11 +3090,19 @@ a.cm-res-chip .cm-res-name {
 
 /* The meter track/fill. The FILL is the one place the base (non-`-text`) intent
  * token is correct: it is a block of colour, not a glyph. */
+/*
+ * 🔴 THE TRACK IS --civitai-color-BORDER, not surface-2, for the same measured
+ * reason as the menu hover above: on the light theme surface-2 == surface ==
+ * body == #FEFEFE, so a surface-2 track is INVISIBLE against the card and the
+ * meter degrades to a floating blue stub with no scale behind it — the reader
+ * loses the "of what" entirely. `border` is the one neutral token that differs
+ * from the card surface in BOTH themes (#CED4DA light / #373A40 dark).
+ */
 .cm-meter {
   position: relative;
   height: 0.5rem;
   border-radius: 999px;
-  background: var(--civitai-color-surface-2);
+  background: var(--civitai-color-border);
   overflow: hidden;
 }
 .cm-meter-fill {
