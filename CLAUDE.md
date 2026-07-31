@@ -139,9 +139,14 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   card (stats-as-SVG-icons, "Updated" bottom-left).
 - **`internal/store`** — SQLite via **`modernc.org/sqlite`** (pure Go, **no
   cgo**). Schema is embedded, **ordered** migrations (`migrations/*.sql`, via
-  `go:embed`, applied in filename order; **latest is `0015`** —
-  `0014_run_presets`, `0015_hf_provenance`). Subscriptions, queue, events,
+  `go:embed`, applied in filename order). Subscriptions, queue, events,
   local-files, quarantine, model-cache, settings.
+  ⚠ **This line used to name the latest migration and went stale twice** — two
+  agents in one session took their next number from a claim that was two behind,
+  which is exactly how a numbering collision ships. **Do not restate the latest
+  number here.** Read the directory instead:
+  `ls internal/store/migrations/ | tail -1`, and check any in-flight branch too,
+  since a parallel worktree may already hold the number you are about to take.
 - **`internal/civitai`** — thin wrapper over the `pkg/civitai` SDK + path helpers.
   **Data gotcha:** a model's `modelVersions[]` is ordered by the creator's `index`
   (primary/featured first), **NOT by publish date** — positional `[0]` == the primary
