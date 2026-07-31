@@ -239,14 +239,35 @@ const (
 // disclosure over the two Library tabs.
 //
 // 🔴 IT IS <details>/<summary>, NOT A JS CONTROLLER, AND THAT IS DELIBERATE.
-// The app ships htmx and a couple of tiny page scripts, nothing more. A bespoke
-// dropdown would need a click-outside handler, Escape handling, focus
+// The app ships htmx and a couple of tiny page scripts, nothing more, and a
+// bespoke dropdown would need a click-outside handler, Escape handling, focus
 // management, aria-expanded bookkeeping and a re-open guard after every htmx
-// swap. <details> gives all of that natively: it opens on click AND on
-// Enter/Space, exposes its expanded state to assistive tech, and is fully
-// operable with JavaScript disabled. It also closes itself on navigation for
-// free — every page render emits it WITHOUT the `open` attribute, so following
-// an item leaves a closed menu with no state to reset.
+// swap.
+//
+// WHAT <details> ACTUALLY GIVES, AND WHAT IT DOES NOT — the earlier version of
+// this comment claimed it provides "all of that natively", which is wrong and
+// worth stating precisely because it is the reason someone might reach for JS
+// later:
+//
+//	GIVES     opens on click AND on Enter/Space; exposes its expanded state to
+//	          assistive tech without any aria-expanded bookkeeping; fully
+//	          operable with JavaScript disabled; closes itself on navigation for
+//	          free, since every page render emits it WITHOUT `open`, so
+//	          following an item leaves a closed menu with no state to reset.
+//	DOES NOT  light-dismiss (a click anywhere else leaves it open) and Escape
+//	          (no key handling at all). Nor does it move focus into the panel.
+//
+// The missing light-dismiss is felt most BELOW 1024px, where the panel is a
+// full-width `position: fixed` sheet under the bar: the only way to dismiss it
+// without navigating is to find the summary again. Accepted for now — it is one
+// extra click on a menu with two items, in a single-user local app.
+//
+// THE DETERMINISTIC UPGRADE, IF THAT BECOMES ANNOYING, IS `popover`, NOT JS. A
+// popover attribute plus popovertarget gives light-dismiss and Escape natively
+// and keeps the no-JS property, so it is a strictly better version of the same
+// trade. It is not done here because it is a real interaction change to the app's
+// primary navigation and would need browser verification at both breakpoints,
+// which is out of scope for an audit-fix pass.
 //
 // 🔴 THE PANEL WOULD BE CLIPPED IF IT WERE A PLAIN ABSOLUTE BOX. Its parent
 // .cm-navlinks is `overflow-x: auto`, and per CSS Overflow a non-visible

@@ -13,7 +13,13 @@ import (
 // weight as the new ones being present.
 //
 // The label checks use the exact anchor text (">X<"), not a bare substring, so
-// they cannot be satisfied by a heading or an href elsewhere in the fragment.
+// they cannot be satisfied by a heading or an href elsewhere in the fragment —
+// and unlike the absence list below, which was always written that way, the
+// presence loop USED to check only `">"+label`, with no closing angle bracket.
+// That left ">Apps" satisfiable by an ">Apps discovery" heading and made the
+// comment describe a strictness the code did not have. Both ends are ">X<" now.
+// ("Library" is a <summary> whose text is followed by the caret <span>, so its
+// closing "<" is that tag rather than a </a>; the assertion holds either way.)
 func TestNavbarLabels(t *testing.T) {
 	body := renderString(t, navbar("dark", "csrf-token", fullMaturityRange(), railData{}))
 
@@ -27,7 +33,7 @@ func TestNavbarLabels(t *testing.T) {
 		{"Library", ""}, // a <summary>, not an <a> — its two items are checked below
 		{"Disks", "/disks"},
 	} {
-		if !strings.Contains(body, ">"+c.label) {
+		if !strings.Contains(body, ">"+c.label+"<") {
 			t.Errorf("nav is missing the %q entry:\n%s", c.label, body)
 		}
 		if c.href != "" && !strings.Contains(body, `href="`+c.href+`"`) {
