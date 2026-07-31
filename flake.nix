@@ -27,7 +27,7 @@
       # (the tag without its leading "v") into `main.version`; this must be the
       # same string so `--version` reads the same from a Nix build and from a
       # release tarball. Bump it in the commit that cuts the tag.
-      version = "0.1.88";
+      version = "0.1.89";
 
       # A git flake exposes `rev` when the tree is clean and `dirtyRev` when it
       # is not; a plain path (`nix build /some/dir`) exposes neither.
