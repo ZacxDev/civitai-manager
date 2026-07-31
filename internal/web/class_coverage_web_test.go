@@ -359,7 +359,12 @@ func TestShellMeasureIsInTheBuiltCSS(t *testing.T) {
 	for _, want := range []string{
 		".cm-nav {", "position: sticky", "--cm-nav-h", "scroll-padding-top",
 		".cm-rail {", ".cm-rail-scrim", ".cm-shell-rail {", ".cm-shell-rail-collapsed {",
-		`.cm-rail[data-nsfw="blur"] .cm-rail-thumb`, ".cm-cardgrid {",
+		// The rail's blur selector follows the thumbnail class. It moved from
+		// .cm-rail-thumb to the shared .cm-out-thumb when the rail and the masonry
+		// tile were unified onto one thumbnail renderer (generationThumb); a rename
+		// that missed this rule would silently disable NSFW blur on the rail, which
+		// is exactly what this assertion is here to catch.
+		`.cm-rail[data-nsfw="blur"] .cm-out-thumb`, ".cm-cardgrid {",
 	} {
 		if !strings.Contains(string(app), want) {
 			t.Errorf("app.css missing %q", want)

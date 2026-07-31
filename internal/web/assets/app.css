@@ -1994,14 +1994,35 @@ html {
 .cm-rail-item:focus-visible {
   border-color: var(--civitai-color-primary);
 }
-.cm-rail-thumb {
+/*
+ * Captured-output thumbnail (.cm-out-thumb / .cm-out-nothumb) — see
+ * generationThumb in outputs_pages.go. SHARED by the /outputs masonry tile, the
+ * per-batch page and the recent-outputs rail, so a video can never look right on
+ * one surface and broken on another.
+ *
+ * It replaces the old rail-only .cm-rail-thumb/.cm-rail-nothumb pair and the
+ * masonry tile's inline Tailwind utilities, which resolved to these exact
+ * declarations already — the two surfaces had duplicated the same styling under
+ * two spellings.
+ *
+ * The selector deliberately matches BOTH img and video: a video output renders as
+ * an inert <video preload="metadata"> that paints its own frame 0 as a poster, and
+ * it must fill the square box identically to an <img>. `object-fit: cover` applies
+ * to a video element the same way. `display: block` is needed on <video>, which is
+ * inline by default and would otherwise sit on a text baseline and leave a gap.
+ */
+.cm-out-thumb {
   position: absolute;
   inset: 0;
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  /* A video paints nothing until its first frame decodes; without this the tile
+   * flashes the page background through. */
+  background: var(--civitai-color-body);
 }
-.cm-rail-nothumb {
+.cm-out-nothumb {
   position: absolute;
   inset: 0;
   display: flex;
@@ -2009,6 +2030,15 @@ html {
   justify-content: center;
   font-size: 0.625rem;
   color: var(--civitai-color-text-dimmed);
+}
+/*
+ * The ▶ badge is sized for a full-width card tile; the rail is a narrow column
+ * where 2.25rem would swallow the thumbnail. Scale it down there only.
+ */
+.cm-rail-item .cm-video-badge {
+  width: 1.5rem;
+  height: 1.5rem;
+  font-size: 0.7rem;
 }
 /*
  * Collapsed-batch badge (.cm-rail-badge) — see railTile. A "Queue xN" batch is
@@ -2023,7 +2053,7 @@ html {
  * pair is legible over ANY thumbnail — over pure white (its worst case, alpha
  * 0.78 compositing to #444559) #f8fafc still measures ~8.5:1.
  *
- * No z-index: it follows .cm-rail-thumb in DOM order, which already paints it
+ * No z-index: it follows .cm-out-thumb in DOM order, which already paints it
  * above (both are positioned), matching how .cm-rail-cap stacks.
  */
 .cm-rail-badge {
@@ -2070,17 +2100,22 @@ html {
  * thumbnails render genuinely blurred and reveal on hover/focus. ("hide" never
  * reaches CSS - the server omits the rail markup entirely; "show" renders
  * plain.) A real filter on the pixels, matching .cm-blur.
+ *
+ * It targets .cm-out-thumb, which is BOTH the <img> and the <video> a rail tile
+ * can hold — a video output must blur exactly like an image one. The selector
+ * moved here from .cm-rail-thumb; class_coverage_web_test.go asserts this exact
+ * string so the two cannot drift apart silently.
  */
-.cm-rail[data-nsfw="blur"] .cm-rail-thumb {
+.cm-rail[data-nsfw="blur"] .cm-out-thumb {
   filter: blur(14px);
   transition: filter 120ms ease;
 }
-.cm-rail[data-nsfw="blur"] .cm-rail-item:hover .cm-rail-thumb,
-.cm-rail[data-nsfw="blur"] .cm-rail-item:focus-visible .cm-rail-thumb {
+.cm-rail[data-nsfw="blur"] .cm-rail-item:hover .cm-out-thumb,
+.cm-rail[data-nsfw="blur"] .cm-rail-item:focus-visible .cm-out-thumb {
   filter: none;
 }
 @media (prefers-reduced-motion: reduce) {
-  .cm-rail[data-nsfw="blur"] .cm-rail-thumb {
+  .cm-rail[data-nsfw="blur"] .cm-out-thumb {
     transition: none;
   }
 }

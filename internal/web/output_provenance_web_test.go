@@ -285,10 +285,12 @@ func TestGenerationDetailPageCarriesProvenance(t *testing.T) {
 	if !strings.Contains(main, "cm-res-chip") {
 		t.Errorf("the resource chips must render on the real page:\n%s", main)
 	}
-	// Below the media: the Images card comes first.
-	imgs, prov := strings.Index(main, "Images"), strings.Index(main, "Provenance")
+	// Below the media: the media card comes first. Its heading is "Outputs", not
+	// "Images" — a video-only generation contains no images at all, and the card now
+	// renders <video> as well as <img>.
+	imgs, prov := strings.Index(main, "Outputs"), strings.Index(main, "Provenance")
 	if imgs < 0 || prov < 0 || imgs > prov {
-		t.Errorf("provenance must sit BELOW the media (images=%d provenance=%d)", imgs, prov)
+		t.Errorf("provenance must sit BELOW the media (outputs=%d provenance=%d)", imgs, prov)
 	}
 }
 

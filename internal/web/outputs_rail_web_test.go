@@ -179,7 +179,7 @@ func TestRailHonorsNSFWModes(t *testing.T) {
 			t.Fatal("blur mode must still render the rail")
 		}
 		if !strings.Contains(out, `data-nsfw="blur"`) {
-			t.Error("blur mode must mark the rail so .cm-rail-thumb is blurred")
+			t.Error("blur mode must mark the rail so .cm-out-thumb is blurred")
 		}
 		if !strings.Contains(out, imgURL) {
 			t.Error("blur mode blurs the pixels but still serves the thumbnail")
