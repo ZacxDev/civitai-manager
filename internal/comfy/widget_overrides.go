@@ -21,6 +21,12 @@ type WidgetOverrideKey struct {
 // node id and the slot's INDEX in that node's widgets_values array. This is the key
 // DetectRunInputs emits (RunInput.NodeID + RunInput.WidgetIndex).
 //
+// NodeID is either a TOP-LEVEL node id ("12") or, for a node living inside a subgraph
+// definition, "<instance id>:<interior id>" ("93:12" — see subgraphKeySep). The plain
+// form is unchanged and keeps resolving exactly as it always did, which is what makes
+// every preset / generations.params row stored before subgraph reach existed keep
+// working without a migration.
+//
 // Why an index and not an input name: the value a curated node shows may live on a
 // DIFFERENT, upstream node (a widget converted to an input, driven by a primitive or a
 // custom node), and mapping that node's widgets_values slots to schema input NAMES
@@ -47,6 +53,14 @@ var integerLiteralRe = regexp.MustCompile(`^-?\d+$`)
 //     unchanged), and an array/object/bool/null slot is never touched;
 //   - the input graph is never mutated. A parse failure, a non-array widgets_values, or
 //     an empty override set returns uiGraph unchanged.
+//
+// A key of the form "<instance id>:<interior id>" targets a node inside a subgraph
+// DEFINITION (definitions.subgraphs[].nodes[]) — the only place an interior edit
+// survives, since flattening clones the definition's interior and deletes the instance
+// node. Such a key is honored ONLY for an instance subgraphRunTargets accepts (the
+// definition is instantiated exactly once, and the instance is not bypassed/muted), so
+// the write rule and DetectRunInputs' exposure rule are the same rule. A key with no
+// separator is a top-level key and behaves exactly as it always has.
 func ApplyUIWidgetOverrides(uiGraph json.RawMessage, overrides map[UIWidgetKey]string) json.RawMessage {
 	if len(overrides) == 0 {
 		return uiGraph
@@ -58,6 +72,72 @@ func ApplyUIWidgetOverrides(uiGraph json.RawMessage, overrides map[UIWidgetKey]s
 	var nodes []json.RawMessage
 	if err := json.Unmarshal(doc["nodes"], &nodes); err != nil {
 		return uiGraph
+	}
+	top, interior := splitUIWidgetOverrides(nodes, overrides)
+
+	changed := false
+	if nb, ok := rewriteNodeWidgets(nodes, top); ok {
+		doc["nodes"] = nb
+		changed = true
+	}
+	if len(interior) > 0 {
+		if db, ok := rewriteSubgraphWidgets(uiGraph, doc["definitions"], interior); ok {
+			doc["definitions"] = db
+			changed = true
+		}
+	}
+	if !changed {
+		return uiGraph
+	}
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return uiGraph
+	}
+	return out
+}
+
+// splitUIWidgetOverrides partitions an override set into the TOP-LEVEL keys and the
+// subgraph-interior ones (grouped by instance id, re-keyed to the interior node id).
+//
+// A key is interior only when it carries the separator AND names no top-level node:
+// the top-level table wins, so a (pathological) top-level id containing a ":" keeps
+// resolving to that node instead of being reinterpreted as a path.
+func splitUIWidgetOverrides(nodes []json.RawMessage, overrides map[UIWidgetKey]string) (map[UIWidgetKey]string, map[string]map[UIWidgetKey]string) {
+	topIDs := make(map[string]bool, len(nodes))
+	for _, raw := range nodes {
+		var node map[string]json.RawMessage
+		if json.Unmarshal(raw, &node) != nil {
+			continue
+		}
+		if id := idToString(node["id"]); id != "" {
+			topIDs[id] = true
+		}
+	}
+	top := make(map[UIWidgetKey]string, len(overrides))
+	var interior map[string]map[UIWidgetKey]string
+	for key, val := range overrides {
+		instID, innerID, isPath := strings.Cut(key.NodeID, subgraphKeySep)
+		if !isPath || topIDs[key.NodeID] || instID == "" || innerID == "" {
+			top[key] = val
+			continue
+		}
+		if interior == nil {
+			interior = map[string]map[UIWidgetKey]string{}
+		}
+		if interior[instID] == nil {
+			interior[instID] = map[UIWidgetKey]string{}
+		}
+		interior[instID][UIWidgetKey{NodeID: innerID, Widget: key.Widget}] = val
+	}
+	return top, interior
+}
+
+// rewriteNodeWidgets applies overrides to a nodes[] array in place (replacing the
+// rewritten entries' raw JSON) and returns the re-marshaled array. ok is false when
+// nothing changed, so the caller can leave the document untouched.
+func rewriteNodeWidgets(nodes []json.RawMessage, overrides map[UIWidgetKey]string) (json.RawMessage, bool) {
+	if len(overrides) == 0 {
+		return nil, false
 	}
 	changed := false
 	for i, raw := range nodes {
@@ -102,18 +182,98 @@ func ApplyUIWidgetOverrides(uiGraph json.RawMessage, overrides map[UIWidgetKey]s
 		changed = true
 	}
 	if !changed {
-		return uiGraph
+		return nil, false
 	}
 	nb, err := json.Marshal(nodes)
 	if err != nil {
-		return uiGraph
+		return nil, false
 	}
-	doc["nodes"] = nb
-	out, err := json.Marshal(doc)
+	return nb, true
+}
+
+// rewriteSubgraphWidgets applies the interior overrides to definitions.subgraphs[]
+// and returns the re-marshaled definitions object.
+//
+// The set of writable instances is re-derived HERE from the graph via
+// subgraphRunTargets — never taken from the caller — so the multi-instance and
+// bypassed-instance refusals hold even for a hand-built override map that never went
+// through DetectRunInputs.
+func rewriteSubgraphWidgets(uiGraph json.RawMessage, defsRaw json.RawMessage, interior map[string]map[UIWidgetKey]string) (json.RawMessage, bool) {
+	if len(defsRaw) == 0 {
+		return nil, false
+	}
+	var g uiConvGraph
+	if json.Unmarshal(uiGraph, &g) != nil {
+		return nil, false
+	}
+	// instance id → definition id, for the instances we are willing to write through.
+	writable := make(map[string]string)
+	for _, t := range subgraphRunTargets(&g) {
+		writable[t.instanceID] = t.def.ID
+	}
+
+	var defs map[string]json.RawMessage
+	if json.Unmarshal(defsRaw, &defs) != nil {
+		return nil, false
+	}
+	var subgraphs []json.RawMessage
+	if json.Unmarshal(defs["subgraphs"], &subgraphs) != nil {
+		return nil, false
+	}
+	// definition id → its index in subgraphs[], so a target resolves to raw JSON.
+	posByID := make(map[string]int, len(subgraphs))
+	parsed := make([]map[string]json.RawMessage, len(subgraphs))
+	for i, raw := range subgraphs {
+		var sg map[string]json.RawMessage
+		if json.Unmarshal(raw, &sg) != nil {
+			continue
+		}
+		parsed[i] = sg
+		var id string
+		if json.Unmarshal(sg["id"], &id) == nil && id != "" {
+			posByID[id] = i
+		}
+	}
+
+	changed := false
+	for instID, keys := range interior {
+		defID, ok := writable[instID]
+		if !ok {
+			continue // refused: multi-instance definition, bypassed instance, or unknown
+		}
+		pos, ok := posByID[defID]
+		if !ok || parsed[pos] == nil {
+			continue
+		}
+		var sgNodes []json.RawMessage
+		if json.Unmarshal(parsed[pos]["nodes"], &sgNodes) != nil {
+			continue
+		}
+		nb, ok := rewriteNodeWidgets(sgNodes, keys)
+		if !ok {
+			continue
+		}
+		parsed[pos]["nodes"] = nb
+		sb, err := json.Marshal(parsed[pos])
+		if err != nil {
+			continue
+		}
+		subgraphs[pos] = sb
+		changed = true
+	}
+	if !changed {
+		return nil, false
+	}
+	sb, err := json.Marshal(subgraphs)
 	if err != nil {
-		return uiGraph
+		return nil, false
 	}
-	return out
+	defs["subgraphs"] = sb
+	db, err := json.Marshal(defs)
+	if err != nil {
+		return nil, false
+	}
+	return db, true
 }
 
 // ApplyWidgetOverrides returns a COPY of the api-format graph with each targeted

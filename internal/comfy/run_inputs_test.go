@@ -125,10 +125,17 @@ func TestDetectRunInputsSelectChoicesFromObjectInfo(t *testing.T) {
 	}
 }
 
-// TestDetectRunInputsSkipsSubgraphInterior proves nodes living under
-// definitions.subgraphs[] (subgraph interiors) are NOT scanned — only top-level
-// nodes[] are, because interior ids are rewritten by flattening.
-func TestDetectRunInputsSkipsSubgraphInterior(t *testing.T) {
+// TestDetectRunInputsSkipsUninstantiatedSubgraph pins the remaining rule after
+// subgraph interiors became reachable: a definition that NOTHING INSTANTIATES is dead
+// weight in definitions.subgraphs[] — flattening never clones it, so it contributes no
+// node to the submitted graph and must contribute no editable field either.
+//
+// (This test previously asserted that NO interior is ever scanned. That stopped being
+// true when interiors of instantiated definitions became editable, and it kept passing
+// only because its fixture had no instance and it looked up the BARE interior id "99"
+// — which is not the id an interior input carries any more. Both halves below are now
+// checked against the scoped id as well, so neither can go vacuous the same way.)
+func TestDetectRunInputsSkipsUninstantiatedSubgraph(t *testing.T) {
 	const graph = `{
 	  "nodes": [
 	    {"id": 1, "type": "EmptyLatentImage", "widgets_values": [512, 512, 1], "inputs": []}
@@ -145,8 +152,36 @@ func TestDetectRunInputsSkipsSubgraphInterior(t *testing.T) {
 	if findRunInput(inputs, "1", "width") == nil {
 		t.Error("top-level EmptyLatentImage should be detected")
 	}
-	if findRunInput(inputs, "99", "steps") != nil {
-		t.Error("subgraph-interior KSampler must NOT be detected")
+	for _, ri := range inputs {
+		if ri.ClassType == "KSampler" {
+			t.Errorf("an UNINSTANTIATED definition's interior was exposed as %+v — "+
+				"flattening emits no clone for it, so the edit could never land", ri)
+		}
+	}
+
+	// The contrast that keeps the assertion above honest: add ONE instance of the very
+	// same definition and the interior must appear, scoped to that instance. Without
+	// this half, deleting the interior scan entirely would leave the test green.
+	const instantiated = `{
+	  "nodes": [
+	    {"id": 1, "type": "EmptyLatentImage", "widgets_values": [512, 512, 1], "inputs": []},
+	    {"id": 90, "type": "sg1", "mode": 0, "inputs": []}
+	  ],
+	  "links": [],
+	  "definitions": {"subgraphs": [
+	    {"id": "sg1", "nodes": [
+	      {"id": 99, "type": "KSampler",
+	       "widgets_values": [7, "fixed", 30, 7.5, "euler", "normal", 1.0], "inputs": []}
+	    ]}
+	  ]}
+	}`
+	got := DetectRunInputs(json.RawMessage(instantiated), nil)
+	if findRunInput(got, "90:99", "steps") == nil {
+		t.Errorf("an INSTANTIATED definition's interior must be exposed as 90:99, got %+v", got)
+	}
+	if findRunInput(got, "99", "steps") != nil {
+		t.Error("the interior must never be addressed by its bare id — that collides " +
+			"with a top-level node")
 	}
 }
 
