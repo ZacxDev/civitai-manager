@@ -329,9 +329,21 @@ func waitForProbeGoroutines(t *testing.T, want int, when string) {
 // barrier wait is short (2s): a serial implementation cannot reach the barrier
 // inside that window, because each probe waits out the previous one's watchdog.
 func TestDisksProbesAreConcurrentAndBounded(t *testing.T) {
-	// Two more directories than the cap, so the cap has something to hold back.
-	// ModelRoot + 8 library paths + the derived trash dir = 10 entries.
-	extra := make([]string, 8)
+	// ⚠ THIS TEST READS diskProbeParallelism FOR ITS EXPECTATION, SO IT CAN BE
+	// DISARMED BY MOVING THAT CONSTANT — measured, not theorised: setting it to 1
+	// made the whole test pass green, because the barrier then closed on the
+	// FIRST probe and "all of them are in flight" became "one of them is". The
+	// floor below turns that into a loud failure instead of a silent pass. It is
+	// the honest limit of a policy-shaped guard: it pins that the code honours the
+	// declared cap, not that the declared cap is a good number.
+	if diskProbeParallelism < 2 {
+		t.Fatalf("diskProbeParallelism is %d — at 1 there is no concurrency to observe and the "+
+			"barrier below would close on the first probe, so this guard would pass VACUOUSLY. "+
+			"Either restore a real cap or delete this test knowingly.", diskProbeParallelism)
+	}
+	// Two more directories than the cap, so the cap has something to hold back:
+	// ModelRoot + diskProbeParallelism library paths + the derived trash dir.
+	extra := make([]string, diskProbeParallelism)
 	for i := range extra {
 		extra[i] = t.TempDir()
 	}
