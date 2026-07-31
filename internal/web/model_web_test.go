@@ -138,8 +138,17 @@ func newModelReader(t *testing.T) fakeReader {
 	version := &civitai.ModelVersionDetail{
 		ID: 11, ModelID: 7, BaseModel: "SDXL",
 		TrainedWords: []string{"mytoken", "secondword"},
+		// TWO files, each with a real downloadUrl. The header download control only
+		// PRINTS names/sizes/types in its multi-file MENU shape — one file renders a
+		// bare "Download" button by design (headerDownloadControl) — so a one-file
+		// fixture would make every "the page lists the version's files" assertion in
+		// this package vacuous. Two files is also the realistic shape (a checkpoint
+		// plus its VAE).
 		Files: []civitai.ModelVersionFile{
-			{ID: 1, Name: "great-model.safetensors", Type: "Model", SizeKB: 2 * 1024 * 1024},
+			{ID: 1, Name: "great-model.safetensors", Type: "Model", SizeKB: 2 * 1024 * 1024,
+				DownloadURL: "https://civitai.com/api/download/models/11"},
+			{ID: 2, Name: "great-model.vae.pt", Type: "VAE", SizeKB: 300 * 1024,
+				DownloadURL: "https://civitai.com/api/download/models/11?type=VAE"},
 		},
 	}
 	// Inline showcase images with NUMERIC nsfwLevel: 1 = None/PG (safe),
