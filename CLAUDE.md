@@ -338,6 +338,11 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   Reduced-motion users never saw this bug at all — the same block sets
   `transform: none`, so no stacking context is created. That is why it survived so
   long and why it can only be caught in a real browser (v0.1.82).
+- **`preload="metadata"` does NOT bound a video fetch.** Measured: **472,055 bytes
+  transferred for a 471,755-byte clip** — the whole file, plus overhead. Deferring
+  requires rendering **`data-src`, not `src`**, and swapping it in from an
+  IntersectionObserver — what `generationThumbClass` / the lazy-video path in
+  `internal/web/outputs_pages.go` does. Do not "simplify" it back to `src`.
 - **Maturity is a PG..XXX RANGE, and out-of-range content is OMITTED SERVER-SIDE.**
   (This supersedes the old two-state `blur ⇄ show` NSFW toggle, v0.1.92. The old
   "restore a real hide vs drop the omit invariant" open decision is **CLOSED**:
@@ -530,18 +535,59 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   mutation-verification and window-bounding are complementary, and **neither alone is
   sufficient** — one catches a test that cannot fail, the other a test that fails at
   nothing.
+- 🔴 **Three procedural checks decide whether mutation-verification happened at all —
+  skipping them produced ELEVEN green guard tests that proved nothing in ONE session,
+  each vacuous for a DIFFERENT reason.**
+  - **Re-run the mutation YOURSELF.** An agent's "mutation-verified" claim is not
+    evidence: TWO agents this session reported it for tests where the mutation had
+    never been run at all.
+  - **Confirm the fixture REACHES the interesting case** — assert the intermediate
+    state, not only the outcome. Several of the eleven passed because the code path
+    under guard never executed.
+  - ⚠ **A `sed`-based mutation that MATCHES NOTHING is indistinguishable from a
+    passing test** — a mutation check that didn't mutate looks exactly like a green
+    one. Print `git diff --stat` and confirm the mutation LANDED before you believe
+    the red/green.
+
+  The eleven modes, so you can recognise your own test: calibrated **one row short**
+  of the bug (the threshold sat just outside the broken case); a **false
+  mutation-verification certificate**, claimed but never run (×2); the **fixture
+  could not reach the code path** — a 2-byte rune meant the walk-back branch never
+  ran, and with no marshal step in the fixture the asserted U+FFFD could never
+  appear; **true for an incidental reason** — a CSS assertion matched the FIRST
+  `@media` block, ~1000 lines from the rule under test; **sliced its own fixture to
+  the cap, then asserted the cap**; **shared test infrastructure carried an escape
+  hatch** — a `title=` allowance in the ux-audit helper let two agents' changes pass
+  independently (removed; `internal/web/ux_audit_web_test.go` now says do not add it
+  back); **`omitempty` hid the field on a zero value**, so the assertion could never
+  observe it; **substring matched the wrong variant** (`<option value="">` vs
+  `<option value="" selected>`); **a CSS *comment* satisfied a substring search**
+  while the property it described was absent; **one fixture name was a substring of
+  another** (`thumbFragment("x.jpeg")` matched inside `xxx.jpeg`); **15 test servers
+  silently shared one `cache=shared` in-memory DB**, so per-server isolation was
+  fictional.
 - **A REAL BROWSER IS AVAILABLE — use it for anything visual.** (This bullet used
   to claim the opposite; that claim is dead. MCP Playwright is still broken on this
   NixOS host and there is still no `chromium` on PATH, but neither of those is the
   whole story any more.)
   - **The `browser` skill drives the user's LIVE Brave** via the local
-    browser-bridge: `browser --instance <key> open <url>` → `activate` →
-    `screenshot` / `eval`. **`activate` is not optional** — a freshly `open`ed tab
-    is backgrounded and Chrome throttles it, so a heavy page may never paint and
-    you screenshot a blank. **`--instance` is required**: two profiles (`work`,
-    `personal`) are normally connected and the bridge refuses to guess. Always
-    `open` your OWN tab and `close` it when done — never drive the tab the user is
-    working in.
+    browser-bridge: `browser --instance <key> open <url>` → **`wake`** →
+    `screenshot` / `js`. A freshly `open`ed tab is backgrounded and Chrome
+    throttles it, so a heavy page may never paint and you screenshot a blank —
+    **`wake` is the fix** (it un-throttles with NO focus movement). 🔴 **`activate`
+    is NOT that fix** — it STEALS the operator's screen, and an autonomous agent
+    cannot reach it at all; reserve it for something needing the real foreground
+    (a permission prompt, a native file picker). **The skill is the authority
+    here and it moves** — read `~/.claude/skills/browser/SKILL.md` rather than
+    trusting this summary (this bullet said "`activate` is not optional" long
+    after `wake` superseded it, which is exactly the wrong instruction).
+    **`--instance` is required**: two profiles (`work`, `personal`) are normally
+    connected and the bridge refuses to guess. Always `open` your OWN tab and
+    `close` it when done — never drive the tab the user is working in.
+    ⚠ **`open` can return `reused: true` carrying a SIBLING agent's tab** (siblings
+    share a session id) — check that field, thread `--tab <id>` on every op, and
+    **confirm `location.href` before trusting a screenshot**; an agent reported
+    findings about the wrong `cm` instance this way.
   - **Brave also works as the axe harness's Chromium**:
     `AUDITLOOP_CHROMIUM=/run/current-system/sw/bin/brave make ux-audit` (the
     resolver in `e2e/uxaudit/chromium.go` honours `AUDITLOOP_CHROMIUM` /
@@ -583,6 +629,30 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   ⚠ **`eval` evaluates ONE EXPRESSION, not a script.** A multi-statement body
   returns **`null` with no error**, which reads exactly like a broken bridge and
   sends you debugging the wrong thing. Wrap it: `(function(){ … })()`.
+- **A covered popover is NOT automatically a z-index problem — and an element that
+  paints NOTHING can still win hit-testing.** v0.1.87 was reported as "the version
+  hover has a z-index issue" and was fixed with **no z-index change at all**: the
+  hit-test named a `hidden` `.cm-vgroup` panel that was still at `display: flex`,
+  because **an author `display` rule beats the UA `[hidden]` rule** — the UA sheet's
+  `[hidden] { display: none }` is 0-0-1 and loses to any author `display`. The same
+  class was fixed elsewhere this session by `.cm-version-tabs[hidden] { display:
+  none; }` in `app.css` — its 0-2-0 specificity is deliberate, chosen to beat the
+  author `display: flex`. So "I can see through it" is not evidence it isn't the
+  culprit: hit-test first, and the v0.1.82 stacking-context story is one diagnosis,
+  not the diagnosis.
+- **When raising `z-index` would cost something, fix the overlap by LAYOUT instead.**
+  v0.1.88 (card carousel): raising the card above `z-5` would have buried the
+  carousel's own scroll buttons, so the fix was `padding` **plus `scroll-padding`** on
+  the scroller. **`padding` ALONE FAILED** — under mandatory scroll-snap the gutter
+  just scrolls away (measured: `scrollLeft` settled at 44px, CTA still covered);
+  `scroll-padding` insets the snapport so it holds. Verified in the browser by
+  re-hit-testing at **4 scroll positions** (zero covered CTAs) *and* at the upper
+  bound — both scroll buttons still win at their own centres and the sticky nav still
+  wins over the card (same discipline as the `.cm-lift` invariant's ceiling; the
+  STACKING ORDER ledger in `app.css` is the budget). Its guard,
+  `TestCardCarouselKeepsAGutterForItsScrollButtons` in
+  `internal/web/imported_workflows_carousel_web_test.go`, is mutation-verified —
+  deleting `scroll-padding-left: 2.75rem` from `app.css` makes it fail.
 - **Verify htmx/interaction changes at the HTTP level** — the fast, non-intrusive
   default for a server-side effect (pair it with the browser check above for
   anything visual). What works:
@@ -620,6 +690,13 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   `.json`). A **local ComfyUI (v0.27) at `http://127.0.0.1:8188`** (the default
   `comfy_url`) live-verifies the workflow run/convert path (`/object_info`, `/prompt`,
   `/history`, `/view`).
+- 🔴 **A readiness loop that only proves "something answered" can succeed against the
+  WRONG server.** A stale instance keeps holding its port after you delete its DB, so
+  the loop goes green and every conclusion after it is about a phantom — this happened
+  **three times in a row** against one scratch instance this session, while the feature
+  under test was fine the whole time. **Check the server's IDENTITY, not a bare 200**:
+  a version string, the pid, `location.port`. The dogfood-swap sequence below is the
+  same lesson one layer down.
 - **Dogfood binary swap is a 4-step SEQUENCE, not a compound:** `pkill -9 -f
   "dogfood/cm serve"` → confirm the port is free by a `curl` returning `000` (do NOT
   trust `pgrep`, which matches its own shell) → `cp` the new binary → start. A
@@ -628,7 +705,16 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
 - **zsh loop gotchas that cause flaky verify loops:** unquoted `for x in $var` does
   NOT word-split in zsh (use `while IFS= read -r x` from a file/`<<<`, or
   `${(f)var}`); `curl` inside a loop consumes the loop's stdin — pass `</dev/null`;
-  `pgrep -f PATTERN` matches the very shell running the command.
+  🔴 **`pgrep -f PATTERN` / `pkill -f PATTERN` match the very shell running them —
+  and other agents' processes.** A `pkill -f` killed the command issuing it (exit
+  **144**), and separately an un-qualified one killed a SIBLING agent's scratch
+  server. **Resolve the PID and kill that**: `pgrep -f` → skip `$$` → confirm each
+  via `/proc/<pid>/cmdline` → `kill "$p"`.
+- **Backticks inside a `git commit -m "…"` message are EXECUTED by the shell** — a
+  merge commit lost a word to command substitution this session (it committed
+  `-  is "video/h264-mp4"`). Use single quotes or `-F <file>`. Recovery if it lands:
+  `git reset --soft` then re-commit with `-F`/`--amend`, and re-run the gate. Never
+  `reset --hard`.
 - **Converter reality (ComfyUI UI→API):** a UI-graph node input slot's `type` can be
   a **string OR an array** (COMBO/enum inputs carry their option list as the type) —
   decode it as `json.RawMessage` (v0.1.51 array-type fix). The converter also handles
