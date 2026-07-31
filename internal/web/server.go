@@ -571,7 +571,15 @@ func (s *Server) Handler() http.Handler {
 	// manager. The id is the ONLY thing the request supplies — see
 	// reveal_handlers.go for the loopback/CSRF/containment/allowlist gates.
 	mux.HandleFunc("POST /library/files/{id}/reveal", s.handleLibraryFileReveal)
-	mux.HandleFunc("GET /trash", s.handleTrash)
+	// Disks: per-filesystem capacity + the quarantine batches /trash used to show.
+	// GET, read-only (no CSRF). The CAPACITY half is loopback-gated inside the
+	// handler — it prints absolute filesystem paths — while the quarantine table
+	// stays reachable, exactly as it was at /trash. See handleDisks.
+	mux.HandleFunc("GET /disks", s.handleDisks)
+	// /trash's GET is now a 302 into /disks so old bookmarks and any stale in-app
+	// link still land somewhere sensible. The RESTORE POST is unmoved: it is the
+	// action the quarantine table's htmx buttons issue.
+	mux.HandleFunc("GET /trash", s.handleTrashRedirect)
 	mux.HandleFunc("POST /trash/{id}/restore", s.handleRestore)
 
 	mux.HandleFunc("POST /library/workflow-scan", s.handleWorkflowScan)
