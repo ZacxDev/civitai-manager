@@ -1793,7 +1793,10 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   appearance: auto;
   min-width: 0;
   max-width: 100%;
-  flex: 1 1 12rem;
+  /* Sized to the control, not to the card: `flex: 1 1` stretched it across the
+   * whole card width, which read as a text field rather than a picker. It may
+   * still SHRINK on a narrow viewport (flex-shrink 1 + min-width 0). */
+  flex: 0 1 24rem;
   font-size: 0.75rem;
   line-height: 1.2;
   padding: 0.2rem 0.3rem;

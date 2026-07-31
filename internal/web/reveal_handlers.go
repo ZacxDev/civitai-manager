@@ -418,7 +418,7 @@ func (s *Server) handleLibraryFileReveal(w http.ResponseWriter, r *http.Request)
 		s.render(w, http.StatusOK, s.revealResult(id, dir,
 			"The computer running civitai-manager has no graphical session "+
 				"(no DISPLAY or WAYLAND_DISPLAY), so no file-manager window can open there. "+
-				"The folder is:", "error"))
+				"The folder is", "error"))
 		return
 	}
 
