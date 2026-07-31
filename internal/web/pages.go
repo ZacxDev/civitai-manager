@@ -701,8 +701,16 @@ const (
 func creatorPage(username string, res *civitai.ModelSearchResult, subs map[int]*store.Subscription, csrf, theme string, mr maturityRange, rail ...railData) g.Node {
 	return page("@"+username, theme, csrf, mr, railOf(rail),
 		card(
+			// flex-wrap + gap, NOT bare justify-between: subscribeCreatorInline grew
+			// Auto-download/Notify-only radios (so notify-only is reachable at all on
+			// this path), and a justify-between row with no gap puts the widened
+			// control flush against the @username with ZERO spacing once it stops
+			// fitting. Measured: the collision width moved 414px -> 632px when the
+			// radios landed, i.e. it now bites at ordinary window sizes. The control
+			// wraps internally; the row it lives in has to wrap too, or the internal
+			// wrapping just makes the collision arrive sooner.
 			h.Div(
-				h.Class("flex items-center justify-between"),
+				h.Class("flex flex-wrap items-center justify-between gap-x-4 gap-y-2"),
 				h.H1(h.Class("text-xl font-semibold"), g.Text("@"+username)),
 				subscribeInline("creator", username, "Subscribe to creator", csrf),
 			),

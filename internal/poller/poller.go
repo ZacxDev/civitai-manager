@@ -40,10 +40,16 @@ const (
 	outcomeTransientError
 )
 
-// workflowPostSkipDetail is the one sentence every surface uses to explain the
-// workflow-post skip (the poll event, the backfill BackfillOutcome.Detail, and
-// through it the CLI line). One string so the CLI and the event log cannot drift
-// into telling the user two different things.
+// workflowPostSkipDetail is the reason clause shared by the poll EVENT and by
+// BackfillOutcome.Detail, so those two cannot drift.
+//
+// ⚠ It is deliberately NOT the whole user-facing sentence, and the CLI does not
+// use it: backfillReasonMessage's BackfillFilteredWorkflowPost arm
+// (internal/cli/commands.go) writes its own longer line, because a terminal has
+// room to name the action that DOES work ("Import workflows on the model page")
+// and the event log does not. An earlier version of this comment claimed every
+// surface shared one string — it never did, and the CLI arm never read
+// bf.Detail at all. Two deliberate wordings, not three accidental ones.
 const workflowPostSkipDetail = "workflow posts are imported, not downloaded"
 
 // Poller runs subscription polls against a civitai.Reader and records results
@@ -308,8 +314,8 @@ func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c
 		_ = p.store.AddEvent(store.Event{
 			Level: store.LevelInfo, Kind: "type_skip", SubscriptionID: &sub.ID,
 			ModelID: intPtr(c.ModelID), VersionID: intPtr(c.VersionID),
-			Message: fmt.Sprintf("Skipping %q: workflow posts are imported, not downloaded — "+
-				"use Import workflows on the model page", c.ModelName),
+			Message: fmt.Sprintf("Skipping %q: %s — use Import workflows on the model page",
+				c.ModelName, workflowPostSkipDetail),
 		})
 		res.Skipped++
 		res.backfillReason = BackfillFilteredWorkflowPost
