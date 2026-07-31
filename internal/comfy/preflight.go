@@ -145,7 +145,15 @@ func detectBadOptions(nodes map[string]apiNode, info ObjectInfo, modelRefSet map
 		for _, inName := range inNames {
 			spec, ok := inputSpec(sch, inName)
 			if !ok || !spec.IsCombo || len(spec.Choices) == 0 {
-				continue // not a combo, or a combo with non-string (uncomparable) choices
+				// Not a combo, or a combo whose options are NOT strings (InputSpec
+				// leaves Choices nil for a numeric option list like RIFE VFI's
+				// scale_factor [0.25,0.5,1.0,2.0,4.0] — see stringChoices). Numeric
+				// combos are deliberately NOT validated here: comparing a saved number
+				// against formatted option text is a false-positive generator ("1" vs
+				// "1.0"), and the repair the UI would offer is string-typed, so it
+				// could not produce a graph ComfyUI accepts anyway. Under-validating
+				// leaves ComfyUI's submit-time check as the authority.
+				continue
 			}
 			val, ok := scalarComboValue(n.Inputs[inName])
 			if !ok {

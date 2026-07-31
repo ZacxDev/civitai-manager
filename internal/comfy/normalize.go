@@ -64,7 +64,12 @@ var inertActionPickers = func() map[[2]string]bool {
 // EMITTED api graph; the stored graph is never mutated.
 func (c *converter) normalizeComboWidget(classType, inputName string, spec InputSpec, raw json.RawMessage) json.RawMessage {
 	if !spec.IsCombo || len(spec.Choices) == 0 {
-		return raw // not a combo, or non-string (uncomparable) choices
+		// Not a combo, or a combo whose options are not strings (Choices is nil for a
+		// numeric option list — see stringChoices). Leaving numeric combos alone is
+		// load-bearing here, not merely conservative: Tier 1 below emits Choices[0] as
+		// a JSON STRING, so a single-option numeric combo would be rewritten from 1.0
+		// to "1.0" and rejected by ComfyUI.
+		return raw
 	}
 	val, ok := scalarComboValue(raw)
 	if !ok {
