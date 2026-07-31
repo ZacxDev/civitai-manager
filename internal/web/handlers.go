@@ -485,6 +485,14 @@ const communityCacheTTL = time.Hour
 // self-invalidates every cached body rather than serving the old level's mix.
 const communityImagesNSFWLevel = "Mature"
 
+// communityImagesNSFWSFWLevel is the level used when nsfwSearchFlag() is false —
+// i.e. only if a real `hide` mode is ever restored (it is normalized away today,
+// so this is currently unreachable). "None" is the API's SFW-only browsing level,
+// live-probed: it returns nsfwLevel None exclusively. Sending it rather than
+// omitting the param keeps the request shape identical in both branches, and the
+// cache key still carries the level so the two can never serve each other's body.
+const communityImagesNSFWSFWLevel = "None"
+
 // handleModelCommunity backs the LAZY-loaded community feed at the bottom of the
 // model page: recent-popular civitai images that use the selected model version.
 // It is a GET fragment (no state change, no CSRF) that makes AT MOST ONE bounded
@@ -534,7 +542,19 @@ func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
 	q.Set("period", "Month")
 	q.Set("limit", "12")
 	// REQUIRED: without this the response is SFW-only (see communityImagesNSFWLevel).
-	q.Set("nsfw", communityImagesNSFWLevel)
+	//
+	// Gated on nsfwSearchFlag() like EVERY other outbound path (search, discover,
+	// related-workflows). Today that flag is always true — `hide` is normalized away
+	// — so this is the constant in practice. It exists for the open decision in
+	// CLAUDE.md to restore a real `hide`: without the gate, restoring it would keep
+	// fetching Mature, communityImageTile would then omit every NSFW tile, and the
+	// section would silently vanish WHILE a raw body full of NSFW image URLs was
+	// still written to the local DB. Fail-safe for display is not fail-safe at rest.
+	level := communityImagesNSFWLevel
+	if !s.nsfwSearchFlag() {
+		level = communityImagesNSFWSFWLevel
+	}
+	q.Set("nsfw", level)
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 

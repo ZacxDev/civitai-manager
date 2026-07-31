@@ -417,6 +417,18 @@ func TestRelatedWorkflowsSectionIsLazyAndSwappedOutOfBand(t *testing.T) {
 			"the section inside #version-region and reorder the page; fragment = %q",
 			firstN(hxBody, 1200))
 	}
+	// EXACTLY ONE. htmx lifts an oob element out of the fragment and removes it
+	// before swapping the rest, so a second copy would be swapped IN BAND into
+	// #version-region and the page would carry two — one of them inside the region
+	// that re-renders, i.e. duplicating on every subsequent version click. This is
+	// the last property the older …OutsideTheVersionRegion test used to cover
+	// (it asserted the id was ABSENT from the fragment, which was the per-MODEL
+	// contract this fix deliberately reversed), so assert the count, not absence.
+	if n := strings.Count(hxBody, `id="related-workflows"`); n != 1 {
+		t.Errorf("the swap fragment carries %d related-workflows containers, want exactly 1 — "+
+			"a second copy is swapped in band and duplicates the section; fragment = %q",
+			n, firstN(hxBody, 1200))
+	}
 	// The swap fragment is still lazy: it re-issues the hx-get, it does not embed
 	// a grid, so the version click itself costs no outbound request either.
 	if len(r.calls) != 0 {
