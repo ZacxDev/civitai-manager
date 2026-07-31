@@ -59,16 +59,31 @@ func librarySubscribeSuggestions(files []store.LocalFile, subs []store.Subscript
 	return out
 }
 
-// dashboardPage is the full dashboard: add-a-subscription (integrated civitai
-// search + library-derived suggestions + a demoted manual form), subscriptions,
-// activity feed, and queue.
+// homePageTitle is the user-facing name of "/" — both the <title> and the <h1>,
+// from one constant so the tab and the heading can never disagree.
+//
+// IT IS "Overview", NOT "Dashboard", AND THE RENAME IS THE POINT. The nav rework
+// deleted the "Dashboard" entry outright (the brand wordmark is the home link —
+// see navbar's comment), so the word survived only as a heading naming a control
+// that no longer exists. "Overview" describes what the page actually is: a
+// read-at-a-glance stack of subscriptions, activity and queue.
+//
+// The GO IDENTIFIERS stay dashboard* — handleDashboard, dashboardPage,
+// dashboard_search_web_test.go. Renaming them would be a large diff across
+// files this change has no other reason to touch, and the internal name is not
+// what the user reads.
+const homePageTitle = "Overview"
+
+// dashboardPage is the full home page ("/"): add-a-subscription (integrated
+// civitai search + library-derived suggestions + a demoted manual form),
+// subscriptions, activity feed, and queue.
 func dashboardPage(subs []store.Subscription, suggestions []suggestion, csrf, theme string, mr maturityRange, rail ...railData) g.Node {
-	return page("Dashboard", theme, csrf, mr, railOf(rail),
-		// The page's single <h1>. The dashboard is a stack of equal-weight cards with
+	return page(homePageTitle, theme, csrf, mr, railOf(rail),
+		// The page's single <h1>. The home page is a stack of equal-weight cards with
 		// no natural title card, so the heading is emitted on its own above them —
 		// otherwise the outline would start at <h2> ("Add a subscription") with no
 		// level-1 heading anywhere on the page.
-		pageTitle("Dashboard"),
+		pageTitle(homePageTitle),
 		card(
 			sectionTitle("Add a subscription"),
 			// Primary: search civitai and subscribe with one click.
