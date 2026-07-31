@@ -518,10 +518,17 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   loopback port (e.g. `:8972`) for live verification + user dogfooding — rebuild and
   restart it after each merge. Honest caveat: HTTP-level reproduction verifies the
   server response, not the actual browser DOM/JS dispatch — say so when reporting,
-  and never silently skip interaction verification. Two specifics: (a) the
+  and never silently skip interaction verification. Two specifics: (a) 🔴 the
   **download-enqueue** endpoint (`POST /models/{id}/download`) makes the worker
-  **actually download the file** — verify it against a temp DB with a
-  `--max-file-size` guard (or kill fast) so you don't pull multi-GB models; (b) on
+  **actually download the file, and `--max-file-size` DOES NOT STOP IT.** That flag
+  resolves to `MaxFileSizeBytes`, which is read only by the **poller**
+  (`cli/commands.go` `SetMaxFileSize`) and the **"Download & run"** workflow path
+  (`run_download.go`, `run_install_all.go`) — `handleModelDownload` never consults
+  it. An agent trusting this line as originally written fired a real **2 GB** fetch
+  and had to kill the server at 127 MB. So for that endpoint the ONLY protection is
+  a temp DB plus **killing fast**, or picking a version whose primary file is small.
+  Verify the flag covers the path you are about to exercise before relying on it;
+  (b) on
   model/search pages the CSRF token is embedded in the button's **`hx-vals` JSON**
   (`csrf_token&#34;:…`), not a `<input name="csrf_token">` — extract it from there
   when curl-reproducing a POST.
