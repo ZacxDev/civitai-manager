@@ -262,6 +262,10 @@ func uiPairs() []pair {
 		// The app's most-used secondary text (text-slate-400 / text-slate-500).
 		{"dimmed text on the page", "--civitai-color-text-dimmed", plain("--civitai-color-body"), wcagAANormal, nil},
 		{"dimmed text on surface-2", "--civitai-color-text-dimmed", plain("--civitai-color-surface-2"), wcagAANormal, nil},
+		// The nav bar is bg-slate-900 == --civitai-color-surface (see tailwind.config.js),
+		// and the maturity range control's "Maturity" legend + the "–" between its two
+		// ends are dimmed text sitting directly on it.
+		{"dimmed text on surface (nav maturity legend)", "--civitai-color-text-dimmed", plain("--civitai-color-surface"), wcagAANormal, nil},
 		{"dimmed text in a light button (flagToggle off)", "--civitai-color-text-dimmed-text", tint("--civitai-color-text-dimmed", 12), wcagAANormal,
 			lightDebt(4.1348, whyDimmedTint)},
 
