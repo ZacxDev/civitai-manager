@@ -358,10 +358,19 @@ func TestVersionTabsGroupingStillApplies(t *testing.T) {
 	}
 }
 
-// --- 5. The download card ----------------------------------------------------
+// --- 5. The version metadata disclosure, at its NEW home ---------------------
+//
+// The standalone download card (versionDownloadCard) is RETIRED — the download
+// action moved into the model header's action group (headerDownloadControl) and
+// the metadata disclosure moved under the header's version tab strip. These tests
+// used to render the card; they are re-pointed at modelHeaderCard rather than
+// deleted, so the same guarantees (collapsed by default, download reachable in
+// both disclosure states, honest degradation) are still pinned at the new
+// location. The header-download SHAPES are covered in
+// model_header_download_web_test.go.
 
 // downloadCardView builds a view with a selected version carrying files and
-// metadata, for the download-card tests.
+// metadata. The name is kept so the fixture stays greppable from the old card.
 func downloadCardView(files []civitai.ModelVersionFile) modelDetailView {
 	return modelDetailView{
 		Model: &civitai.ModelDetail{ID: 7, Name: "M"},
@@ -371,63 +380,71 @@ func downloadCardView(files []civitai.ModelVersionFile) modelDetailView {
 			Files:        files,
 		},
 		SelectedVersionID: 11,
-		// A full civitai ISO stamp — the card must show only its date part.
+		// A full civitai ISO stamp — the disclosure must show only its date part.
 		PublishedAt: "2026-01-15T20:50:47.173Z",
 	}
 }
 
-// TestDownloadCardCollapsedByDefault proves the reworked "Files & metadata" card:
-// the download action is the visible primary action, and the metadata is a native
-// <details> that is COLLAPSED by default.
-func TestDownloadCardCollapsedByDefault(t *testing.T) {
-	out := renderString(t, versionDownloadCard(downloadCardView([]civitai.ModelVersionFile{
+// TestVersionMetadataCollapsedByDefault proves the metadata disclosure survived
+// the download card's retirement INTACT and at its new home: it renders inside the
+// header card, still carries every fact it used to, and is still COLLAPSED by
+// default.
+func TestVersionMetadataCollapsedByDefault(t *testing.T) {
+	out := renderString(t, modelHeaderCard(downloadCardView([]civitai.ModelVersionFile{
 		{ID: 1, Name: "primary.safetensors", Type: "Model", SizeKB: 2048, DownloadURL: "https://civitai.com/f/1"},
 		{ID: 2, Name: "extra.pt", Type: "VAE", SizeKB: 512, DownloadURL: "https://civitai.com/f/2"},
-	}), "csrf"))
+	}), nil, "csrf", "https://civitai.com"))
 
 	for _, want := range []string{
-		">Download</h2>",        // the card is named for its primary job
 		`class="cm-meta-reveal`, // the disclosure
 		"<summary",              // native, keyboard-operable, no JS
 		"Version metadata",      // its label
 		"cm-meta-chevron",       // the rotating affordance
 		"mytoken",               // metadata content is present, just collapsed
 		">2026-01-15<",          // the ISO stamp is shown as its date only
+		">SDXL<",                // the base-model row
 	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("download card missing %q:\n%s", want, out)
+			t.Errorf("header card missing the moved metadata %q:\n%s", want, out)
 		}
 	}
-	// COLLAPSED: the <details> must not carry the `open` boolean attribute.
-	details := out[strings.Index(out, "<details"):]
-	if head := details[:strings.Index(details, ">")]; strings.Contains(head, "open") {
+	// COLLAPSED: the metadata <details> must not carry the `open` boolean attribute.
+	at := strings.Index(out, `class="cm-meta-reveal`)
+	if at < 0 {
+		t.Fatalf("expected the metadata disclosure in the header card:\n%s", out)
+	}
+	openTag := out[strings.LastIndex(out[:at], "<details"):]
+	if head := openTag[:strings.Index(openTag, ">")]; strings.Contains(head, " open") {
 		t.Errorf("the metadata disclosure must be collapsed by default, got %q", head)
 	}
-	// The old heading is gone.
-	if strings.Contains(out, "Files &amp; metadata") {
-		t.Errorf("the old 'Files & metadata' heading should be gone:\n%s", out)
+	// The retired card's heading must not have followed it here.
+	for _, gone := range []string{">Download</h2>", "Files &amp; metadata"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("the retired download card's heading %q is still rendered:\n%s", gone, out)
+		}
 	}
 }
 
 // TestDownloadActionSurvivesBothDisclosureStates proves the download action can
-// never be hidden by the metadata disclosure: every Download control renders
-// BEFORE the <details> opens, i.e. outside it. Whether the user has expanded the
-// metadata or not therefore cannot affect it.
+// never be hidden by the METADATA disclosure. At the new location that is a
+// stronger statement than before: the action lives in the header's action group,
+// which renders entirely BEFORE the metadata <details> — so expanding or
+// collapsing the metadata cannot affect it either way.
 func TestDownloadActionSurvivesBothDisclosureStates(t *testing.T) {
 	files := []civitai.ModelVersionFile{
 		{ID: 1, Name: "primary.safetensors", Type: "Model", SizeKB: 2048, DownloadURL: "https://civitai.com/f/1"},
 		{ID: 2, Name: "extra.pt", Type: "VAE", SizeKB: 512, DownloadURL: "https://civitai.com/f/2"},
 	}
-	out := renderString(t, versionDownloadCard(downloadCardView(files), "csrf-token"))
+	out := renderString(t, modelHeaderCard(downloadCardView(files), nil, "csrf-token", "https://civitai.com"))
 
-	detailsAt := strings.Index(out, "<details")
-	if detailsAt < 0 {
+	metaAt := strings.Index(out, `class="cm-meta-reveal`)
+	if metaAt < 0 {
 		t.Fatalf("expected a metadata disclosure:\n%s", out)
 	}
-	before, inside := out[:detailsAt], out[detailsAt:]
+	before, inside := out[:metaAt], out[metaAt:]
 
 	if n := strings.Count(before, `hx-post="/models/7/download"`); n != len(files) {
-		t.Errorf("all %d download actions must render OUTSIDE the disclosure, found %d before it:\n%s",
+		t.Errorf("all %d download actions must render OUTSIDE the metadata disclosure, found %d before it:\n%s",
 			len(files), n, before)
 	}
 	if strings.Contains(inside, "/models/7/download") {
@@ -448,28 +465,34 @@ func TestDownloadActionSurvivesBothDisclosureStates(t *testing.T) {
 			}
 		}
 	}
-	// Exactly one visually-primary (filled) action: the version's first file.
-	if n := strings.Count(before, `data-variant="filled"`); n != 1 {
-		t.Errorf("exactly one download button should be filled (the primary file), got %d", n)
+	// Exactly one visually-primary (filled) DOWNLOAD action: the version's first
+	// file. The menu's own trigger is filled too, hence the scoped count.
+	if n := strings.Count(before, `data-variant="filled"`); n != 2 {
+		t.Errorf("expected the menu trigger + exactly one filled per-file button, got %d filled controls:\n%s", n, before)
 	}
 }
 
-// TestDownloadCardDegradesWithoutVersionOrFiles proves the card never renders a
-// broken shell: no selected version → a muted line; a version with no files → the
-// "No files." note and NO empty metadata disclosure when there is nothing to show.
-func TestDownloadCardDegradesWithoutVersionOrFiles(t *testing.T) {
-	none := renderString(t, versionDownloadCard(modelDetailView{
-		Model: &civitai.ModelDetail{ID: 7, Name: "M"}}, "csrf"))
-	if !strings.Contains(none, "Select a version") {
-		t.Errorf("no selected version should degrade to a muted line:\n%s", none)
+// TestHeaderDegradesWithoutVersionOrFiles proves the header never renders a broken
+// shell where the download card used to degrade: no selected version, and a
+// version with no files, both render NO download control and NO empty metadata
+// disclosure — rather than the card's old "Select a version" / "No files." shells.
+func TestHeaderDegradesWithoutVersionOrFiles(t *testing.T) {
+	none := renderString(t, modelHeaderCard(modelDetailView{
+		Model: &civitai.ModelDetail{ID: 7, Name: "M"}}, nil, "csrf", "https://civitai.com"))
+	for _, gone := range []string{"/models/7/download", "cm-dl-menu", "<details", "Select a version"} {
+		if strings.Contains(none, gone) {
+			t.Errorf("no selected version must render no download control and no disclosure, found %q:\n%s", gone, none)
+		}
 	}
 
-	empty := renderString(t, versionDownloadCard(modelDetailView{
+	empty := renderString(t, modelHeaderCard(modelDetailView{
 		Model:   &civitai.ModelDetail{ID: 7, Name: "M"},
 		Version: &civitai.ModelVersionDetail{ID: 11, ModelID: 7},
-	}, "csrf"))
-	if !strings.Contains(empty, "No files.") {
-		t.Errorf("a version with no files should say so:\n%s", empty)
+	}, nil, "csrf", "https://civitai.com"))
+	for _, gone := range []string{"/models/7/download", "cm-dl-menu", "No files."} {
+		if strings.Contains(empty, gone) {
+			t.Errorf("a version with no files must render no download control at all, found %q:\n%s", gone, empty)
+		}
 	}
 	if strings.Contains(empty, "<details") {
 		t.Errorf("a version with no metadata must not render an empty disclosure:\n%s", empty)
@@ -651,16 +674,25 @@ func TestModelDetailEscapesHostileStrings(t *testing.T) {
 		Version: &civitai.ModelVersionDetail{
 			ID: 11, ModelID: 7, BaseModel: evil + "-base",
 			TrainedWords: []string{evil + "-word"},
+			// TWO files deliberately: the header download control only PRINTS file
+			// names in its multi-file menu shape (the single-file shape is a bare
+			// "Download" button that renders no untrusted text at all), so a one-file
+			// fixture would make the file-name escaping assertion vacuous.
 			Files: []civitai.ModelVersionFile{
 				{ID: 1, Name: evil + ".safetensors", Type: "Model", SizeKB: 1024,
 					DownloadURL: "https://civitai.com/f/1"},
+				{ID: 2, Name: evil + ".vae.pt", Type: evil + "-type", SizeKB: 512,
+					DownloadURL: "https://civitai.com/f/2"},
 			},
 		},
 	}
 	fragments := map[string]string{
-		"header":   renderString(t, modelHeaderCard(view, nil, "csrf", "https://civitai.com")),
-		"tabs":     renderString(t, modelVersionTabs(view)),
-		"download": renderString(t, versionDownloadCard(view, "csrf")),
+		"header": renderString(t, modelHeaderCard(view, nil, "csrf", "https://civitai.com")),
+		"tabs":   renderString(t, modelVersionTabs(view)),
+		// The download control (and the hostile FILE NAME it prints) now renders
+		// inside the header card; kept as its own entry so a regression names the
+		// download control rather than "header".
+		"download": renderString(t, headerDownloadControl(view, "csrf")),
 	}
 	for what, out := range fragments {
 		if strings.Contains(out, "<script>alert(") {
