@@ -436,7 +436,23 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 			// Requiring min-w-0 alongside costs one redundant class on the direct-item
 			// case and closes the hole. Do NOT relax this back to bare `truncate`.
 			truncates := strings.Contains(chunk, "truncate") && strings.Contains(chunk, "min-w-0")
-			if !strings.Contains(chunk, "break-all") && !strings.Contains(chunk, "title=") && !truncates {
+			// 🔴 `title=` is NOT an escape hatch — do not add one back.
+			//
+			// It used to be accepted here, and it was BOTH redundant and a hole. The
+			// scan above is already scoped to TEXT (`chunk[gt:]`), so an element whose
+			// long string lives only in an attribute never reaches this check at all —
+			// which is the entire case the hatch existed for. What it actually did was
+			// exempt any element that carried a `title` AND printed the long string as
+			// text, because the substring match ran over the WHOLE chunk, attributes
+			// included. A tooltip changes no layout, so those elements overflowed while
+			// reading green.
+			//
+			// Two independent agents hit this within an hour: one on the model header's
+			// download menu, one on the imported-workflows carousel. Both saw a deleted
+			// `min-w-0` go UNDETECTED, and both worked around it by relocating the
+			// tooltip to a parent. Removing the clause fixes it at the checker instead —
+			// the full suite passes without it, so nothing legitimately depended on it.
+			if !strings.Contains(chunk, "break-all") && !truncates {
 				t.Errorf("%s: an element printing an unbreakable %d-char string can neither "+
 					"break nor truncate:\n  <%s", name, len(long), chunk)
 			}
