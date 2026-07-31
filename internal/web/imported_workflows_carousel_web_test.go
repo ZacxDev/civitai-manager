@@ -89,56 +89,77 @@ func TestImportedWorkflowsCarouselRendersNothingWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestImportedWorkflowsSectionIsBounded — more workflows than the cap renders
-// EXACTLY the cap, the total stays truthful, the overflow is stated, and the
-// "see all" affordance (the library link) is present.
+// TestImportedWorkflowsSectionIsBounded — a library holding far more imported
+// workflows than the cap paints EXACTLY the cap, the sentence still reports the
+// TRUE total, the withheld remainder is disclosed, and the "see all" affordance
+// (the library link) is present.
 //
-// The cap is enforced twice and both matter: in SQL
-// (store.ListWorkflowsByModel's LIMIT, which is what the handler passes) and
-// here in the renderer. This exercises the renderer half by handing it MORE than
-// the cap, which is what a caller that forgot the limit would do.
+// It drives the REAL handler with 23 rows in the store rather than handing the
+// renderer a pre-sliced fixture. That distinction is the whole point: the
+// renderer does NOT slice — the bound is store.ListWorkflowsByModel's SQL LIMIT
+// and the cap the handler passes it — so a test that slices its own fixture to
+// the cap and then asserts the cap proves nothing. (That was this test's first
+// version, and raising the cap to 12 left the card count GREEN at 12/12.)
 //
-// MUTATION-VERIFIED: raising importedWorkflowsCap from 8 to 12 makes this fail
-// with
-//
-//	the carousel must render exactly importedWorkflowsCap(12) cards, got 10
-//
-// and slicing to the cap in the renderer instead (so the "Showing the N most
-// recent." note disappears) fails with
-//
-//	the section must disclose that it is showing a subset of 23
+// MUTATION-VERIFIED, with the handler driving it:
+//   - importedWorkflowsCap 8 → 12 fails with
+//     "the page must paint exactly 8 imported-workflow cards, got 12"
+//   - dropping the cap argument (passing 0/-1, i.e. no limit) fails the same
+//     assertion with 0 cards, since a non-positive limit yields no rows.
+//   - removing importedWorkflowsOverflowNote fails with
+//     "the section must disclose that 23 workflows exist but only 8 are shown"
 func TestImportedWorkflowsSectionIsBounded(t *testing.T) {
 	const total = 23
-	all := importedWorkflowFixtures(total)
-
-	// The handler asks the store for at most the cap. Reproduce that here rather
-	// than assuming it: the section must be correct for the slice it is given.
-	capped := all
-	if len(capped) > importedWorkflowsCap {
-		capped = capped[:importedWorkflowsCap]
+	if importedWorkflowsCap != 8 {
+		t.Fatalf("importedWorkflowsCap changed to %d — this test pins the shipped "+
+			"bound and its copy; update both deliberately", importedWorkflowsCap)
 	}
-	if len(capped) != importedWorkflowsCap {
-		t.Fatalf("fixture must exceed the cap: %d workflows vs cap %d", total, importedWorkflowsCap)
+	if total <= importedWorkflowsCap {
+		t.Fatalf("the fixture must EXCEED the cap or nothing is bounded: %d vs %d",
+			total, importedWorkflowsCap)
 	}
 
-	out := renderString(t, workflowImportDetailCard(7, "csrf", total, capped))
+	reader := newModelReader(t)
+	m := *reader.model
+	m.Type = "Workflows"
+	reader.model = &m
+	srv := newModelServer(t, reader)
 
-	if got := strings.Count(out, `class="cm-carousel-card"`); got != importedWorkflowsCap {
-		t.Errorf("the carousel must render exactly importedWorkflowsCap(%d) cards, got %d",
-			importedWorkflowsCap, got)
+	modelID := 7
+	for i := 1; i <= total; i++ {
+		if _, err := srv.store.InsertWorkflow(context.Background(), &store.Workflow{
+			Name: "bounded wf " + strconv.Itoa(i), Format: store.WorkflowFormatAPI,
+			Graph:  `{"1":{"class_type":"KSampler","inputs":{"seed":` + strconv.Itoa(i) + `}}}`,
+			Source: store.WorkflowSourceCivitai, ModelID: &modelID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out := getModelPage(t, srv, "/models/7")
+
+	if got := strings.Count(out, `class="cm-carousel-card"`); got != 8 {
+		t.Errorf("the page must paint exactly 8 imported-workflow cards, got %d", got)
 	}
 	// The count in the copy is the TRUE total, not the number of cards.
 	if !strings.Contains(out, "23 workflows from this model are in your workflow library") {
-		t.Errorf("the sentence must report the true total (%d):\n%s", total, out)
+		t.Errorf("the sentence must report the true total (%d)", total)
 	}
 	// The subset is disclosed, so 8 cards under "23 workflows" is not a bug report.
 	if !strings.Contains(out, "Showing the 8 most recent.") {
-		t.Errorf("the section must disclose that it is showing a subset of %d:\n%s", total, out)
+		t.Errorf("the section must disclose that %d workflows exist but only 8 are shown", total)
 	}
 	// "See all" — the way to the ones past the cap.
 	if !strings.Contains(out, "View in library") ||
 		!strings.Contains(out, `href="/library?tab=workflows&amp;model=7"`) {
-		t.Errorf("the see-all affordance (the library link) must be present:\n%s", out)
+		t.Error("the see-all affordance (the library link) must be present")
+	}
+	// Newest first: the last-inserted rows are the ones kept, not the first 8.
+	if !strings.Contains(out, "bounded wf 23") {
+		t.Error("the cap must keep the NEWEST workflows")
+	}
+	if strings.Contains(out, "bounded wf 1<") {
+		t.Error("the cap must drop the OLDEST workflows")
 	}
 
 	// Under the cap, nothing is withheld — so nothing claims otherwise.
