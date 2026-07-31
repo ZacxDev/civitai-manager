@@ -163,10 +163,114 @@ func TestCollapsedRailDropsTheRedundantHeadButton(t *testing.T) {
 	}
 }
 
+// cssPrelude normalizes the text between two block delimiters into the selector
+// or at-rule prelude it represents: /* comments */ removed, whitespace collapsed
+// to single spaces, trimmed.
+//
+// Stripping comments is not cosmetic. Every block in app.css is preceded by a
+// documentation comment, so the raw text before a `{` reads
+// "/* Desktop: a real right-hand column … */\n@media (min-width: 1024px)" — which
+// compares equal to nothing and made the containment check below fail on
+// perfectly correct CSS the first time it ran.
+func cssPrelude(raw string) string {
+	var b strings.Builder
+	for i := 0; i < len(raw); {
+		if strings.HasPrefix(raw[i:], "/*") {
+			end := strings.Index(raw[i+2:], "*/")
+			if end < 0 {
+				break
+			}
+			i += 2 + end + 2
+			b.WriteByte(' ')
+			continue
+		}
+		b.WriteByte(raw[i])
+		i++
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// enclosingAtRules returns the at-rule preludes (`@media …`, `@supports …`, …)
+// whose blocks CONTAIN byte offset pos, outermost first.
+//
+// 🔴 It exists because "is this rule inside that media query" cannot be answered
+// by comparing string indexes. The first version of the test below did exactly
+// that — `strings.Index(css, "@media (min-width: 1024px)")` finds the FIRST such
+// block in the file (~1000 lines before the rail CSS) and then asserts only
+// `shown > that`, which is true for essentially any position in the second half
+// of the stylesheet, INCLUDING one outside every media block. It was green
+// against the very bug it is named for.
+//
+// So this tracks BRACE DEPTH, which is the only thing that actually answers the
+// question. It skips /* comments */ and quoted strings, because both can contain
+// braces and would otherwise desynchronise the depth count.
+func enclosingAtRules(css string, pos int) []string {
+	var stack []string
+	prelStart, i := 0, 0
+	for i < len(css) && i < pos {
+		if strings.HasPrefix(css[i:], "/*") {
+			end := strings.Index(css[i+2:], "*/")
+			if end < 0 {
+				break
+			}
+			i += 2 + end + 2
+			continue
+		}
+		switch c := css[i]; c {
+		case '"', '\'':
+			i++
+			for i < len(css) && css[i] != c {
+				if css[i] == '\\' {
+					i++
+				}
+				i++
+			}
+			i++
+			continue
+		case '{':
+			stack = append(stack, cssPrelude(css[prelStart:i]))
+			i++
+			prelStart = i
+			continue
+		case '}':
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+			i++
+			prelStart = i
+			continue
+		case ';':
+			i++
+			prelStart = i
+			continue
+		}
+		i++
+	}
+	// Only at-rules are containment-relevant; a plain selector block cannot nest
+	// another rule in the CSS this project writes.
+	out := make([]string, 0, len(stack))
+	for _, s := range stack {
+		if strings.HasPrefix(s, "@") {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// railExpandDesktopSelector is the rule that DISPLAYS the collapsed-edge overlay.
+const railExpandDesktopSelector = `.cm-rail[data-collapsed="true"] .cm-rail-expand {`
+
+// desktopMediaPrelude is the ONE at-rule that rule is allowed to live in.
+const desktopMediaPrelude = "@media (min-width: 1024px)"
+
 // TestRailExpandControlIsDesktopOnly guards the mobile drawer against the
 // overlay, against the REAL shipped CSS rather than a copy of it. Below 1024px
 // the rail is an off-canvas drawer where data-collapsed carries no meaning; a
 // displayed full-height overlay there would cover the drawer's tiles.
+//
+// It asserts CONTAINMENT by brace depth (see enclosingAtRules), so it goes red
+// for BOTH ways the rule can escape: moved outside every media block, or moved
+// into a DIFFERENT one.
 func TestRailExpandControlIsDesktopOnly(t *testing.T) {
 	b, err := assetsFS.ReadFile("assets/app.css")
 	if err != nil {
@@ -174,24 +278,91 @@ func TestRailExpandControlIsDesktopOnly(t *testing.T) {
 	}
 	css := string(b)
 
+	// The mobile-first DEFAULT: display:none, and NOT inside any at-rule (a
+	// media-scoped default would leave the overlay displayed everywhere else).
 	base := strings.Index(css, ".cm-rail-expand {")
 	if base < 0 {
 		t.Fatal("app.css has no base .cm-rail-expand rule")
 	}
-	if !strings.Contains(css[base:base+64], "display: none") {
-		t.Errorf("the base .cm-rail-expand rule must be display:none (mobile drawer); got %q", css[base:base+64])
+	end := base + 64
+	if end > len(css) {
+		end = len(css)
+	}
+	if !strings.Contains(css[base:end], "display: none") {
+		t.Errorf("the base .cm-rail-expand rule must be display:none (mobile drawer); got %q", css[base:end])
+	}
+	if at := enclosingAtRules(css, base); len(at) != 0 {
+		t.Errorf("the BASE .cm-rail-expand rule is inside %v — the display:none default must be "+
+			"unconditional, or the overlay is displayed wherever that at-rule does not apply", at)
 	}
 
-	desktop := strings.Index(css, "@media (min-width: 1024px)")
-	if desktop < 0 {
-		t.Fatal("app.css has no 1024px desktop block")
-	}
-	shown := strings.Index(css, `.cm-rail[data-collapsed="true"] .cm-rail-expand {`)
+	// The rule that DISPLAYS it must be inside the rail's own desktop media block.
+	shown := strings.Index(css, railExpandDesktopSelector)
 	if shown < 0 {
 		t.Fatal("app.css never displays .cm-rail-expand in the collapsed desktop state")
 	}
-	if shown < desktop {
-		t.Error("the .cm-rail-expand display rule is OUTSIDE the desktop media block — it " +
-			"would overlay the mobile drawer's tiles")
+	at := enclosingAtRules(css, shown)
+	if len(at) == 0 {
+		t.Fatalf("the .cm-rail-expand display rule is OUTSIDE every at-rule — below 1024px the "+
+			"rail is an off-canvas DRAWER, so a displayed full-height overlay would cover its "+
+			"tiles and swallow their clicks. It must live inside %q.", desktopMediaPrelude)
+	}
+	if len(at) != 1 || at[0] != desktopMediaPrelude {
+		t.Fatalf("the .cm-rail-expand display rule is enclosed by %v, want exactly [%q] — a "+
+			"different media block does not restrict it to the desktop rail", at, desktopMediaPrelude)
+	}
+}
+
+// TestEnclosingAtRulesActuallyTracksBraces proves the GUARD'S OWN MACHINERY can
+// tell the three cases apart, on a fixture where the answer is known by
+// construction.
+//
+// Without this, a bug in enclosingAtRules (say, always returning the first
+// at-rule in the file) would make the test above green for the wrong reason —
+// which is exactly the failure mode that made its predecessor vacuous.
+func TestEnclosingAtRulesActuallyTracksBraces(t *testing.T) {
+	const fixture = `
+@media (min-width: 1024px) {
+  .early { color: red; }
+}
+/* a comment with braces { } and a "quote */
+.outside { content: "}"; }
+@media (prefers-reduced-motion: reduce) {
+  .wrong-block { display: flex; }
+}
+@media (min-width: 1024px) {
+  @supports (display: grid) {
+    .nested { display: grid; }
+  }
+  .right-block { display: flex; }
+}
+`
+	cases := []struct {
+		needle string
+		want   []string
+	}{
+		{".early {", []string{"@media (min-width: 1024px)"}},
+		// After the first block CLOSES — the depth must have come back down.
+		{".outside {", nil},
+		{".wrong-block {", []string{"@media (prefers-reduced-motion: reduce)"}},
+		{".right-block {", []string{"@media (min-width: 1024px)"}},
+		{".nested {", []string{"@media (min-width: 1024px)", "@supports (display: grid)"}},
+	}
+	for _, c := range cases {
+		pos := strings.Index(fixture, c.needle)
+		if pos < 0 {
+			t.Fatalf("fixture is missing %q", c.needle)
+		}
+		got := enclosingAtRules(fixture, pos)
+		if len(got) != len(c.want) {
+			t.Errorf("%s: enclosed by %v, want %v", c.needle, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("%s: enclosed by %v, want %v", c.needle, got, c.want)
+				break
+			}
+		}
 	}
 }
