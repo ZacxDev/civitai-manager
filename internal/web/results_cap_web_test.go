@@ -61,7 +61,9 @@ func makeCandidates(n int) []store.LocalFile {
 // cards render and the truncation note carries the TRUE total; the heading counts M.
 func TestMatchedModelsSectionCaps(t *testing.T) {
 	total := maxRenderedMatchedCards + 50
-	out := renderString(t, matchedModelsSection(makeMatchedGroups(total), nil))
+	// Rendered through the whole card, because the TRUE total now lives in the TAB
+	// LABEL rather than a section heading (see matchedFilesCard).
+	out := renderString(t, matchedFilesCard(makeMatchedGroups(total), nil, nil))
 
 	// One `id="model-card-` per rendered card.
 	if got := strings.Count(out, `id="model-card-`); got != maxRenderedMatchedCards {
@@ -72,9 +74,9 @@ func TestMatchedModelsSectionCaps(t *testing.T) {
 	if !strings.Contains(out, wantNote) {
 		t.Errorf("missing truncation note %q", wantNote)
 	}
-	// The heading must show the TRUE total M, not the capped N.
+	// The TAB LABEL must show the TRUE total M, not the capped N.
 	if !strings.Contains(out, fmt.Sprintf("Matched models (%d)", total)) {
-		t.Errorf("heading should show true total %d", total)
+		t.Errorf("tab label should show true total %d", total)
 	}
 	// The capped-away card (e.g. the last model id) must NOT be rendered.
 	if strings.Contains(out, fmt.Sprintf(`id="model-card-%d"`, total)) {
@@ -100,7 +102,7 @@ func TestMatchedModelsSectionNoCapWhenUnderLimit(t *testing.T) {
 // and the section heading still shows the true total M.
 func TestOtherFilesSectionCaps(t *testing.T) {
 	total := 1200 // > cap and large enough to exercise the thousands separator
-	out := renderString(t, otherFilesSection(makeUnmatchedFiles(total)))
+	out := renderString(t, matchedFilesCard(nil, makeUnmatchedFiles(total), nil))
 
 	// One row Tr class per rendered unmatched row.
 	if got := strings.Count(out, `border-b border-slate-800/60`); got != maxRenderedUnmatchedRows {
@@ -112,9 +114,9 @@ func TestOtherFilesSectionCaps(t *testing.T) {
 	if !strings.Contains(out, wantNote) {
 		t.Errorf("missing truncation note %q", wantNote)
 	}
-	// The heading keeps the TRUE total M.
-	if !strings.Contains(out, fmt.Sprintf("Other files (%d unmatched)", total)) {
-		t.Errorf("heading should show true total %d unmatched", total)
+	// The TAB LABEL keeps the TRUE total M.
+	if !strings.Contains(out, fmt.Sprintf("Unmatched (%d)", total)) {
+		t.Errorf("tab label should show true total %d unmatched", total)
 	}
 	// The capped-away files must not appear as rendered rows.
 	if strings.Contains(out, "/lib/u1199.bin") {
