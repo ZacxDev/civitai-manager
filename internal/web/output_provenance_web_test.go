@@ -2,10 +2,13 @@ package web
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
 	"github.com/ZacxDev/civitai-manager/internal/store"
@@ -28,7 +31,10 @@ const capturedProvenanceParams = `{
      "input_name":"text","text":"blurry, watermark, extra fingers"}
   ],
   "resources": ["seg-a/waiNSFWIllustrious_v140.safetensors",
-                "Add_Details_v1.2-illustrious.safetensors"],
+                "Add_Details_v1.2-illustrious.safetensors",
+                "BYPASSED_PIPELINE.safetensors"],
+  "resources_used": ["seg-a/waiNSFWIllustrious_v140.safetensors",
+                     "Add_Details_v1.2-illustrious.safetensors"],
   "base_model": "Illustrious"
 }`
 
@@ -70,6 +76,15 @@ func TestOutputProvenanceRendersPromptResourcesAndWorkflowLink(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Errorf("resource %q missing:\n%s", want, html)
 		}
+	}
+	// The fixture's `resources` (the workflow's full reference list) additionally
+	// carries a bypassed pipeline's checkpoint. The card renders `resources_used`, so
+	// it must NOT appear under a heading asserting it ran.
+	if strings.Contains(html, "BYPASSED_PIPELINE.safetensors") {
+		t.Errorf("a model the run did not load must not be claimed as used:\n%s", html)
+	}
+	if !strings.Contains(html, resourcesUsedHeading) {
+		t.Errorf("a captured resource list earns the strong heading:\n%s", html)
 	}
 	// The source workflow, as a LINK.
 	if !strings.Contains(html, `href="/workflows/7"`) {
@@ -196,7 +211,8 @@ func TestOutputProvenanceNoPromptInputIsItsOwnMessage(t *testing.T) {
 func TestOutputProvenanceResourcesFollowSubstitutions(t *testing.T) {
 	wfID := int64(7)
 	gen := &store.Generation{ID: 5, WorkflowID: &wfID, WorkflowName: "wf",
-		Params: `{"prompts_captured":true,"resources":["missing.safetensors","kept.safetensors"],` +
+		Params: `{"prompts_captured":true,` +
+			`"resources_used":["missing.safetensors","kept.safetensors"],` +
 			`"substitute":{"missing.safetensors":"installed.safetensors"}}`}
 	html := renderString(t, generationProvenanceCard(gen, workflowResolver{}))
 
@@ -206,9 +222,11 @@ func TestOutputProvenanceResourcesFollowSubstitutions(t *testing.T) {
 	if !strings.Contains(html, "kept.safetensors") {
 		t.Errorf("an unsubstituted resource must still render:\n%s", html)
 	}
-	if strings.Contains(html, `class="cm-res-chip"`) &&
-		strings.Contains(html[strings.Index(html, "Resources used"):], "missing.safetensors") {
+	if strings.Contains(html, "missing.safetensors") {
 		t.Errorf("the pre-substitution filename must not be presented as what ran:\n%s", html)
+	}
+	if !strings.Contains(html, resourcesUsedHeading) {
+		t.Errorf("a captured resource list earns the strong heading:\n%s", html)
 	}
 	if !strings.Contains(html, "substituted for this run") {
 		t.Errorf("the substitution must be disclosed, not silently applied:\n%s", html)
@@ -283,16 +301,24 @@ func TestGenerationDetailPageCarriesProvenance(t *testing.T) {
 // purple groups), where EACH pipeline holds its OWN prompt.
 //
 // The asymmetry is the whole point, and it mirrors queueModeSeedGraph: pipeline A's
-// encoder ships ACTIVE and pipeline B's ships BYPASSED, so the RAW graph and the
+// nodes ship ACTIVE and pipeline B's ship BYPASSED, so the RAW graph and the
 // MODE-APPLIED graph expose DIFFERENT prompts. DetectRunInputs never surfaces a
 // bypassed node, so reading wf.Graph records the barn while the run made the whale.
+//
+// Each pipeline also carries its OWN checkpoint loader, so the SAME fixture proves
+// the resource half: comfy.ExtractResourcesAny (no mode check) returns BOTH
+// filenames, while the provenance capture must return only the selected one's.
 const provenanceModePromptGraph = `{"nodes":[
   {"id":1,"type":"Fast Groups Bypasser (rgthree)","mode":0,"pos":[-800,-800],"size":[200,80],
    "title":"Workflows","properties":{"matchColors":"purple","matchTitle":"","toggleRestriction":"max one"}},
   {"id":10,"type":"CLIPTextEncode","mode":0,"pos":[50,80],"size":[200,100],
    "title":"A-POSITIVE","widgets_values":["a red barn at dawn"]},
   {"id":20,"type":"CLIPTextEncode","mode":4,"pos":[650,80],"size":[200,100],
-   "title":"B-POSITIVE","widgets_values":["a blue whale underwater"]}],
+   "title":"B-POSITIVE","widgets_values":["a blue whale underwater"]},
+  {"id":11,"type":"CheckpointLoaderSimple","mode":0,"pos":[50,250],"size":[200,100],
+   "widgets_values":["PIPELINE_A_ONLY.safetensors"]},
+  {"id":21,"type":"CheckpointLoaderSimple","mode":4,"pos":[650,250],"size":[200,100],
+   "widgets_values":["PIPELINE_B_ONLY.safetensors"]}],
  "links":[],
  "groups":[
   {"title":"MODE-A","bounding":[0,0,500,400],"color":"#a1309b"},
@@ -322,7 +348,7 @@ func TestCapturedPromptComesFromTheModeAppliedGraph(t *testing.T) {
 		modeKeySelector(t, provenanceModePromptGraph): modeB,
 	}}
 
-	got := capturePrompts(wf, opts)
+	got := capturePrompts(runSubmittedGraph(wf, opts))
 	if len(got) != 1 {
 		t.Fatalf("captured %d prompts, want exactly the selected pipeline's one: %+v", len(got), got)
 	}
@@ -332,6 +358,85 @@ func TestCapturedPromptComesFromTheModeAppliedGraph(t *testing.T) {
 	}
 	if got[0].NodeID != "20" {
 		t.Errorf("captured node %q, want the selected pipeline's node 20", got[0].NodeID)
+	}
+}
+
+// TestCapturedResourcesExcludeBypassedPipelines is audit finding F1: the resource
+// half of provenance must follow the mode exactly like the prompt half.
+//
+// wf.Resources is comfy.ExtractResourcesAny over the STORED graph with NO mode check,
+// so on a template it names every pipeline's models. Rendering that under "Resources
+// used" asserts a checkpoint ran that demonstrably did not — the same false claim this
+// branch closed for prompts, three lines away in the same function.
+func TestCapturedResourcesExcludeBypassedPipelines(t *testing.T) {
+	wf := &store.Workflow{ID: 1, Format: store.WorkflowFormatUI, Graph: provenanceModePromptGraph}
+
+	// Sanity-pin the asymmetry: the UNFILTERED extractor sees BOTH pipelines. Without
+	// this, an extractor change that stopped returning the bypassed file would make the
+	// guard below pass for the wrong reason.
+	all, err := comfy.ExtractResourcesAny(store.WorkflowFormatUI, []byte(provenanceModePromptGraph))
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("the workflow's reference list should name BOTH pipelines' checkpoints, got %v", all)
+	}
+
+	_, byTitle := modeKeys(t, provenanceModePromptGraph)
+	opts := runOptions{ModeSelection: map[string]string{
+		modeKeySelector(t, provenanceModePromptGraph): byTitle["MODE-B"],
+	}}
+
+	got := captureActiveResources(wf, runSubmittedGraph(wf, opts))
+	if len(got) != 1 || got[0] != "PIPELINE_B_ONLY.safetensors" {
+		t.Errorf("captured %v — provenance must record ONLY the selected pipeline's "+
+			"models; naming a bypassed pipeline's checkpoint claims a model ran that "+
+			"did not", got)
+	}
+
+	// And end-to-end through the snapshot the store actually persists.
+	round := parseRunParams(marshalRunParams(buildRunParamsSnapshot(wf, opts)))
+	if len(round.ResourcesUsed) != 1 || round.ResourcesUsed[0] != "PIPELINE_B_ONLY.safetensors" {
+		t.Errorf("resources_used = %v after marshal → parse, want only the selected "+
+			"pipeline's checkpoint", round.ResourcesUsed)
+	}
+	// The workflow's full reference list is still snapshotted separately — the params
+	// card below the provenance card shows it, honestly labeled.
+	if len(round.Resources) != 0 {
+		t.Logf("resources (reference list) = %v", round.Resources)
+	}
+}
+
+// TestOutputProvenanceFallsBackToTheReferenceHeading pins the degradation path for a
+// row with no captured resource list (every pre-change row): it may still show the
+// workflow's reference list, but ONLY under a heading that claims reference rather
+// than use, plus the sentence saying the list can include bypassed pipelines.
+func TestOutputProvenanceFallsBackToTheReferenceHeading(t *testing.T) {
+	wfID := int64(7)
+	gen := &store.Generation{ID: 5, WorkflowID: &wfID, WorkflowName: "wf",
+		Params: preChangeParams} // no resources_used at all
+
+	html := renderString(t, generationProvenanceCard(gen, workflowResolver{}))
+	if !strings.Contains(html, resourcesReferencedHeading) {
+		t.Errorf("an uncaptured resource list must use the weaker heading:\n%s", html)
+	}
+	if strings.Contains(html, resourcesUsedHeading) {
+		t.Errorf("a row that did not record what it loaded must not claim USE:\n%s", html)
+	}
+	if !strings.Contains(html, resourcesReferencedNote) {
+		t.Errorf("the fallback must say the list can include models that did not run:\n%s", html)
+	}
+	if !strings.Contains(html, "oldCheckpoint.safetensors") {
+		t.Errorf("the reference list is still worth showing:\n%s", html)
+	}
+
+	// The strong heading is reachable — otherwise this test proves nothing about the
+	// distinction, only that one string is absent.
+	captured := &store.Generation{ID: 6, WorkflowID: &wfID, WorkflowName: "wf",
+		Params: `{"prompts_captured":true,"resources_used":["ran.safetensors"]}`}
+	strong := renderString(t, generationProvenanceCard(captured, workflowResolver{}))
+	if !strings.Contains(strong, resourcesUsedHeading) || strings.Contains(strong, resourcesReferencedHeading) {
+		t.Errorf("a captured list must use the strong heading and only that one:\n%s", strong)
 	}
 }
 
@@ -349,7 +454,7 @@ func TestCapturedPromptAppliesRunOverrides(t *testing.T) {
 			{NodeID: "20", Widget: 0}: "an octopus playing chess",
 		},
 	}
-	got := capturePrompts(wf, opts)
+	got := capturePrompts(runSubmittedGraph(wf, opts))
 	if len(got) != 1 || got[0].Text != "an octopus playing chess" {
 		t.Errorf("captured %+v — the per-run prompt edit was not applied before capture", got)
 	}
@@ -366,7 +471,7 @@ func TestCapturedPromptsKeepPositiveAndNegativeApart(t *testing.T) {
 	 "links":[]}`
 	wf := &store.Workflow{ID: 1, Format: store.WorkflowFormatUI, Graph: graph}
 
-	got := capturePrompts(wf, runOptions{})
+	got := capturePrompts(runSubmittedGraph(wf, runOptions{}))
 	if len(got) != 2 {
 		t.Fatalf("captured %d prompts, want 2: %+v", len(got), got)
 	}
@@ -401,29 +506,110 @@ func TestBuildRunParamsSnapshotMarksCaptureEvenWithNoPrompts(t *testing.T) {
 	}
 }
 
-// TestCapturedPromptIsBounded pins the ceiling on what one capture writes into the
-// params blob, and that a clipped prompt says so in the stored text rather than
-// silently presenting a fragment as the whole prompt.
-func TestCapturedPromptIsBounded(t *testing.T) {
-	long := strings.Repeat("é", maxCapturedPromptBytes) // 2 bytes per rune
-	wf := &store.Workflow{ID: 1, Format: store.WorkflowFormatUI,
+// promptTextGraph wraps one prompt string in a minimal single-encoder UI graph.
+func promptTextGraph(t *testing.T, text string) *store.Workflow {
+	t.Helper()
+	quoted, err := json.Marshal(text)
+	if err != nil {
+		t.Fatalf("marshal fixture text: %v", err)
+	}
+	return &store.Workflow{ID: 1, Format: store.WorkflowFormatUI,
 		Graph: `{"nodes":[{"id":10,"type":"CLIPTextEncode","mode":0,"pos":[0,0],"size":[9,9],` +
-			`"widgets_values":["` + long + `"]}],"links":[]}`}
+			`"widgets_values":[` + string(quoted) + `]}],"links":[]}`}
+}
 
-	got := capturePrompts(wf, runOptions{})
+// TestCapturedPromptIsBounded pins the BYTE ceiling on what one capture writes into
+// the params blob, and that a clipped prompt says so in the stored text rather than
+// silently presenting a fragment as the whole prompt.
+//
+// The fixture size is a LITERAL, deliberately not derived from maxCapturedPromptBytes:
+// sizing it by the constant under test made the old version self-referential — raising
+// the cap to 1 GiB also passed, because the input grew with it.
+func TestCapturedPromptIsBounded(t *testing.T) {
+	const fixtureBytes = 32768 // fixed; must stay comfortably above any sane cap
+	if maxCapturedPromptBytes >= fixtureBytes {
+		t.Fatalf("the cap (%d) has grown past this test's fixed %d-byte fixture — the "+
+			"test can no longer prove clipping; raise the fixture deliberately",
+			maxCapturedPromptBytes, fixtureBytes)
+	}
+	got := capturePrompts(runSubmittedGraph(
+		promptTextGraph(t, strings.Repeat("a", fixtureBytes)), runOptions{}))
 	if len(got) != 1 {
 		t.Fatalf("captured %d prompts, want 1", len(got))
 	}
 	if len(got[0].Text) > maxCapturedPromptBytes+len(promptTruncatedMarker) {
-		t.Errorf("captured prompt is %d bytes, past the %d cap", len(got[0].Text), maxCapturedPromptBytes)
+		t.Errorf("captured prompt is %d bytes, past the %d cap",
+			len(got[0].Text), maxCapturedPromptBytes)
 	}
 	if !strings.Contains(got[0].Text, "truncated") {
-		t.Errorf("a clipped prompt must say it was clipped: %q", got[0].Text)
+		t.Errorf("a clipped prompt must say it was clipped (%d bytes in, %d out)",
+			fixtureBytes, len(got[0].Text))
 	}
-	// The clip must land on a rune boundary — a split multi-byte rune would be
-	// re-encoded as U+FFFD by encoding/json, corrupting the tail of the record.
-	if strings.ContainsRune(got[0].Text, '\uFFFD') {
-		t.Errorf("the clip split a rune: %q", got[0].Text)
+}
+
+// TestCapturedPromptCountIsBounded pins the OTHER cap (maxCapturedPrompts). It was
+// previously unguarded: deleting the break in capturePrompts left every test green.
+//
+// The encoder count is a literal for the same reason the byte fixture is.
+func TestCapturedPromptCountIsBounded(t *testing.T) {
+	const encoders = 26 // fixed; must stay above maxCapturedPrompts
+	if maxCapturedPrompts >= encoders {
+		t.Fatalf("the prompt cap (%d) has reached this test's fixed %d-encoder fixture "+
+			"— it can no longer prove clamping; raise the fixture deliberately",
+			maxCapturedPrompts, encoders)
+	}
+	var nodes []string
+	for i := 0; i < encoders; i++ {
+		nodes = append(nodes, fmt.Sprintf(
+			`{"id":%d,"type":"CLIPTextEncode","mode":0,"pos":[0,%d],"size":[9,9],`+
+				`"widgets_values":["prompt %d"]}`, 100+i, i*20, i))
+	}
+	wf := &store.Workflow{ID: 1, Format: store.WorkflowFormatUI,
+		Graph: `{"nodes":[` + strings.Join(nodes, ",") + `],"links":[]}`}
+
+	got := capturePrompts(runSubmittedGraph(wf, runOptions{}))
+	if len(got) != maxCapturedPrompts {
+		t.Errorf("captured %d prompts from %d encoders; the cap of %d was not applied",
+			len(got), encoders, maxCapturedPrompts)
+	}
+}
+
+// TestCapturedPromptClipLandsOnARuneBoundary is the F2 rewrite. The previous version
+// COULD NOT FAIL, for two independent reasons:
+//
+//  1. its fixture was 2-byte runes, so byte index maxCapturedPromptBytes (an even
+//     number) was ALREADY a rune start and the walk-back loop never executed;
+//  2. it checked for U+FFFD on the in-memory string, but U+FFFD only appears AFTER a
+//     JSON round trip — and the test never marshalled.
+//
+// Both are fixed here: a 3-byte rune whose repetition guarantees the cut lands
+// mid-rune, and the assertion made on the value that survives marshalRunParams →
+// parseRunParams, which is what the store actually persists.
+func TestCapturedPromptClipLandsOnARuneBoundary(t *testing.T) {
+	// \u754c is 3 bytes. The cut lands INSIDE a rune only when the cap is not a
+	// multiple of 3 — assert that rather than assume it, so a future cap change cannot
+	// quietly defang this test the way the old 2-byte fixture did.
+	const r = "\u754c"
+	if maxCapturedPromptBytes%len(r) == 0 {
+		t.Fatalf("the cap (%d) is now a multiple of %d, so a byte-exact cut would land ON "+
+			"a rune boundary and this test would prove nothing — repoint the fixture",
+			maxCapturedPromptBytes, len(r))
+	}
+	wf := promptTextGraph(t, strings.Repeat(r, maxCapturedPromptBytes)) // far over the cap
+
+	// Through the REAL persistence path: encoding/json is what turns a split rune into
+	// U+FFFD, so an in-memory check can never see the corruption.
+	round := parseRunParams(marshalRunParams(buildRunParamsSnapshot(wf, runOptions{})))
+	if len(round.Prompts) != 1 {
+		t.Fatalf("round-tripped %d prompts, want 1", len(round.Prompts))
+	}
+	text := round.Prompts[0].Text
+	if !utf8.ValidString(text) {
+		t.Errorf("the persisted prompt is not valid UTF-8 — the clip split a rune")
+	}
+	if strings.ContainsRune(text, utf8.RuneError) {
+		t.Errorf("the persisted prompt carries U+FFFD — encoding/json replaced a rune "+
+			"the clip had split (tail: %q)", text[max(0, len(text)-48):])
 	}
 }
 
@@ -468,7 +654,7 @@ func TestWorkflowOutputsStripRendersTilesAndViewAll(t *testing.T) {
 }
 
 // TestWorkflowDetailStripQueryIsBounded pins the discipline
-// store.ListRecentGenerations documents: a strip rendered on every workflow view
+// store.ListGenerations' bounded callers document: a strip rendered on every workflow view
 // must read a small FIXED number of rows, never the whole gallery.
 //
 // It is asserted through the rendered page — the observable consequence — with more
