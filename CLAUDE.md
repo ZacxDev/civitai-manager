@@ -2,7 +2,12 @@
 
 Conventions for working ON this repo. End-user docs live in `README.md`; this
 file is for contributors and agents. Module: `github.com/ZacxDev/civitai-manager`
-(Go 1.25). Current release line: v0.1.x (latest **v0.1.82**).
+(Go 1.25). Release line: v0.1.x.
+
+⚠ **This line used to name the latest release and went 14 versions stale** — the
+same failure as the migration number below. Do not restate it here; read it:
+`git describe --tags --abbrev=0`, and `flake.nix`'s `version` for what the next
+build will report.
 
 ## The `civitai/cli` dependency — GOPRIVATE is NO LONGER required
 
