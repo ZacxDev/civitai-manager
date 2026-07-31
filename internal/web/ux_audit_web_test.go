@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
+	"github.com/ZacxDev/civitai-manager/internal/diskusage"
 	"github.com/ZacxDev/civitai-manager/internal/library"
 	"github.com/ZacxDev/civitai-manager/internal/store"
 	g "maragu.dev/gomponents"
@@ -81,6 +82,55 @@ func fullPages(t *testing.T) map[string]string {
 			Sort: "Most Downloaded", Period: "Month",
 		}, "dark")),
 		"discover-apps": renderString(t, appsDiscoverPage(nil, "dark", fullMaturityRange(), "", "", "", "csrf")),
+
+		// /disks in ALL THREE of its shapes. It was missing from this inventory
+		// entirely while `trash` — the page it replaced, now reachable only through
+		// a 302 — was the one being audited, so the live surface had no
+		// heading-outline coverage at all.
+		//
+		// Three entries rather than one because the page's BODY is a branch, not a
+		// variation: gated renders an <alert> instead of the capacity card, the
+		// unconfigured case renders an emptyState, and only the populated case
+		// renders the rows. A single fixture would leave two of the three
+		// unaudited, which is how the gap arose in the first place.
+		"disks": renderString(t, disksPage(
+			[]diskRow{
+				{Label: "Model root", Path: "/m", Usage: diskusage.Usage{Total: 1000, Free: 250, Used: 750}},
+				{Label: "Library path", Path: "/l", Err: "boom"},
+			},
+			[]batchView{{Batch: store.QuarantineBatch{ID: 1, Reason: store.CandidateDuplicate}, Files: 2}},
+			false, "csrf", "dark", fullMaturityRange())),
+		"disks-gated": renderString(t, disksPage(nil, nil, true, "csrf", "dark", fullMaturityRange())),
+		"disks-empty": renderString(t, disksPage(nil, nil, false, "csrf", "dark", fullMaturityRange())),
+	}
+}
+
+// TestDisksFixturesReachTheirBranches keeps the three /disks entries in
+// fullPages HONEST. Each is meant to exercise a DIFFERENT body branch, and all
+// three are constructed from the same call — so a signature change or a wrong
+// argument could quietly collapse them onto one shape and the heading audit
+// above would silently be auditing the same page three times.
+func TestDisksFixturesReachTheirBranches(t *testing.T) {
+	pages := fullPages(t)
+	for _, c := range []struct{ page, want, notWant string }{
+		// populated: real rows, and NOT the gate notice or the empty state
+		{"disks", `class="cm-meter"`, "Capacity hidden"},
+		{"disks", "Capacity unknown", "No model directories configured"},
+		// gated: the notice, and no capacity at all
+		{"disks-gated", "Capacity hidden", `class="cm-meter"`},
+		// unconfigured: the guided empty state, not a blank card
+		{"disks-empty", "No model directories configured", `class="cm-meter"`},
+	} {
+		html := pages[c.page]
+		if html == "" {
+			t.Fatalf("fullPages has no %q entry", c.page)
+		}
+		if !strings.Contains(html, c.want) {
+			t.Errorf("fixture %q never reaches its branch: missing %q", c.page, c.want)
+		}
+		if strings.Contains(html, c.notWant) {
+			t.Errorf("fixture %q leaked into another branch: contains %q", c.page, c.notWant)
+		}
 	}
 }
 
@@ -710,6 +760,20 @@ func TestEmptyStatesGuideTheUser(t *testing.T) {
 		"trash": {
 			renderString(t, trashPage(nil, "csrf", "dark", fullMaturityRange())),
 			"Nothing in the trash", "/library?tab=files",
+		},
+		// /disks is where that quarantine table now LIVES (trashPage's own route
+		// is a 302 into it). Added rather than swapped so the shared builder stays
+		// covered too — the empty state must survive on the surface a user can
+		// actually reach.
+		"disks quarantine": {
+			renderString(t, disksPage(nil, nil, false, "csrf", "dark", fullMaturityRange())),
+			"Nothing in the trash", "/library?tab=files",
+		},
+		// The capacity half has its OWN empty state — an unconfigured install must
+		// be told what a "model directory" is, not shown a blank card.
+		"disks capacity": {
+			renderString(t, disksCapacityCard(nil, false)),
+			"No model directories configured", "/library?tab=files",
 		},
 		"outputs": {
 			renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", "dark", fullMaturityRange())),

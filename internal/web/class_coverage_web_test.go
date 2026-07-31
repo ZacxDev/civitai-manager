@@ -371,6 +371,16 @@ func TestShellMeasureIsInTheBuiltCSS(t *testing.T) {
 		// so the coverage moves here rather than disappearing.
 		".cm-maturity {", ".cm-maturity-select {", ".cm-maturity-legend {",
 		".cm-cardgrid {",
+		// The nav rework's hand-written CSS, here for the same purge-proofing
+		// reason as everything above it. These are PRESENCE checks only — the
+		// panel's two-mode POSITIONING (the load-bearing part) is guarded by
+		// TestNavMenuPanelEscapesTheScrollStrip in nav_menu_css_web_test.go, which
+		// slices out the individual rule bodies. A bare "position: fixed" here
+		// would have been satisfied by .cm-rail's own rule ~900 lines away.
+		".cm-brand-mark {", ".cm-navmenu {", ".cm-navmenu-summary {",
+		".cm-navmenu-panel {", ".cm-rail-title-link {",
+		// /disks: the capacity rows and their meter.
+		".cm-disk-row {", ".cm-disk-path {", ".cm-meter {", ".cm-meter-fill {",
 	} {
 		if !strings.Contains(string(app), want) {
 			t.Errorf("app.css missing %q", want)

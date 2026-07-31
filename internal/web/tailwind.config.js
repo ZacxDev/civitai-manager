@@ -34,7 +34,21 @@ const tint = (name, pct) => `color-mix(in srgb, var(--civitai-color-${name}) ${p
 const text = (name) => solid(`${name}-text`);
 
 module.exports = {
-  content: ["./*.go"],
+  // 🔴 TEST FILES ARE EXCLUDED, AND THE NEGATION IS LOAD-BEARING.
+  // The scanner reads these files as PLAIN TEXT — it has no idea what Go is, so
+  // it cannot tell a class name in an h.Class("…") literal from one in a comment
+  // or from something that merely LOOKS like a class. Scanning *_test.go minted
+  // nine dead rules into the shipped stylesheet: `.z-30` and `.mb-1` out of prose
+  // in comments, plus seven invalid selectors (`.[base\:end]`, `.[i\:upto]`,
+  // `.[pos\:neg]`, …) extracted from ordinary Go SLICE EXPRESSIONS like
+  // `css[base:end]`, which browsers cannot parse at all.
+  //
+  // Test files can only ever contribute false positives here: a class that is
+  // genuinely rendered appears in the template that renders it, which is a
+  // non-test file. (This does NOT fully sanitise the input — a comment in a
+  // non-test .go file is still scraped, which is how a comment saying a class
+  // "has no rule" created that rule. Don't name a class you are rejecting.)
+  content: ["./*.go", "!./*_test.go"],
   theme: {
     colors: {
       transparent: "transparent",

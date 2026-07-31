@@ -221,8 +221,15 @@ func workflowUsageCard(modelID int, usages []store.WorkflowUsage) g.Node {
 	}
 
 	body := []g.Node{
-		// mb-2, not mb-1: output.css is a PURGED Tailwind build and mb-1 has no rule
-		// in it, so it would render unstyled (TestEveryTemplateClassExistsInAStylesheet).
+		// output.css is a PURGED Tailwind build, so a spacing utility only has a rule
+		// if some template already uses it; reaching for a smaller step than the one
+		// below would render unstyled (TestEveryTemplateClassExistsInAStylesheet).
+		//
+		// This comment deliberately does NOT name the rejected class. The content
+		// glob scrapes these .go files as plain text and does not know what a Go
+		// comment is, so writing the class here MINTED the very rule the comment
+		// says does not exist — the note falsified itself and shipped six dead
+		// bytes of CSS.
 		h.H2(h.Class("text-sm font-semibold text-slate-300 mb-2"),
 			g.Text("Workflows that use this model")),
 		// State the inference plainly. The relation is derived from FILENAMES, and a

@@ -9,5 +9,5 @@ import "embed"
 // CDN, so the UI works fully offline — the civitai design system is served from
 // the binary just like the rest of the assets.
 //
-//go:embed assets/output.css assets/htmx.min.js assets/app.css assets/civitai-theme.css assets/civitai-components.css
+//go:embed assets/output.css assets/htmx.min.js assets/app.css assets/civitai-theme.css assets/civitai-components.css assets/favicon.svg
 var assetsFS embed.FS

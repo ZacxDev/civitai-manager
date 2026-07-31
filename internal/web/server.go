@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
 	"github.com/ZacxDev/civitai-manager/internal/config"
+	"github.com/ZacxDev/civitai-manager/internal/diskusage"
 	"github.com/ZacxDev/civitai-manager/internal/library"
 	"github.com/ZacxDev/civitai-manager/internal/poller"
 	"github.com/ZacxDev/civitai-manager/internal/store"
@@ -236,6 +237,19 @@ type Server struct {
 	// that runs a process, so the seam is deliberately narrow: it receives an argv
 	// the caller has already built and validated, and returns only a start error.
 	openerFn func(argv []string) error
+	// diskStatFn probes ONE directory's filesystem for the /disks capacity card.
+	// Nil (production) uses diskusage.Stat.
+	//
+	// 🔴 IT IS SEAMED AT THE SYSCALL, NOT AT diskRows, AND THAT IS THE WHOLE POINT.
+	// /disks' loopback gate claims something stronger than "no path reaches the
+	// response": it claims the probe is never ISSUED for a remote caller, so a
+	// LAN-exposed bind cannot be used to stat the operator's directories. Only a
+	// counter at the syscall can prove that. A seam one level up (a diskRowsFn) is
+	// satisfied by the exact broken shape the gate forbids — collect the rows,
+	// then throw them away — because a handler that called s.diskRows() directly
+	// would bypass it and the test would stay green. This one cannot be bypassed:
+	// every path to a Usage goes through it.
+	diskStatFn func(path string) (diskusage.Usage, error)
 	// evictMu serializes output-gallery cap enforcement. Captures are NOT mutually
 	// exclusive — the run job clears `running` under runMu BEFORE the capture runs
 	// off the mutex — so two captures can enforce the cap concurrently. Without this
@@ -571,7 +585,15 @@ func (s *Server) Handler() http.Handler {
 	// manager. The id is the ONLY thing the request supplies — see
 	// reveal_handlers.go for the loopback/CSRF/containment/allowlist gates.
 	mux.HandleFunc("POST /library/files/{id}/reveal", s.handleLibraryFileReveal)
-	mux.HandleFunc("GET /trash", s.handleTrash)
+	// Disks: per-filesystem capacity + the quarantine batches /trash used to show.
+	// GET, read-only (no CSRF). The CAPACITY half is loopback-gated inside the
+	// handler — it prints absolute filesystem paths — while the quarantine table
+	// stays reachable, exactly as it was at /trash. See handleDisks.
+	mux.HandleFunc("GET /disks", s.handleDisks)
+	// /trash's GET is now a 302 into /disks so old bookmarks and any stale in-app
+	// link still land somewhere sensible. The RESTORE POST is unmoved: it is the
+	// action the quarantine table's htmx buttons issue.
+	mux.HandleFunc("GET /trash", s.handleTrashRedirect)
 	mux.HandleFunc("POST /trash/{id}/restore", s.handleRestore)
 
 	mux.HandleFunc("POST /library/workflow-scan", s.handleWorkflowScan)

@@ -235,7 +235,18 @@ func outputsRail(rd railData, csrf string) g.Node {
 		dataAttr("open", "false"),
 		g.Attr("aria-label", "Recent outputs"),
 		h.Div(h.Class("cm-rail-head"),
-			h.Span(h.Class("cm-rail-title"), g.Text("Recent outputs")),
+			// 🔴 THE HEADING IS A LINK TO /outputs, AND THAT IS LOAD-BEARING.
+			// "Outputs" left the top nav (see navbar), so the rail is now the app's
+			// primary entry point to the gallery. It used to be an inert <span> with
+			// the only link buried in the rail's FOOT, below twelve tiles — reachable,
+			// but not where a user looks. Making the title itself the link puts the
+			// affordance at the top of the column that is already labelled with the
+			// destination's name. The foot link stays: it is the "I have scrolled to
+			// the end of the tiles" case, and duplicating a destination costs nothing.
+			h.A(h.Href("/outputs"), h.Class("cm-rail-title cm-rail-title-link"),
+				g.Text("Recent outputs"),
+				h.Span(h.Class("cm-rail-title-arrow"), g.Attr("aria-hidden", "true"), g.Text("→")),
+			),
 			// Only the EXPANDED head carries a control; the collapsed edge's control
 			// is the full-edge overlay emitted last (see railExpandControl).
 			g.If(!rd.Collapsed, collapse),
