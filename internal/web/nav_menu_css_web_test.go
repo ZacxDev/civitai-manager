@@ -7,29 +7,35 @@ import (
 )
 
 // TestNavMenuPanelEscapesTheScrollStrip is the guard on the one non-obvious
-// thing about the Library dropdown: WHERE its panel is positioned, at each
+// thing about the Library menu: WHERE its panel is positioned, at each
 // breakpoint, and why.
 //
 // THE BUG IT GUARDS. .cm-navlinks is `overflow-x: auto`, and per CSS Overflow a
 // non-`visible` overflow-x computes overflow-y to `auto` too — so the strip
 // clips in BOTH axes and an ordinary absolutely-positioned panel is cut off at
-// the bar's bottom edge. The fix has two halves that must BOTH survive:
+// the bar's bottom edge.
 //
-//	< 1024px  the panel is `position: fixed` (a fixed box's containing block is
-//	          the viewport, so an ancestor's overflow cannot clip it)
-//	>= 1024px .cm-navlinks becomes `overflow: visible` and the panel becomes an
-//	          anchored `position: absolute` box
+// 🔴 THE PANEL IS NOW A `popover`, SO THE TOP LAYER SOLVES THE CLIP OUTRIGHT,
+// AND THIS TEST MOVED WITH IT. The old shape needed TWO halves — a fixed sheet
+// below 1024px and an `overflow: visible` override on .cm-navlinks at >=1024px.
+// A top-layer box cannot be clipped by any ancestor's overflow at any width, so
+// the override was DELETED and its absence is asserted below: re-adding it would
+// be cargo-cult CSS restored against a trap that no longer exists.
 //
-// Delete either half and the menu is clipped at exactly one breakpoint —
-// invisible to any markup assertion, and invisible to a browser check that only
-// ever looks at one viewport width.
+// ⚠ THE PROMOTION BROKE ANCHORING, WHICH IS THE HALF WORTH GUARDING NOW. A
+// top-layer element's containing block is the VIEWPORT, so the old
+// `position: absolute; top: calc(100% + 0.625rem)` resolves against the viewport
+// height. MEASURED in Brave at 1198x921 by injecting exactly that rule: the
+// panel landed at top 931.6px — a full screen below the fold — instead of at
+// 50px under its trigger. Hence CSS anchor positioning, behind @supports.
 //
 // 🔴 IT SLICES OUT THE RULE BODIES BEFORE ASSERTING. The first version of this
 // coverage lived as a bare `strings.Contains(app, "position: fixed")` in
 // class_coverage_web_test.go and was VACUOUS: `.cm-rail` declares
 // `position: fixed` ~900 lines earlier, so rewriting the panel to
 // `position: absolute` left it green. Mutating the panel's rule is what exposed
-// that, and the scoping below is the fix.
+// that, and the scoping below is the fix. Keep it — a flat Contains over this
+// sheet proves nothing.
 func TestNavMenuPanelEscapesTheScrollStrip(t *testing.T) {
 	raw, err := os.ReadFile("assets/app.css")
 	if err != nil {
@@ -37,45 +43,97 @@ func TestNavMenuPanelEscapesTheScrollStrip(t *testing.T) {
 	}
 	css := string(raw)
 
-	// --- the base (mobile / <1024px) rule -----------------------------------
+	// --- the base (sheet) rule ------------------------------------------------
 	base := cssRuleIn(t, css, ".cm-navmenu-panel {")
 	if !strings.Contains(base, "position: fixed;") {
-		t.Errorf("the base .cm-navmenu-panel rule must be `position: fixed` — an absolute box is "+
-			"clipped by .cm-navlinks' overflow. Got:\n%s", base)
+		t.Errorf("the base .cm-navmenu-panel rule must be `position: fixed` — the UA [popover] sheet "+
+			"would otherwise centre it in the viewport. Got:\n%s", base)
 	}
-	// A fixed box needs its offsets, or it lands wherever it was laid out.
 	for _, want := range []string{"top: var(--cm-nav-h);", "left: 0;", "right: 0;"} {
 		if !strings.Contains(base, want) {
-			t.Errorf("the fixed panel is missing %q — it would not sit under the bar. Got:\n%s", want, base)
+			t.Errorf("the sheet panel is missing %q — it would not sit under the bar. Got:\n%s", want, base)
+		}
+	}
+	// The [popover] UA sheet sets inset:0 + margin:auto + width/height:fit-content
+	// + border:solid. Without these resets the panel is a small bordered box
+	// floating in the middle of the screen.
+	for _, want := range []string{"margin: 0;", "width: auto;", "border: none;"} {
+		if !strings.Contains(base, want) {
+			t.Errorf("the base rule must undo the [popover] UA sheet with %q. Got:\n%s", want, base)
 		}
 	}
 
-	// --- the desktop (>=1024px) overrides ------------------------------------
-	// Scope to the desktop media block so an `overflow: visible` somewhere else in
-	// the file cannot satisfy this. The block is located by its opening line and
-	// bounded by the NEXT top-level media query / comment banner.
-	desktop := cssMediaBlock(t, css, "@media (min-width: 1024px) {\n  /* Five short links")
-	if !strings.Contains(desktop, ".cm-navlinks {") || !strings.Contains(desktop, "overflow: visible;") {
-		t.Errorf("at >=1024px .cm-navlinks must stop clipping (`overflow: visible`), or the "+
-			"anchored panel below it is cut off. Got:\n%s", desktop)
+	// 🔴 THE UA-DISPLAY TRAP. A popover is CLOSED by the UA rule
+	// `[popover]:not(:popover-open) { display: none }`, and an AUTHOR `display`
+	// beats a UA one at any specificity — so a `display` in the base rule pins the
+	// menu permanently open on every page. Same class as the `hidden` .cm-vgroup
+	// that was still `display: flex`. The layout must live on :popover-open only.
+	if strings.Contains(base, "display:") {
+		t.Errorf("the base .cm-navmenu-panel rule must declare NO `display` — an author display "+
+			"beats the UA `[popover]:not(:popover-open){display:none}` rule and the menu would "+
+			"render permanently open. Put it on :popover-open. Got:\n%s", base)
 	}
-	if !strings.Contains(desktop, "position: absolute;") {
-		t.Errorf("at >=1024px the panel must anchor under its summary (`position: absolute`), "+
-			"not stay a full-width fixed sheet. Got:\n%s", desktop)
+	open := cssRuleIn(t, css, ".cm-navmenu-panel:popover-open {")
+	if !strings.Contains(open, "display: flex;") {
+		t.Errorf("the :popover-open rule must supply the flex layout the base rule may not. Got:\n%s", open)
+	}
+
+	// --- the desktop (>=1024px) anchor ---------------------------------------
+	desktop := cssMediaBlock(t, css, "@media (min-width: 1024px) {\n  /*\n   * The desktop panel anchors")
+	for _, want := range []string{
+		"@supports (anchor-name: --cm-navmenu-anchor)", // the guard itself
+		"anchor-name: --cm-navmenu-anchor;",            // on the trigger
+		"position-anchor: --cm-navmenu-anchor;",        // on the panel
+		"top: calc(anchor(bottom) + 0.625rem);",
+		"left: anchor(left);",
+	} {
+		if !strings.Contains(desktop, want) {
+			t.Errorf("the desktop anchor is missing %q. Manual CSS cannot anchor a TOP-LAYER box "+
+				"under an arbitrary trigger — its containing block is the viewport, measured at "+
+				"top 931.6px in a 921px viewport. Got:\n%s", want, desktop)
+		}
+	}
+	// The @supports guard is not decoration: without it, `anchor()` drops whole
+	// declarations in Firefox/Safari and the panel half-applies the desktop rules.
+	if !strings.Contains(desktop, "@supports") {
+		t.Errorf("the anchor rules must sit behind @supports — anchor positioning is Chromium-only "+
+			"and an unguarded `anchor()` silently drops in other engines. Got:\n%s", desktop)
+	}
+	// 🔴 The old workaround must NOT come back.
+	if strings.Contains(desktop, "position: absolute;") {
+		t.Errorf("the desktop panel must not use `position: absolute` — a top-layer box resolves it "+
+			"against the VIEWPORT, which measured a full screen below the fold. Got:\n%s", desktop)
+	}
+	// 🔴 The override must STAY — but for the focus rings, not the panel.
+	//
+	// This assertion was inverted once. It originally FORBADE the override, on the
+	// correct reasoning that the top layer cannot be clipped by ancestor overflow —
+	// so the panel no longer needs it. That was right about the panel and wrong
+	// about the rest of the strip: `.cm-navlinks` is `overflow-x: auto`, so
+	// `overflow-y` computes to `auto` and the strip clips INK OVERFLOW, which is
+	// where a focus ring lives. Measured at 1198px: 0.5px of headroom for the links
+	// and 0px for the Library trigger, against a 2px outline at 2px offset plus a
+	// 4px glow — the trigger's ring rendered as left/right brackets with no top or
+	// bottom edge. The forbidding version of this test made that one-line fix fail
+	// CI, which is how a guard turns an accessibility regression into a rule.
+	//
+	// The panel's independence from it is asserted separately above (no
+	// `position: absolute`, anchor rules behind `@supports`, no z-index) — those
+	// are the checks that stop the workaround creeping back for the WRONG reason.
+	if !strings.Contains(desktop, ".cm-navlinks {") || !strings.Contains(desktop, "overflow: visible;") {
+		t.Errorf("the desktop block must keep `.cm-navlinks { overflow: visible }` — the strip's "+
+			"`overflow-x: auto` computes overflow-y to auto and CLIPS THE FOCUS RINGS of every "+
+			"nav control (measured: 0.5px headroom for the links, 0px for the Library trigger). "+
+			"It is not a panel workaround; the panel is in the top layer and needs nothing. Got:\n%s", desktop)
 	}
 
 	// --- the stacking claim --------------------------------------------------
-	// The panel's z-index is LOCAL to the nav's stacking context and must stay
-	// small. A value that looked global (30/45/50) would misrepresent the budget
-	// documented in the STACKING ORDER ledger and buy nothing — a descendant
-	// cannot escape its ancestor's stacking context.
-	if !strings.Contains(base, "z-index: 1;") {
-		t.Errorf("the panel's z-index must be the local 1 (see the STACKING ORDER ledger). Got:\n%s", base)
-	}
-	for _, global := range []string{"z-index: 25", "z-index: 30", "z-index: 44", "z-index: 45", "z-index: 50"} {
-		if strings.Contains(base, global) {
-			t.Errorf("the panel must not spend a value from the global stacking budget (%s). Got:\n%s", global, base)
-		}
+	// A top-layer box paints above EVERY stacking context, so any z-index here is
+	// inert and would misdescribe the STACKING ORDER ledger's budget.
+	if strings.Contains(base, "z-index") {
+		t.Errorf("the panel must declare NO z-index — the top layer already paints above every "+
+			"stacking context, so a value is inert and misrepresents the STACKING ORDER "+
+			"ledger. Got:\n%s", base)
 	}
 }
 

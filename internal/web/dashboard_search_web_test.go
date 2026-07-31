@@ -306,6 +306,53 @@ func TestPopularDefaultAndCache(t *testing.T) {
 
 // --- D. Dashboard structure + subscribe search ---
 
+// TestHomePageIsCalledOverview pins the rename of "/" and, more importantly, the
+// ABSENCE of the old word.
+//
+// WHY THE RENAME. "Dashboard" was a nav entry pointing at the same place as the
+// brand wordmark beside it. The nav rework deleted the entry (see navbar's
+// comment), which left the word surviving only as this page's <title> and <h1> —
+// vocabulary naming a control the user can no longer see.
+//
+// 🔴 THE ABSENCE HALF IS WHAT MAKES THIS A GUARD. Asserting only that "Overview"
+// appears would stay green if a later edit put "Dashboard" back in the tab title,
+// or added a "Dashboard" heading to one of the cards — both of which reintroduce
+// exactly the split vocabulary this removes. It scans the WHOLE rendered page,
+// not the heading, and it deliberately does NOT ban the substring "dashboard":
+// the Go identifiers (handleDashboard, dashboardPage) keep that name and are not
+// user-visible, so banning it would be a rename-everything mandate this change
+// never agreed to.
+func TestHomePageIsCalledOverview(t *testing.T) {
+	srv := newTestServer(t)
+	rec := get(t, srv, "/")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	// The browser tab and the page heading, both from homePageTitle.
+	if !strings.Contains(body, "<title>"+homePageTitle+" · civitai-manager</title>") {
+		t.Errorf("the home page's <title> must read %q:\n%s", homePageTitle, firstN(body, 600))
+	}
+	if !strings.Contains(body, ">"+homePageTitle+"</h1>") {
+		t.Errorf("the home page's <h1> must read %q:\n%s", homePageTitle, firstN(body, 3000))
+	}
+	// FIXTURE REACH: exactly one <h1>, which is also what
+	// TestEveryFullPageHasExactlyOneH1 requires — deleting the heading is not an
+	// available way to satisfy the absence check below.
+	if n := strings.Count(body, "<h1 "); n != 1 {
+		t.Errorf("the home page must have exactly one <h1>, got %d", n)
+	}
+
+	// GONE: no user-visible occurrence of the old word anywhere on the page.
+	for _, gone := range []string{">Dashboard<", ">Dashboard</h1>", "<title>Dashboard"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("the home page still shows the removed word via %q — the nav entry it named "+
+				"no longer exists:\n%s", gone, firstN(body, 3000))
+		}
+	}
+}
+
 func TestDashboardManualFormDemotedAndSearchBox(t *testing.T) {
 	out := renderString(t, dashboardPage(nil, nil, "test-csrf", "dark", fullMaturityRange()))
 	for _, want := range []string{
