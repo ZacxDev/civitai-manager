@@ -571,13 +571,23 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   NixOS host and there is still no `chromium` on PATH, but neither of those is the
   whole story any more.)
   - **The `browser` skill drives the user's LIVE Brave** via the local
-    browser-bridge: `browser --instance <key> open <url>` → `activate` →
-    `screenshot` / `eval`. **`activate` is not optional** — a freshly `open`ed tab
-    is backgrounded and Chrome throttles it, so a heavy page may never paint and
-    you screenshot a blank. **`--instance` is required**: two profiles (`work`,
-    `personal`) are normally connected and the bridge refuses to guess. Always
-    `open` your OWN tab and `close` it when done — never drive the tab the user is
-    working in.
+    browser-bridge: `browser --instance <key> open <url>` → **`wake`** →
+    `screenshot` / `js`. A freshly `open`ed tab is backgrounded and Chrome
+    throttles it, so a heavy page may never paint and you screenshot a blank —
+    **`wake` is the fix** (it un-throttles with NO focus movement). 🔴 **`activate`
+    is NOT that fix** — it STEALS the operator's screen, and an autonomous agent
+    cannot reach it at all; reserve it for something needing the real foreground
+    (a permission prompt, a native file picker). **The skill is the authority
+    here and it moves** — read `~/.claude/skills/browser/SKILL.md` rather than
+    trusting this summary (this bullet said "`activate` is not optional" long
+    after `wake` superseded it, which is exactly the wrong instruction).
+    **`--instance` is required**: two profiles (`work`, `personal`) are normally
+    connected and the bridge refuses to guess. Always `open` your OWN tab and
+    `close` it when done — never drive the tab the user is working in.
+    ⚠ **`open` can return `reused: true` carrying a SIBLING agent's tab** (siblings
+    share a session id) — check that field, thread `--tab <id>` on every op, and
+    **confirm `location.href` before trusting a screenshot**; an agent reported
+    findings about the wrong `cm` instance this way.
   - **Brave also works as the axe harness's Chromium**:
     `AUDITLOOP_CHROMIUM=/run/current-system/sw/bin/brave make ux-audit` (the
     resolver in `e2e/uxaudit/chromium.go` honours `AUDITLOOP_CHROMIUM` /
