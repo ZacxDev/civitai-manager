@@ -282,7 +282,7 @@ const (
 // panel anchors under its summary. Both live in the NAV MENU block of app.css.
 //
 // STACKING: the panel spends NOTHING from the app's global z-index budget. The
-// whole nav is one stacking context at z-30 (.cm-nav is `position: sticky` with
+// whole nav is one stacking context at z-index 30 (.cm-nav is `position: sticky` with
 // a z-index), so every descendant paints inside it — above page content and
 // below the rail drawer (44/45) and the popover tier (50), which is exactly
 // where a nav menu belongs. The panel's own z-index is a local 1, meaningful
