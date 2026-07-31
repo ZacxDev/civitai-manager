@@ -2,6 +2,8 @@ package comfy
 
 import (
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -71,20 +73,54 @@ func TestAllImagesHarvestsRealVHSGifsEntry(t *testing.T) {
 // nothing ever reads an attacker-chosen absolute path is for the field not to
 // exist. If someone adds it "for logging", this fails and they have to come read
 // the comment on ImageRef.
+//
+// 🔴 IT REFLECTS OVER THE STRUCT TYPE, and it does so because the obvious version
+// DID NOT WORK. Marshalling a zero-valued ImageRef and checking the resulting keys
+// looks equivalent and is not: `omitempty` on a newly-added `Fullpath` drops it
+// from the output, so the round-trip check stayed GREEN through a deliberate
+// mutation that added the field AND made captureGeneration read it. Reflection sees
+// the field regardless of tag options and regardless of value.
 func TestImageRefNeverDecodesFullpath(t *testing.T) {
-	blob, err := json.Marshal(ImageRef{Filename: "a.mp4", Subfolder: "s", Type: "output"})
+	banned := map[string]string{
+		"fullpath": "an absolute path on the ComfyUI host — reading it would let an " +
+			"untrusted upstream name any file on this machine",
+		"workflow": "the companion PNG's filename — fetch it through /view like any " +
+			"other output if it is ever needed, do not treat it as a path",
+		"frame_rate": "unused; decoding it invites treating VHS metadata as trusted",
+	}
+
+	rt := reflect.TypeOf(ImageRef{})
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		tag := strings.Split(f.Tag.Get("json"), ",")[0]
+		key := strings.ToLower(tag)
+		if key == "" || key == "-" {
+			key = strings.ToLower(f.Name)
+		}
+		if why, bad := banned[key]; bad {
+			t.Errorf("ImageRef.%s decodes %q — %s", f.Name, key, why)
+		}
+	}
+
+	// The behavioural half: decoding the REAL payload must not surface those keys
+	// anywhere, i.e. the fields really are absent rather than merely untagged.
+	var ref ImageRef
+	if err := json.Unmarshal([]byte(`{"filename":"a.mp4","subfolder":"s","type":"output",
+		"format":"video/h264-mp4","workflow":"a.png","frame_rate":30.0,
+		"fullpath":"/etc/shadow"}`), &ref); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	blob, err := json.Marshal(ref)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	var round map[string]any
-	if err := json.Unmarshal(blob, &round); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	for _, banned := range []string{"fullpath", "workflow", "frame_rate"} {
-		if _, ok := round[banned]; ok {
-			t.Errorf("ImageRef must not carry %q — an absolute path (or a companion "+
-				"filename) from an untrusted ComfyUI must be structurally unreadable", banned)
+	for key := range banned {
+		if strings.Contains(strings.ToLower(string(blob)), key) {
+			t.Errorf("re-marshalled ImageRef carries %q: %s", key, blob)
 		}
+	}
+	if strings.Contains(string(blob), "/etc/shadow") {
+		t.Errorf("the untrusted absolute path survived the decode: %s", blob)
 	}
 }
 

@@ -409,6 +409,13 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 		"imported workflows carousel": renderString(t, workflowImportDetailCard(7, "csrf", 1,
 			[]store.Workflow{{ID: 1, Name: long, Format: store.WorkflowFormatAPI,
 				Source: store.WorkflowSourceCivitai}})),
+		// A captured output's filename is comfy-supplied and unbounded, and VIDEO is
+		// how it reaches TEXT content. The <img>/<video> branches put it in alt /
+		// aria-label, which lay out nothing, but the NOT-PREVIEWABLE branch (a type
+		// outside the serving whitelist — a ProRes .mov, a corrupted row) prints it
+		// as the label of a download link, in a narrow grid cell.
+		"generation detail unrenderable output": renderString(t, generationDetailMedia(
+			store.GenerationImage{ID: 1, Filename: long, ContentType: outputMediaTypeRefused})),
 	}
 	for name, html := range cases {
 		// Every element that prints the long string must be able to break it.
