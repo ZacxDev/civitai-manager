@@ -239,7 +239,7 @@ func renderMissingModelsRunPanel(t *testing.T, srv *Server, wf *store.Workflow) 
 		MissingResolved: map[string]missingResolution{},
 		LibMeta:         map[string]store.LocalModelMeta{},
 	}
-	return renderString(t, generateSection(wf, snap, "tok", true, true, "blur", v, true, comfyHelperView{}))
+	return renderString(t, generateSection(wf, snap, "tok", true, true, fullMaturityRange(), v, true, comfyHelperView{}))
 }
 
 // TestRunPanelHxIncludesAlwaysMatch is the issue-#28 regression test.

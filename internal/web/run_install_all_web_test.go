@@ -45,7 +45,7 @@ func twoMissingSnapshot() runSnapshot {
 // the whole failure, then the per-file secondary path, with the raw engine sentence
 // demoted into a disclosure.
 func TestRunFailureLeadsWithSummaryThenOnePrimaryAction(t *testing.T) {
-	body := renderString(t, runStatusFragment(twoMissingSnapshot(), 7, "tok", true, NSFWBlur))
+	body := renderString(t, runStatusFragment(twoMissingSnapshot(), 7, "tok", true, fullMaturityRange()))
 
 	// 1. Plain-language headline + lead naming the count in user terms.
 	for _, want := range []string{
@@ -147,7 +147,7 @@ func TestRunFailureSingularCopy(t *testing.T) {
 	snap := twoMissingSnapshot()
 	snap.Preflight = &comfy.PreflightReport{MissingModels: []string{"only-MISSING.safetensors"}}
 	snap.MissingModels = snap.MissingModels[:1]
-	body := renderString(t, runStatusFragment(snap, 7, "tok", true, NSFWBlur))
+	body := renderString(t, runStatusFragment(snap, 7, "tok", true, fullMaturityRange()))
 
 	for _, want := range []string{
 		"Run failed — 1 model file missing",
@@ -166,7 +166,7 @@ func TestRunFailureSingularCopy(t *testing.T) {
 // omission, and never a POST target. AND the lead must not promise the install: "…
 // Install them and it should run" is false when the button is greyed out.
 func TestRunFailurePrimaryActionDisabledWhenIneligible(t *testing.T) {
-	body := renderString(t, runStatusFragment(twoMissingSnapshot(), 7, "tok", false, NSFWBlur))
+	body := renderString(t, runStatusFragment(twoMissingSnapshot(), 7, "tok", false, fullMaturityRange()))
 
 	if strings.Contains(body, "install-missing-and-run") {
 		t.Errorf("ineligible failure state must not POST the batch install:\n%s", body)
@@ -202,7 +202,7 @@ func TestBatchInstallKeepsUninferrableTypesAndFlagsThem(t *testing.T) {
 		{Filename: "routable-MISSING.safetensors", Query: "routable", CivitaiType: "Checkpoint"},
 		{Filename: "mystery-MISSING.bin", Query: "mystery", CivitaiType: ""}, // no inferred type
 	}
-	body := renderString(t, runStatusFragment(snap, 7, "tok", true, NSFWBlur))
+	body := renderString(t, runStatusFragment(snap, 7, "tok", true, fullMaturityRange()))
 
 	// Both files are attempted, and the label counts both.
 	if !strings.Contains(body, "Install 2 missing model files and run") {
@@ -302,12 +302,12 @@ func TestBatchInstallDisabledOnlyWhenServerCannotInstall(t *testing.T) {
 	snap.MissingModels = []comfy.MissingModel{{Filename: "mystery-MISSING.bin", Query: "m", CivitaiType: ""}}
 
 	// Eligible: an uncertain file alone does NOT disable the CTA.
-	if body := renderString(t, runStatusFragment(snap, 7, "tok", true, NSFWBlur)); !strings.Contains(
+	if body := renderString(t, runStatusFragment(snap, 7, "tok", true, fullMaturityRange())); !strings.Contains(
 		body, "/workflows/7/install-missing-and-run") {
 		t.Errorf("uncertainty alone must not disable the batch:\n%s", body)
 	}
 	// Ineligible: disabled, and the reason names the config blocker the user can fix.
-	body := renderString(t, runStatusFragment(snap, 7, "tok", false, NSFWBlur))
+	body := renderString(t, runStatusFragment(snap, 7, "tok", false, fullMaturityRange()))
 	if strings.Contains(body, "install-missing-and-run") {
 		t.Errorf("an ineligible server must not offer the POST:\n%s", body)
 	}
@@ -442,7 +442,7 @@ func TestFailureHeadlineAgreesWithTheCTA(t *testing.T) {
 		MissingResolved: map[string]missingResolution{},
 		LibMeta:         map[string]store.LocalModelMeta{},
 	}
-	body := renderString(t, runStatusFragment(snap, 7, "tok", true, NSFWBlur))
+	body := renderString(t, runStatusFragment(snap, 7, "tok", true, fullMaturityRange()))
 
 	if !strings.Contains(body, "Run failed — 1 model file missing") {
 		t.Errorf("headline must count the DISTINCT set, like the CTA:\n%s", body)
@@ -461,7 +461,7 @@ func TestFailureHeadlineAgreesWithTheCTA(t *testing.T) {
 	// preflight count still drives the headline.
 	old := snap
 	old.MissingModels = nil
-	oldBody := renderString(t, runStatusFragment(old, 7, "tok", true, NSFWBlur))
+	oldBody := renderString(t, runStatusFragment(old, 7, "tok", true, fullMaturityRange()))
 	if !strings.Contains(oldBody, "Run failed — 2 model files missing") {
 		t.Errorf("with no enriched analysis the preflight count must stand:\n%s", oldBody)
 	}
@@ -538,7 +538,7 @@ func TestRunFailureNodeAndOptionCopy(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			snap := runSnapshot{Started: true, WorkflowID: 7, Phase: runPhaseFailed,
 				Message: "Preflight failed.", Preflight: tc.report}
-			body := renderString(t, runStatusFragment(snap, 7, "tok", true, NSFWBlur))
+			body := renderString(t, runStatusFragment(snap, 7, "tok", true, fullMaturityRange()))
 			for _, want := range tc.want {
 				if !strings.Contains(body, want) {
 					t.Errorf("missing %q:\n%s", want, body)
@@ -1176,7 +1176,7 @@ func TestBatchCTAComposesWithPresetTabs(t *testing.T) {
 	// cloud run became ONE "Generate" section). Same render, wider signature: it also
 	// takes whether ComfyUI is configured and the helper state, both of which only
 	// affect sibling controls — the batch CTA this test is about is unchanged.
-	page := renderString(t, generateSection(wf, snap, "tok", true, true /* dlEligible */, "blur", v,
+	page := renderString(t, generateSection(wf, snap, "tok", true, true /* dlEligible */, fullMaturityRange(), v,
 		true /* comfyConfigured */, comfyHelperView{}))
 
 	// 1. The CTA survived the merge.

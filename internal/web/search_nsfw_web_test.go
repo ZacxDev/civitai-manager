@@ -6,12 +6,15 @@ import (
 	"testing"
 )
 
-// setNSFWMode persists the display mode directly (bypassing the CSRF-guarded
-// settings POST) so a test can exercise hide/blur/show search behavior.
-func setNSFWMode(t *testing.T, srv *Server, mode string) {
+// setMaturity persists the range directly (bypassing the CSRF-guarded settings
+// POST) so a test can exercise per-band search behaviour.
+func setMaturity(t *testing.T, srv *Server, rng string) {
 	t.Helper()
-	if err := srv.store.SetSetting(nsfwSettingKey, mode); err != nil {
-		t.Fatalf("set nsfw mode: %v", err)
+	if _, ok := parseMaturityRange(rng); !ok {
+		t.Fatalf("fixture range %q is not valid — the test would assert nothing", rng)
+	}
+	if err := srv.store.SetSetting(maturitySettingKey, rng); err != nil {
+		t.Fatalf("set maturity range: %v", err)
 	}
 }
 
@@ -26,19 +29,27 @@ func lastCall(t *testing.T, r *recordingSearchReader) map[string][]string {
 	return r.calls[len(r.calls)-1]
 }
 
-// TestSearchNSFWParamByMode proves the civitai model-search nsfw param follows the
-// display mode. Since the toggle dropped the hide state (nsfwSearchFlag is now
-// always true — a stored hide migrates to blur), blur/show/hide all send
-// nsfw=true across the keyword search, the popular default, and the dashboard
-// subscribe search.
-func TestSearchNSFWParamByMode(t *testing.T) {
+// TestSearchNSFWParamFollowsTheRangeMax proves the model-search `nsfw` param
+// tracks the range's MAX.
+//
+// 🔴 /api/v1/models takes ONLY a boolean here — `nsfw=Mature` is an HTTP 400
+// whose body reads `expected boolean … expected one of "true"|"1"|"yes"|…`
+// (live-probed 2026-07-31). So the range degrades to one bit at this endpoint:
+// false restricts the feed to SFW models, true lets NSFW models through WITH
+// their showcase images (without it they come back image-less and every card
+// reads "No showcase images"). Only a band that tops out at PG can be served by
+// the SFW-only feed. The per-IMAGE band filter still runs at render time.
+func TestSearchNSFWParamFollowsTheRangeMax(t *testing.T) {
 	cases := []struct {
-		mode string
+		rng  string
 		want string
 	}{
-		{NSFWBlur, "true"},
-		{NSFWShow, "true"},
-		{NSFWHide, "true"}, // migrated to blur → still nsfw=true
+		{"pg:pg", "false"},
+		{"pg:pg13", "true"},
+		{"pg:r", "true"},
+		{"r:r", "true"},
+		{"xxx:xxx", "true"},
+		{"pg:xxx", "true"},
 	}
 	paths := []string{
 		"/search?q=anime",           // keyword search
@@ -47,31 +58,36 @@ func TestSearchNSFWParamByMode(t *testing.T) {
 	}
 	for _, tc := range cases {
 		for _, p := range paths {
-			t.Run(tc.mode+" "+p, func(t *testing.T) {
+			t.Run(tc.rng+" "+p, func(t *testing.T) {
 				reader := &recordingSearchReader{result: popularResult(t)}
 				srv := newModelServer(t, reader)
-				setNSFWMode(t, srv, tc.mode)
+				setMaturity(t, srv, tc.rng)
 
 				rec := httptest.NewRecorder()
 				srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
 				if rec.Code != http.StatusOK {
 					t.Fatalf("GET %s = %d", p, rec.Code)
 				}
-				if got := lastCall(t, reader)["nsfw"]; len(got) == 0 || got[0] != tc.want {
-					t.Errorf("nsfw param = %v, want %q", got, tc.want)
+				got := lastCall(t, reader)["nsfw"]
+				if len(got) == 0 || got[0] != tc.want {
+					t.Errorf("range %s: nsfw param = %v, want %q", tc.rng, got, tc.want)
+				}
+				// A level NAME here is a 400 from the real API — never send one.
+				for _, name := range []string{"None", "Soft", "Mature", "X", "XXX", "Blocked"} {
+					if len(got) > 0 && got[0] == name {
+						t.Errorf("range %s sent the level name %q to /api/v1/models, which answers 400",
+							tc.rng, name)
+					}
 				}
 			})
 		}
 	}
 }
 
-// TestPopularCacheSharedAcrossModes proves that after the hide→blur migration, the
-// popular TTL cache is keyed by an nsfw flag that is now always true for every
-// UI-selectable mode (blur/show/hide-migrated-to-blur). So flipping the display
-// mode serves the SAME cached list — no extra fetch within the TTL. (The cache
-// key is still keyed by the flag; there is simply no longer a mode that produces
-// nsfw=false.)
-func TestPopularCacheSharedAcrossModes(t *testing.T) {
+// TestPopularCacheIsKeyedByTheNSFWFlag proves the popular TTL cache is keyed by
+// the boolean the range resolves to: two ranges that agree on the flag share one
+// cached list (no extra fetch), and two that disagree do not.
+func TestPopularCacheIsKeyedByTheNSFWFlag(t *testing.T) {
 	reader := &recordingSearchReader{result: popularResult(t)}
 	srv := newModelServer(t, reader)
 
@@ -83,27 +99,32 @@ func TestPopularCacheSharedAcrossModes(t *testing.T) {
 		}
 	}
 
-	// Default mode is blur → nsfw=true. First load fetches + caches.
-	setNSFWMode(t, srv, NSFWBlur)
+	// The full range → nsfw=true. First load fetches + caches.
+	setMaturity(t, srv, "pg:xxx")
 	get()
 	if reader.callCount() != 1 {
-		t.Fatalf("first blur load: calls = %d, want 1", reader.callCount())
+		t.Fatalf("first load: calls = %d, want 1", reader.callCount())
 	}
 	if got := lastCall(t, reader)["nsfw"]; len(got) == 0 || got[0] != "true" {
-		t.Errorf("blur popular fetch nsfw = %v, want true", got)
+		t.Errorf("full-range popular fetch nsfw = %v, want true", got)
 	}
 
-	// Flip to show → still nsfw=true → served from the SAME cache (no fetch).
-	setNSFWMode(t, srv, NSFWShow)
+	// A NARROWER band that still needs NSFW models (R..XXX) → same flag → same
+	// cache entry, no refetch. The band filter runs at render time.
+	setMaturity(t, srv, "r:xxx")
 	get()
 	if reader.callCount() != 1 {
-		t.Fatalf("show load should hit the true-flag cache: calls = %d, want 1", reader.callCount())
+		t.Fatalf("a same-flag range should hit the cache: calls = %d, want 1", reader.callCount())
 	}
 
-	// Flip to a stored hide → migrates to blur → nsfw=true → same cache (no fetch).
-	setNSFWMode(t, srv, NSFWHide)
+	// PG-only flips the flag to false → a DIFFERENT cache key → a real fetch.
+	setMaturity(t, srv, "pg:pg")
 	get()
-	if reader.callCount() != 1 {
-		t.Fatalf("migrated-hide load should hit the true-flag cache: calls = %d, want 1", reader.callCount())
+	if reader.callCount() != 2 {
+		t.Fatalf("flipping the nsfw flag must not reuse the true-flag cache: calls = %d, want 2",
+			reader.callCount())
+	}
+	if got := lastCall(t, reader)["nsfw"]; len(got) == 0 || got[0] != "false" {
+		t.Errorf("PG-only popular fetch nsfw = %v, want false", got)
 	}
 }

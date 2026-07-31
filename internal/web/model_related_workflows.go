@@ -43,7 +43,7 @@ import (
 //	                           repeated `tag=` is HTTP 400, and the three
 //	                           `inpaint` synonyms returned three DIFFERENT sets —
 //	                           which is exactly why the fan-out exists.
-//	sort=Most Downloaded, period=AllTime, nsfw=<display mode>
+//	sort=Most Downloaded, period=AllTime, nsfw=<from the maturity range>
 //
 // THE SIGNAL IS THE ECOSYSTEM OF THE SELECTED VERSION, and it is REQUIRED. Each
 // version carries its own CivitAI `baseModel` string, which maps through the
@@ -284,7 +284,7 @@ func (s *Server) handleModelRelatedWorkflows(w http.ResponseWriter, r *http.Requ
 		s.render(w, http.StatusOK, relatedWorkflowsAbsent())
 		return
 	}
-	s.render(w, http.StatusOK, relatedWorkflowsResults(modelID, f, res, s.nsfwMode(), s.csrf))
+	s.render(w, http.StatusOK, relatedWorkflowsResults(modelID, f, res, s.maturity(), s.csrf))
 }
 
 // relatedWorkflowsResults renders the fragment body: the heading, the capped card
@@ -298,7 +298,7 @@ func (s *Server) handleModelRelatedWorkflows(w http.ResponseWriter, r *http.Requ
 // and go through modelCardCore, which is the same renderer the audited
 // /workflows/discover grid uses — including its sanitizer and NSFW handling. No
 // field is interpolated here.
-func relatedWorkflowsResults(modelID int, f workflowFacets, res *civitai.ModelSearchResult, mode, csrf string) g.Node {
+func relatedWorkflowsResults(modelID int, f workflowFacets, res *civitai.ModelSearchResult, mr maturityRange, csrf string) g.Node {
 	items := make([]civitai.ModelListItem, 0, len(res.Items))
 	for _, it := range res.Items {
 		if it.ID == modelID {
@@ -336,7 +336,7 @@ func relatedWorkflowsResults(modelID int, f workflowFacets, res *civitai.ModelSe
 				"Importing downloads the workflow zip with your token and stores each workflow locally.")),
 		h.Div(h.Class("cm-cardgrid"),
 			g.Map(items, func(it civitai.ModelListItem) g.Node {
-				return modelCardCore(it, images[it.ID], mode, updated[it.ID], workflowImportAction(it.ID, csrf))
+				return modelCardCore(it, images[it.ID], mr, updated[it.ID], workflowImportAction(it.ID, csrf))
 			}),
 		),
 	)

@@ -3,7 +3,6 @@ package web
 import (
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/ZacxDev/civitai-manager/internal/store"
 	g "maragu.dev/gomponents"
@@ -130,27 +129,25 @@ func groupRailGenerations(gens []store.Generation, limit int) []railGroup {
 // predicate behind the rail markup, the shell's reserved width, and the nav's
 // drawer button, so those three can never disagree.
 //
-// NSFW: a captured generation carries no per-image rating signal, so the whole
-// rail is treated as ONE surface — mode "hide" OMITS it server-side (no markup at
-// all), "blur" renders it blurred (hover/focus reveals), "show" renders it plain.
+// 🔴 THE MATURITY RANGE DOES NOT REACH HERE, DELIBERATELY. The rail shows the
+// user's OWN local generations. Nobody has rated them — they carry no
+// browsingLevel, no nsfwLevel, nothing. "No level" here does NOT mean level 0 and
+// it does NOT mean maturityUnknown (the fail-closed sentinel for CivitAI content
+// whose rating we expected and did not get): it means the content is OUT OF SCOPE
+// of a scale that describes CivitAI-sourced material.
 //
-// Like the omit branches in model_pages.go, the hide path is an INERT, PRESERVED
-// capability rather than a live one: every production caller passes s.nsfwMode(),
-// which runs normalizeNSFWMode and MIGRATES a stored "hide" to blur, so mode ==
-// hide is unreachable in practice. The test below reads the RAW value (instead of
-// normalizing first, which would make the branch unreachable from tests too) so
-// the "hide omits server-side" invariant stays exercised and cannot rot.
-func (rd railData) visible(nsfwMode string) bool {
-	if len(rd.Groups) == 0 {
-		return false
-	}
-	return !strings.EqualFold(strings.TrimSpace(nsfwMode), NSFWHide)
+// So the rail renders in full at every range, PG-only included. Feeding it a
+// range would silently blank the user's own outputs — content they made, on their
+// own disk, that no filter was ever asked to hide. The same reasoning covers the
+// /outputs gallery and the per-batch gallery.
+func (rd railData) visible() bool {
+	return len(rd.Groups) > 0
 }
 
 // railShellClass is the <body> class that reserves the rail's width on desktop.
 // Empty when no rail renders, so the shell is byte-identical to the pre-rail one.
-func railShellClass(rd railData, nsfwMode string) string {
-	if !rd.visible(nsfwMode) {
+func railShellClass(rd railData) string {
+	if !rd.visible() {
 		return ""
 	}
 	if rd.Collapsed {
@@ -177,13 +174,10 @@ func railOf(rd []railData) railData {
 // collapses to a thin labelled edge, and an off-canvas drawer below 1024px opened
 // from the nav. It is a sibling of <main>, never inside it, so it cannot interfere
 // with any htmx poll target in the page body.
-func outputsRail(rd railData, csrf, nsfwMode string) g.Node {
-	// visible() reads the RAW mode (see its doc) — normalize only afterwards, for
-	// the blur/show distinction.
-	if !rd.visible(nsfwMode) {
+func outputsRail(rd railData, csrf string) g.Node {
+	if !rd.visible() {
 		return nil
 	}
-	mode := normalizeNSFWMode(nsfwMode)
 
 	tiles := make([]g.Node, 0, len(rd.Groups))
 	for _, gr := range rd.Groups {
@@ -191,7 +185,7 @@ func outputsRail(rd railData, csrf, nsfwMode string) g.Node {
 	}
 
 	// Collapse / expand control: POSTs the NEXT state with the CSRF token and
-	// replies HX-Refresh, exactly like the theme and NSFW toggles.
+	// replies HX-Refresh, exactly like the theme and maturity controls.
 	//
 	// The two states get DIFFERENT controls, and that asymmetry is the whole point:
 	//
@@ -239,7 +233,6 @@ func outputsRail(rd railData, csrf, nsfwMode string) g.Node {
 		h.Class("cm-rail"),
 		dataAttr("collapsed", strconv.FormatBool(rd.Collapsed)),
 		dataAttr("open", "false"),
-		g.If(mode == NSFWBlur, dataAttr("nsfw", "blur")),
 		g.Attr("aria-label", "Recent outputs"),
 		h.Div(h.Class("cm-rail-head"),
 			h.Span(h.Class("cm-rail-title"), g.Text("Recent outputs")),

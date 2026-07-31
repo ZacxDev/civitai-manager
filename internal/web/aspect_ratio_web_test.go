@@ -13,7 +13,7 @@ import (
 func TestGalleryTileAspectRatio(t *testing.T) {
 	withDims := renderString(t, galleryTile(galleryImage{
 		URL: "https://image.civitai.com/a.jpeg", Width: 16, Height: 9,
-	}, "cm-meta-x", false))
+	}, "cm-meta-x"))
 	if !strings.Contains(withDims, "aspect-ratio: 16/9") {
 		t.Errorf("tile should carry the image's aspect-ratio style:\n%s", withDims)
 	}
@@ -23,7 +23,7 @@ func TestGalleryTileAspectRatio(t *testing.T) {
 
 	noDims := renderString(t, galleryTile(galleryImage{
 		URL: "https://image.civitai.com/b.jpeg", Width: 0, Height: 0,
-	}, "cm-meta-y", false))
+	}, "cm-meta-y"))
 	if !strings.Contains(noDims, "aspect-square") {
 		t.Error("a tile with missing dims should fall back to aspect-square")
 	}
@@ -40,7 +40,7 @@ func TestCarouselVariableWidthItemsAndArrows(t *testing.T) {
 		{URL: "https://image.civitai.com/a.jpeg", NSFWLevel: 1, Width: 16, Height: 9},
 		{URL: "https://image.civitai.com/b.jpeg", NSFWLevel: 1, Width: 9, Height: 16},
 	}
-	out := renderString(t, modelCardCarousel(7, imgs, NSFWShow))
+	out := renderString(t, modelCardCarousel(7, imgs, fullMaturityRange()))
 	if !strings.Contains(out, "cm-carousel-item") {
 		t.Error("carousel should wrap tiles in cm-carousel-item")
 	}
@@ -62,11 +62,14 @@ func TestCarouselVariableWidthItemsAndArrows(t *testing.T) {
 func TestCommunityMasonryAspectRatio(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
 
-	it := civitai.ImageItem{
-		ID: 1, URL: "https://image.civitai.com/c.jpeg", Width: 3, Height: 4,
-		NSFWLevel: "None", Username: "alice",
+	it := civitai.LeveledImage{
+		ImageItem: civitai.ImageItem{
+			ID: 1, URL: "https://image.civitai.com/c.jpeg", Width: 3, Height: 4,
+			NSFWLevel: "None", Username: "alice",
+		},
+		BrowsingLevel: 1,
 	}
-	out := renderString(t, srv.communityImageTile(it, NSFWShow))
+	out := renderString(t, srv.communityImageTile(it, fullMaturityRange()))
 	if !strings.Contains(out, "cm-masonry-item") {
 		t.Error("community tile should be a masonry item")
 	}
@@ -77,11 +80,14 @@ func TestCommunityMasonryAspectRatio(t *testing.T) {
 		t.Error("a community tile with real dims should not use the square fallback")
 	}
 
-	it0 := civitai.ImageItem{
-		ID: 2, URL: "https://image.civitai.com/d.jpeg",
-		NSFWLevel: "None", Username: "bob",
+	it0 := civitai.LeveledImage{
+		ImageItem: civitai.ImageItem{
+			ID: 2, URL: "https://image.civitai.com/d.jpeg",
+			NSFWLevel: "None", Username: "bob",
+		},
+		BrowsingLevel: 1,
 	}
-	out0 := renderString(t, srv.communityImageTile(it0, NSFWShow))
+	out0 := renderString(t, srv.communityImageTile(it0, fullMaturityRange()))
 	if !strings.Contains(out0, "aspect-square") {
 		t.Error("a community tile with missing dims should fall back to aspect-square")
 	}
@@ -94,9 +100,10 @@ func TestCommunityMasonryAspectRatio(t *testing.T) {
 // replaced by the CSS multi-column masonry container.
 func TestCommunityFeedUsesMasonryContainer(t *testing.T) {
 	srv := newModelServer(t, newModelReader(t))
-	out := renderString(t, srv.communityFeedFragment([]civitai.ImageItem{
-		{ID: 1, URL: "https://image.civitai.com/c.jpeg", Width: 2, Height: 3, NSFWLevel: "None", Username: "a"},
-	}, NSFWShow))
+	out := renderString(t, srv.communityFeedFragment([]civitai.LeveledImage{
+		{ImageItem: civitai.ImageItem{ID: 1, URL: "https://image.civitai.com/c.jpeg",
+			Width: 2, Height: 3, NSFWLevel: "None", Username: "a"}, BrowsingLevel: 1},
+	}, fullMaturityRange()))
 	if !strings.Contains(out, `class="cm-masonry"`) {
 		t.Errorf("community feed should render the masonry container:\n%s", out)
 	}

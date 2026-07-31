@@ -359,12 +359,18 @@ func TestShellMeasureIsInTheBuiltCSS(t *testing.T) {
 	for _, want := range []string{
 		".cm-nav {", "position: sticky", "--cm-nav-h", "scroll-padding-top",
 		".cm-rail {", ".cm-rail-scrim", ".cm-shell-rail {", ".cm-shell-rail-collapsed {",
-		// The rail's blur selector follows the thumbnail class. It moved from
-		// .cm-rail-thumb to the shared .cm-out-thumb when the rail and the masonry
-		// tile were unified onto one thumbnail renderer (generationThumb); a rename
-		// that missed this rule would silently disable NSFW blur on the rail, which
-		// is exactly what this assertion is here to catch.
-		`.cm-rail[data-nsfw="blur"] .cm-out-thumb`, ".cm-cardgrid {",
+		// The nav's maturity range control is hand-written .cm-* CSS for the same
+		// reason the rail is: output.css is a purged static build, so a Tailwind
+		// utility added here would be unstyled until someone regenerates it.
+		//
+		// These three replaced a `.cm-rail[data-nsfw="blur"] .cm-out-thumb`
+		// assertion that guarded the rail's NSFW blur. That rule is GONE, not
+		// broken: the blur/show toggle was replaced by a maturity range that omits
+		// out-of-band content server-side, and the rail (the user's own outputs)
+		// is not filtered by it at all. Nothing else asserted the control's CSS,
+		// so the coverage moves here rather than disappearing.
+		".cm-maturity {", ".cm-maturity-select {", ".cm-maturity-legend {",
+		".cm-cardgrid {",
 	} {
 		if !strings.Contains(string(app), want) {
 			t.Errorf("app.css missing %q", want)

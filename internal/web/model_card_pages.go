@@ -23,7 +23,7 @@ type matchedModelCardView struct {
 	FileCount  int
 	TotalBytes int64
 	Images     []galleryImage
-	NSFWMode   string
+	Maturity   maturityRange
 
 	// Version breakdown (Item C). Local is the versions the user actually has
 	// (grouped from local files); Available is the model's version list (civitai
@@ -178,8 +178,8 @@ func buildVersionBreakdown(versions []civitai.ModelVersionSummary, files []store
 // images are sourced from the model raw JSON's inline images[] via
 // parseVersionImages — the SAME inline-image path the model page uses, never a
 // separate /api/v1/images call.
-func buildMatchedModelCardView(id int, m *civitai.ModelDetail, raw []byte, files []store.LocalFile, nsfwMode string, sub *store.Subscription) matchedModelCardView {
-	v := matchedModelCardView{ModelID: id, NSFWMode: nsfwMode}
+func buildMatchedModelCardView(id int, m *civitai.ModelDetail, raw []byte, files []store.LocalFile, mr maturityRange, sub *store.Subscription) matchedModelCardView {
+	v := matchedModelCardView{ModelID: id, Maturity: mr}
 	for _, f := range files {
 		v.TotalBytes += f.SizeBytes
 	}
@@ -366,7 +366,7 @@ func matchedModelCard(v matchedModelCardView, csrf string) g.Node {
 			),
 			sizeText(v.TotalBytes),
 		),
-		modelCardCarousel(v.ModelID, v.Images, v.NSFWMode),
+		modelCardCarousel(v.ModelID, v.Images, v.Maturity),
 		versionBreakdownSection(v, csrf),
 	)
 }
@@ -640,13 +640,13 @@ func modelCardError(id, fileCount int, total int64, msg string) g.Node {
 }
 
 // modelCardCarousel renders the model's showcase images as a horizontal
-// scroll-snap carousel, honoring the persisted NSFW display mode exactly as the
-// model page does (hide omits, blur obscures behind click-to-reveal, show
-// reveals) — it never re-flags or exposes NSFW. Each tile reuses galleryTile
+// scroll-snap carousel, honoring the app-wide maturity RANGE exactly as the model
+// page does: an image whose level falls outside the band is OMITTED — its URL is
+// never emitted — and everything inside renders plain. Each tile reuses galleryTile
 // (and thus the shared lightbox on the results page) with a per-model-namespaced
 // meta id so multiple carousels don't collide.
-func modelCardCarousel(modelID int, images []galleryImage, mode string) g.Node {
-	return modelCardCarouselW(modelID, images, mode, thumbnailWidth)
+func modelCardCarousel(modelID int, images []galleryImage, mr maturityRange) g.Node {
+	return modelCardCarouselW(modelID, images, mr, thumbnailWidth)
 }
 
 // modelCardCarouselW is modelCardCarousel with an explicit tile thumbnail width.
@@ -654,19 +654,22 @@ func modelCardCarousel(modelID int, images []galleryImage, mode string) g.Node {
 // model DETAIL showcase calls this with detailThumbnailWidth so its enlarged
 // tiles stay crisp — the markup is otherwise identical (same .cm-carousel strip,
 // NSFW handling, and lightbox), so the card carousel is unaffected.
-func modelCardCarouselW(modelID int, images []galleryImage, mode string, tileWidth int) g.Node {
-	mode = normalizeNSFWMode(mode)
+// A model itself is NEVER omitted by the range. A model's own `nsfwLevel` is a
+// BITMASK UNION of the levels of its images (measured live: 31 = 1|2|4|8|16,
+// 60 = 4|8|16|32), not one comparable level, so there is nothing to compare a
+// band against; the filtering happens per IMAGE, which does carry a single level.
+// A model whose every showcase image falls outside the band renders the honest
+// "No showcase images." line rather than vanishing from the results.
+func modelCardCarouselW(modelID int, images []galleryImage, mr maturityRange, tileWidth int) g.Node {
 	var tiles []g.Node
 	shown := 0
 	for i, im := range images {
-		nsfw := isNSFWLevel(im.NSFWLevel)
-		if nsfw && mode == NSFWHide {
-			continue // hide mode omits NSFW images entirely
+		if !mr.containsBrowsingLevel(im.NSFWLevel) {
+			continue // outside the maturity range — the URL never reaches the DOM
 		}
-		blur := nsfw && mode == NSFWBlur
 		tiles = append(tiles, h.Div(
 			h.Class("cm-carousel-item"),
-			galleryTileW(im, fmt.Sprintf("cm-meta-m%d-%d", modelID, i), blur, tileWidth),
+			galleryTileW(im, fmt.Sprintf("cm-meta-m%d-%d", modelID, i), tileWidth),
 		))
 		shown++
 	}

@@ -2,36 +2,21 @@ package web
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/ZacxDev/civitai-manager/internal/civitai"
 	g "maragu.dev/gomponents"
 	h "maragu.dev/gomponents/html"
 )
 
-// nsfwLevelFromString maps CivitAI's STRING nsfwLevel label (as it appears on
-// the /api/v1/images ImageItem — "None"/"Soft"/"Mature"/"X"/"XX"/"XXX") to the
-// numeric level scale used by isNSFWLevel. It FAILS CLOSED: an empty or
-// unrecognized label maps to nsfwLevelUnknown (treated NSFW), so a mislabeled or
-// future-labeled image is never rendered un-obscured.
-func nsfwLevelFromString(s string) int {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "none":
-		return 1
-	case "soft":
-		return 2
-	case "mature":
-		return 4
-	case "x":
-		return 8
-	case "xx":
-		return 16
-	case "xxx":
-		return 32
-	default:
-		return nsfwLevelUnknown
-	}
-}
+// 🔴 THERE IS DELIBERATELY NO nsfwLevelFromString HERE ANY MORE.
+//
+// This file used to map /api/v1/images' STRING `nsfwLevel` label onto a numeric
+// scale. That mapping is UNSOUND and was removed with the maturity range: the
+// endpoint labels BOTH of its top two levels `"X"`. Measured 2026-07-31 on
+// nsfw=X&limit=100 — 41 items at browsingLevel 8 and 40 at browsingLevel 16, all
+// labelled "X" — so a string mapping cannot tell X from XXX, which makes both
+// "X only" and "up to X" lies. The tiles read civitai.LeveledImage.BrowsingLevel,
+// the NUMBER, instead. Do not reintroduce a label-based level.
 
 // imageReactionCount totals the positive reaction tallies on an image (likes,
 // hearts, laughs, cries) — the "reactions" signal shown on a community tile.
@@ -52,16 +37,22 @@ func imageReactionCount(st civitai.ImageStats) int {
 // server-side; they just don't leave a scar on the page.
 func communityFeedAbsent() g.Node { return g.Text("") }
 
-// communityFeedFragment renders the community image grid. Each ImageItem honors
-// the NSFW display mode exactly like the showcase gallery: hide OMITS the image
-// server-side (its URL never reaches the DOM), blur renders it blurred behind a
-// click-to-reveal overlay, show renders it plain. If every item is omitted by
-// hide mode, the truthful empty note is shown.
-func (s *Server) communityFeedFragment(items []civitai.ImageItem, mode string) g.Node {
-	mode = normalizeNSFWMode(mode)
+// communityFeedFragment renders the community image grid, honoring the app-wide
+// maturity range exactly like the showcase gallery: an image outside the band is
+// OMITTED server-side (its URL never reaches the DOM); everything inside renders
+// plain. If every item is omitted, the section is omitted entirely.
+//
+// It takes MORE items than it renders — see communityFetchLimit. The upstream
+// `nsfw` param is a CEILING that returns a mix at and below it, so a narrow band
+// is a fraction of the response; the handler over-fetches and this clamps to
+// communityPageSize so a full page still fills.
+func (s *Server) communityFeedFragment(items []civitai.LeveledImage, mr maturityRange) g.Node {
 	var tiles []g.Node
 	for _, it := range items {
-		if tile := s.communityImageTile(it, mode); tile != nil {
+		if len(tiles) >= communityPageSize {
+			break // clamp: the over-fetch feeds the filter, not the page
+		}
+		if tile := s.communityImageTile(it, mr); tile != nil {
 			tiles = append(tiles, tile)
 		}
 	}
@@ -83,25 +74,22 @@ func (s *Server) communityFeedFragment(items []civitai.ImageItem, mode string) g
 
 // communityImageTile renders one community image tile: a downscaled thumbnail
 // that links OUT to the image's civitai.com page (new tab), captioned with the
-// poster's username and reaction count. Returns nil when the image is NSFW and
-// the mode is hide (so the URL is omitted from the HTML entirely).
-func (s *Server) communityImageTile(it civitai.ImageItem, mode string) g.Node {
-	nsfw := isNSFWLevel(nsfwLevelFromString(it.NSFWLevel))
-	if nsfw && mode == NSFWHide {
-		return nil // hide mode omits NSFW images entirely — URL must not reach the DOM
+// poster's username and reaction count. Returns nil when the image's maturity
+// level falls outside the range — the URL is then omitted from the HTML entirely,
+// never merely styled differently.
+//
+// It reads BrowsingLevel (the number), never NSFWLevel (the string label): see
+// the note at the top of this file.
+func (s *Server) communityImageTile(it civitai.LeveledImage, mr maturityRange) g.Node {
+	if !mr.containsBrowsingLevel(it.BrowsingLevel) {
+		return nil // outside the range — the URL must not reach the DOM
 	}
-	blur := nsfw && mode == NSFWBlur
 
-	imgClass := "h-full w-full object-cover transition"
-	if blur {
-		imgClass += " cm-blur"
-	}
 	img := h.Img(
 		h.Src(civitaiThumbURL(it.URL, thumbnailWidth)),
 		h.Alt("community image"),
 		h.Loading("lazy"),
-		g.If(blur, g.Attr("data-blurred", "1")),
-		h.Class(imgClass),
+		h.Class("h-full w-full object-cover transition"),
 	)
 
 	// The image links out to civitai (external, new tab) — NOT the internal
@@ -128,16 +116,6 @@ func (s *Server) communityImageTile(it civitai.ImageItem, mode string) g.Node {
 		children = append(children, h.Class(wrapClass+" aspect-square"))
 	}
 	children = append(children, link)
-	if blur {
-		// Reuse the showcase cm-reveal/blur-xl pattern. The reveal must not follow
-		// the tile's outbound link, so it stops the click before revealing in place.
-		children = append(children, h.Button(
-			h.Type("button"),
-			g.Attr("onclick", "event.preventDefault();event.stopPropagation();cmReveal(this)"),
-			h.Class("absolute inset-0 z-10 flex items-center justify-center bg-slate-950/40 text-xs font-medium text-slate-100"),
-			g.Text("reveal"),
-		))
-	}
 	// Caption overlay: poster username + reaction count. Usernames are untrusted
 	// civitai data — g.Text auto-escapes them.
 	children = append(children, h.Div(

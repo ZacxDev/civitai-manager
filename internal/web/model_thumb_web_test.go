@@ -94,7 +94,7 @@ func TestTileThumbWidthNoUpscale(t *testing.T) {
 // full-resolution original.
 func TestGalleryTileUsesThumbForSrcOriginalForLightbox(t *testing.T) {
 	orig := "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/ad0eb2e0-c228-4131-956d-ca01b95552d3/Krea2upscale_00942_.jpeg"
-	html := renderString(t, galleryTile(galleryImage{URL: orig, Width: 1024}, "cm-meta-0", false))
+	html := renderString(t, galleryTile(galleryImage{URL: orig, Width: 1024}, "cm-meta-0"))
 
 	wantThumb := "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/ad0eb2e0-c228-4131-956d-ca01b95552d3/anim=false,width=450,optimized=true/Krea2upscale_00942_.jpeg"
 	if !strings.Contains(html, `src="`+wantThumb+`"`) {

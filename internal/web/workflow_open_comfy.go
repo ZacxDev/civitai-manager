@@ -332,7 +332,7 @@ func (s *Server) renderOpenComfyPage(w http.ResponseWriter, body, backLink g.Nod
 	if backLink != nil {
 		nodes = append(nodes, backLink)
 	}
-	s.render(w, http.StatusOK, page("Open in ComfyUI", s.currentTheme(), s.csrf, s.nsfwMode(), railData{}, nodes...))
+	s.render(w, http.StatusOK, page("Open in ComfyUI", s.currentTheme(), s.csrf, s.maturity(), railData{}, nodes...))
 }
 
 func openComfyBackLink(id int64) g.Node {

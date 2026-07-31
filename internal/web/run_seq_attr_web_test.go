@@ -17,7 +17,7 @@ func TestRunStatusFragmentRunSeqAttr(t *testing.T) {
 		"runRunning": func(s runSnapshot) string { return renderString(t, runRunning(s, 1, csrf)) },
 		"runStopped": func(s runSnapshot) string { return renderString(t, runStopped(s, 1, csrf)) },
 		"runTerminal": func(s runSnapshot) string {
-			return renderString(t, runTerminal(s, 1, csrf, false, ""))
+			return renderString(t, runTerminal(s, 1, csrf, false, fullMaturityRange()))
 		},
 	}
 

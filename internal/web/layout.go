@@ -31,14 +31,14 @@ func dataFlag(name string) g.Node { return g.Attr("data-" + name) }
 // outputs_rail.go). Its zero value renders no rail — the shell is then
 // byte-identical to the pre-rail one, which is what page builders called without
 // shell state (unit tests) produce.
-func page(title, theme, csrf, nsfwMode string, rail railData, body ...g.Node) g.Node {
+func page(title, theme, csrf string, mr maturityRange, rail railData, body ...g.Node) g.Node {
 	if theme != "light" {
 		theme = "dark"
 	}
 	// One predicate decides the rail markup, the shell's reserved width and the
 	// nav's drawer button, so they can never disagree.
 	bodyClass := "min-h-screen bg-slate-950 text-slate-100 antialiased"
-	if c := railShellClass(rail, nsfwMode); c != "" {
+	if c := railShellClass(rail); c != "" {
 		bodyClass += " " + c
 	}
 	return g.El("html",
@@ -61,14 +61,14 @@ func page(title, theme, csrf, nsfwMode string, rail railData, body ...g.Node) g.
 		),
 		h.Body(
 			h.Class(bodyClass),
-			navbar(theme, csrf, nsfwMode, rail),
+			navbar(theme, csrf, mr, rail),
 			h.Main(
 				h.Class("mx-auto "+shellMeasure+" px-4 py-6 space-y-6"),
 				g.Group(body),
 			),
 			// The rail is a SIBLING of <main>, never inside it, so it can never
 			// interfere with an htmx poll target in the page body.
-			outputsRail(rail, csrf, nsfwMode),
+			outputsRail(rail, csrf),
 			// Lazy-attach thumbnail video sources. It lives in the SHARED layout
 			// because the recent-outputs rail renders on EVERY page, so a video
 			// thumbnail can appear on any of them — not only /outputs. It is a
@@ -92,7 +92,7 @@ const shellMeasure = "max-w-[1800px]"
 // keeps every destination reachable in one gesture with no JS, no focus trap and
 // no second overlay competing with the rail drawer for the same corner of the
 // screen; only the brand shortens. The controls (rail/NSFW/theme) never scroll.
-func navbar(theme, csrf, nsfwMode string, rail railData) g.Node {
+func navbar(theme, csrf string, mr maturityRange, rail railData) g.Node {
 	return h.Nav(
 		h.Class("cm-nav border-b border-slate-800 bg-slate-900"),
 		h.Div(
@@ -112,42 +112,95 @@ func navbar(theme, csrf, nsfwMode string, rail railData) g.Node {
 				navLink("/trash", "Trash"),
 			),
 			h.Div(h.Class("flex shrink-0 items-center gap-2"),
-				g.If(rail.visible(nsfwMode), railNavToggle()),
-				nsfwToggle(nsfwMode, csrf),
+				g.If(rail.visible(), railNavToggle()),
+				maturityControl(mr, csrf),
 				themeToggle(theme, csrf),
 			),
 		),
 	)
 }
 
-// nsfwToggle renders the global NSFW display control as a 2-state cycling button
-// (matching the themeToggle idiom): the label shows the CURRENT mode and one
-// click flips between Blur ⇄ Show. It POSTs the NEXT mode (with the CSRF token)
-// to /settings/nsfw; the handler persists it and replies HX-Refresh so the
-// current page re-renders under the new mode (galleries then blur/show
-// accordingly). hx-swap="none" — the refresh does the re-render.
+// maturityControlID / maturityControlMaxID are the stable ids the two ends of the
+// range control carry. Exported as constants because both the markup and the
+// tests that assert the accessible names key off them.
+const (
+	maturityControlMinID = "cm-maturity-min"
+	maturityControlMaxID = "cm-maturity-max"
+)
+
+// maturityControl renders the app-wide PG..XXX maturity RANGE as TWO NATIVE
+// <select>s inside one <form> — a "from" end and a "to" end. It replaced the old
+// 2-state NSFW blur⇄show button outright: one concept, one stored setting.
 //
-// The old "hide" state was removed from the cycle; normalizeNSFWMode migrates any
-// stored hide to blur, so the toggle only ever surfaces Blur or Show.
-func nsfwToggle(mode, csrf string) g.Node {
-	mode = normalizeNSFWMode(mode)
-	var next, label string
-	switch mode {
-	case NSFWShow:
-		next, label = NSFWBlur, "NSFW: Show"
-	default: // blur (the safe default; migrated hide lands here too)
-		next, label = NSFWShow, "NSFW: Blur"
+// WHY TWO <select>s AND NOT A SLIDER. HTML has no two-thumb range input, so a
+// dual slider means two overlapping <input type=range> plus JavaScript to keep
+// them apart — and this app ships htmx and nothing else. Two selects are:
+//
+//   - keyboard-operable for free (Tab to reach, arrows/Home/End to change,
+//     type-ahead to jump) with no key handling of our own;
+//   - individually named for assistive tech — each end carries its OWN <label>,
+//     so a screen reader announces "Maturity from" / "Maturity to" rather than one
+//     ambiguous "slider";
+//   - offline and framework-free — native elements, no CDN, no polyfill;
+//   - and readable at a glance: the current band is literally spelled out.
+//
+// 🔴 THE CONTROL CANNOT EMIT AN INVERTED RANGE. Each end only offers the levels
+// that keep the band valid — the "from" select stops at the current Max, the "to"
+// select starts at the current Min — so every single change from a valid state
+// lands on another valid state. (Widening past the other end therefore takes two
+// steps, which is the deliberate trade for never being able to submit nonsense.)
+// The handler ALSO rejects an inverted submission with 400; the two are belt and
+// braces, because the markup constraint only binds a browser.
+//
+// Changing either end submits the WHOLE form (both values + the CSRF token) to
+// POST /settings/maturity, which persists and replies HX-Refresh so the current
+// page re-renders under the new band — the same idiom as the theme toggle, so the
+// one control works on every page.
+func maturityControl(mr maturityRange, csrf string) g.Node {
+	if !mr.valid() {
+		mr = fullMaturityRange()
 	}
-	return civButton("outline", "sm",
-		[]g.Node{
-			h.Type("button"),
-			hx("post", "/settings/nsfw"),
-			hx("vals", fmt.Sprintf(`{"mode":%q,"csrf_token":%q}`, next, csrf)),
-			hx("swap", "none"),
-			g.Attr("aria-label", "Cycle NSFW display (currently "+mode+", click for "+next+")"),
-		},
-		g.Text(label),
+	return h.Form(
+		h.Class("cm-maturity"),
+		hx("post", "/settings/maturity"),
+		hx("trigger", "change"),
+		hx("swap", "none"),
+		// The CSRF token rides in the form, not in hx-vals, so the control is one
+		// self-contained POST body — hx-include is not needed and cannot go stale.
+		h.Input(h.Type("hidden"), h.Name("csrf_token"), h.Value(csrf)),
+		h.Span(h.Class("cm-maturity-legend"), g.Attr("aria-hidden", "true"), g.Text("Maturity")),
+		maturityEnd(maturityControlMinID, "min", "Maturity from", mr.Min, maturityPG, mr.Max),
+		h.Span(h.Class("cm-maturity-dash"), g.Attr("aria-hidden", "true"), g.Text("–")),
+		maturityEnd(maturityControlMaxID, "max", "Maturity to", mr.Max, mr.Min, maturityXXX),
 	)
+}
+
+// maturityEnd renders one end of the range control: a visually-hidden but REAL
+// <label> bound to the <select> (so the end has an accessible name), offering
+// only the levels between lo and hi inclusive — which is what makes an inverted
+// range unreachable from the UI.
+func maturityEnd(id, name, label string, selected, lo, hi maturityLevel) g.Node {
+	opts := make([]g.Node, 0, len(maturityScale))
+	for _, l := range maturityScale {
+		if l < lo || l > hi {
+			continue
+		}
+		attrs := []g.Node{h.Value(l.slug())}
+		if l == selected {
+			attrs = append(attrs, g.Attr("selected"))
+		}
+		attrs = append(attrs, g.Text(l.label()))
+		opts = append(opts, h.Option(attrs...))
+	}
+	return g.Group([]g.Node{
+		// A real <label for=…>, not an aria-label: it is the element assistive tech
+		// prefers, and .cm-sr-only keeps it out of the visual nav strip without
+		// removing it from the accessibility tree (display:none would).
+		h.Label(h.Class("cm-sr-only"), h.For(id), g.Text(label)),
+		h.Select(append([]g.Node{
+			h.ID(id), h.Name(name), h.Class("cm-maturity-select"),
+		}, opts...)...),
+	})
 }
 
 func navLink(href, label string) g.Node {

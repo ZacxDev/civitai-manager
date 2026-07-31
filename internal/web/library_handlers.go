@@ -28,7 +28,7 @@ const modelCacheTTL = 7 * 24 * time.Hour
 // (hx-get target of modelCardLazy). It resolves the model detail through the
 // model_cache (only calling GetModel on a miss/stale entry), gathers the model's
 // local files for the file count/size, parses the inline showcase images, and
-// renders the carousel honoring the persisted NSFW mode. GET, no state change.
+// renders the carousel honoring the persisted maturity range. GET, no state change.
 func (s *Server) handleModelCard(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil || id <= 0 {
@@ -56,7 +56,7 @@ func (s *Server) handleModelCard(w http.ResponseWriter, r *http.Request) {
 			modelCardError(id, len(group), total, "Details unavailable (offline or not found)."))
 		return
 	}
-	view := buildMatchedModelCardView(id, m, raw, group, s.nsfwMode(), s.modelSubscription(id))
+	view := buildMatchedModelCardView(id, m, raw, group, s.maturity(), s.modelSubscription(id))
 	s.render(w, http.StatusOK, matchedModelCard(view, s.csrf))
 }
 
@@ -394,7 +394,7 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	s.render(w, http.StatusOK, libraryPage(s.annotateLibrary(buildLibraryView(files)), s.csrf, s.extraPathsAllowed(), selected, s.currentTheme(), tab, discoverInitial, s.matchRemoteEnabled(), scanInitial, s.nsfwMode(), lw, s.rail(r.Context())))
+	s.render(w, http.StatusOK, libraryPage(s.annotateLibrary(buildLibraryView(files)), s.csrf, s.extraPathsAllowed(), selected, s.currentTheme(), tab, discoverInitial, s.matchRemoteEnabled(), scanInitial, s.maturity(), lw, s.rail(r.Context())))
 }
 
 func (s *Server) handleLibraryScan(w http.ResponseWriter, r *http.Request) {
@@ -614,7 +614,7 @@ func (s *Server) handleTrash(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load trash", err)
 		return
 	}
-	s.render(w, http.StatusOK, trashPage(batches, s.csrf, s.currentTheme(), s.nsfwMode(), s.rail(r.Context())))
+	s.render(w, http.StatusOK, trashPage(batches, s.csrf, s.currentTheme(), s.maturity(), s.rail(r.Context())))
 }
 
 func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {

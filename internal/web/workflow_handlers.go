@@ -66,11 +66,11 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 	// runs on this render path.
 	comfyConfigured := strings.TrimSpace(s.cfg.ComfyURL) != ""
 	generate := generateSection(wf, s.runJobState(), s.csrf, s.extraPathsAllowed(),
-		s.comfyDownloadEligible(), s.nsfwMode(),
+		s.comfyDownloadEligible(), s.maturity(),
 		s.buildPresetView(r.Context(), wf, 0, nil, true),
 		comfyConfigured, s.comfyHelperState())
 	s.render(w, http.StatusOK, workflowDetailPage(wf,
-		s.csrf, s.currentTheme(), s.nsfwMode(), generate, recent, s.workflowResolver(),
+		s.csrf, s.currentTheme(), s.maturity(), generate, recent, s.workflowResolver(),
 		s.rail(r.Context())))
 }
 
@@ -353,7 +353,7 @@ func (s *Server) workflowResolver() workflowResolver {
 			}
 			return info, true
 		},
-		nsfwMode:   s.nsfwMode(),
+		mr:         s.maturity(),
 		csrf:       s.csrf,
 		openFolder: openFolder,
 	}

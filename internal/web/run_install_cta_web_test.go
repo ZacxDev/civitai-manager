@@ -195,7 +195,7 @@ func TestInstallAndRunCTAAlwaysCarriesModelID(t *testing.T) {
 	mm := fixTestModel()
 	section := renderString(t, civitaiMatchSection(mm,
 		missingResolution{Reached: true, Result: resolveResult("Primary Match", "Alt1", "Alt2", "Alt3")},
-		7, "tok-csrf", true, NSFWBlur))
+		7, "tok-csrf", true, fullMaturityRange()))
 
 	ctas := downloadAndRunCTAs(t, section)
 	if len(ctas) != fixAltCap+1 {
