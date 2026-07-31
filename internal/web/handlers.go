@@ -420,8 +420,19 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 	// A version click is an htmx partial swap of #version-region: render ONLY that
 	// region's inner content (not the full page shell), so scroll is preserved and
 	// the URL is updated via hx-push-url on the link.
+	//
+	// The related-workflows section rides along OUT OF BAND. Its ecosystem comes
+	// from the SELECTED version (a model's versions can sit on different base
+	// models — LUSTIFY!'s newest is Krea 2 while its other 16 are SDXL), so it MUST
+	// re-render on a version click; but it lives BELOW #version-region on the page,
+	// so an in-band swap would move it. hx-swap-oob replaces it where it stands.
+	// Re-rendering is cheap: a same-ecosystem switch yields the same hx-get URL and
+	// is answered from facetFeed's TTL cache, costing zero outbound requests.
 	if isHX {
-		s.render(w, http.StatusOK, versionRegionInner(view, sub, s.csrf, s.cfg.BaseURL))
+		s.render(w, http.StatusOK, g.Group([]g.Node{
+			versionRegionInner(view, sub, s.csrf, s.cfg.BaseURL),
+			relatedWorkflowsOOB(view),
+		}))
 		return
 	}
 	// FULL-PAGE ONLY: the workflow-linkage sections are per-MODEL and live outside
