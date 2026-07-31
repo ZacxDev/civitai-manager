@@ -119,7 +119,18 @@ func workflowDiscoverPage(v workflowDiscoverView, theme string, rail ...railData
 	return page("Discover workflows", theme, v.CSRF, v.Mode, railOf(rail),
 		browseSurface(browseSurfaceSpec{
 			Title: "Discover workflows",
-			Blurb: "Browse ComfyUI workflows on CivitAI by ecosystem, use case, or keyword. Your search is sent to civitai.com. Importing downloads the workflow zip with your token and stores each workflow locally.",
+			// ⚠ EGRESS DISCLOSURE — READ BEFORE EDITING EITHER HALF.
+			// "Your search is sent to civitai.com" is now the ONLY egress statement
+			// on this surface. The import half — "Importing downloads the workflow
+			// zip with your token and stores each workflow locally." — was removed
+			// here by explicit request, and workflowImportAction deliberately
+			// carries no note of its own (per-card it was noise on a grid of cards,
+			// see its comment block). Consequence, accepted knowingly:
+			// /workflows/discover no longer discloses the IMPORT egress anywhere.
+			// The model DETAIL page's related-workflows section still carries the
+			// sentence, and it is that surface's only egress statement — do not
+			// remove it as "duplicate copy".
+			Blurb: "Browse ComfyUI workflows on CivitAI by ecosystem, use case, or keyword. Your search is sent to civitai.com.",
 			Controls: browseFilterForm("/workflows/discover", "discover-results", "discover",
 				v.Query, "Search workflows by name, tag, …", v.Sort, v.Period,
 				// Carry the selected facets through a sort/period/query change, so

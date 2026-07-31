@@ -46,8 +46,13 @@ func TestImportButtonHasNoTrailingCopy(t *testing.T) {
 }
 
 // TestDiscoverCardsDropTheImportNoteButKeepThePageBlurb — the per-card note is
-// gone, but the page's own description (which is what states the civitai.com
-// egress) is a DIFFERENT element and stays.
+// gone and the page's own description stays.
+//
+// ⚠ The blurb's IMPORT-egress sentence ("Importing downloads the workflow zip
+// with your token and stores each workflow locally.") was REMOVED by explicit
+// request. Since workflowImportAction carries no note either, /workflows/discover
+// now discloses only the SEARCH egress. This test pins that state deliberately —
+// if the sentence comes back, this is the place that says why it left.
 func TestDiscoverCardsDropTheImportNoteButKeepThePageBlurb(t *testing.T) {
 	reader := &recordingSearchReader{result: workflowResult(t)}
 	srv := newModelServer(t, reader)
@@ -66,7 +71,12 @@ func TestDiscoverCardsDropTheImportNoteButKeepThePageBlurb(t *testing.T) {
 	if !strings.Contains(body, "Browse ComfyUI workflows on CivitAI") {
 		t.Error("the page's own blurb is a different element and must stay")
 	}
-	if !strings.Contains(body, "Importing downloads the workflow zip with your token") {
-		t.Error("the blurb still has to state the civitai.com egress")
+	if !strings.Contains(body, "Your search is sent to civitai.com") {
+		t.Error("the blurb still has to state the SEARCH egress")
+	}
+	if strings.Contains(body, "Importing downloads the workflow zip with your token") {
+		t.Error("the import-egress sentence was removed from the discover blurb by request; " +
+			"it must not come back here silently — if it should, say so and update the " +
+			"comment above, because this surface currently has NO import-egress disclosure")
 	}
 }
