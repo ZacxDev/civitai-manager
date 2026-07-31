@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -341,11 +342,16 @@ func outputsPagination(selectedWorkflow string, page, total int) g.Node {
 	return h.Div(h.Class("flex items-center justify-center gap-6 pt-2"), g.Group(controls))
 }
 
-// generationDetailPage renders one generation: full images (lightbox), the params
-// panel, and Re-run / Delete actions. wfExists gates the Re-run control (disabled
-// when the source workflow was deleted). Render-plain.
+// generationDetailPage renders one generation: full images (lightbox), the
+// provenance card (source workflow + prompt + resources), the params panel, and
+// Re-run / Delete actions. Render-plain.
+//
+// resolver is the SAME workflowResolver the workflow detail page uses — it is what
+// lets the resource chips resolve a basename to a local file and a CivitAI/HF source
+// link. Its zero value is safe (nothing about a file is then claimed), which is what
+// a unit test calling this without a server gets.
 func generationDetailPage(gen *store.Generation, images []store.GenerationImage,
-	csrf, theme, nsfwMode string, rail ...railData) g.Node {
+	csrf, theme, nsfwMode string, resolver workflowResolver, rail ...railData) g.Node {
 
 	id := strconv.FormatInt(gen.ID, 10)
 
@@ -377,12 +383,256 @@ func generationDetailPage(gen *store.Generation, images []store.GenerationImage,
 	body := []g.Node{
 		header,
 		imagesCard,
+		// Provenance sits directly BELOW the media and ABOVE the raw params dump: it
+		// answers "what made this picture" (workflow, prompt, models), which is what
+		// someone scrolling off the image is actually asking.
+		generationProvenanceCard(gen, resolver),
 		generationParamsCard(gen),
 		generationActionsCard(gen, csrf),
 		lightboxOverlay(),
 		modelPageScript(),
 	}
 	return page("Output "+id, theme, csrf, nsfwMode, railOf(rail), body...)
+}
+
+// promptNotRecordedNote is what a generation captured BEFORE prompt capture existed
+// says in place of a prompt.
+//
+// It is deliberately an explicit statement rather than a blank or a best guess. The
+// prompt could be re-read from the linked workflow's graph today — and that is
+// exactly the wrong thing to do: a rescan replaces a workflow's graph in place, so
+// the text shown would be the CURRENT prompt attributed to a PAST image, with nothing
+// on screen admitting the difference.
+//
+// Both this and promptNoneDetectedNote are deliberately written WITHOUT an
+// apostrophe, so a test can assert the shipped constant directly: g.Text escapes
+// `'` to `&#39;`, and a test comparing against the Go string would silently never
+// match — a guard that cannot fail.
+const promptNotRecordedNote = "Not recorded for this run. Prompts are captured with " +
+	"the run, and this generation predates that. Reading it from the workflow now " +
+	"would show that workflow as it is TODAY, which is not necessarily what made " +
+	"this image."
+
+// promptNoneDetectedNote is the OTHER empty case: capture ran and found no prompt
+// input at all (an api-format workflow has no widgets_values to read, and a UI graph
+// may simply carry no CLIPTextEncode-family node). Distinct wording matters — "we
+// looked and there is none" is a different fact from "we never looked".
+const promptNoneDetectedNote = "No prompt input was detected in the graph this run " +
+	"submitted, so there is no prompt text to show."
+
+// generationProvenanceCard answers "what made this image": the source workflow, the
+// prompt that ran, and the models it referenced.
+//
+// It sits below the media and is built ENTIRELY from the generation row + its params
+// snapshot — never from the live workflow — so an orphaned generation (workflow_id
+// NULL) renders identically to a linked one apart from the link itself.
+func generationProvenanceCard(gen *store.Generation, resolver workflowResolver) g.Node {
+	snap := parseRunParams(gen.Params)
+	return card(
+		sectionTitle("Provenance"),
+		generationWorkflowRow(gen),
+		generationPromptBlock(snap),
+		generationResourcesBlock(snap, resolver),
+	)
+}
+
+// generationWorkflowRow renders the source-workflow row: a LINK when the workflow
+// still exists, and plain text when it does not.
+//
+// workflow_id is nullable (ON DELETE SET NULL) while workflow_name is a snapshot, so
+// a deleted workflow still has a name to print — but printing it as a link would send
+// the user to a 404. generationLabel already encodes that convention (it appends
+// "(deleted)" / returns "(deleted workflow)"), so the two renderings can never
+// disagree about the text.
+func generationWorkflowRow(gen *store.Generation) g.Node {
+	label := generationLabel(*gen)
+	// Same shape as metaRow (which takes a plain string and so cannot carry a link).
+	var value g.Node
+	if gen.WorkflowID != nil {
+		// break-all lives on the element that PRINTS the name, not only on its <dd>
+		// parent — that is what TestLongUntrustedStringsCanBreak checks, and it is right
+		// to: an inline <a> is its own box and wraps by its own rules.
+		value = h.A(
+			h.Href("/workflows/"+strconv.FormatInt(*gen.WorkflowID, 10)),
+			h.Class("break-all text-indigo-400 hover:text-indigo-300"),
+			g.Text(label))
+	} else {
+		value = h.Span(
+			h.Class("break-all text-slate-400"),
+			h.Title("The source workflow was deleted, so there is nothing to link to. "+
+				"The name is the snapshot taken when this generation was captured."),
+			g.Text(label))
+	}
+	return h.Dl(h.Class("space-y-1"),
+		h.Div(h.Class("flex gap-2 text-sm"),
+			h.Dt(h.Class("text-slate-500 w-28 sm:w-40 shrink-0"), g.Text("From workflow")),
+			// min-w-0 + break-all for metaRow's reason: a workflow name is untrusted,
+			// unbounded and has no guaranteed break opportunity.
+			h.Dd(h.Class("text-slate-200 min-w-0 break-all"), value),
+		))
+}
+
+// generationPromptBlock renders the captured prompt(s), or states plainly why there
+// is none. It NEVER falls back to reading the workflow — see promptNotRecordedNote.
+//
+// Each prompt keeps its own label ("Prompt (POSITIVE)", "Prompt (G)"), so a
+// positive/negative pair stays distinguishable; collapsing them into one blob would
+// make the negative prompt read as part of the positive one.
+func generationPromptBlock(snap runParamsSnapshot) g.Node {
+	head := h.H3(h.Class("text-sm font-semibold text-slate-200 mt-3 mb-2"), g.Text("Prompt"))
+	switch {
+	case !snap.PromptsCaptured:
+		return h.Div(head, h.P(h.Class("text-sm text-slate-400"), g.Text(promptNotRecordedNote)))
+	case len(snap.Prompts) == 0:
+		return h.Div(head, h.P(h.Class("text-sm text-slate-400"), g.Text(promptNoneDetectedNote)))
+	}
+	items := make([]g.Node, 0, len(snap.Prompts))
+	for _, p := range snap.Prompts {
+		items = append(items, h.Div(h.Class("mb-2"),
+			h.Div(h.Class("text-xs text-slate-500 min-w-0 break-all"), g.Text(promptEntryLabel(p))),
+			// .cm-prompt keeps the author's own line breaks (white-space: pre-wrap);
+			// break-all is what stops one unbroken 5000-char prompt from widening the
+			// card past the viewport (TestLongUntrustedStringsCanBreak).
+			h.P(h.Class("cm-prompt min-w-0 break-all text-sm text-slate-300"), g.Text(p.Text)),
+		))
+	}
+	return h.Div(head, g.Group(items))
+}
+
+// promptEntryLabel is the heading above one captured prompt. It prefers the label the
+// graph's own node title produced, degrades to the input name (text / text_g / text_l)
+// and finally to "Prompt".
+//
+// The node id is appended UNCONDITIONALLY (whenever one was recorded), not only when
+// the label would otherwise be ambiguous. Two reasons it is not conditional: an
+// untitled positive/negative pair both label "Prompt", so SOMETHING must separate
+// them; and deciding "is this label ambiguous" means inspecting the sibling entries,
+// which would make one prompt's caption depend on another's — a caption that silently
+// changes when an unrelated node gains a title. The id also earns its place on its
+// own: it is the coordinate to look for in ComfyUI.
+func promptEntryLabel(p promptEntry) string {
+	label := strings.TrimSpace(p.Label)
+	if label == "" {
+		label = strings.TrimSpace(p.InputName)
+	}
+	if label == "" {
+		label = "Prompt"
+	}
+	if p.NodeID != "" {
+		label += " · node " + p.NodeID
+	}
+	return label
+}
+
+// generationResourcesBlock renders the models this run referenced, through the SHARED
+// .cm-res-chip component (workflow_resources.go) — the same one the workflow detail
+// page uses, so a checkpoint reads identically on both surfaces and a second renderer
+// can never drift from it.
+func generationResourcesBlock(snap runParamsSnapshot, resolver workflowResolver) g.Node {
+	resources, substituted, used := effectiveResources(snap)
+	if len(resources) == 0 {
+		return nil
+	}
+	heading := resourcesUsedHeading
+	if !used {
+		heading = resourcesReferencedHeading
+	}
+	kids := []g.Node{
+		h.H3(h.Class("text-sm font-semibold text-slate-200 mt-3 mb-2"), g.Text(heading)),
+		workflowResourceChips(resources, resolver),
+	}
+	if !used {
+		// The fallback list is wf.Resources — extracted with NO mode check, so on a
+		// multi-mode template it names every pipeline's models including the bypassed
+		// ones. Saying so is the point: the heading only claims REFERENCE, and this
+		// sentence stops a reader inferring USE from proximity to the images.
+		kids = append(kids, h.P(h.Class("text-xs text-slate-400 mt-2"),
+			g.Text(resourcesReferencedNote)))
+	}
+	if substituted {
+		kids = append(kids, h.P(h.Class("text-xs text-slate-400 mt-2"),
+			g.Text("One or more models were substituted for this run — the chips show what "+
+				"actually ran; the swap is listed under Model substitutions below.")))
+	}
+	// Same statement the workflow detail page makes: the folder control execs a file
+	// manager on the SERVER, which is meaningless when the UI is driven from another
+	// device. It is gated on a chip ACTUALLY carrying the control, not merely on the
+	// loopback bind — a generation whose resources are all missing from the library
+	// gets no folder button at all, and explaining a control that is not on screen
+	// reads as a bug (caught in a real browser, where the note sat under two chips
+	// that had no button).
+	if resolver.openFolder && anyResourceRevealable(resources, resolver) {
+		kids = append(kids, h.P(h.Class("text-xs text-slate-400 mt-2"),
+			g.Text("The folder button opens a file-manager window on the computer running civitai-manager.")))
+	}
+	return h.Div(kids...)
+}
+
+// anyResourceRevealable reports whether at least ONE of these resources resolves to
+// a concrete, contained local file — i.e. whether any chip will actually render the
+// "open containing folder" control. It asks the SAME predicate the chip does
+// (resourceInfo.revealable), so the explanation and the button can never disagree.
+func anyResourceRevealable(resources []string, resolver workflowResolver) bool {
+	for _, res := range resources {
+		info, _ := resolver.resource(filepath.Base(strings.ReplaceAll(res, "\\", "/")))
+		if info.revealable() {
+			return true
+		}
+	}
+	return false
+}
+
+// The two resource headings. They are DIFFERENT CLAIMS, and keeping them apart is the
+// whole job of this block: one asserts these models made the image, the other only
+// that the workflow mentions them.
+const (
+	resourcesUsedHeading       = "Resources used"
+	resourcesReferencedHeading = "Resources this workflow references"
+	// Apostrophe-free for the reason spelled out on promptNotRecordedNote: g.Text
+	// escapes `'` to `&#39;`, so a test asserting the shipped constant would silently
+	// never match — a guard that cannot fail.
+	resourcesReferencedNote = "This run did not record which models it loaded, so this " +
+		"is the full reference list of the workflow — on a multi-pipeline workflow that " +
+		"can include models which were bypassed and did not run."
+)
+
+// effectiveResources picks WHICH resource list the provenance card may show, how
+// strong a claim it is allowed to make, and maps it through the run's substitutions.
+//
+// used=true → snap.ResourcesUsed: extracted from the graph this run SUBMITTED, ACTIVE
+// nodes only. That is a provenance claim and earns "Resources used".
+//
+// used=false → snap.Resources (== wf.Resources): extracted from the STORED graph with
+// NO mode check, so on a multi-mode template it contains every pipeline's models. A
+// pre-change row has only this. It earns the weaker "…references" heading — showing it
+// under "Resources used" would assert that a bypassed pipeline's checkpoint ran, which
+// is exactly the false claim this branch closed for prompts (audit F1).
+//
+// SUBSTITUTIONS are applied to whichever list is chosen. A substitution is a real swap
+// of one model file for another at run time (comfy.ApplySubstitutions rewrites every
+// loader input equal to the missing filename), and both lists are PRE-substitution.
+// Rendering unmapped would name a file this run did not use — and mark it "not in your
+// library", since being missing is why it was substituted. The keys match exactly: the
+// extractor collects, and ApplySubstitutions matches, the same verbatim loader-input
+// value from the same graph.
+func effectiveResources(snap runParamsSnapshot) (resources []string, substituted, used bool) {
+	src, used := snap.ResourcesUsed, true
+	if len(src) == 0 {
+		src, used = snap.Resources, false
+	}
+	if len(src) == 0 {
+		return nil, false, false
+	}
+	out := make([]string, 0, len(src))
+	for _, res := range src {
+		if to, ok := snap.Substitute[res]; ok && to != "" {
+			out = append(out, to)
+			substituted = true
+			continue
+		}
+		out = append(out, res)
+	}
+	return out, substituted, used
 }
 
 // generationParamsCard renders the stored run params + snapshots, all escaped.
@@ -497,7 +747,54 @@ func generationActionsCard(gen *store.Generation, csrf string) g.Node {
 	)
 }
 
-// NOTE: the per-workflow "Recent outputs" card that used to live here was
-// REMOVED — the global recent-outputs rail (outputs_rail.go), rendered by the app
-// shell on every page, supersedes it. Per-workflow browsing is still one click
-// away at /outputs?workflow=<id> via the gallery's workflow filter.
+// workflowOutputsStripLimit is how many tiles the per-workflow "Recent outputs"
+// strip shows. Like the rail's limit it is deliberately small and FIXED: the strip
+// renders on every workflow detail view, so its store read must be a bounded query
+// (store.ListGenerations with a Limit, via the existing per-workflow filter) and
+// never a scan whose cost grows with the gallery.
+//
+// 8 fills two rows of the 4-column desktop grid; there is no pagination here on
+// purpose — "view all →" is the surface for that.
+const workflowOutputsStripLimit = 8
+
+// workflowOutputsStrip renders ONE workflow's most recent outputs as a compact
+// thumbnail strip, with a "view all" link into the filtered gallery. It returns nil
+// for a workflow with no captured outputs — a dead empty strip on every never-run
+// workflow would be pure noise.
+//
+// HISTORY (this reverses a removal, deliberately): a per-workflow "Recent outputs"
+// card used to live in this file and was deleted when the GLOBAL rail shipped. The
+// rail did not actually supersede it: the rail is CROSS-workflow chrome answering
+// "what did I make recently", while this answers "what has THIS workflow made" —
+// per-workflow provenance, right beside the controls that would make more. Both now
+// exist and they are not redundant.
+//
+// TILE RENDERER: it reuses generationTile (the gallery/batch tile), NOT railTile.
+// generationTile is self-contained — aspect-square, its own overlay anchor, its own
+// caption — and inherits nothing from its parent, so it drops into any grid.
+// railTile's .cm-rail-item/.cm-rail-thumb/.cm-rail-cap rules are defined only under
+// the .cm-rail column (and vary with its collapsed/drawer states), so lifting it into
+// the page body would import the rail's geometry along with it. Its markup contract
+// is pinned byte-for-byte by batch_gallery_web_test.go and is NOT touched here.
+//
+// Render-plain (no NSFW blur) like every outputs surface — the user's own local
+// generations carry no rating signal.
+func workflowOutputsStrip(workflowID int64, gens []store.Generation) g.Node {
+	if len(gens) == 0 {
+		return nil
+	}
+	href := "/outputs?workflow=" + strconv.FormatInt(workflowID, 10)
+	return card(
+		h.Div(h.Class("flex items-center justify-between gap-4"),
+			sectionTitle("Recent outputs"),
+			h.A(h.Href(href), h.Class("shrink-0 text-sm text-indigo-400 hover:text-indigo-300 mb-3"),
+				g.Text("View all →")),
+		),
+		// generationGrid, not a hand-rolled grid: .cm-masonry is the container
+		// .cm-masonry-item was written for (its margin-bottom + break-inside are the
+		// column layout's gutter), so reusing the pair keeps spacing identical to the
+		// gallery and introduces no new utility class into the purged build. The nil
+		// empty-state is unreachable — the len==0 early return above owns that case.
+		generationGrid(gens, nil),
+	)
+}

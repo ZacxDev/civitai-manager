@@ -33,7 +33,7 @@ func detailPageNode(wf *store.Workflow, csrf, theme, nsfw string, comfyConfigure
 	hv comfyHelperView, res workflowResolver) g.Node {
 	gen := generateSection(wf, runSnapshot{}, csrf, true, false, nsfw,
 		implicitPresetView(wf, nil), comfyConfigured, hv)
-	return workflowDetailPage(wf, csrf, theme, nsfw, gen, res)
+	return workflowDetailPage(wf, csrf, theme, nsfw, gen, nil, res)
 }
 
 // uiGraphWithParams is a minimal UI-format graph carrying one of every editable

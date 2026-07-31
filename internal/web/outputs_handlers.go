@@ -218,7 +218,11 @@ func (s *Server) handleGenerationDetail(w http.ResponseWriter, r *http.Request) 
 		s.renderError(w, "load generation", err)
 		return
 	}
-	s.render(w, http.StatusOK, generationDetailPage(gen, images, s.csrf, s.currentTheme(), s.nsfwMode(), s.rail(r.Context())))
+	// The SAME resolver the workflow detail page builds — the provenance card renders
+	// the run's resources through the shared .cm-res-chip component, which needs it to
+	// resolve a basename to a local file and its CivitAI/HuggingFace source link.
+	s.render(w, http.StatusOK, generationDetailPage(gen, images, s.csrf, s.currentTheme(),
+		s.nsfwMode(), s.workflowResolver(), s.rail(r.Context())))
 }
 
 // handleGenerationRerun re-runs the CURRENT stored workflow with the generation's

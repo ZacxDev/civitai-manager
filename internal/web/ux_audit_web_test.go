@@ -74,7 +74,7 @@ func fullPages(t *testing.T) map[string]string {
 		"library":    renderString(t, libraryPage(libraryView{}, "csrf", true, []string{"/m"}, "dark", "files", nil, true, nil, NSFWBlur, libraryWorkflowsView{})),
 		"trash":      renderString(t, trashPage(nil, "csrf", "dark", NSFWBlur)),
 		"outputs":    renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", "dark", NSFWBlur)),
-		"generation": renderString(t, generationDetailPage(gen, nil, "csrf", "dark", NSFWBlur)),
+		"generation": renderString(t, generationDetailPage(gen, nil, "csrf", "dark", NSFWBlur, workflowResolver{})),
 		"workflow":   renderString(t, detailPageNode(wf, "csrf", "dark", NSFWBlur, false, comfyHelperView{}, workflowResolver{})),
 		"discover-workflow": renderString(t, workflowDiscoverPage(workflowDiscoverView{
 			Res: searchRes, Mode: NSFWBlur, CSRF: "csrf",
@@ -366,6 +366,15 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 
 	cases := map[string]string{
 		"generation run params": renderString(t, generationParamsCard(gen)),
+		// The provenance card prints THREE untrusted, unbounded strings: the source
+		// workflow's name, a captured prompt (the worst case in the app — a wildcard
+		// expansion is routinely thousands of characters with no space in it) and that
+		// prompt's label, which is built from the graph author's own node title.
+		"generation provenance": renderString(t, generationProvenanceCard(&store.Generation{
+			ID: 5, WorkflowID: &wfID, WorkflowName: long,
+			Params: `{"prompts_captured":true,"resources":["` + long + `"],` +
+				`"prompts":[{"label":"Prompt (` + long + `)","node_id":"4","text":"` + long + `"}]}`,
+		}, workflowResolver{})),
 		"workflow resources": renderString(t, detailPageNode(
 			&store.Workflow{ID: 1, Name: "w", Format: store.WorkflowFormatAPI, Graph: "{}",
 				Resources: []string{long}},

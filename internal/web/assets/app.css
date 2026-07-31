@@ -2156,6 +2156,25 @@ html {
  */
 
 /*
+ * .cm-prompt — a captured prompt on the output detail page
+ * (generationPromptBlock in outputs_pages.go).
+ *
+ * A prompt is authored multi-line text and its line breaks are meaning, so it needs
+ * `white-space: pre-wrap` — which is NOT in the purged Tailwind build and would need
+ * a rebuild to add, whereas a .cm-* rule ships as-is. It carries NO colour of its own
+ * (the element pairs it with the card's existing text utility), so contrast
+ * _web_test.go's pinned pairs are untouched.
+ *
+ * overflow-wrap: anywhere is the belt to the markup's break-all braces: a prompt is
+ * routinely one 3000-character unbroken token (a wildcard expansion, a pasted tag
+ * soup) and must not widen the card past the viewport.
+ */
+.cm-prompt {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/*
  * .cm-res-* — referenced-resource CHIPS (workflowResourceChip in
  * workflow_resources.go). Used in two places with the SAME markup: inline on the
  * workflow detail page's "Referenced resources" card, and inside the list item's

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
 	"github.com/ZacxDev/civitai-manager/internal/store"
@@ -41,7 +42,66 @@ type runParamsSnapshot struct {
 	// "<selector node id>:<group index>", i.e. POSITIONAL in the group array, so it
 	// is gated by the same graph-hash check as the positional widget overrides.
 	ModeSelection map[string]string `json:"mode_selection,omitempty"`
+
+	// PromptsCaptured marks that this run went through capturePrompts AT ALL. It is
+	// the ONLY way to tell a row written before prompt capture existed ("we do not
+	// know what the prompt was") from one whose graph simply exposes no prompt input
+	// ("we looked, there is none"). Rendering those two the same way would either
+	// invent a fact or hide one, so the detail page branches on this flag.
+	//
+	// params is a JSON blob, so no migration was needed — but that is exactly why the
+	// flag has to be explicit: an OLD row decodes to the zero value, silently, with
+	// no error to notice.
+	PromptsCaptured bool `json:"prompts_captured,omitempty"`
+	// Prompts are the EFFECTIVE prompt texts this run submitted, in graph order, each
+	// still labeled with which prompt it was (positive/negative, text_g/text_l).
+	// Empty with PromptsCaptured set means the graph exposes no prompt inputs.
+	Prompts []promptEntry `json:"prompts,omitempty"`
+
+	// ResourcesUsed are the model files the ACTIVE nodes of the submitted graph load
+	// — the provenance claim. It is deliberately SEPARATE from Resources above:
+	//
+	//   Resources     = wf.Resources = comfy.ExtractResourcesAny over the STORED graph
+	//                   with NO mode check, so a multi-mode template's list contains
+	//                   every pipeline's models including the bypassed ones. That is
+	//                   the right answer to "what can this workflow need" and the
+	//                   WRONG answer to "what made this image".
+	//   ResourcesUsed = comfy.ExtractActiveResources over the submitted graph.
+	//
+	// Empty means "not captured / nothing derivable", and the detail page then falls
+	// back to Resources under a heading that only claims REFERENCE, never USE. A
+	// pre-change row lands there naturally, with no flag needed.
+	ResourcesUsed []string `json:"resources_used,omitempty"`
 }
+
+// promptEntry is ONE captured prompt input: the text that actually ran, plus enough
+// identity to keep a positive/negative (or text_g/text_l) pair distinguishable.
+//
+// Label is comfy.RunInput.Label — "Prompt (POSITIVE)", "Prompt (G)" — derived from
+// the graph author's own node title, so it is UNTRUSTED text like everything else in
+// this blob and every caller renders it through g.Text. ClassType/InputName are the
+// structural fallback for a graph whose nodes carry no titles: two CLIPTextEncode
+// nodes with no titles both label as bare "Prompt", and the node id is then the only
+// thing telling them apart, which is why it is recorded too.
+type promptEntry struct {
+	Label     string `json:"label,omitempty"`
+	NodeID    string `json:"node_id,omitempty"`
+	ClassType string `json:"class_type,omitempty"`
+	InputName string `json:"input_name,omitempty"`
+	Text      string `json:"text"`
+}
+
+// maxCapturedPromptBytes / maxCapturedPrompts bound what one capture writes into the
+// params blob. Every capture writes a row that is kept until the user deletes it, and
+// a prompt is arbitrary user/graph text (a wildcard-expanded prompt can be large), so
+// the blob needs a ceiling. A clipped prompt is marked in the stored text itself
+// (promptTruncatedMarker) so the detail page can never present a partial prompt as
+// the whole one.
+const (
+	maxCapturedPromptBytes = 4096
+	maxCapturedPrompts     = 16
+	promptTruncatedMarker  = "\n… (prompt truncated at capture time)"
+)
 
 type optionFixEntry struct {
 	InputName string `json:"input_name"`
@@ -166,8 +226,112 @@ func buildRunParamsSnapshot(wf *store.Workflow, opts runOptions) runParamsSnapsh
 		snap.Resources = wf.Resources
 		snap.BaseModel = wf.BaseModel
 		snap.Format = wf.Format
+		// Neither the effective prompt NOR the effective resource list is derivable
+		// later: wf.Graph is replaced in place by a rescan and workflow_id goes NULL on
+		// delete, so reading either at render time would describe TODAY's workflow for a
+		// PAST run. Capture both here, once, from the ONE graph this run submitted.
+		submitted := runSubmittedGraph(wf, opts)
+		snap.PromptsCaptured = true
+		snap.Prompts = capturePrompts(submitted)
+		snap.ResourcesUsed = captureActiveResources(wf, submitted)
 	}
 	return snap
+}
+
+// runSubmittedGraph rebuilds the graph this run actually converted and submitted: the
+// stored graph with the chosen mode un-bypassed and the Parameters-panel edits
+// applied, in the SAME ORDER realRun applies them (modes, then UI widget overrides —
+// an override key is positional in the mode-applied graph).
+//
+// 🔴 Every provenance fact must be derived from THIS, never from wf.Graph:
+//
+//   - MODE: a multi-mode template ships every pipeline in one graph with all but one
+//     bypassed. Read raw, a template records whichever pipeline happens to be
+//     un-bypassed in storage — the WRONG prompt and the WRONG models, silently, for
+//     every run of every other mode. (Same trap
+//     TestQueueSeedKeysComeFromTheModeAppliedGraph pins for seeds.)
+//   - OVERRIDES: the Parameters panel's edit IS what the user ran. The graph's stored
+//     value is the pre-edit text.
+//
+// It exists as ONE helper so the prompt half and the resource half cannot drift: the
+// resource half was originally read from the stored wf.Resources list and therefore
+// named bypassed pipelines' checkpoints under a heading asserting they ran.
+func runSubmittedGraph(wf *store.Workflow, opts runOptions) json.RawMessage {
+	if wf == nil {
+		return nil
+	}
+	graph := modeAppliedGraph(wf, opts.ModeSelection)
+	if wf.Format == store.WorkflowFormatUI && len(opts.UIWidgetOverrides) > 0 {
+		graph = comfy.ApplyUIWidgetOverrides(graph, opts.UIWidgetOverrides)
+	}
+	return graph
+}
+
+// captureActiveResources records the model files the run's graph actually loads —
+// ACTIVE nodes only (comfy.ExtractActiveResources), so a bypassed pipeline's
+// checkpoint is never presented as something this image was made with.
+//
+// It reuses the shared extractor rather than a second implementation, so what counts
+// as a resource is defined in exactly one place (internal/comfy/format.go).
+//
+// Best-effort like the rest of capture: an error or an unknown format yields nil, and
+// the detail page then falls back to the workflow's own reference list under an
+// honest heading rather than claiming anything.
+func captureActiveResources(wf *store.Workflow, submitted json.RawMessage) []string {
+	if wf == nil || len(submitted) == 0 {
+		return nil
+	}
+	res, err := comfy.ExtractActiveResources(wf.Format, submitted)
+	if err != nil {
+		return nil
+	}
+	return res
+}
+
+// capturePrompts reads the effective prompt text out of the graph this run actually
+// submitted (runSubmittedGraph — read its doc for why nothing here may touch
+// wf.Graph).
+//
+// Only UI-format workflows yield anything: an api-format graph has no widgets_values,
+// so DetectRunInputs returns nothing and the row honestly records "no prompt inputs
+// detected" rather than a guess. Best-effort throughout — a capture must never fail a
+// run — so a graph that cannot be parsed simply yields no entries.
+func capturePrompts(submitted json.RawMessage) []promptEntry {
+	var out []promptEntry
+	for _, ri := range comfy.DetectRunInputs(submitted, nil) {
+		if ri.Kind != comfy.RunInputText {
+			continue // seeds/steps/cfg are already covered by the override list
+		}
+		if len(out) >= maxCapturedPrompts {
+			break
+		}
+		out = append(out, promptEntry{
+			Label:     ri.Label,
+			NodeID:    ri.NodeID,
+			ClassType: ri.ClassType,
+			InputName: ri.InputName,
+			Text:      clipPromptText(ri.Current),
+		})
+	}
+	return out
+}
+
+// clipPromptText bounds ONE captured prompt, marking the clip inside the stored text
+// so a truncated prompt can never be displayed as if it were complete.
+//
+// The cut walks BACK to a rune boundary: a byte-exact slice can split a multi-byte
+// rune, and the resulting invalid UTF-8 would be re-encoded by encoding/json as a
+// U+FFFD replacement character — a silent corruption at the tail of the very field
+// this whole feature exists to record faithfully.
+func clipPromptText(s string) string {
+	if len(s) <= maxCapturedPromptBytes {
+		return s
+	}
+	cut := maxCapturedPromptBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + promptTruncatedMarker
 }
 
 // marshalRunParams serializes a snapshot to JSON, returning "" on failure (the

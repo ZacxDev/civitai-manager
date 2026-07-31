@@ -884,8 +884,10 @@ func workflowModelNameText(modelID int, resolver workflowResolver) g.Node {
 // page and told nobody anything the graph preview does not.
 //
 // `generate` is the combined run section (nil renders no run controls at all).
+// `recent` is this workflow's most recent captured outputs (bounded by the handler);
+// empty renders no strip at all.
 func workflowDetailPage(wf *store.Workflow, csrf, theme, nsfwMode string, generate g.Node,
-	resolver workflowResolver, rail ...railData) g.Node {
+	recent []store.Generation, resolver workflowResolver, rail ...railData) g.Node {
 	id := strconv.FormatInt(wf.ID, 10)
 	name := wf.Name
 	if strings.TrimSpace(name) == "" {
@@ -922,6 +924,10 @@ func workflowDetailPage(wf *store.Workflow, csrf, theme, nsfwMode string, genera
 	if generate != nil {
 		body = append(body, generate)
 	}
+
+	// What this workflow has actually MADE, directly under the controls that make
+	// more of it. Nil (no card at all) for a workflow that has never produced output.
+	body = append(body, workflowOutputsStrip(wf.ID, recent))
 
 	// Referenced resources, as chips: have/missing at a glance, the absolute on-disk
 	// path on hover, and a source link for anything matched to a CivitAI model or
