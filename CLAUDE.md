@@ -206,6 +206,22 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   - `/api/v1/apps` is **default-closed / launch-gated**: returns `{"items":[]}` for
     a normal user until CivitAI flips the marketplace flag; it auto-opens with no
     code change. Build apps features flag-tolerant.
+  - 🔴 **A ComfyUI COMBO's option list is not always strings, and `[]string` decodes
+    a numeric one into PHANTOM EMPTY STRINGS.** `json.Unmarshal([0.25,0.5,1.0], &[]string{})`
+    allocates the slice, fails per element, and returns an error **with 3 empty
+    strings left behind** — not nil. That shipped as an **unfixable** BadOption whose
+    picker offered N BLANK options and halted the run (v0.1.90). `InputSpec.Choices`
+    is therefore populated **all-or-nothing** by `stringChoices` and stays nil for any
+    non-string list, while `IsCombo` stays TRUE — flipping that would reclassify the
+    input as a LINK and break the converter.
+    **Numeric combos are deliberately NOT validated locally.** `ApplyOptionFixes`
+    injects a chosen option via `json.Marshal(string)`, so a "fix" would write
+    `"1.0"` where ComfyUI requires the number `1.0` — a BadOption there could only
+    ever offer a picker that cannot produce an acceptable graph. Under-validate and
+    let ComfyUI's submit-time validation be the authority. Measured: only **3 of 2462**
+    node types carry one (`RIFE VFI` / `IFRNet VFI` `scale_factor`,
+    `WanVideoSetRadialAttention` `block_size`) — but `RIFE VFI` was in **16 of 70**
+    library workflows, so a 3-node-type bug blocked the entire working set.
 - **`internal/comfyext`** — the **embedded ComfyUI helper extension** (`extension/`,
   `go:embed all:extension`) + its safe `Install`/`Uninstall`/`Inspect`.
   **ComfyUI has NEVER had a `?workflow=` URL param** in any frontend version
