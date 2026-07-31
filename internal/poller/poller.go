@@ -40,6 +40,12 @@ const (
 	outcomeTransientError
 )
 
+// workflowPostSkipDetail is the one sentence every surface uses to explain the
+// workflow-post skip (the poll event, the backfill BackfillOutcome.Detail, and
+// through it the CLI line). One string so the CLI and the event log cannot drift
+// into telling the user two different things.
+const workflowPostSkipDetail = "workflow posts are imported, not downloaded"
+
 // Poller runs subscription polls against a civitai.Reader and records results
 // in the store.
 type Poller struct {
@@ -121,6 +127,12 @@ const (
 	// BackfillFilteredSize: the latest version's primary file exceeds the
 	// configured max file size.
 	BackfillFilteredSize
+	// BackfillFilteredWorkflowPost: the subscription's model is a CivitAI
+	// Workflows-type post. Its versions ship an Archive .zip that the download
+	// path would accept whole, but `.zip` is not a library extension — the bytes
+	// would never be scanned, counted, deduped or quarantined. Workflows are
+	// IMPORTED, not downloaded.
+	BackfillFilteredWorkflowPost
 	// BackfillNoDownloadableFile: the latest version has no file we can download.
 	BackfillNoDownloadableFile
 	// BackfillNoCandidates: the subscription currently has no versions at all.
@@ -273,6 +285,37 @@ func (p *Poller) enqueueCandidate(ctx context.Context, sub store.Subscription, c
 	res.backfillVersion = c.VersionID
 	res.backfillReason = BackfillReasonUnknown
 	res.backfillDetail = ""
+
+	// TYPE GUARD — the load-bearing one, and the reason it lives HERE rather than
+	// only in the web UI: this is the point of ACTION, so it covers the CLI and
+	// the creator-subscription path (candidatesFromCreatorSearch flattens EVERY
+	// model of every type a creator has published) that no render-layer check can
+	// reach.
+	//
+	// A CivitAI "Workflows" post is a model id like any other, and its payload is
+	// indistinguishable from a checkpoint's except for this string: every version
+	// carries a populated baseModel, a downloadUrl and a primary file with a real
+	// SHA256, so SelectFile → DestPath → Enqueue accepts it whole. What it
+	// enqueues is an Archive .zip, and `.zip` is not in library.DefaultExtensions
+	// — the bytes would never be scanned, counted, deduped or quarantined.
+	// Invisible bytes, while a working one-click Import sits on the model page.
+	//
+	// PERMANENT skip: a model's type does not change between polls, so
+	// re-evaluating it every poll would only re-spend the API call. The version is
+	// still marked seen and still notified on, so a notify-only subscription to a
+	// workflow post keeps working exactly as before.
+	if civitai.IsWorkflowPost(c.ModelType) {
+		_ = p.store.AddEvent(store.Event{
+			Level: store.LevelInfo, Kind: "type_skip", SubscriptionID: &sub.ID,
+			ModelID: intPtr(c.ModelID), VersionID: intPtr(c.VersionID),
+			Message: fmt.Sprintf("Skipping %q: workflow posts are imported, not downloaded — "+
+				"use Import workflows on the model page", c.ModelName),
+		})
+		res.Skipped++
+		res.backfillReason = BackfillFilteredWorkflowPost
+		res.backfillDetail = workflowPostSkipDetail
+		return outcomePermanentSkip
+	}
 
 	if sub.BaseModelFilter != "" && !strings.EqualFold(c.BaseModel, sub.BaseModelFilter) {
 		res.Skipped++

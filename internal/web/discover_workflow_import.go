@@ -87,8 +87,11 @@ func (s *Server) handleWorkflowDiscoverImport(w http.ResponseWriter, r *http.Req
 	// only shows the import control on Workflows models, but a hand-crafted
 	// loopback+CSRF POST against another model type should be rejected with a
 	// clear message rather than silently reaching "no archive found". Guard on a
-	// populated Type so a cache entry that omits it doesn't false-reject.
-	if m.Type != "" && !strings.EqualFold(m.Type, "Workflows") {
+	// populated Type so a cache entry that omits it doesn't false-reject — that
+	// fail-OPEN empty case is the whole reason this reads IsKnownNonWorkflowPost
+	// rather than !IsWorkflowPost, and it is pinned by
+	// TestIsKnownNonWorkflowPostStaysOpenOnAnEmptyType.
+	if civitai.IsKnownNonWorkflowPost(m.Type) {
 		s.importRespond(w, r, modelID, isHX,
 			"That model is not a Workflows-type model, so it has no workflows to import.", false, 0)
 		return

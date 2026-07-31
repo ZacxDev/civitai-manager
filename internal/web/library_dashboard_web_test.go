@@ -218,7 +218,10 @@ func TestUpdateCTAUsesTheTextToken(t *testing.T) {
 // button grew, and an info popover states the AUTO-DOWNLOAD consequence before the
 // click.
 func TestSubscribeControlIsLargerAndExplainsItself(t *testing.T) {
-	out := renderString(t, subscribeControl(7, nil, "csrf"))
+	// workflow=false: this pins the ORDINARY model control. The Workflows-post
+	// shape is a separate control with different copy — see
+	// workflow_subscribe_web_test.go.
+	out := renderString(t, subscribeControl(7, nil, "csrf", false))
 
 	// The size class actually changed (it was data-size="sm").
 	if !strings.Contains(out, `data-size="md"`) {

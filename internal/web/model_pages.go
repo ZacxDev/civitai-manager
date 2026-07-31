@@ -655,7 +655,7 @@ func versionRegionInner(v modelDetailView, sub *store.Subscription, csrf, baseUR
 		// Workflows-type models are zips of ComfyUI workflow .json — offer a one-click
 		// import into the local workflow library (Discover D2). Other model types are
 		// unaffected.
-		g.If(strings.EqualFold(m.Type, "Workflows"),
+		g.If(civitai.IsWorkflowPost(m.Type),
 			workflowImportDetailCard(m.ID, csrf, v.ImportedWorkflows, v.ImportedWorkflowList)),
 		communityFeedContainer(m.ID, v.SelectedVersionID),
 	})
@@ -678,9 +678,43 @@ func versionRegionInner(v modelDetailView, sub *store.Subscription, csrf, baseUR
 // the TRUE total, so the sentence keeps telling the truth when the carousel is
 // showing a subset. The two come from one predicate (store.CountWorkflowsByModel
 // / store.ListWorkflowsByModel), so they cannot describe different sets.
+// workflowImportCardID is the workflow-import section's stable in-page anchor. The
+// model header's primary action links to it (workflowImportJumpLink) because on a
+// workflow post the header's Download slot is replaced by the action that actually
+// works, and that action lives in this card — below the showcase carousel, i.e. a
+// scroll away.
+const workflowImportCardID = "workflow-import"
+
+// workflowImportJumpLink is the model header's primary action on a Workflows post:
+// a plain in-page anchor to the import card, styled as the filled button that used
+// to be Download. No JS, no POST, no CSRF — it only moves the viewport, so it
+// cannot be the "second button that looks equivalent but doesn't work".
+//
+// The label follows the card's own state so the two can never contradict each
+// other: nothing imported yet → "Import workflows"; already imported → "View
+// workflows", because re-importing would only report "0 imported, N already
+// present" (see workflowImportDetailCard).
+func workflowImportJumpLink(imported int) g.Node {
+	label := "Import workflows"
+	aria := "Go to the workflow import section"
+	if imported > 0 {
+		label = "View workflows"
+		aria = "Go to the workflows imported from this model"
+	}
+	return h.A(
+		h.Href("#"+workflowImportCardID),
+		dataAttr("civitai-ui", "button"),
+		dataAttr("variant", "filled"),
+		dataAttr("size", "sm"),
+		g.Attr("aria-label", aria),
+		g.Text(label),
+	)
+}
+
 func workflowImportDetailCard(modelID int, csrf string, imported int, wfs []store.Workflow) g.Node {
 	if imported > 0 {
 		return card(
+			h.ID(workflowImportCardID),
 			h.H2(h.Class("text-sm font-semibold text-slate-300 mb-2"), g.Text(workflowImportCardHeading)),
 			h.P(h.Class("mb-2 text-xs text-slate-400"),
 				g.Text(fmt.Sprintf("Already imported — %s from this model %s in your workflow library.",
@@ -706,6 +740,7 @@ func workflowImportDetailCard(modelID int, csrf string, imported int, wfs []stor
 	// the import the result line lands beside the stable heading rather than under a
 	// heading that has just stopped describing the card.
 	return card(
+		h.ID(workflowImportCardID),
 		h.Div(
 			h.Class("mb-2 flex flex-wrap items-center justify-between gap-2"),
 			h.H2(h.Class("text-sm font-semibold text-slate-300"), g.Text(workflowImportCardHeading)),
@@ -917,7 +952,7 @@ func modelHeaderCard(v modelDetailView, sub *store.Subscription, csrf, baseURL s
 			h.Div(
 				h.Class("flex flex-col items-end gap-2"),
 				headerDownloadControl(v, csrf),
-				subscribeControl(m.ID, sub, csrf),
+				subscribeControl(m.ID, sub, csrf, civitai.IsWorkflowPost(m.Type)),
 				viewOnCivitaiLink(modelCivitaiURL(baseURL, m.ID)),
 			),
 		),
@@ -971,9 +1006,27 @@ func headerVersionMetadata(v modelDetailView) g.Node {
 // "Invalid request" for fileID <= 0), so a version-level URL with no file rows is
 // NOT actionable through this endpoint. A button that could only ever fail would
 // be a lie; rendering nothing is the honest degradation.
+//
+// A WORKFLOW POST never gets a Download button, whatever its file list says. Its
+// versions carry an Archive .zip with a real SHA256, a downloadUrl and a
+// primary: true flag — so every check above passes and the button used to render
+// byte-identically to a checkpoint's — but `.zip` is not in
+// library.DefaultExtensions, so those bytes would never be scanned, counted,
+// deduped or quarantined. The action that DOES work is Import, and it is already
+// on this page, so the control is REPOINTED at it rather than merely hidden:
+// leaving the header's primary slot empty on a page whose whole point is the
+// import card would be a worse answer than a wrong button was. Server-side,
+// handleModelDownload refuses the same case — a button disappearing is not an
+// endpoint refusing.
 func headerDownloadControl(v modelDetailView, csrf string) g.Node {
 	ver := v.Version
-	if ver == nil || v.Model == nil || len(ver.Files) == 0 {
+	if v.Model == nil {
+		return nil
+	}
+	if civitai.IsWorkflowPost(v.Model.Type) {
+		return workflowImportJumpLink(v.ImportedWorkflows)
+	}
+	if ver == nil || len(ver.Files) == 0 {
 		return nil
 	}
 	modelID := v.Model.ID

@@ -608,9 +608,14 @@ func modelCard(it civitai.ModelListItem, images []galleryImage, subs map[int]*st
 // The control reflects real state from the per-render subs map (subs[it.ID] nil →
 // collapsed "Subscribe"); the map is built ONCE per render (one ListSubscriptions
 // query), never per card.
+// A search result card is the ONE surface where a workflow post is most likely to
+// be met: /search sets no `types` param (deliberately — mixing workflow posts into
+// keyword results is correct), and `query="wan workflow"` returns 98 of 99 items
+// as type "Workflows". it.Type is all a card has, which is exactly why
+// civitai.IsWorkflowPost takes the type string rather than a model struct.
 func modelCardWith(it civitai.ModelListItem, images []galleryImage, subs map[int]*store.Subscription, mr maturityRange, csrf string, updated modelUpdateInfo) g.Node {
 	return modelCardCore(it, images, mr, updated,
-		h.Div(h.Class("mt-1"), subscribeControl(it.ID, subs[it.ID], csrf)))
+		h.Div(h.Class("mt-1"), subscribeControl(it.ID, subs[it.ID], csrf, civitai.IsWorkflowPost(it.Type))))
 }
 
 // modelCardCore renders the shared result-card body (showcase carousel, name link
@@ -637,7 +642,7 @@ func modelCardCore(it civitai.ModelListItem, images []galleryImage, mr maturityR
 			h.Class("flex items-center gap-2 text-xs text-slate-400"),
 			// The redundant "Workflows" chip is dropped on discover-workflow cards;
 			// the useful Checkpoint/LORA/etc. badge stays on model-search cards.
-			g.If(it.Type != "Workflows", badge(it.Type, "indigo")),
+			g.If(!civitai.IsWorkflowPost(it.Type), badge(it.Type, "indigo")),
 			g.If(it.NSFW, badge("NSFW", "red")),
 			g.If(creator != "", h.A(h.Href("/creators/"+creator), h.Class("hover:underline"), g.Text("@"+creator))),
 		),
@@ -722,22 +727,54 @@ func subscribeInline(kind, value, label, csrf string) g.Node {
 		return subscribeCreatorInline(value, label, csrf)
 	}
 	id, _ := strconv.Atoi(value)
-	return subscribeControl(id, nil, csrf)
+	// workflow=false: this path serves the dashboard's LIBRARY-DERIVED subscribe
+	// suggestions, which exist because the scanner matched a local model file. A
+	// workflow post's only artifact is a `.zip`, which is not in
+	// library.DefaultExtensions and so never enters the library — it cannot reach
+	// this surface. (The search cards, which CAN meet one, go through
+	// modelCardWith and pass the real type.)
+	return subscribeControl(id, nil, csrf, false)
 }
 
-// subscribeCreatorInline is the one-click creator subscribe: POST /subscribe with
-// auto-download on, plus a success note revealed via htmx's after-request event
-// (no extra endpoint, minimal change from the prior one-click behavior).
+// subscribeCreatorInline is the creator subscribe: POST /subscribe, plus a success
+// note revealed via htmx's after-request event (no extra endpoint).
+//
+// It used to hard-code `auto_download=true` as a HIDDEN input with no options
+// panel at all, which made "Notify only" unreachable on this path — the one path
+// where it matters most. A creator poll sets no `types` filter, so
+// candidatesFromCreatorSearch flattens EVERY model of every type the creator
+// published, and workflow-only creators are common. The poller's type guard stops
+// the workflow downloads either way; this restores the user's ability to say
+// "notify me, don't download" about the creator's REAL models too.
+//
+// The radios (rather than the model path's two-step collapsed→panel flow) keep
+// this a single header-row control with no new endpoint; Auto-download stays
+// pre-selected, so the prior one-click behaviour is unchanged for anyone who
+// ignores them. handleSubscribe reads `mode` exactly as handleModelSubscribe does.
 func subscribeCreatorInline(username, label, csrf string) g.Node {
+	radio := func(value, text string, checked bool) g.Node {
+		attrs := []g.Node{h.Type("radio"), h.Name("mode"), h.Value(value), h.Class("text-indigo-500")}
+		if checked {
+			attrs = append(attrs, g.Attr("checked"))
+		}
+		return h.Label(
+			h.Class("flex items-center gap-1.5 text-sm text-slate-300"),
+			h.Input(attrs...),
+			g.Text(text),
+		)
+	}
 	return h.Form(
 		hx("post", "/subscribe"),
 		hx("swap", "none"),
 		g.Attr("hx-on::after-request",
 			"if(event.detail.successful){this.querySelector('[data-sub-note]').classList.remove('hidden');}"),
-		h.Class("flex items-center gap-2"),
+		h.Class("flex flex-wrap items-center gap-2"),
 		csrfInput(csrf),
 		h.Input(h.Type("hidden"), h.Name("creator"), h.Value(username)),
-		h.Input(h.Type("hidden"), h.Name("auto_download"), h.Value("true")),
+		h.Div(h.Class("flex items-center gap-3"),
+			radio("auto_download", "Auto-download", true),
+			radio("notify_only", "Notify only", false),
+		),
 		btnPrimary(g.Text(label)),
 		// text-emerald-400, NOT text-green-500 — see subscribedState in
 		// model_card_pages.go: the config replaces theme.colors, so `green` has no scale.
