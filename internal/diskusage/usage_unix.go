@@ -20,19 +20,5 @@ func stat(path string) (Usage, error) {
 	if err := syscall.Statfs(path, &st); err != nil {
 		return Usage{}, err
 	}
-	bsize := uint64(st.Bsize)
-	if bsize == 0 {
-		// A zero block size makes every product zero, which Known() would then
-		// report as "unknown" anyway — return it as an explicit failure so a caller
-		// that logs the error sees why.
-		return Usage{}, ErrUnsupported
-	}
-	total := uint64(st.Blocks) * bsize
-	free := uint64(st.Bavail) * bsize
-	unalloc := uint64(st.Bfree) * bsize
-	var used uint64
-	if total > unalloc {
-		used = total - unalloc
-	}
-	return Usage{Total: total, Free: free, Used: used}, nil
+	return fromBlocks(uint64(st.Blocks), uint64(st.Bfree), uint64(st.Bavail), uint64(st.Bsize))
 }

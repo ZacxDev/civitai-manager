@@ -70,3 +70,53 @@ func (u Usage) UsedFraction() float64 {
 // A non-nil error always comes with a zero Usage, so a caller that ignores the
 // error still renders "unknown" rather than a fabricated zero-byte disk.
 func Stat(path string) (Usage, error) { return stat(path) }
+
+// fromBlocks converts raw statfs(2) block counters into a Usage.
+//
+// IT IS PLATFORM-INDEPENDENT ON PURPOSE. Which counter feeds which field is the
+// only interesting decision in the unix implementation, and a syscall result
+// cannot be pinned by a test — nothing knows what the machine's real disk holds,
+// and probing it by writing a file is flaky on compressing/CoW filesystems. So
+// the arithmetic lives here where a table test CAN pin it (a Free/Used swap or a
+// Bavail/Bfree mix-up fails immediately), and usage_unix.go stays a thin shim
+// whose only job is widening the OS's differently-sized fields.
+//
+//   - blocks: total blocks in the filesystem
+//   - bfree:  blocks unallocated (INCLUDES any root reserve)
+//   - bavail: blocks allocatable by an unprivileged process (EXCLUDES it)
+//   - bsize:  bytes per block
+//
+// bfree >= bavail always; the difference is the reserve, which this reports as
+// neither used nor free.
+func fromBlocks(blocks, bfree, bavail, bsize uint64) (Usage, error) {
+	if bsize == 0 {
+		// Every product would be zero, which Known() reports as "unknown" anyway —
+		// return it as an explicit failure so a caller that logs sees the reason.
+		return Usage{}, ErrUnsupported
+	}
+	total := blocks * bsize
+	unalloc := bfree * bsize
+	var used uint64
+	if total > unalloc {
+		used = total - unalloc
+	}
+	return Usage{Total: total, Free: bavail * bsize, Used: used}, nil
+}
+
+// fromByteCounts converts GetDiskFreeSpaceExW's three byte counts into a Usage,
+// for the same reason fromBlocks exists: it is the mapping decision, and it is
+// testable on every platform while the DLL call is not.
+//
+//   - total:         TotalNumberOfBytes
+//   - totalFree:     TotalNumberOfFreeBytes (ignores the caller's quota)
+//   - availToCaller: FreeBytesAvailableToCaller (honours it)
+//
+// availToCaller is the Windows analogue of statfs' Bavail, and totalFree of
+// Bfree, so the three fields mean exactly what they mean on unix.
+func fromByteCounts(total, totalFree, availToCaller uint64) Usage {
+	var used uint64
+	if total > totalFree {
+		used = total - totalFree
+	}
+	return Usage{Total: total, Free: availToCaller, Used: used}
+}

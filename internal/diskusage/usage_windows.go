@@ -54,9 +54,5 @@ func stat(path string) (Usage, error) {
 		}
 		return Usage{}, ErrUnsupported
 	}
-	var used uint64
-	if total > totalFree {
-		used = total - totalFree
-	}
-	return Usage{Total: total, Free: availToCaller, Used: used}, nil
+	return fromByteCounts(total, totalFree, availToCaller), nil
 }
