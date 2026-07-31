@@ -632,10 +632,21 @@ func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, ba
 		// added here would have to remember to carry it. Pinned by
 		// TestSectionCardsAreSpacedAtTheContainer.
 		h.Div(h.ID(versionRegionID), h.Class("space-y-6"), versionRegionInner(v, sub, csrf, baseURL)),
-		// The two workflow-linkage sections sit OUTSIDE #version-region: both are
-		// per-MODEL facts, so a version tab click must not re-render (or re-fetch)
-		// them. Each returns nil when it has nothing, so neither can leave an empty
-		// heading behind.
+		// Both workflow-linkage sections sit OUTSIDE #version-region, but for
+		// DIFFERENT reasons and with different refresh behaviour:
+		//
+		//   workflowUsageCard    — genuinely per-MODEL (a local workflow references
+		//                          FILES, not a version tab). Never re-renders on a
+		//                          version click. Returns nil when empty.
+		//   relatedWorkflowsCard — per-SELECTED-VERSION: the ecosystem comes from the
+		//                          selected version's baseModel, and a model's versions
+		//                          can sit on different ones (LUSTIFY!'s newest is Krea
+		//                          2, its other 16 are SDXL). It is here only for
+		//                          PLACEMENT; a version click re-renders it OUT OF BAND
+		//                          (relatedWorkflowsOOB, wired in handleModel's HX
+		//                          path). It renders an empty `hidden` container — not
+		//                          nil — so that OOB target always exists; `[hidden]` is
+		//                          skipped by space-y-6, so it costs no spacing.
 		workflowUsageCard(m.ID, v.UsedByWorkflows),
 		relatedWorkflowsCard(v),
 		g.If(strings.TrimSpace(v.Description) != "", modelDescriptionCard(v.Description)),

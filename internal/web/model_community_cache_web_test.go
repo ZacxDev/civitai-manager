@@ -29,8 +29,8 @@ func backdateCommunityCache(t *testing.T, srv *Server, modelID, versionID int, a
 	t.Helper()
 	stamp := time.Now().Add(-age).UTC().Format(time.RFC3339)
 	if _, err := srv.store.DB().Exec(
-		`UPDATE community_cache SET fetched_at = ? WHERE model_id = ? AND version_id = ?`,
-		stamp, modelID, versionID); err != nil {
+		`UPDATE community_cache SET fetched_at = ? WHERE model_id = ? AND version_id = ? AND nsfw = ?`,
+		stamp, modelID, versionID, communityImagesNSFWLevel); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -54,7 +54,7 @@ func TestCommunityCacheFirstCallFetchesAndCaches(t *testing.T) {
 		t.Fatalf("first call should fetch exactly once, got %d", got)
 	}
 	// The response was cached under (7, 11).
-	ent, err := srv.store.GetCommunityCache(7, 11)
+	ent, err := srv.store.GetCommunityCache(7, 11, communityImagesNSFWLevel)
 	if err != nil || ent == nil {
 		t.Fatalf("first call should have cached the feed, got (%v,%v)", ent, err)
 	}

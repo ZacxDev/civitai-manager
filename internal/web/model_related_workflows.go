@@ -45,13 +45,16 @@ import (
 //	                           which is exactly why the fan-out exists.
 //	sort=Most Downloaded, period=AllTime, nsfw=<display mode>
 //
-// THE SIGNAL IS THE ECOSYSTEM, and it is REQUIRED. A model's versions carry
-// CivitAI `baseModel` strings; those map through the curated table
-// (civitai.EcosystemsForBaseModels) to a family, and a workflow built for that
-// family is genuinely runnable with this model. If NO ecosystem resolves, this
-// section renders NOTHING — an unfiltered `types=Workflows` feed is the popular
-// feed, and presenting that as "workflows for this model" would be a section
-// that lies.
+// THE SIGNAL IS THE ECOSYSTEM OF THE SELECTED VERSION, and it is REQUIRED. Each
+// version carries its own CivitAI `baseModel` string, which maps through the
+// curated table (civitai.EcosystemsForBaseModel) to a family, and a workflow
+// built for that family is genuinely runnable with that version. It is resolved
+// PER VERSION, not per model: a model's versions can sit on different base models
+// (LUSTIFY!'s newest is Krea 2 while its other 16 are SDXL), and unioning them
+// labelled the section with a version the user was not looking at — see
+// modelWorkflowFacets. If NO ecosystem resolves, this section renders NOTHING —
+// an unfiltered `types=Workflows` feed is the popular feed, and presenting that
+// as "workflows for this model" would be a section that lies.
 //
 // THE MODEL NAME IS DELIBERATELY NOT USED as a free-text `query=`. Two reasons,
 // both concrete: (a) a model name is arbitrary untrusted text ("wai NSFW
@@ -89,30 +92,60 @@ const (
 // /workflows/discover with the same facets for the full grid.
 const relatedWorkflowsCap = 6
 
-// modelWorkflowFacets derives the WHITELISTED facet selection for a model.
+// selectedVersionBaseModel returns the `baseModel` string of the version the page
+// is CURRENTLY SHOWING — one version, never a union.
 //
-//   - Eco: from the model's versions' `baseModel` strings through the curated
-//     table. A model spanning several ecosystems (versions on different base
-//     models) takes the FIRST in TABLE order — deterministic, and independent of
-//     the order CivitAI happens to return versions in, which is the creator's
-//     `index` and not anything we should key on.
+// The fallback is the PRIMARY version, m.ModelVersions[0]. That is not "the
+// newest": modelVersions[] is ordered by the creator's `index`, so [0] is the
+// featured/primary version and is exactly what the detail page renders when no
+// ?version= is given (see loadModelView). Reaching it means the selection could
+// not be matched at all (id 0, or a ?version= belonging to another model), and
+// falling back to what the page would otherwise be showing keeps the heading and
+// the grid describing the same version.
+func selectedVersionBaseModel(m *civitai.ModelDetail, selectedVersionID int) string {
+	for _, v := range m.ModelVersions {
+		if v.ID == selectedVersionID {
+			return strings.TrimSpace(v.BaseModel)
+		}
+	}
+	if len(m.ModelVersions) > 0 {
+		return strings.TrimSpace(m.ModelVersions[0].BaseModel)
+	}
+	return ""
+}
+
+// modelWorkflowFacets derives the WHITELISTED facet selection for the SELECTED
+// VERSION of a model.
+//
+//   - Eco: from the SELECTED version's `baseModel` string through the curated
+//     table. Exactly one base model is consulted, so the answer is the ecosystem
+//     of the thing the user is looking at.
 //   - Use: from the model's own tags, but only insofar as they hit the curated
 //     use-case vocabulary; the first match in table order. No match simply means
-//     no tag is sent (one broader request), never a guessed one.
+//     no tag is sent (one broader request), never a guessed one. Tags are a
+//     MODEL-level fact on CivitAI (there is no per-version tag list), so this half
+//     is genuinely version-independent.
+//
+// WHY NOT THE UNION OF ALL VERSIONS. It used to be
+// EcosystemsForBaseModels(every version's baseModel) with ecos[0] taken in table
+// order, which is a MAJORITY/table-order vote that ignores the selection
+// entirely. Live case that broke (v0.1.87, /models/573152): LUSTIFY! has 17
+// versions — the newest, 3112728, is "Krea 2" and the other 16 are SDXL 1.0 /
+// SDXL Lightning. With 3112728 selected the section still read "Workflows for
+// SDXL family" and fetched SDXL workflows, i.e. it described a version the user
+// was not looking at.
 //
 // Returns the zero facets when no ecosystem resolves — the caller MUST treat that
-// as "render nothing" rather than as "no filters".
-func modelWorkflowFacets(m *civitai.ModelDetail) workflowFacets {
+// as "render nothing" rather than as "no filters". This is the case that matters
+// most: an unfiltered types=Workflows feed IS the popular feed, so a heading over
+// it would lie.
+func modelWorkflowFacets(m *civitai.ModelDetail, selectedVersionID int) workflowFacets {
 	if m == nil {
 		return workflowFacets{}
 	}
-	bases := make([]string, 0, len(m.ModelVersions))
-	for _, v := range m.ModelVersions {
-		if b := strings.TrimSpace(v.BaseModel); b != "" {
-			bases = append(bases, b)
-		}
-	}
-	ecos := civitai.EcosystemsForBaseModels(bases)
+	// EcosystemsForBaseModel is per-BASE-MODEL and the table is a partition
+	// (TestEcosystemBaseModelsArePartitioned), so this is at most one entry.
+	ecos := civitai.EcosystemsForBaseModel(selectedVersionBaseModel(m, selectedVersionID))
 	if len(ecos) == 0 {
 		return workflowFacets{}
 	}
@@ -138,6 +171,10 @@ func relatedWorkflowsPath(modelID int, f workflowFacets) string {
 	return fmt.Sprintf("/models/%d/related-workflows?%s", modelID, q.Encode())
 }
 
+// relatedWorkflowsID is the stable container id. It is stable because a version
+// tab click re-targets it OUT OF BAND (see relatedWorkflowsOOB).
+const relatedWorkflowsID = "related-workflows"
+
 // relatedWorkflowsCard is the model page's placeholder for the section.
 //
 // It is LAZY (hx-trigger=revealed), exactly like the community feed and for the
@@ -146,23 +183,55 @@ func relatedWorkflowsPath(modelID int, f workflowFacets) string {
 // makes the fail-soft requirement structural rather than a promise — the worst
 // case is a fragment that renders nothing, inside a page that already painted.
 //
-// Returns nil when the model resolves to no ecosystem, so no heading, no
-// placeholder and no request happen at all.
+// WHEN THE SELECTED VERSION RESOLVES TO NO ECOSYSTEM the container is rendered
+// EMPTY and `hidden`, so the section shows nothing — no heading, no placeholder
+// and, because there is no hx-get, no request either. It is still emitted for two
+// reasons: it is the OOB target a later version switch needs to be able to find,
+// and the `hidden` ATTRIBUTE (not a class) is what keeps it free: <main> is
+// `space-y-6`, whose generated rule is
+// `.space-y-6 > :not([hidden]) ~ :not([hidden])`, so a `[hidden]` child is
+// excluded from BOTH sides of the sibling combinator and contributes no margin.
+// The surrounding section spacing is therefore byte-identical to rendering
+// nothing at all.
 func relatedWorkflowsCard(v modelDetailView) g.Node {
+	return relatedWorkflowsContainer(v, false)
+}
+
+// relatedWorkflowsOOB is the same container marked for an OUT-OF-BAND swap. It
+// rides along with the #version-region fragment on a version tab click so the
+// section re-resolves to the newly selected version WITHOUT moving in the DOM.
+//
+// Why OOB and not "put it inside #version-region": the section sits below the
+// version region on the page, and moving it into the swapped container would
+// reorder the page's sections. hx-swap-oob replaces the element in place.
+//
+// A same-ecosystem switch (e.g. between two of LUSTIFY!'s 16 SDXL versions)
+// produces the SAME hx-get URL, so the refetched fragment is answered from
+// facetFeed's TTL cache — ZERO outbound civitai requests. Only a switch that
+// actually changes the ecosystem misses that cache.
+func relatedWorkflowsOOB(v modelDetailView) g.Node {
+	return relatedWorkflowsContainer(v, true)
+}
+
+func relatedWorkflowsContainer(v modelDetailView, oob bool) g.Node {
+	attrs := []g.Node{h.ID(relatedWorkflowsID)}
+	if oob {
+		attrs = append(attrs, hx("swap-oob", "true"))
+	}
 	m := v.Model
-	if m == nil {
-		return nil
+	var f workflowFacets
+	if m != nil {
+		f = modelWorkflowFacets(m, v.SelectedVersionID)
 	}
-	f := modelWorkflowFacets(m)
 	if f.Eco == nil {
-		return nil
+		// No ecosystem for the SELECTED version → render nothing, fetch nothing.
+		return h.Div(append(attrs, g.Attr("hidden"))...)
 	}
-	return h.Div(
-		h.ID("related-workflows"),
+	return h.Div(append(attrs,
 		hx("get", relatedWorkflowsPath(m.ID, f)),
 		hx("trigger", "revealed"),
 		hx("swap", "innerHTML"),
-	)
+	)...)
 }
 
 // relatedWorkflowsHeading names the ACTUAL filter that produced the grid, so the

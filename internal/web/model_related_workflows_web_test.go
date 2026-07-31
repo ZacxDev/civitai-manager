@@ -338,7 +338,7 @@ func TestRelatedWorkflowsRefusesAnUnwhitelistedEcosystem(t *testing.T) {
 // ecosystem from base models, use case from tags — through the curated table in
 // both cases, and never a raw tag.
 func TestModelWorkflowFacetsAreDerivedFromTheWhitelist(t *testing.T) {
-	f := modelWorkflowFacets(fluxModel())
+	f := modelWorkflowFacets(fluxModel(), 421)
 	if f.Eco == nil || f.Eco.Slug != "flux1" {
 		t.Fatalf("ecosystem = %v, want flux1 (derived from the versions' baseModels)", f.Eco)
 	}
@@ -352,12 +352,18 @@ func TestModelWorkflowFacetsAreDerivedFromTheWhitelist(t *testing.T) {
 		ID: 7, Name: "x", Type: "LORA",
 		ModelVersions: []civitai.ModelVersionSummary{{ID: 71, BaseModel: "TotallyMadeUp 9000"}},
 	}
-	if got := modelWorkflowFacets(unknown); got.Eco != nil {
+	if got := modelWorkflowFacets(unknown, 71); got.Eco != nil {
 		t.Errorf("an unrecognized baseModel must resolve to no ecosystem, got %v", got.Eco)
 	}
-	if node := relatedWorkflowsCard(modelDetailView{Model: unknown}); node != nil {
-		t.Error("a model with no ecosystem must render no section — an unfiltered " +
-			"types=Workflows feed is the POPULAR feed, not 'workflows for this model'")
+	// The container is still emitted (it is the OOB target a later version switch
+	// needs), but it is EMPTY, `hidden`, and carries NO hx-get — so nothing renders
+	// and nothing is fetched.
+	if html := renderString(t, relatedWorkflowsCard(modelDetailView{Model: unknown, SelectedVersionID: 71})); strings.Contains(html, "hx-get") {
+		t.Errorf("a version with no ecosystem must issue no request — an unfiltered "+
+			"types=Workflows feed is the POPULAR feed, not 'workflows for this model'; got %q", html)
+	} else if !strings.Contains(html, "hidden") {
+		t.Errorf("the empty container must carry the `hidden` ATTRIBUTE (space-y-6 skips "+
+			"[hidden] children, so it costs no section spacing); got %q", html)
 	}
 
 	// Tags that are pure noise / stopwords yield NO use case (one broader request),
@@ -367,14 +373,16 @@ func TestModelWorkflowFacetsAreDerivedFromTheWhitelist(t *testing.T) {
 		Tags:          []string{"tool", "comfyui", "anime girl"},
 		ModelVersions: []civitai.ModelVersionSummary{{ID: 81, BaseModel: "Flux.1 D"}},
 	}
-	if got := modelWorkflowFacets(noisy); got.Use != nil {
+	if got := modelWorkflowFacets(noisy, 81); got.Use != nil {
 		t.Errorf("stopword/noise tags must yield NO use case, got %v", got.Use)
 	}
 }
 
-// TestRelatedWorkflowsSectionIsLazyAndOutsideTheVersionRegion: the section must
-// not be on the page's critical path, and a version swap must not re-render it.
-func TestRelatedWorkflowsSectionIsLazyAndOutsideTheVersionRegion(t *testing.T) {
+// TestRelatedWorkflowsSectionIsLazyAndSwappedOutOfBand: the section must not be
+// on the page's critical path, must keep its PLACE in the DOM (it renders below
+// #version-region), and must still re-resolve on a version tab click — which is
+// what hx-swap-oob buys.
+func TestRelatedWorkflowsSectionIsLazyAndSwappedOutOfBand(t *testing.T) {
 	r := &tagSearchReader{byTag: map[string][]int{}, noTag: []int{1}}
 	srv := relatedServer(t, r)
 
@@ -395,11 +403,36 @@ func TestRelatedWorkflowsSectionIsLazyAndOutsideTheVersionRegion(t *testing.T) {
 		t.Errorf("the model page render issued %d outbound searches; it must issue none", len(r.calls))
 	}
 
-	// The htmx version-swap fragment (#version-region) must NOT contain it — the
-	// relation is per-model, so a version click must not refetch it.
+	// The htmx version-swap fragment carries it as an OUT-OF-BAND element. The
+	// section's ecosystem comes from the SELECTED version, so a version click MUST
+	// re-render it; it sits below #version-region on the page, so an in-band swap
+	// would move it. hx-swap-oob replaces it where it stands.
 	_, hxBody := hxGet(t, srv, "/models/42")
-	if strings.Contains(hxBody, `id="related-workflows"`) {
-		t.Error("the related-workflows section must live OUTSIDE #version-region")
+	if !strings.Contains(hxBody, `id="related-workflows"`) {
+		t.Fatalf("a version swap must re-render the related-workflows container (its "+
+			"ecosystem is the SELECTED version's); fragment = %q", firstN(hxBody, 1200))
+	}
+	if !strings.Contains(hxBody, `hx-swap-oob="true"`) {
+		t.Errorf("the container must be swapped OUT OF BAND — an in-band copy would move "+
+			"the section inside #version-region and reorder the page; fragment = %q",
+			firstN(hxBody, 1200))
+	}
+	// EXACTLY ONE. htmx lifts an oob element out of the fragment and removes it
+	// before swapping the rest, so a second copy would be swapped IN BAND into
+	// #version-region and the page would carry two — one of them inside the region
+	// that re-renders, i.e. duplicating on every subsequent version click. This is
+	// the last property the older …OutsideTheVersionRegion test used to cover
+	// (it asserted the id was ABSENT from the fragment, which was the per-MODEL
+	// contract this fix deliberately reversed), so assert the count, not absence.
+	if n := strings.Count(hxBody, `id="related-workflows"`); n != 1 {
+		t.Errorf("the swap fragment carries %d related-workflows containers, want exactly 1 — "+
+			"a second copy is swapped in band and duplicates the section; fragment = %q",
+			n, firstN(hxBody, 1200))
+	}
+	// The swap fragment is still lazy: it re-issues the hx-get, it does not embed
+	// a grid, so the version click itself costs no outbound request either.
+	if len(r.calls) != 0 {
+		t.Errorf("the version swap issued %d outbound searches; it must issue none", len(r.calls))
 	}
 }
 

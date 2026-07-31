@@ -94,8 +94,8 @@ func TestHFProvenanceMigrationOnPopulatedDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 16 {
-		t.Fatalf("schema version after migrate = %d, want 16", v)
+	if v != 17 {
+		t.Fatalf("schema version after migrate = %d, want 17", v)
 	}
 	var post int
 	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM local_files`).Scan(&post); err != nil {

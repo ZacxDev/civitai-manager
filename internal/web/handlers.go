@@ -420,8 +420,19 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 	// A version click is an htmx partial swap of #version-region: render ONLY that
 	// region's inner content (not the full page shell), so scroll is preserved and
 	// the URL is updated via hx-push-url on the link.
+	//
+	// The related-workflows section rides along OUT OF BAND. Its ecosystem comes
+	// from the SELECTED version (a model's versions can sit on different base
+	// models — LUSTIFY!'s newest is Krea 2 while its other 16 are SDXL), so it MUST
+	// re-render on a version click; but it lives BELOW #version-region on the page,
+	// so an in-band swap would move it. hx-swap-oob replaces it where it stands.
+	// Re-rendering is cheap: a same-ecosystem switch yields the same hx-get URL and
+	// is answered from facetFeed's TTL cache, costing zero outbound requests.
 	if isHX {
-		s.render(w, http.StatusOK, versionRegionInner(view, sub, s.csrf, s.cfg.BaseURL))
+		s.render(w, http.StatusOK, g.Group([]g.Node{
+			versionRegionInner(view, sub, s.csrf, s.cfg.BaseURL),
+			relatedWorkflowsOOB(view),
+		}))
 		return
 	}
 	// FULL-PAGE ONLY: the workflow-linkage sections are per-MODEL and live outside
@@ -437,12 +448,57 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 // (fail-open); this only decides when to PREFER a fresh fetch.
 const communityCacheTTL = time.Hour
 
+// communityImagesNSFWLevel is the CivitAI `nsfw` value the community feed asks
+// for. It is a CONSTANT, and both halves of that are deliberate.
+//
+// WHY A LEVEL AT ALL. /api/v1/images' `nsfw` is a BROWSING LEVEL, not a ceiling,
+// and OMITTING it is equivalent to asking for SFW only. Live-probed 2026-07-30
+// on modelVersionId=3112728 (limit=20), counting the returned nsfwLevel labels:
+//
+//	(absent)     None 20        <- what this endpoint used to send: SFW only
+//	nsfw=None    None 20
+//	nsfw=Soft    Soft 16, None 4
+//	nsfw=Mature  Mature 15, Soft 3, X 1, None 1
+//	nsfw=X       X 17, Mature 3     <- NO SFW items at all
+//	nsfw=true    X 17, Mature 3     <- identical to X
+//	nsfw=false   None 20
+//	nsfw=bogus   HTTP 400           <- unlike `tag`, this one fails LOUDLY
+//
+// So the section could never show an NSFW post, on any model.
+//
+// WHY `Mature` AND NOT `X`/`true`. Mature is the widest mix that STILL RETURNS
+// SFW items, so a SFW model's feed cannot be emptied by the change; X and true
+// drop level-None entirely and would have blanked exactly the models that work
+// today. Re-probed across 17 model versions (NSFW checkpoints, base models,
+// Workflows-type models, SFW LoRAs): `Mature` never returned FEWER items than
+// the no-param request, and returned more on 7 of them.
+//
+// WHY IT DOES NOT FOLLOW THE NSFW TOGGLE. The app's NSFW state is TWO-state
+// (blur ⇄ show) and `blur` is a browser-side CSS filter — the bytes go over the
+// wire either way — so neither state means "fetch less". Deriving a browsing
+// level from it would invent a THIRD NSFW concept the toggle cannot express, and
+// would make `blur` silently act as an access control it explicitly is not. The
+// per-mode treatment already happens where it belongs: communityImageTile blurs
+// or shows each tile by its own nsfwLevel.
+//
+// It is part of the cache KEY (see store 0017), so changing this line
+// self-invalidates every cached body rather than serving the old level's mix.
+const communityImagesNSFWLevel = "Mature"
+
+// communityImagesNSFWSFWLevel is the level used when nsfwSearchFlag() is false —
+// i.e. only if a real `hide` mode is ever restored (it is normalized away today,
+// so this is currently unreachable). "None" is the API's SFW-only browsing level,
+// live-probed: it returns nsfwLevel None exclusively. Sending it rather than
+// omitting the param keeps the request shape identical in both branches, and the
+// cache key still carries the level so the two can never serve each other's body.
+const communityImagesNSFWSFWLevel = "None"
+
 // handleModelCommunity backs the LAZY-loaded community feed at the bottom of the
 // model page: recent-popular civitai images that use the selected model version.
 // It is a GET fragment (no state change, no CSRF) that makes AT MOST ONE bounded
 // outbound SearchImages proxy call — the same egress posture as /models — and
 // NEVER breaks the page. It is CACHE-FIRST + FAIL-OPEN, keyed on
-// (modelID, versionId):
+// (modelID, versionId, communityImagesNSFWLevel):
 //
 //  1. A FRESH cached entry (within communityCacheTTL) with items is served with
 //     NO fetch at all.
@@ -471,7 +527,7 @@ func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Cache-first: a fresh cached entry with items serves without any fetch.
-	cached, _ := s.store.GetCommunityCache(modelID, vid)
+	cached, _ := s.store.GetCommunityCache(modelID, vid, communityImagesNSFWLevel)
 	if cached != nil && time.Since(cached.FetchedAt) < communityCacheTTL {
 		if res, derr := civitai.DecodeImageSearch(cached.Raw); derr == nil && res != nil && len(res.Items) > 0 {
 			s.render(w, http.StatusOK, s.communityFeedFragment(res.Items, mode))
@@ -485,6 +541,20 @@ func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
 	q.Set("sort", "Most Reactions")
 	q.Set("period", "Month")
 	q.Set("limit", "12")
+	// REQUIRED: without this the response is SFW-only (see communityImagesNSFWLevel).
+	//
+	// Gated on nsfwSearchFlag() like EVERY other outbound path (search, discover,
+	// related-workflows). Today that flag is always true — `hide` is normalized away
+	// — so this is the constant in practice. It exists for the open decision in
+	// CLAUDE.md to restore a real `hide`: without the gate, restoring it would keep
+	// fetching Mature, communityImageTile would then omit every NSFW tile, and the
+	// section would silently vanish WHILE a raw body full of NSFW image URLs was
+	// still written to the local DB. Fail-safe for display is not fail-safe at rest.
+	level := communityImagesNSFWLevel
+	if !s.nsfwSearchFlag() {
+		level = communityImagesNSFWSFWLevel
+	}
+	q.Set("nsfw", level)
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
@@ -493,7 +563,7 @@ func (s *Server) handleModelCommunity(w http.ResponseWriter, r *http.Request) {
 		// Only cache a successful, non-empty response (never poison with empty/error).
 		// Skip caching when the raw body is absent (nothing to re-decode later).
 		if len(res.Raw) > 0 {
-			if perr := s.store.PutCommunityCache(modelID, vid, res.Raw); perr != nil {
+			if perr := s.store.PutCommunityCache(modelID, vid, communityImagesNSFWLevel, res.Raw); perr != nil {
 				s.log.Warn("cache community feed", "model", modelID, "versionId", vid, "err", perr)
 			}
 		}
