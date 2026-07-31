@@ -501,9 +501,15 @@ func generationPromptBlock(snap runParamsSnapshot) g.Node {
 
 // promptEntryLabel is the heading above one captured prompt. It prefers the label the
 // graph's own node title produced, degrades to the input name (text / text_g / text_l)
-// and finally to "Prompt". The node id is appended whenever the label alone would not
-// distinguish two prompts — an untitled positive/negative pair both label "Prompt",
-// and captioning both identically is exactly the collapse this block exists to avoid.
+// and finally to "Prompt".
+//
+// The node id is appended UNCONDITIONALLY (whenever one was recorded), not only when
+// the label would otherwise be ambiguous. Two reasons it is not conditional: an
+// untitled positive/negative pair both label "Prompt", so SOMETHING must separate
+// them; and deciding "is this label ambiguous" means inspecting the sibling entries,
+// which would make one prompt's caption depend on another's — a caption that silently
+// changes when an unrelated node gains a title. The id also earns its place on its
+// own: it is the coordinate to look for in ComfyUI.
 func promptEntryLabel(p promptEntry) string {
 	label := strings.TrimSpace(p.Label)
 	if label == "" {
@@ -523,13 +529,25 @@ func promptEntryLabel(p promptEntry) string {
 // page uses, so a checkpoint reads identically on both surfaces and a second renderer
 // can never drift from it.
 func generationResourcesBlock(snap runParamsSnapshot, resolver workflowResolver) g.Node {
-	resources, substituted := effectiveResources(snap)
+	resources, substituted, used := effectiveResources(snap)
 	if len(resources) == 0 {
 		return nil
 	}
+	heading := resourcesUsedHeading
+	if !used {
+		heading = resourcesReferencedHeading
+	}
 	kids := []g.Node{
-		h.H3(h.Class("text-sm font-semibold text-slate-200 mt-3 mb-2"), g.Text("Resources used")),
+		h.H3(h.Class("text-sm font-semibold text-slate-200 mt-3 mb-2"), g.Text(heading)),
 		workflowResourceChips(resources, resolver),
+	}
+	if !used {
+		// The fallback list is wf.Resources — extracted with NO mode check, so on a
+		// multi-mode template it names every pipeline's models including the bypassed
+		// ones. Saying so is the point: the heading only claims REFERENCE, and this
+		// sentence stops a reader inferring USE from proximity to the images.
+		kids = append(kids, h.P(h.Class("text-xs text-slate-400 mt-2"),
+			g.Text(resourcesReferencedNote)))
 	}
 	if substituted {
 		kids = append(kids, h.P(h.Class("text-xs text-slate-400 mt-2"),
@@ -564,23 +582,49 @@ func anyResourceRevealable(resources []string, resolver workflowResolver) bool {
 	return false
 }
 
-// effectiveResources maps the workflow's referenced-resource snapshot through the
-// run's recorded substitutions, so the chips name the files that ACTUALLY ran.
+// The two resource headings. They are DIFFERENT CLAIMS, and keeping them apart is the
+// whole job of this block: one asserts these models made the image, the other only
+// that the workflow mentions them.
+const (
+	resourcesUsedHeading       = "Resources used"
+	resourcesReferencedHeading = "Resources this workflow references"
+	// Apostrophe-free for the reason spelled out on promptNotRecordedNote: g.Text
+	// escapes `'` to `&#39;`, so a test asserting the shipped constant would silently
+	// never match — a guard that cannot fail.
+	resourcesReferencedNote = "This run did not record which models it loaded, so this " +
+		"is the full reference list of the workflow — on a multi-pipeline workflow that " +
+		"can include models which were bypassed and did not run."
+)
+
+// effectiveResources picks WHICH resource list the provenance card may show, how
+// strong a claim it is allowed to make, and maps it through the run's substitutions.
 //
-// A substitution is a real swap of one model file for another at run time
-// (comfy.ApplySubstitutions rewrites every loader input equal to the missing
-// filename), and snap.Resources is the workflow's PRE-substitution list. Rendering it
-// unmapped would confidently name a file this run did not use — and would mark it
-// "not in your library", since the reason it was substituted is that it is missing.
+// used=true → snap.ResourcesUsed: extracted from the graph this run SUBMITTED, ACTIVE
+// nodes only. That is a provenance claim and earns "Resources used".
 //
-// The keys match exactly: both the resource list and the substitution map hold the
-// verbatim loader-input value from the same graph.
-func effectiveResources(snap runParamsSnapshot) (resources []string, substituted bool) {
-	if len(snap.Resources) == 0 {
-		return nil, false
+// used=false → snap.Resources (== wf.Resources): extracted from the STORED graph with
+// NO mode check, so on a multi-mode template it contains every pipeline's models. A
+// pre-change row has only this. It earns the weaker "…references" heading — showing it
+// under "Resources used" would assert that a bypassed pipeline's checkpoint ran, which
+// is exactly the false claim this branch closed for prompts (audit F1).
+//
+// SUBSTITUTIONS are applied to whichever list is chosen. A substitution is a real swap
+// of one model file for another at run time (comfy.ApplySubstitutions rewrites every
+// loader input equal to the missing filename), and both lists are PRE-substitution.
+// Rendering unmapped would name a file this run did not use — and mark it "not in your
+// library", since being missing is why it was substituted. The keys match exactly: the
+// extractor collects, and ApplySubstitutions matches, the same verbatim loader-input
+// value from the same graph.
+func effectiveResources(snap runParamsSnapshot) (resources []string, substituted, used bool) {
+	src, used := snap.ResourcesUsed, true
+	if len(src) == 0 {
+		src, used = snap.Resources, false
 	}
-	out := make([]string, 0, len(snap.Resources))
-	for _, res := range snap.Resources {
+	if len(src) == 0 {
+		return nil, false, false
+	}
+	out := make([]string, 0, len(src))
+	for _, res := range src {
 		if to, ok := snap.Substitute[res]; ok && to != "" {
 			out = append(out, to)
 			substituted = true
@@ -588,7 +632,7 @@ func effectiveResources(snap runParamsSnapshot) (resources []string, substituted
 		}
 		out = append(out, res)
 	}
-	return out, substituted
+	return out, substituted, used
 }
 
 // generationParamsCard renders the stored run params + snapshots, all escaped.

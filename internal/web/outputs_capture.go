@@ -57,6 +57,21 @@ type runParamsSnapshot struct {
 	// still labeled with which prompt it was (positive/negative, text_g/text_l).
 	// Empty with PromptsCaptured set means the graph exposes no prompt inputs.
 	Prompts []promptEntry `json:"prompts,omitempty"`
+
+	// ResourcesUsed are the model files the ACTIVE nodes of the submitted graph load
+	// — the provenance claim. It is deliberately SEPARATE from Resources above:
+	//
+	//   Resources     = wf.Resources = comfy.ExtractResourcesAny over the STORED graph
+	//                   with NO mode check, so a multi-mode template's list contains
+	//                   every pipeline's models including the bypassed ones. That is
+	//                   the right answer to "what can this workflow need" and the
+	//                   WRONG answer to "what made this image".
+	//   ResourcesUsed = comfy.ExtractActiveResources over the submitted graph.
+	//
+	// Empty means "not captured / nothing derivable", and the detail page then falls
+	// back to Resources under a heading that only claims REFERENCE, never USE. A
+	// pre-change row lands there naturally, with no flag needed.
+	ResourcesUsed []string `json:"resources_used,omitempty"`
 }
 
 // promptEntry is ONE captured prompt input: the text that actually ran, plus enough
@@ -211,36 +226,37 @@ func buildRunParamsSnapshot(wf *store.Workflow, opts runOptions) runParamsSnapsh
 		snap.Resources = wf.Resources
 		snap.BaseModel = wf.BaseModel
 		snap.Format = wf.Format
-		// The effective prompt is NOT derivable later: wf.Graph is replaced in place by
-		// a rescan and workflow_id goes NULL on delete, so reading it at render time
-		// would show TODAY's prompt for a PAST run. Capture it here, once, with the run.
+		// Neither the effective prompt NOR the effective resource list is derivable
+		// later: wf.Graph is replaced in place by a rescan and workflow_id goes NULL on
+		// delete, so reading either at render time would describe TODAY's workflow for a
+		// PAST run. Capture both here, once, from the ONE graph this run submitted.
+		submitted := runSubmittedGraph(wf, opts)
 		snap.PromptsCaptured = true
-		snap.Prompts = capturePrompts(wf, opts)
+		snap.Prompts = capturePrompts(submitted)
+		snap.ResourcesUsed = captureActiveResources(wf, submitted)
 	}
 	return snap
 }
 
-// capturePrompts reads the effective prompt text out of the graph this run actually
-// submitted.
+// runSubmittedGraph rebuilds the graph this run actually converted and submitted: the
+// stored graph with the chosen mode un-bypassed and the Parameters-panel edits
+// applied, in the SAME ORDER realRun applies them (modes, then UI widget overrides —
+// an override key is positional in the mode-applied graph).
 //
-// 🔴 It must read the MODE-APPLIED, OVERRIDE-APPLIED graph, never wf.Graph:
+// 🔴 Every provenance fact must be derived from THIS, never from wf.Graph:
 //
 //   - MODE: a multi-mode template ships every pipeline in one graph with all but one
-//     bypassed, and DetectRunInputs skips bypassed nodes. Read raw, a template records
-//     whichever pipeline happens to be un-bypassed in storage — i.e. the WRONG prompt,
-//     silently, for every run of every other mode. (Same trap
+//     bypassed. Read raw, a template records whichever pipeline happens to be
+//     un-bypassed in storage — the WRONG prompt and the WRONG models, silently, for
+//     every run of every other mode. (Same trap
 //     TestQueueSeedKeysComeFromTheModeAppliedGraph pins for seeds.)
-//   - OVERRIDES: the Parameters panel's edit IS the prompt the user ran. Reading the
-//     graph's stored value would record the pre-edit text.
+//   - OVERRIDES: the Parameters panel's edit IS what the user ran. The graph's stored
+//     value is the pre-edit text.
 //
-// The two are applied in the SAME ORDER realRun applies them (modes, then UI widget
-// overrides), because an override key is positional in the mode-applied graph.
-//
-// Only UI-format workflows yield anything: an api-format graph has no widgets_values,
-// so DetectRunInputs returns nothing and the row honestly records "no prompt inputs
-// detected" rather than a guess. Best-effort throughout — a capture must never fail a
-// run — so a graph that cannot be parsed simply yields no entries.
-func capturePrompts(wf *store.Workflow, opts runOptions) []promptEntry {
+// It exists as ONE helper so the prompt half and the resource half cannot drift: the
+// resource half was originally read from the stored wf.Resources list and therefore
+// named bypassed pipelines' checkpoints under a heading asserting they ran.
+func runSubmittedGraph(wf *store.Workflow, opts runOptions) json.RawMessage {
 	if wf == nil {
 		return nil
 	}
@@ -248,8 +264,41 @@ func capturePrompts(wf *store.Workflow, opts runOptions) []promptEntry {
 	if wf.Format == store.WorkflowFormatUI && len(opts.UIWidgetOverrides) > 0 {
 		graph = comfy.ApplyUIWidgetOverrides(graph, opts.UIWidgetOverrides)
 	}
+	return graph
+}
+
+// captureActiveResources records the model files the run's graph actually loads —
+// ACTIVE nodes only (comfy.ExtractActiveResources), so a bypassed pipeline's
+// checkpoint is never presented as something this image was made with.
+//
+// It reuses the shared extractor rather than a second implementation, so what counts
+// as a resource is defined in exactly one place (internal/comfy/format.go).
+//
+// Best-effort like the rest of capture: an error or an unknown format yields nil, and
+// the detail page then falls back to the workflow's own reference list under an
+// honest heading rather than claiming anything.
+func captureActiveResources(wf *store.Workflow, submitted json.RawMessage) []string {
+	if wf == nil || len(submitted) == 0 {
+		return nil
+	}
+	res, err := comfy.ExtractActiveResources(wf.Format, submitted)
+	if err != nil {
+		return nil
+	}
+	return res
+}
+
+// capturePrompts reads the effective prompt text out of the graph this run actually
+// submitted (runSubmittedGraph — read its doc for why nothing here may touch
+// wf.Graph).
+//
+// Only UI-format workflows yield anything: an api-format graph has no widgets_values,
+// so DetectRunInputs returns nothing and the row honestly records "no prompt inputs
+// detected" rather than a guess. Best-effort throughout — a capture must never fail a
+// run — so a graph that cannot be parsed simply yields no entries.
+func capturePrompts(submitted json.RawMessage) []promptEntry {
 	var out []promptEntry
-	for _, ri := range comfy.DetectRunInputs(graph, nil) {
+	for _, ri := range comfy.DetectRunInputs(submitted, nil) {
 		if ri.Kind != comfy.RunInputText {
 			continue // seeds/steps/cfg are already covered by the override list
 		}
