@@ -104,37 +104,41 @@ func TestCardImagesUnknownModelEmptyNode(t *testing.T) {
 	}
 }
 
-// TestCardImagesNSFWModeHonored proves the persisted NSFW mode is threaded into the
-// carousel: blur mode blurs the NSFW tile (cm-blur affordance), show renders it
-// plain (no cm-blur). modelCardRawJSON carries one safe + one NSFW image.
-func TestCardImagesNSFWModeHonored(t *testing.T) {
-	// Blur mode: the NSFW tile carries the cm-blur affordance.
-	blurSrv := newModelServer(t, errModelReader{})
-	if err := blurSrv.store.PutModelCache(7, "Great Model", modelCardRawJSON(t)); err != nil {
+// TestCardImagesMaturityRangeHonored proves the persisted range is threaded into
+// the lazily-loaded card carousel: an out-of-band tile is OMITTED (its URL is not
+// in the response), an in-band one renders plain. modelCardRawJSON carries one
+// level-1 and one higher-level image.
+func TestCardImagesMaturityRangeHonored(t *testing.T) {
+	// A PG-only range: the NSFW tile's URL must be absent entirely.
+	narrow := newModelServer(t, errModelReader{})
+	if err := narrow.store.PutModelCache(7, "Great Model", modelCardRawJSON(t)); err != nil {
 		t.Fatal(err)
 	}
-	if err := blurSrv.store.SetSetting(nsfwSettingKey, NSFWBlur); err != nil {
+	if err := narrow.store.SetSetting(maturitySettingKey, "pg:pg"); err != nil {
 		t.Fatal(err)
 	}
-	blurBody := getModelPage(t, blurSrv, "/models/7/card-images")
-	if !strings.Contains(blurBody, "cm-blur") {
-		t.Errorf("blur mode should blur the NSFW tile (cm-blur):\n%s", blurBody)
+	narrowBody := getModelPage(t, narrow, "/models/7/card-images")
+	if strings.Contains(narrowBody, "nsfw.jpeg") {
+		t.Errorf("a PG-only range LEAKED the NSFW tile URL:\n%s", narrowBody)
+	}
+	if strings.Contains(narrowBody, "cm-blur") {
+		t.Errorf("blur is dead — the card carousel must not emit cm-blur:\n%s", narrowBody)
 	}
 
-	// Show mode: no blur affordance — the NSFW tile renders plain.
-	showSrv := newModelServer(t, errModelReader{})
-	if err := showSrv.store.PutModelCache(7, "Great Model", modelCardRawJSON(t)); err != nil {
+	// The full range: the tile is present and plain.
+	full := newModelServer(t, errModelReader{})
+	if err := full.store.PutModelCache(7, "Great Model", modelCardRawJSON(t)); err != nil {
 		t.Fatal(err)
 	}
-	if err := showSrv.store.SetSetting(nsfwSettingKey, NSFWShow); err != nil {
+	if err := full.store.SetSetting(maturitySettingKey, "pg:xxx"); err != nil {
 		t.Fatal(err)
 	}
-	showBody := getModelPage(t, showSrv, "/models/7/card-images")
-	if strings.Contains(showBody, "cm-blur") {
-		t.Errorf("show mode should render the NSFW tile plain (no cm-blur):\n%s", showBody)
+	fullBody := getModelPage(t, full, "/models/7/card-images")
+	if strings.Contains(fullBody, "cm-blur") || strings.Contains(fullBody, `data-blurred="1"`) {
+		t.Errorf("the full range must render tiles plain:\n%s", fullBody)
 	}
-	if !strings.Contains(showBody, "cm-carousel") {
-		t.Errorf("show mode should still render the carousel:\n%s", showBody)
+	if !strings.Contains(fullBody, "cm-carousel") {
+		t.Errorf("the full range should still render the carousel:\n%s", fullBody)
 	}
 }
 

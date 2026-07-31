@@ -1,27 +1,19 @@
 package web
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/ZacxDev/civitai-manager/internal/civitai"
 )
 
-// communityRawBody marshals a set of images into an /api/v1/images-shaped body
-// (the bytes SearchImages would return on .Raw and the community cache stores).
-func communityRawBody(t *testing.T, imgs []civitai.ImageItem) []byte {
-	t.Helper()
-	b, err := json.Marshal(civitai.ImageSearchResult{Items: imgs})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b
-}
+// fullRangeCeiling is the CivitAI `nsfw` ceiling the DEFAULT (full) maturity
+// range asks for, and therefore the community cache key every test below uses.
+// Spelled out rather than recomputed so a change to imagesNSFWCeiling shows up
+// here as a failing cache lookup instead of silently agreeing with itself.
+const fullRangeCeiling = "X"
 
 // backdateCommunityCache rewrites a cache row's fetched_at to now-age so tests
 // can exercise the stale (fail-open) branch. White-box (same package).
@@ -30,20 +22,18 @@ func backdateCommunityCache(t *testing.T, srv *Server, modelID, versionID int, a
 	stamp := time.Now().Add(-age).UTC().Format(time.RFC3339)
 	if _, err := srv.store.DB().Exec(
 		`UPDATE community_cache SET fetched_at = ? WHERE model_id = ? AND version_id = ? AND nsfw = ?`,
-		stamp, modelID, versionID, communityImagesNSFWLevel); err != nil {
+		stamp, modelID, versionID, fullRangeCeiling); err != nil {
 		t.Fatal(err)
 	}
 }
 
 // TestCommunityCacheFirstCallFetchesAndCaches proves the first call fetches
-// upstream and persists the response to the community cache.
+// upstream and persists the response to the community cache, keyed by the
+// CEILING the current range asks for.
 func TestCommunityCacheFirstCallFetchesAndCaches(t *testing.T) {
-	imgs := []civitai.ImageItem{
-		communityImage(1, "https://image.civitai.com/bucket/uuid/a.jpeg", "None", "alice", 5, 0),
-	}
 	reader := newModelReader(t)
-	reader.communityImages = imgs
-	reader.communityRaw = communityRawBody(t, imgs)
+	reader.communityRaw = communityBody(t,
+		pgItem(1, "https://image.civitai.com/bucket/uuid/a.jpeg", "alice", 5, 0))
 	srv := newModelServer(t, reader)
 
 	code, body := communityReq(t, srv, "/models/7/community?versionId=11")
@@ -53,22 +43,18 @@ func TestCommunityCacheFirstCallFetchesAndCaches(t *testing.T) {
 	if got := atomic.LoadInt32(reader.searchHits); got != 1 {
 		t.Fatalf("first call should fetch exactly once, got %d", got)
 	}
-	// The response was cached under (7, 11).
-	ent, err := srv.store.GetCommunityCache(7, 11, communityImagesNSFWLevel)
+	ent, err := srv.store.GetCommunityCache(7, 11, fullRangeCeiling)
 	if err != nil || ent == nil {
-		t.Fatalf("first call should have cached the feed, got (%v,%v)", ent, err)
+		t.Fatalf("first call should have cached the feed under the ceiling, got (%v,%v)", ent, err)
 	}
 }
 
 // TestCommunityCacheSecondCallServesFromCache proves a second call within TTL is
 // served from the cache WITHOUT a second upstream fetch (searchHits stays 1).
 func TestCommunityCacheSecondCallServesFromCache(t *testing.T) {
-	imgs := []civitai.ImageItem{
-		communityImage(1, "https://image.civitai.com/bucket/uuid/a.jpeg", "None", "alice", 5, 0),
-	}
 	reader := newModelReader(t)
-	reader.communityImages = imgs
-	reader.communityRaw = communityRawBody(t, imgs)
+	reader.communityRaw = communityBody(t,
+		pgItem(1, "https://image.civitai.com/bucket/uuid/a.jpeg", "alice", 5, 0))
 	srv := newModelServer(t, reader)
 
 	_, _ = communityReq(t, srv, "/models/7/community?versionId=11")
@@ -82,15 +68,46 @@ func TestCommunityCacheSecondCallServesFromCache(t *testing.T) {
 	}
 }
 
+// TestCommunityCacheKeyIsTheRequestedCeiling is the 🔴 cross-range guard: a body
+// fetched for one range must never be served to a range whose ceiling differs.
+//
+// It primes the cache at the full range (ceiling X) with a distinctive poster,
+// then narrows the range to PG-only (ceiling None) and proves the handler goes
+// back to the network rather than reusing the wider body — which would hand a
+// PG-only user a page built from an X-ceiling response.
+func TestCommunityCacheKeyIsTheRequestedCeiling(t *testing.T) {
+	reader := newModelReader(t)
+	reader.communityRaw = communityBody(t,
+		pgItem(1, "https://image.civitai.com/bucket/uuid/wide.jpeg", "wide_poster", 5, 0))
+	srv := newModelServer(t, reader)
+
+	if _, _ = communityReq(t, srv, "/models/7/community?versionId=11"); atomic.LoadInt32(reader.searchHits) != 1 {
+		t.Fatalf("priming call should have fetched once, got %d", atomic.LoadInt32(reader.searchHits))
+	}
+
+	if err := srv.store.SetSetting(maturitySettingKey, "pg:pg"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = communityReq(t, srv, "/models/7/community?versionId=11")
+	if got := atomic.LoadInt32(reader.searchHits); got != 2 {
+		t.Fatalf("narrowing the range changes the CEILING, so the cached body must not be "+
+			"reused; searchHits = %d, want 2", got)
+	}
+	// …and the second body was stored under the NEW ceiling, beside the old one.
+	if ent, _ := srv.store.GetCommunityCache(7, 11, "None"); ent == nil {
+		t.Error("the refetch should be cached under the PG ceiling \"None\"")
+	}
+	if ent, _ := srv.store.GetCommunityCache(7, 11, fullRangeCeiling); ent == nil {
+		t.Error("the original X-ceiling entry should still exist (keys are independent)")
+	}
+}
+
 // TestCommunityCacheFailOpenServesStale proves a fetch ERROR falls back to the
 // last cached entry (even when stale) rather than the error note.
 func TestCommunityCacheFailOpenServesStale(t *testing.T) {
-	imgs := []civitai.ImageItem{
-		communityImage(2, "https://image.civitai.com/bucket/uuid/cached.jpeg", "None", "cached_bob", 9, 0),
-	}
 	reader := newModelReader(t)
-	reader.communityImages = imgs
-	reader.communityRaw = communityRawBody(t, imgs)
+	reader.communityRaw = communityBody(t,
+		pgItem(2, "https://image.civitai.com/bucket/uuid/cached.jpeg", "cached_bob", 9, 0))
 	srv := newModelServer(t, reader)
 
 	// Prime the cache with a real fetch, then backdate it past the TTL so the next
@@ -116,6 +133,38 @@ func TestCommunityCacheFailOpenServesStale(t *testing.T) {
 	}
 }
 
+// TestCommunityCacheStaleEntryIsStillRangeFiltered: serving a stale body must not
+// bypass the band. The cache is a fetch optimisation, never a filter bypass.
+func TestCommunityCacheStaleEntryIsStillRangeFiltered(t *testing.T) {
+	reader := newModelReader(t)
+	reader.communityRaw = communityBody(t,
+		pgItem(1, "https://image.civitai.com/bucket/uuid/pg.jpeg", "pg_poster", 1, 0),
+		communityItem{ID: 2, URL: "https://image.civitai.com/bucket/uuid/xxx.jpeg",
+			Label: "X", Level: 16, Username: "xxx_poster"},
+	)
+	srv := newModelServer(t, reader)
+
+	_, _ = communityReq(t, srv, "/models/7/community?versionId=11")
+	backdateCommunityCache(t, srv, 7, 11, 2*communityCacheTTL)
+
+	failing := newModelReader(t)
+	failing.communityErr = errors.New("civitai down")
+	srv.reader = failing
+
+	// A range that still resolves to the SAME ceiling (X) so the stale entry is the
+	// one served — but excludes XXX.
+	if err := srv.store.SetSetting(maturitySettingKey, "pg:x"); err != nil {
+		t.Fatal(err)
+	}
+	_, body := communityReq(t, srv, "/models/7/community?versionId=11")
+	if !strings.Contains(body, "pg_poster") {
+		t.Fatalf("the stale entry should still be served (fail-open):\n%s", body)
+	}
+	if strings.Contains(body, "xxx.jpeg") || strings.Contains(body, "xxx_poster") {
+		t.Errorf("a STALE cached body was served past the maturity band:\n%s", body)
+	}
+}
+
 // TestCommunityCacheErrorNoCacheRendersNothing proves a fetch error with NO usable
 // cache degrades to an EMPTY fragment — 200, but no heading and no error note (the
 // failure is logged server-side instead of scarring the page).
@@ -136,22 +185,19 @@ func TestCommunityCacheErrorNoCacheRendersNothing(t *testing.T) {
 // TestCommunityCacheEmptyResultServesStale proves an EMPTY fresh result falls
 // back to a prior non-empty cache (never blanks a feed the user has seen).
 func TestCommunityCacheEmptyResultServesStale(t *testing.T) {
-	imgs := []civitai.ImageItem{
-		communityImage(3, "https://image.civitai.com/bucket/uuid/prev.jpeg", "None", "prev_carol", 4, 0),
-	}
 	reader := newModelReader(t)
-	reader.communityImages = imgs
-	reader.communityRaw = communityRawBody(t, imgs)
+	reader.communityRaw = communityBody(t,
+		pgItem(3, "https://image.civitai.com/bucket/uuid/prev.jpeg", "prev_carol", 4, 0))
 	srv := newModelServer(t, reader)
 
 	// Prime + backdate so the next call re-fetches.
 	_, _ = communityReq(t, srv, "/models/7/community?versionId=11")
 	backdateCommunityCache(t, srv, 7, 11, 2*communityCacheTTL)
 
-	// Now upstream returns an EMPTY (non-nil) result. The prior non-empty cache
-	// must be served rather than an empty (omitted) section.
+	// Now upstream returns an EMPTY (but well-formed) body. The prior non-empty
+	// cache must be served rather than an empty (omitted) section.
 	empty := newModelReader(t)
-	empty.communityImages = []civitai.ImageItem{}
+	empty.communityRaw = communityBody(t)
 	srv.reader = empty
 
 	_, body := communityReq(t, srv, "/models/7/community?versionId=11")

@@ -133,9 +133,9 @@ func TestModelVersionTabsMarkup(t *testing.T) {
 // NOT carry the large class and keeps the 450px default — so cards are unchanged.
 func TestDetailShowcaseEnlargedNotCards(t *testing.T) {
 	// A properly-shaped civitai CDN url so civitaiThumbURL applies the transform.
-	imgs := []galleryImage{{URL: "https://image.civitai.com/bucket/uuid/pic.jpeg", Width: 4096, Height: 2048}}
+	imgs := []galleryImage{{URL: "https://image.civitai.com/bucket/uuid/pic.jpeg", NSFWLevel: 1, Width: 4096, Height: 2048}}
 
-	detail := renderString(t, showcaseCard(7, imgs, NSFWShow))
+	detail := renderString(t, showcaseCard(7, imgs, fullMaturityRange()))
 	if !strings.Contains(detail, "cm-showcase-lg") {
 		t.Error("detail showcase should carry the .cm-showcase-lg enlargement modifier")
 	}
@@ -143,7 +143,7 @@ func TestDetailShowcaseEnlargedNotCards(t *testing.T) {
 		t.Errorf("detail showcase should request the larger thumbnail width (800):\n%s", detail)
 	}
 
-	card := renderString(t, modelCardCarousel(7, imgs, NSFWShow))
+	card := renderString(t, modelCardCarousel(7, imgs, fullMaturityRange()))
 	if strings.Contains(card, "cm-showcase-lg") {
 		t.Error("the shared card carousel must NOT carry the detail-only large class")
 	}

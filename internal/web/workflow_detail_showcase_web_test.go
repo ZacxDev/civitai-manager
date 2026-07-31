@@ -8,7 +8,7 @@ import (
 )
 
 // showcaseResolver builds a resolver whose model_cache returns raw for model 42.
-func showcaseResolver(raw string, mode string) workflowResolver {
+func showcaseResolver(raw string, mr maturityRange) workflowResolver {
 	return workflowResolver{
 		cachedModel: func(id int) (string, []byte, bool) {
 			if id == 42 {
@@ -16,7 +16,7 @@ func showcaseResolver(raw string, mode string) workflowResolver {
 			}
 			return "", nil, false
 		},
-		nsfwMode: mode,
+		mr: mr,
 	}
 }
 
@@ -28,8 +28,8 @@ func TestWorkflowDetailShowsShowcaseWhenModelHasImages(t *testing.T) {
 		ID: 1, Name: "portrait", Format: store.WorkflowFormatUI, Graph: "{}",
 		Source: store.WorkflowSourceCivitai, ModelID: intp(42), VersionID: intp(99),
 	}
-	got := renderString(t, detailPageNode(wf, "csrf", "dark", NSFWShow, false,
-		comfyHelperView{}, showcaseResolver(rawWithImages, NSFWShow)))
+	got := renderString(t, detailPageNode(wf, "csrf", "dark", fullMaturityRange(), false,
+		comfyHelperView{}, showcaseResolver(rawWithImages, fullMaturityRange())))
 
 	if !strings.Contains(got, "cm-showcase-lg") {
 		t.Errorf("detail should render the reused showcase card:\n%s", got)
@@ -49,7 +49,7 @@ func TestWorkflowDetailShowsShowcaseWhenModelHasImages(t *testing.T) {
 func TestWorkflowDetailNoShowcaseWithoutModelOrImages(t *testing.T) {
 	// No linked model.
 	noModel := &store.Workflow{ID: 2, Name: "x", Format: store.WorkflowFormatUI, Graph: "{}", Source: store.WorkflowSourceImported}
-	got := renderString(t, detailPageNode(noModel, "csrf", "dark", NSFWShow, false, comfyHelperView{}, workflowResolver{}))
+	got := renderString(t, detailPageNode(noModel, "csrf", "dark", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{}))
 	if strings.Contains(got, "cm-showcase-lg") {
 		t.Error("no linked model → no showcase card")
 	}
@@ -60,38 +60,37 @@ func TestWorkflowDetailNoShowcaseWithoutModelOrImages(t *testing.T) {
 	// Linked model but uncached (no images).
 	linkedUncached := &store.Workflow{ID: 3, Name: "y", Format: store.WorkflowFormatUI, Graph: "{}",
 		Source: store.WorkflowSourceCivitai, ModelID: intp(42)}
-	got2 := renderString(t, detailPageNode(linkedUncached, "csrf", "dark", NSFWShow, false,
+	got2 := renderString(t, detailPageNode(linkedUncached, "csrf", "dark", fullMaturityRange(), false,
 		comfyHelperView{}, workflowResolver{cachedModel: func(int) (string, []byte, bool) { return "", nil, false }}))
 	if strings.Contains(got2, "cm-showcase-lg") {
 		t.Error("uncached model → no showcase card")
 	}
 }
 
-// TestWorkflowDetailShowcaseRespectsNSFW proves the reused carousel honors the NSFW
-// mode: `show` reveals the NSFW tile plainly, while `blur`/`hide` obscure it behind
-// .cm-blur. (The shared card carousel migrates `hide`→`blur` at this layer — see
-// normalizeNSFWMode — the same behavior as the model-detail showcaseCard and the
-// workflow list cards; reusing the exact component inherits it.)
-func TestWorkflowDetailShowcaseRespectsNSFW(t *testing.T) {
+// TestWorkflowDetailShowcaseRespectsTheRange proves the reused carousel OMITS an
+// out-of-band showcase tile server-side and renders an in-band one plain. It is
+// the exact component the model-detail showcase and the workflow list cards use,
+// so reusing it inherits the behaviour rather than reimplementing it.
+func TestWorkflowDetailShowcaseRespectsTheRange(t *testing.T) {
 	wf := &store.Workflow{ID: 4, Name: "nsfw", Format: store.WorkflowFormatUI, Graph: "{}",
 		Source: store.WorkflowSourceCivitai, ModelID: intp(42)}
 
-	show := renderString(t, detailPageNode(wf, "csrf", "dark", NSFWShow, false,
-		comfyHelperView{}, showcaseResolver(rawWithNSFWImage, NSFWShow)))
+	full := fullMaturityRange()
+	show := renderString(t, detailPageNode(wf, "csrf", "dark", full, false,
+		comfyHelperView{}, showcaseResolver(rawWithNSFWImage, full)))
 	if !strings.Contains(show, "img/x.jpg") {
-		t.Errorf("show mode should render the NSFW tile:\n%s", show)
+		t.Errorf("the full range should render the tile:\n%s", show)
 	}
-	// data-blurred="1" is the per-tile blur marker (cm-blur also appears in the shared
-	// reveal script, so target the tile attribute).
-	if strings.Contains(show, `data-blurred="1"`) {
-		t.Error("show mode must not blur the tile")
+	for _, dead := range []string{`data-blurred="1"`, "cm-blur"} {
+		if strings.Contains(show, dead) {
+			t.Errorf("the showcase still emits the dead blur marker %q:\n%s", dead, show)
+		}
 	}
 
-	for _, mode := range []string{NSFWBlur, NSFWHide} {
-		body := renderString(t, detailPageNode(wf, "csrf", "dark", mode, false,
-			comfyHelperView{}, showcaseResolver(rawWithNSFWImage, mode)))
-		if !strings.Contains(body, "img/x.jpg") || !strings.Contains(body, `data-blurred="1"`) {
-			t.Errorf("%s mode should render the NSFW tile blurred:\n%s", mode, body)
-		}
+	pgOnly := maturityRange{maturityPG, maturityPG}
+	body := renderString(t, detailPageNode(wf, "csrf", "dark", pgOnly, false,
+		comfyHelperView{}, showcaseResolver(rawWithNSFWImage, pgOnly)))
+	if strings.Contains(body, "img/x.jpg") {
+		t.Errorf("a PG-only range LEAKED the out-of-band tile URL:\n%s", body)
 	}
 }

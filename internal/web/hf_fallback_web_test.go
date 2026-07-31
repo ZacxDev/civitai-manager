@@ -244,7 +244,7 @@ func TestResolveMissingModelsPopulatesHF(t *testing.T) {
 	}
 
 	// The rendered popover section shows the HF match.
-	section := renderString(t, civitaiMatchSection(models[0], mr, 3, "csrf", true, "hide"))
+	section := renderString(t, civitaiMatchSection(models[0], mr, 3, "csrf", true, fullMaturityRange()))
 	if !strings.Contains(section, "Found on HuggingFace") || !strings.Contains(section, "Install and run") {
 		t.Errorf("popover should surface the HF match with Install-and-run:\n%s", section)
 	}

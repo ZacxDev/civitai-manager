@@ -14,13 +14,13 @@ import (
 // dropped on workflow cards while a normal model card keeps its type badge.
 func TestCardWorkflowsBadgeOmitted(t *testing.T) {
 	wf := civitai.ModelListItem{ID: 1, Name: "A Workflow", Type: "Workflows"}
-	out := renderString(t, modelCardCore(wf, nil, "show", modelUpdateInfo{}, nil))
+	out := renderString(t, modelCardCore(wf, nil, fullMaturityRange(), modelUpdateInfo{}, nil))
 	if strings.Contains(out, ">Workflows<") {
 		t.Errorf("workflow card should NOT render a 'Workflows' type badge:\n%s", out)
 	}
 
 	ckpt := civitai.ModelListItem{ID: 2, Name: "A Checkpoint", Type: "Checkpoint"}
-	out = renderString(t, modelCardCore(ckpt, nil, "show", modelUpdateInfo{}, nil))
+	out = renderString(t, modelCardCore(ckpt, nil, fullMaturityRange(), modelUpdateInfo{}, nil))
 	if !strings.Contains(out, ">Checkpoint<") {
 		t.Errorf("model card should still render its 'Checkpoint' type badge:\n%s", out)
 	}
@@ -34,7 +34,7 @@ func TestCardUpdatedLineRendersLast(t *testing.T) {
 		Stats: civitai.ModelStats{DownloadCount: 10, ThumbsUpCount: 5}}
 	updated := modelUpdateInfo{At: time.Now().Add(-72 * time.Hour), Name: "v2", VersionID: 9}
 	action := h.Button(g.Text("ACTIONMARKER"))
-	out := renderString(t, modelCardCore(it, nil, "show", updated, action))
+	out := renderString(t, modelCardCore(it, nil, fullMaturityRange(), updated, action))
 
 	iStats := strings.Index(out, "cm-stats")
 	iAction := strings.Index(out, "ACTIONMARKER")

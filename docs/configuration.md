@@ -208,9 +208,13 @@ Specific things a non-loopback bind changes or exposes:
   has a working gallery. The **"Recent outputs" sidebar** puts the most recent
   thumbnails and their workflow names on *every* page, so they are the first
   thing such a client sees.
-- **NSFW "Blur" is not a privacy control.** NSFW previews are blurred by default,
-  but blur is a CSS filter applied in the browser — the unblurred bytes still go
-  over the wire.
+- **The maturity range is a real server-side filter, but it defaults to
+  everything.** The nav's PG..XXX control omits out-of-band CivitAI previews
+  server-side (their URLs are never sent, and a narrower band also narrows what
+  is fetched from civitai.com). It defaults to the FULL range, and it does not
+  apply to your own generations — the outputs gallery is unrated content and is
+  never filtered by it. It is a display preference, not an access control: the
+  UI has no login, so anyone who can reach the port can widen it.
 
 Even on loopback, the web scan is confined and bounded:
 

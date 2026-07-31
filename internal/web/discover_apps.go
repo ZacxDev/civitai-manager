@@ -99,7 +99,7 @@ func normalizeAppsCategory(v string) string {
 func (s *Server) handleDiscoverApps(w http.ResponseWriter, r *http.Request) {
 	q0 := r.URL.Query()
 	isHX := r.Header.Get("HX-Request") == "true"
-	mode := s.nsfwMode()
+	mr := s.maturity()
 
 	kindSel := normalizeAppsKind(q0.Get("kind"))
 	catSel := normalizeAppsCategory(q0.Get("category"))
@@ -122,22 +122,22 @@ func (s *Server) handleDiscoverApps(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("apps list", "err", err)
 		results = appsErrorNote()
 	} else {
-		results = appsDiscoverResults(page, mode, kindSel, catSel, sortSel)
+		results = appsDiscoverResults(page, kindSel, catSel, sortSel)
 	}
 
 	if isHX {
 		s.render(w, http.StatusOK, results)
 		return
 	}
-	s.render(w, http.StatusOK, appsDiscoverPage(results, s.currentTheme(), mode, kindSel, catSel, sortSel, s.csrf, s.rail(r.Context())))
+	s.render(w, http.StatusOK, appsDiscoverPage(results, s.currentTheme(), mr, kindSel, catSel, sortSel, s.csrf, s.rail(r.Context())))
 }
 
 // appsDiscoverPage renders the full Apps browse page: the filter form (kind /
 // category / sort dropdowns wired to GET /apps/discover) and the results
 // container. The container id is stable — the form and the cursor "next" control
 // both swap its innerHTML, never the container itself (streaming-job invariant).
-func appsDiscoverPage(results g.Node, theme, mode, kindSel, catSel, sortSel, csrf string, rail ...railData) g.Node {
-	return page("Apps", theme, csrf, mode, railOf(rail),
+func appsDiscoverPage(results g.Node, theme string, mr maturityRange, kindSel, catSel, sortSel, csrf string, rail ...railData) g.Node {
+	return page("Apps", theme, csrf, mr, railOf(rail),
 		card(
 			pageTitle("Apps"), // the page's single <h1>
 			h.P(h.Class("text-sm text-slate-400 mb-3"),
@@ -163,7 +163,19 @@ func appsDiscoverPage(results g.Node, theme, mode, kindSel, catSel, sortSel, csr
 // app-card grid plus a cursor "next" control. A nil page or empty items list
 // renders the honest pre-launch empty state, NOT an error. kindSel/catSel/sortSel
 // are baked into the "next" control so pagination preserves the active filters.
-func appsDiscoverResults(page *civitai.AppsPage, mode, kindSel, catSel, sortSel string) g.Node {
+//
+// 🔴 APPS ARE OUT OF SCOPE OF THE MATURITY RANGE, deliberately — this used to take
+// a maturityRange it never read, a signature that promised filtering which did not
+// happen. An app carries `contentRating`, a STRING, not the numeric browsingLevel
+// the whole scale is keyed on (see maturity.go), so there is nothing here to
+// compare a band against. Same standing as the outputs rail: not "level 0", not
+// maturityUnknown — outside the scale.
+//
+// This is currently unobservable: /api/v1/apps is launch-gated and returns
+// {"items":[]} for a normal user (re-verified live). When CivitAI flips that flag
+// third-party cover art WILL render at every band, so if apps must respect the
+// range, map contentRating -> a level HERE first — do not re-add an unread param.
+func appsDiscoverResults(page *civitai.AppsPage, kindSel, catSel, sortSel string) g.Node {
 	if page == nil || len(page.Items) == 0 {
 		return appsEmptyState()
 	}

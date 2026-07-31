@@ -15,60 +15,30 @@ import (
 	h "maragu.dev/gomponents/html"
 )
 
-// NSFW display modes (persisted under nsfwSettingKey). blur is the default.
-//
-// NSFWHide is RETAINED as a constant (and the two server-side omit branches that
-// key off it are kept) so the "omit NSFW server-side" capability still exists per
-// the CLAUDE.md invariant — but the navbar toggle NO LONGER OFFERS hide (it is a
-// 2-state Blur ⇄ Show control). normalizeNSFWMode migrates any stored "hide" to
-// blur, so no user is stuck on hide and mode == NSFWHide is unreachable in
-// practice (the omit branches are inert but preserved).
-const (
-	NSFWHide       = "hide"
-	NSFWBlur       = "blur"
-	NSFWShow       = "show"
-	nsfwSettingKey = "nsfw_display"
-)
+// maturitySettingKey is the settings row holding the app-wide PG..XXX maturity
+// RANGE ("<min>:<max>", see maturityRange.String). It replaced the old
+// `nsfw_display` mode row in store migration 0018; an absent row means the full
+// range (fullMaturityRange), which is also what every old mode migrated to.
+const maturitySettingKey = "maturity_range"
 
-// normalizeNSFWMode coerces a stored/submitted value to a known mode, defaulting
-// to blur (the safe default: NSFW images are obscured until the user reveals one).
-// A stored "hide" is MIGRATED to blur: the toggle dropped the hide state, so a
-// previously-persisted hide now reads as blur everywhere (the server-side omit
-// branches keyed on NSFWHide are thus never reached, but stay in place as an
-// inert, preserved capability — see the const block above).
-func normalizeNSFWMode(s string) string {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case NSFWShow:
-		return NSFWShow
-	default: // blur (the safe default) — and "hide" migrates here too
-		return NSFWBlur
-	}
-}
-
-// CivitAI encodes an image's nsfwLevel as a NUMBER (a bitmask-ish severity) on
-// the inline modelVersions[].images[] payload: 1=None/PG, 2=Soft/PG-13,
-// 4=Mature/R, 8=X, 16=XX, 32=XXX. nsfwSafeLevel is the highest level rendered in
-// the clear — only None/PG (1, and the never-observed 0) is safe; everything at
-// Soft (2) and above is treated NSFW.
-const nsfwSafeLevel = 1
-
-// nsfwLevelUnknown is the sentinel the image parser assigns when an image's
-// nsfwLevel is ABSENT or not an integer. It is above every real level so the
-// blur/hide gate FAILS CLOSED: an image with no/garbage level is blurred (blur
-// mode) and omitted (hide mode) rather than rendered un-obscured.
-const nsfwLevelUnknown = 99
-
-// isNSFWLevel reports whether a numeric CivitAI nsfwLevel should be treated as
-// NSFW. Fail-closed: only an explicitly-safe level (<= nsfwSafeLevel) is safe;
-// Soft (2) and above — and the nsfwLevelUnknown sentinel for an absent/garbage
-// level — are NSFW.
-func isNSFWLevel(level int) bool { return level > nsfwSafeLevel }
+// browsingLevelUnknown is the sentinel the inline-image parser assigns when an
+// image's numeric level is ABSENT or not an integer. It is deliberately NOT a
+// value on the maturity scale, so maturityFromBrowsingLevel maps it to
+// maturityUnknown and NO range contains it: an unrated image is OMITTED rather
+// than rendered on the assumption that it is tame.
+const browsingLevelUnknown = 99
 
 // galleryImage is one showcase image sourced from a model version's INLINE
 // images[] (already present in the GetModel / GetModelVersion raw JSON) — not
-// from a separate /api/v1/images call. NSFWLevel is the numeric CivitAI level
-// (nsfwLevelUnknown when absent/unparseable). Meta is the flat generation
-// metadata object, decoded best-effort at render time.
+// from a separate /api/v1/images call.
+//
+// NSFWLevel is CivitAI's NUMERIC level, which on THIS payload is what the
+// `nsfwLevel` key literally holds (measured 2026-07-31: the inline images carry
+// `"nsfwLevel": 1|2|4|8|16` and NO `browsingLevel` key at all — the opposite of
+// /api/v1/images, where `nsfwLevel` is a string label and `browsingLevel` is the
+// number). It feeds maturityFromBrowsingLevel unchanged; browsingLevelUnknown
+// when absent/unparseable. Meta is the flat generation metadata object, decoded
+// best-effort at render time.
 type galleryImage struct {
 	URL       string
 	NSFWLevel int
@@ -91,8 +61,8 @@ func isVideoType(t string) bool {
 
 // rawInlineImage mirrors one object of a version's inline images[] array. The
 // numeric-ish nsfwLevel is captured as raw JSON (not int) so an absent or
-// non-integer value can be detected and mapped to nsfwLevelUnknown (fail closed)
-// rather than silently decoding to 0 (which would read as safe).
+// non-integer value can be detected and mapped to browsingLevelUnknown (fail
+// closed) rather than silently decoding to 0.
 type rawInlineImage struct {
 	URL       string          `json:"url"`
 	NSFWLevel json.RawMessage `json:"nsfwLevel"`
@@ -103,8 +73,8 @@ type rawInlineImage struct {
 }
 
 // toGalleryImages converts parsed inline-image objects to galleryImage values,
-// mapping each nsfwLevel to its numeric level (fail-closed to nsfwLevelUnknown
-// when absent/unparseable) and dropping entries with no URL.
+// mapping each nsfwLevel to its numeric level (fail-closed to
+// browsingLevelUnknown when absent/unparseable) and dropping entries with no URL.
 func toGalleryImages(raws []rawInlineImage) []galleryImage {
 	var out []galleryImage
 	for _, ri := range raws {
@@ -124,15 +94,15 @@ func toGalleryImages(raws []rawInlineImage) []galleryImage {
 }
 
 // parseNSFWLevel decodes a raw nsfwLevel value to its integer level. An absent
-// (empty/null) or non-integer value → nsfwLevelUnknown (fail closed).
+// (empty/null) or non-integer value → browsingLevelUnknown (fail closed).
 func parseNSFWLevel(raw json.RawMessage) int {
 	s := strings.TrimSpace(string(raw))
 	if s == "" || s == "null" {
-		return nsfwLevelUnknown
+		return browsingLevelUnknown
 	}
 	var n int
 	if err := json.Unmarshal(raw, &n); err != nil {
-		return nsfwLevelUnknown
+		return browsingLevelUnknown
 	}
 	return n
 }
@@ -296,7 +266,9 @@ type modelDetailView struct {
 	// when no version carries a parseable date — the stat is then omitted.
 	LastUpdated time.Time
 	Images      []galleryImage
-	NSFWMode    string
+	// Maturity is the app-wide PG..XXX band. Showcase images outside it are
+	// OMITTED server-side by the carousel — their URLs never reach the DOM.
+	Maturity maturityRange
 	// LocalVersionIDs is the set of this model's version ids the user has locally
 	// (derived from local files), used to badge owned versions in the version list.
 	LocalVersionIDs map[int]bool
@@ -613,9 +585,8 @@ func updatedCardLine(modelID, versionID int, rel, absDate, versionName, versionD
 // image gallery with NSFW handling + a lightbox.
 func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, baseURL string, rail ...railData) g.Node {
 	m := v.Model
-	mode := normalizeNSFWMode(v.NSFWMode)
 
-	return page(m.Name, theme, csrf, mode, railOf(rail),
+	return page(m.Name, theme, csrf, v.Maturity, railOf(rail),
 		// The header is now INSIDE the version region: the header card and the
 		// version tab strip are ONE card (see modelHeaderCard), and the active tab's
 		// highlight has to re-render on every version swap — so the whole combined
@@ -677,11 +648,10 @@ const versionRegionID = "version-region"
 // the community feed's lazy `revealed` trigger for the new version id.
 func versionRegionInner(v modelDetailView, sub *store.Subscription, csrf, baseURL string) g.Node {
 	m := v.Model
-	mode := normalizeNSFWMode(v.NSFWMode)
 	// Order: header+tabs+download (one card) → larger showcase → community.
 	return g.Group([]g.Node{
 		modelHeaderCard(v, sub, csrf, baseURL),
-		showcaseCard(m.ID, v.Images, mode),
+		showcaseCard(m.ID, v.Images, v.Maturity),
 		// Workflows-type models are zips of ComfyUI workflow .json — offer a one-click
 		// import into the local workflow library (Discover D2). Other model types are
 		// unaffected.
@@ -826,13 +796,13 @@ func isAre(n int) string {
 // header into the version region so it re-renders on a version change). The
 // carousel tiles route through galleryTile → the thumbnail helper + NSFW handling
 // and share the page lightbox.
-func showcaseCard(modelID int, images []galleryImage, mode string) g.Node {
+func showcaseCard(modelID int, images []galleryImage, mr maturityRange) g.Node {
 	return card(
 		h.Div(
 			h.Class("mb-2 flex flex-wrap items-center justify-between gap-2"),
 			h.H2(h.Class("text-sm font-semibold text-slate-300"), g.Text("Showcase images")),
 		),
-		showcaseCarousel(modelID, images, mode),
+		showcaseCarousel(modelID, images, mr),
 	)
 }
 
@@ -843,8 +813,8 @@ func showcaseCard(modelID int, images []galleryImage, mode string) g.Node {
 //
 // It shares the carousel with showcaseCard (one renderer, two headings) so the two
 // surfaces cannot drift in sizing, NSFW handling or lightbox wiring.
-func showcaseCardUntitled(modelID int, images []galleryImage, mode string) g.Node {
-	return card(showcaseCarousel(modelID, images, mode))
+func showcaseCardUntitled(modelID int, images []galleryImage, mr maturityRange) g.Node {
+	return card(showcaseCarousel(modelID, images, mr))
 }
 
 // showcaseCarousel is the shared body of both showcase cards.
@@ -853,10 +823,10 @@ func showcaseCardUntitled(modelID int, images []galleryImage, mode string) g.Nod
 // taller (~22rem, see app.css) WITHOUT touching the shared .cm-carousel-item height
 // used by search/library cards, and the tiles request the larger
 // detailThumbnailWidth rendition so they stay crisp.
-func showcaseCarousel(modelID int, images []galleryImage, mode string) g.Node {
+func showcaseCarousel(modelID int, images []galleryImage, mr maturityRange) g.Node {
 	return h.Div(
 		h.Class("cm-showcase-lg"),
-		modelCardCarouselW(modelID, images, mode, detailThumbnailWidth),
+		modelCardCarouselW(modelID, images, mr, detailThumbnailWidth),
 	)
 }
 
@@ -1621,9 +1591,13 @@ func downloadFeedback(modelID, versionID, fileID int, msg string, ok bool) g.Nod
 	return h.Span(h.ID(downloadFileID(modelID, versionID, fileID)), h.Class(cls), g.Text(msg))
 }
 
-// galleryTile renders one showcase image. When blur is true the image is shown
-// blurred behind a click-to-reveal overlay; otherwise clicking opens the
-// lightbox. Generation metadata is stashed in a hidden node (keyed by the
+// galleryTile renders one showcase image. Clicking it opens the lightbox.
+//
+// There is NO blur/reveal path any more: an image the user's maturity range does
+// not cover is never handed to this function at all (the carousel omits it
+// server-side), so everything that reaches a tile renders PLAIN. Blur used to be
+// a browser-side CSS filter that still shipped the bytes.
+// Generation metadata is stashed in a hidden node (keyed by the
 // caller-supplied metaID, which must be unique across the page so multiple
 // galleries/carousels don't collide) the lightbox shows.
 // thumbnailWidth is the pixel width requested for grid/carousel showcase tiles.
@@ -1687,19 +1661,16 @@ func civitaiThumbURL(rawURL string, width int) string {
 	return u.Scheme + "://" + u.Host + "/" + strings.Join(segs, "/")
 }
 
-func galleryTile(im galleryImage, metaID string, blur bool) g.Node {
-	return galleryTileW(im, metaID, blur, thumbnailWidth)
+func galleryTile(im galleryImage, metaID string) g.Node {
+	return galleryTileW(im, metaID, thumbnailWidth)
 }
 
 // galleryTileW is galleryTile with an explicit thumbnail target width, so the
 // detail showcase can request a larger rendition (detailThumbnailWidth) while the
 // shared card carousel keeps the 450px default. Only the requested thumbnail
 // width differs — the ORIGINAL (data-full / lightbox) is untouched.
-func galleryTileW(im galleryImage, metaID string, blur bool, thumbW int) g.Node {
+func galleryTileW(im galleryImage, metaID string, thumbW int) g.Node {
 	imgClass := "h-full w-full cursor-zoom-in object-cover transition"
-	if blur {
-		imgClass += " cm-blur"
-	}
 
 	isVideo := isVideoType(im.Type)
 	altText := "showcase image"
@@ -1719,7 +1690,6 @@ func galleryTileW(im galleryImage, metaID string, blur bool, thumbW int) g.Node 
 		g.Attr("data-full", im.URL),
 		g.Attr("data-meta", metaID),
 		g.If(isVideo, g.Attr("data-video", "1")),
-		g.If(blur, g.Attr("data-blurred", "1")),
 		g.Attr("onclick", "cmTileClick(this)"),
 		h.Class(imgClass),
 	)
@@ -1746,17 +1716,6 @@ func galleryTileW(im galleryImage, metaID string, blur bool, thumbW int) g.Node 
 			h.Class("cm-video-badge"),
 			g.Attr("aria-hidden", "true"),
 			g.Text("▶"),
-		))
-	}
-	if blur {
-		children = append(children, h.Button(
-			h.Type("button"),
-			g.Attr("onclick", "cmReveal(this)"),
-			// No cm-reveal marker class: nothing selects it (cmReveal is reached via the
-			// inline onclick and walks the DOM), and it carries no rule — the button is
-			// entirely utility-styled.
-			h.Class("absolute inset-0 z-10 flex items-center justify-center bg-slate-950/40 text-xs font-medium text-slate-100"),
-			g.Text("reveal"),
 		))
 	}
 	children = append(children, imageMetaHidden(metaID, im))
@@ -1841,7 +1800,10 @@ func lightboxOverlay() g.Node {
 }
 
 // modelPageScript is the small, self-contained interaction script for the model
-// page: click-to-copy chips, NSFW reveal, and the lightbox. No external JS.
+// page: click-to-copy chips and the lightbox. No external JS.
+//
+// There is no cmReveal any more — nothing is blurred, because content outside the
+// maturity range is omitted server-side instead of obscured client-side.
 func modelPageScript() g.Node {
 	const js = `
 function cmCopy(btn){
@@ -1851,13 +1813,7 @@ function cmCopy(btn){
   btn.innerHTML = 'copied ✓';
   setTimeout(function(){ btn.innerHTML = prev; }, 1200);
 }
-function cmReveal(btn){
-  var img = btn.parentElement.querySelector('img');
-  if (img){ img.classList.remove('cm-blur'); img.removeAttribute('data-blurred'); }
-  btn.remove();
-}
 function cmTileClick(img){
-  if (img.getAttribute('data-blurred')){ return; }
   cmOpenLightbox(img.getAttribute('data-full'), img.getAttribute('data-meta'), img.getAttribute('data-video'));
 }
 function cmOpenLightbox(url, metaId, isVideo){

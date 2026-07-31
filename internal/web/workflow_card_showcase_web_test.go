@@ -76,19 +76,29 @@ func TestWorkflowCardPlaceholderWhenNoShowcase(t *testing.T) {
 	}
 }
 
-// TestWorkflowCardShowcaseRespectsNSFWBlur proves that under the (reachable) blur
-// mode an NSFW showcase tile renders BLURRED (.cm-blur), not omitted.
-func TestWorkflowCardShowcaseRespectsNSFWBlur(t *testing.T) {
-	r := workflowResolver{
-		cachedModel: func(id int) (string, []byte, bool) { return "NSFW Model", []byte(rawWithNSFWImage), true },
-		nsfwMode:    NSFWBlur,
+// TestWorkflowCardShowcaseRespectsTheRange proves the workflow list card omits an
+// out-of-band showcase tile server-side and renders an in-band one plain — the
+// same shared carousel the model cards use.
+func TestWorkflowCardShowcaseRespectsTheRange(t *testing.T) {
+	resolver := func(mr maturityRange) workflowResolver {
+		return workflowResolver{
+			cachedModel: func(id int) (string, []byte, bool) { return "NSFW Model", []byte(rawWithNSFWImage), true },
+			mr:          mr,
+		}
 	}
-	wf := store.Workflow{ID: 1, Name: "nsfw", Format: store.WorkflowFormatUI, Source: store.WorkflowSourceCivitai, ModelID: intp(42)}
-	got := renderString(t, workflowCardShowcase(wf, r))
-	if !strings.Contains(got, "img/x.jpg") {
-		t.Errorf("blur mode should still render the (blurred) NSFW tile:\n%s", got)
+	wf := store.Workflow{ID: 1, Name: "nsfw", Format: store.WorkflowFormatUI,
+		Source: store.WorkflowSourceCivitai, ModelID: intp(42)}
+
+	full := renderString(t, workflowCardShowcase(wf, resolver(fullMaturityRange())))
+	if !strings.Contains(full, "img/x.jpg") {
+		t.Errorf("the full range should render the tile:\n%s", full)
 	}
-	if !strings.Contains(got, "cm-blur") {
-		t.Errorf("blur mode should blur the NSFW tile (.cm-blur):\n%s", got)
+	if strings.Contains(full, "cm-blur") {
+		t.Errorf("blur is gone — an in-band tile renders plain:\n%s", full)
+	}
+
+	pgOnly := renderString(t, workflowCardShowcase(wf, resolver(maturityRange{maturityPG, maturityPG})))
+	if strings.Contains(pgOnly, "img/x.jpg") {
+		t.Errorf("a PG-only range LEAKED the out-of-band tile URL:\n%s", pgOnly)
 	}
 }

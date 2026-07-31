@@ -173,56 +173,48 @@ func TestParseSearchImagesPrimaryVersion(t *testing.T) {
 
 // --- B. NSFW modes on cards ---
 
-func TestModelCardNSFWModes(t *testing.T) {
-	const safeURL = "https://image.civitai.com/safe.jpeg"
-	const nsfwURL = "https://image.civitai.com/nsfw.jpeg"
+// TestModelCardMaturityRange covers the shared search/dashboard card: an image
+// outside the band is OMITTED (URL absent), one inside renders plain.
+func TestModelCardMaturityRange(t *testing.T) {
+	const pgURL = "https://image.civitai.com/lvl-pg.jpeg"
+	const xxxURL = "https://image.civitai.com/lvl-xxx.jpeg"
 	images := []galleryImage{
-		{URL: safeURL, NSFWLevel: 1},  // safe (None/PG)
-		{URL: nsfwURL, NSFWLevel: 32}, // NSFW (XXX)
+		{URL: pgURL, NSFWLevel: 1},
+		{URL: xxxURL, NSFWLevel: 16},
 	}
 	it := civitai.ModelListItem{ID: 5, Name: "Card Model", Type: "LORA"}
 
-	t.Run("show renders nsfw plain", func(t *testing.T) {
-		out := renderString(t, modelCard(it, images, nil, NSFWShow, "test-csrf", modelUpdateInfo{}))
-		if !strings.Contains(out, nsfwURL) {
-			t.Error("show mode should render the NSFW image url")
+	t.Run("full range renders both, plain", func(t *testing.T) {
+		out := renderString(t, modelCard(it, images, nil, fullMaturityRange(), "test-csrf", modelUpdateInfo{}))
+		if !strings.Contains(out, xxxURL) || !strings.Contains(out, pgURL) {
+			t.Errorf("the full range should render both images:\n%s", out)
 		}
-		if strings.Contains(out, "reveal") {
-			t.Error("show mode should not blur/gate the NSFW image")
-		}
-		if !strings.Contains(out, safeURL) {
-			t.Error("safe image must always render")
-		}
-	})
-
-	t.Run("blur renders nsfw blurred", func(t *testing.T) {
-		out := renderString(t, modelCard(it, images, nil, NSFWBlur, "test-csrf", modelUpdateInfo{}))
-		if !strings.Contains(out, nsfwURL) {
-			t.Error("blur mode still renders the url (behind a reveal overlay)")
-		}
-		if !strings.Contains(out, "reveal") {
-			t.Error("blur mode should gate the NSFW image behind a reveal overlay")
-		}
-		if !strings.Contains(out, "cm-blur") {
-			t.Error("blur mode should blur the NSFW image")
-		}
-		if !strings.Contains(out, safeURL) {
-			t.Error("safe image must always render")
+		for _, dead := range []string{">reveal<", "cm-blur", `data-blurred="1"`} {
+			if strings.Contains(out, dead) {
+				t.Errorf("the card still emits the dead blur marker %q", dead)
+			}
 		}
 	})
 
-	t.Run("stored hide migrates to blur", func(t *testing.T) {
-		// The toggle dropped the hide state; a stored hide now blurs (present) rather
-		// than omitting the NSFW url.
-		out := renderString(t, modelCard(it, images, nil, NSFWHide, "test-csrf", modelUpdateInfo{}))
-		if !strings.Contains(out, nsfwURL) {
-			t.Error("migrated hide (→blur) should render the NSFW image url (blurred)")
+	t.Run("PG-only omits the XXX image", func(t *testing.T) {
+		out := renderString(t, modelCard(it, images, nil,
+			maturityRange{maturityPG, maturityPG}, "test-csrf", modelUpdateInfo{}))
+		if strings.Contains(out, xxxURL) {
+			t.Errorf("a PG-only band LEAKED the XXX image URL:\n%s", out)
 		}
-		if !strings.Contains(out, "reveal") {
-			t.Error("migrated hide (→blur) should gate the NSFW image behind a reveal overlay")
+		if !strings.Contains(out, pgURL) {
+			t.Error("the PG image must still render")
 		}
-		if !strings.Contains(out, safeURL) {
-			t.Error("safe image must still render")
+	})
+
+	t.Run("XXX-only omits the PG image", func(t *testing.T) {
+		out := renderString(t, modelCard(it, images, nil,
+			maturityRange{maturityXXX, maturityXXX}, "test-csrf", modelUpdateInfo{}))
+		if strings.Contains(out, pgURL) {
+			t.Errorf("an XXX-only band LEAKED the PG image URL:\n%s", out)
+		}
+		if !strings.Contains(out, xxxURL) {
+			t.Error("the XXX image must render")
 		}
 	})
 }
@@ -315,7 +307,7 @@ func TestPopularDefaultAndCache(t *testing.T) {
 // --- D. Dashboard structure + subscribe search ---
 
 func TestDashboardManualFormDemotedAndSearchBox(t *testing.T) {
-	out := renderString(t, dashboardPage(nil, nil, "test-csrf", "dark", NSFWBlur))
+	out := renderString(t, dashboardPage(nil, nil, "test-csrf", "dark", fullMaturityRange()))
 	for _, want := range []string{
 		"<details",                   // manual form is demoted into a details
 		"Add by model id / URL",      // the summary label
@@ -425,7 +417,7 @@ func TestDashboardRendersSuggestions(t *testing.T) {
 		{ModelID: 42, FileCount: 2, TotalBytes: 1500, Name: "Resolved Model"}, // cached name
 		{ModelID: 7, FileCount: 1, TotalBytes: 500},                           // cache miss -> lazy
 	}
-	out := renderString(t, dashboardPage(nil, suggestions, "test-csrf", "dark", NSFWBlur))
+	out := renderString(t, dashboardPage(nil, suggestions, "test-csrf", "dark", fullMaturityRange()))
 	if !strings.Contains(out, "Subscribe suggestions from your library") {
 		t.Error("suggestions section heading missing")
 	}
@@ -487,7 +479,7 @@ func TestModelTitleHandler(t *testing.T) {
 }
 
 func TestDashboardHidesEmptySuggestions(t *testing.T) {
-	out := renderString(t, dashboardPage(nil, nil, "test-csrf", "dark", NSFWBlur))
+	out := renderString(t, dashboardPage(nil, nil, "test-csrf", "dark", fullMaturityRange()))
 	if strings.Contains(out, "Subscribe suggestions from your library") {
 		t.Error("suggestions section should be hidden when there are none")
 	}

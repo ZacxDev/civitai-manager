@@ -67,20 +67,20 @@ func fullPages(t *testing.T) map[string]string {
 	wf := &store.Workflow{ID: 3, Name: "My workflow", Format: store.WorkflowFormatAPI, Graph: "{}"}
 
 	return map[string]string{
-		"dashboard":  renderString(t, dashboardPage(subs, nil, "csrf", "dark", NSFWBlur)),
-		"search":     renderString(t, searchPage("q", searchRes, nil, "csrf", "dark", NSFWBlur, "", "", "")),
-		"creator":    renderString(t, creatorPage("dave", searchRes, nil, "csrf", "dark", NSFWBlur)),
+		"dashboard":  renderString(t, dashboardPage(subs, nil, "csrf", "dark", fullMaturityRange())),
+		"search":     renderString(t, searchPage("q", searchRes, nil, "csrf", "dark", fullMaturityRange(), "", "", "")),
+		"creator":    renderString(t, creatorPage("dave", searchRes, nil, "csrf", "dark", fullMaturityRange())),
 		"model":      renderString(t, modelDetailPage(detail, nil, "csrf", "dark", "https://civitai.com")),
-		"library":    renderString(t, libraryPage(libraryView{}, "csrf", true, []string{"/m"}, "dark", "files", nil, true, nil, NSFWBlur, libraryWorkflowsView{})),
-		"trash":      renderString(t, trashPage(nil, "csrf", "dark", NSFWBlur)),
-		"outputs":    renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", "dark", NSFWBlur)),
-		"generation": renderString(t, generationDetailPage(gen, nil, "csrf", "dark", NSFWBlur, workflowResolver{})),
-		"workflow":   renderString(t, detailPageNode(wf, "csrf", "dark", NSFWBlur, false, comfyHelperView{}, workflowResolver{})),
+		"library":    renderString(t, libraryPage(libraryView{}, "csrf", true, []string{"/m"}, "dark", "files", nil, true, nil, fullMaturityRange(), libraryWorkflowsView{})),
+		"trash":      renderString(t, trashPage(nil, "csrf", "dark", fullMaturityRange())),
+		"outputs":    renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", "dark", fullMaturityRange())),
+		"generation": renderString(t, generationDetailPage(gen, nil, "csrf", "dark", fullMaturityRange(), workflowResolver{})),
+		"workflow":   renderString(t, detailPageNode(wf, "csrf", "dark", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{})),
 		"discover-workflow": renderString(t, workflowDiscoverPage(workflowDiscoverView{
-			Res: searchRes, Mode: NSFWBlur, CSRF: "csrf",
+			Res: searchRes, Mode: fullMaturityRange(), CSRF: "csrf",
 			Sort: "Most Downloaded", Period: "Month",
 		}, "dark")),
-		"discover-apps": renderString(t, appsDiscoverPage(nil, "dark", NSFWBlur, "", "", "", "csrf")),
+		"discover-apps": renderString(t, appsDiscoverPage(nil, "dark", fullMaturityRange(), "", "", "", "csrf")),
 	}
 }
 
@@ -378,7 +378,7 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 		"workflow resources": renderString(t, detailPageNode(
 			&store.Workflow{ID: 1, Name: "w", Format: store.WorkflowFormatAPI, Graph: "{}",
 				Resources: []string{long}},
-			"csrf", "dark", NSFWBlur, false, comfyHelperView{}, workflowResolver{})),
+			"csrf", "dark", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{})),
 		"run preflight missing list": renderString(t, missingList("Missing", []string{long})),
 		// The model header's download MENU prints civitai's file names, which are
 		// arbitrary and routinely unbreakable. TWO files, because the single-file
@@ -396,7 +396,7 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 		"batch page header": pageMain(renderString(t, batchGalleryPage(
 			[]store.Generation{{ID: 1, WorkflowID: &wfID, WorkflowName: long, PromptID: "p",
 				BatchID: "b", BatchIndex: 1, BatchTotal: 2}},
-			"csrf", "dark", NSFWBlur))),
+			"csrf", "dark", fullMaturityRange()))),
 		"structured graph listing": renderString(t, workflowGraphSection(
 			[]byte(`{"nodes":[{"id":1,"type":"`+long+`","inputs":[{"name":"`+long+`"}]}]}`),
 			store.WorkflowFormatAPI)),
@@ -472,7 +472,7 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 func TestFixedWidthControlsCanShrink(t *testing.T) {
 	pages := map[string]string{
 		"labeledInput":   renderString(t, labeledInput("model", "Model id", "12345", true)),
-		"outputs filter": renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", "dark", NSFWBlur)),
+		"outputs filter": renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", "dark", fullMaturityRange())),
 	}
 	for name, html := range pages {
 		for _, chunk := range strings.Split(html, "<") {
@@ -683,15 +683,15 @@ func TestEmptyStatesGuideTheUser(t *testing.T) {
 		cta     string
 	}{
 		"trash": {
-			renderString(t, trashPage(nil, "csrf", "dark", NSFWBlur)),
+			renderString(t, trashPage(nil, "csrf", "dark", fullMaturityRange())),
 			"Nothing in the trash", "/library?tab=files",
 		},
 		"outputs": {
-			renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", "dark", NSFWBlur)),
+			renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", "dark", fullMaturityRange())),
 			"No generations yet", "/library?tab=workflows",
 		},
 		"search no results": {
-			renderString(t, searchResults(&civitai.ModelSearchResult{}, nil, NSFWBlur, "csrf", "")),
+			renderString(t, searchResults(&civitai.ModelSearchResult{}, nil, fullMaturityRange(), "csrf", "")),
 			"No models matched that search", "/search",
 		},
 	}

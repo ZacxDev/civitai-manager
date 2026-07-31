@@ -117,7 +117,7 @@ func TestFixPopoverRenderSectionsAndWiring(t *testing.T) {
 	body := renderString(t, missingModelsPanel(
 		[]comfy.MissingModel{mm},
 		map[string]missingResolution{mm.Filename: res},
-		libMeta, 7, "tok-csrf", true, NSFWBlur,
+		libMeta, 7, "tok-csrf", true, fullMaturityRange(),
 	))
 
 	// Both labeled sections.
@@ -191,14 +191,14 @@ func TestFixPopoverZeroMatchAndUnreachable(t *testing.T) {
 
 	zero := renderString(t, missingModelsPanel([]comfy.MissingModel{mm},
 		map[string]missingResolution{mm.Filename: {Reached: true, Result: resolveResult()}},
-		libMeta, 7, "tok", true, NSFWShow))
+		libMeta, 7, "tok", true, fullMaturityRange()))
 	if !strings.Contains(zero, "No CivitAI match") || !strings.Contains(zero, "/search?q=absent") {
 		t.Errorf("zero-match state wrong:\n%s", zero)
 	}
 
 	unreach := renderString(t, missingModelsPanel([]comfy.MissingModel{mm},
 		map[string]missingResolution{mm.Filename: {Reached: false}},
-		libMeta, 7, "tok", true, NSFWShow))
+		libMeta, 7, "tok", true, fullMaturityRange()))
 	if !strings.Contains(unreach, "Could not reach CivitAI") || !strings.Contains(unreach, "/search?q=absent") {
 		t.Errorf("unreachable state wrong:\n%s", unreach)
 	}
@@ -211,7 +211,7 @@ func TestFixPopoverIneligibleInstallDisabled(t *testing.T) {
 	mm := comfy.MissingModel{Filename: "absent.safetensors", Query: "absent", CivitaiType: "Checkpoint"}
 	body := renderString(t, missingModelsPanel([]comfy.MissingModel{mm},
 		map[string]missingResolution{mm.Filename: {Reached: true, Result: resolveResult("A Match")}},
-		map[string]store.LocalModelMeta{}, 7, "tok", false /* dlEligible */, NSFWShow))
+		map[string]store.LocalModelMeta{}, 7, "tok", false /* dlEligible */, fullMaturityRange()))
 
 	if strings.Contains(body, "/download-and-run") {
 		t.Errorf("ineligible popover must NOT POST download-and-run:\n%s", body)
@@ -233,7 +233,7 @@ func TestFixPopoverEscapesUntrustedName(t *testing.T) {
 	mm := comfy.MissingModel{Filename: "x.safetensors", Query: "x", CivitaiType: "LORA"}
 	body := renderString(t, missingModelsPanel([]comfy.MissingModel{mm},
 		map[string]missingResolution{mm.Filename: {Reached: true, Result: resolveResult(`<script>alert(1)</script>`)}},
-		map[string]store.LocalModelMeta{}, 7, "tok", true, NSFWShow))
+		map[string]store.LocalModelMeta{}, 7, "tok", true, fullMaturityRange()))
 	if strings.Contains(body, "<script>alert(1)</script>") {
 		t.Errorf("untrusted model name was not escaped:\n%s", body)
 	}
@@ -242,24 +242,43 @@ func TestFixPopoverEscapesUntrustedName(t *testing.T) {
 	}
 }
 
-// TestFixPopoverNSFWHideOmitsPreview asserts an NSFW library preview is OMITTED
-// server-side (not just CSS-hidden) under nsfw=hide, blurred under nsfw=blur.
-func TestFixPopoverNSFWHideOmitsPreview(t *testing.T) {
+// TestFixPopoverOmitsOutOfRangePreview asserts an installed model's preview is
+// OMITTED server-side — the URL absent from the response — when its level falls
+// outside the maturity range, and rendered PLAIN when it falls inside.
+//
+// The library preview is CivitAI-sourced metadata, so a preview with NO parseable
+// level is UNKNOWN and omitted (fail closed) — unlike the outputs rail, which is
+// the user's own work and is never filtered.
+func TestFixPopoverOmitsOutOfRangePreview(t *testing.T) {
+	const previewURL = "https://image.civitai.com/x.jpeg"
 	mm := comfy.MissingModel{Filename: "a.safetensors", Query: "a",
 		SameBase: []string{"nsfwpick.safetensors"}}
-	libMeta := map[string]store.LocalModelMeta{
-		"nsfwpick.safetensors": {ModelID: 3, Name: "Spicy", ImageURL: "https://image.civitai.com/x.jpeg",
-			NSFWLevel: 8, NSFWLevelKnown: true},
+	meta := func(level int, known bool) map[string]store.LocalModelMeta {
+		return map[string]store.LocalModelMeta{
+			"nsfwpick.safetensors": {ModelID: 3, Name: "Spicy", ImageURL: previewURL,
+				NSFWLevel: level, NSFWLevelKnown: known},
+		}
 	}
-	panel := func(mode string) string {
+	panel := func(libMeta map[string]store.LocalModelMeta, mr maturityRange) string {
 		return renderString(t, missingModelsPanel([]comfy.MissingModel{mm},
-			map[string]missingResolution{mm.Filename: {Reached: true}}, libMeta, 7, "tok", true, mode))
+			map[string]missingResolution{mm.Filename: {Reached: true}}, libMeta, 7, "tok", true, mr))
 	}
-	if hide := panel(NSFWHide); strings.Contains(hide, "image.civitai.com/x.jpeg") {
-		t.Errorf("nsfw=hide must OMIT the preview image server-side:\n%s", hide)
+
+	// Level 8 (X) preview, PG-only band → omitted entirely.
+	if out := panel(meta(8, true), maturityRange{maturityPG, maturityPG}); strings.Contains(out, previewURL) {
+		t.Errorf("a PG-only band must OMIT an X preview server-side:\n%s", out)
 	}
-	if blur := panel(NSFWBlur); !strings.Contains(blur, "cm-blur") || !strings.Contains(blur, "image.civitai.com/x.jpeg") {
-		t.Errorf("nsfw=blur must render a blurred preview:\n%s", blur)
+	// Same preview, full band → present and plain.
+	out := panel(meta(8, true), fullMaturityRange())
+	if !strings.Contains(out, previewURL) {
+		t.Errorf("the full band should render the preview:\n%s", out)
+	}
+	if strings.Contains(out, "cm-blur") {
+		t.Errorf("blur is gone — an in-band preview renders plain:\n%s", out)
+	}
+	// No parseable level → unknown → omitted at every band, including the full one.
+	if out := panel(meta(0, false), fullMaturityRange()); strings.Contains(out, previewURL) {
+		t.Errorf("a preview with no known level must fail closed even at the full band:\n%s", out)
 	}
 }
 
@@ -275,7 +294,7 @@ func TestFixPopoverTerminalHasNoPoller(t *testing.T) {
 		MissingResolved: map[string]missingResolution{"a.safetensors": {Reached: true}},
 		LibMeta:         map[string]store.LocalModelMeta{},
 	}
-	body := renderString(t, runStatusFragment(snap, 7, "tok", false, NSFWBlur))
+	body := renderString(t, runStatusFragment(snap, 7, "tok", false, fullMaturityRange()))
 	if hasRunPoller(body) {
 		t.Errorf("terminal fragment must not carry a poller (would nuke the popover):\n%s", body)
 	}

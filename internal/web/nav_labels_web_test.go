@@ -9,7 +9,7 @@ import (
 // (for /search) and "Workflows" (for /workflows/discover) while keeping the routes
 // unchanged, and that the old ambiguous "Search"/"Discover" labels are gone.
 func TestNavbarFlatRename(t *testing.T) {
-	body := renderString(t, navbar("dark", "csrf-token", "blur", railData{}))
+	body := renderString(t, navbar("dark", "csrf-token", fullMaturityRange(), railData{}))
 
 	// New labels present.
 	if !strings.Contains(body, ">Models<") {

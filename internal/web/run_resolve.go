@@ -60,11 +60,11 @@ func (s *Server) handleWorkflowResolveModel(w http.ResponseWriter, r *http.Reque
 	if query == "" {
 		// Nothing searchable — still offer the (empty) fallback link so the panel is
 		// never a dead end.
-		s.render(w, http.StatusOK, resolveModelFragment("", nil, s.nsfwMode()))
+		s.render(w, http.StatusOK, resolveModelFragment("", nil, s.maturity()))
 		return
 	}
 	res := s.resolveModels(r.Context(), query, typ)
-	s.render(w, http.StatusOK, resolveModelFragment(query, res, s.nsfwMode()))
+	s.render(w, http.StatusOK, resolveModelFragment(query, res, s.maturity()))
 }
 
 // resolveModels runs (or serves from a TTL cache) a bounded CivitAI model search
@@ -137,8 +137,8 @@ const resolveMaxCards = 5
 
 // resolveModelFragment renders the resolution result for a FIRST display (the GET
 // panel) — no action has happened, so there is nothing to explain.
-func resolveModelFragment(query string, res *civitai.ModelSearchResult, mode string) g.Node {
-	return resolveModelFragmentWithReason(query, res, mode, "")
+func resolveModelFragment(query string, res *civitai.ModelSearchResult, mr maturityRange) g.Node {
+	return resolveModelFragmentWithReason(query, res, mr, "")
 }
 
 // resolveModelFragmentWithReason renders the resolution result: an optional
@@ -153,7 +153,7 @@ func resolveModelFragment(query string, res *civitai.ModelSearchResult, mode str
 // which is indistinguishable from a dead button — exactly the failure the
 // filename-resolving primary CTA used to produce. Reasons are the resolveReason*
 // constants in run_download.go.
-func resolveModelFragmentWithReason(query string, res *civitai.ModelSearchResult, mode, reason string) g.Node {
+func resolveModelFragmentWithReason(query string, res *civitai.ModelSearchResult, mr maturityRange, reason string) g.Node {
 	var body []g.Node
 	if strings.TrimSpace(reason) != "" {
 		body = append(body, h.P(
@@ -177,7 +177,7 @@ func resolveModelFragmentWithReason(query string, res *civitai.ModelSearchResult
 		body = append(body, h.Div(
 			h.Class("grid gap-4 sm:grid-cols-2 lg:grid-cols-3"),
 			g.Map(items, func(it civitai.ModelListItem) g.Node {
-				return modelCardCore(it, images[it.ID], mode, updated[it.ID], nil)
+				return modelCardCore(it, images[it.ID], mr, updated[it.ID], nil)
 			}),
 		))
 	} else if query != "" {
@@ -198,7 +198,7 @@ func resolveModelFragmentWithReason(query string, res *civitai.ModelSearchResult
 // cards + search link follow, so choosing a different model stays reachable (the click
 // swapped the whole #run-status container, popover included). requested/remote are
 // untrusted strings and are escaped via g.Text / json.Marshal.
-func substituteOfferFragment(wfID int64, csrf, requested, remote, typ string, modelID int, query string, res *civitai.ModelSearchResult, mode string) g.Node {
+func substituteOfferFragment(wfID int64, csrf, requested, remote, typ string, modelID int, query string, res *civitai.ModelSearchResult, mr maturityRange) g.Node {
 	vals := map[string]string{
 		"csrf_token": csrf,
 		"filename":   requested,
@@ -227,7 +227,7 @@ func substituteOfferFragment(wfID int64, csrf, requested, remote, typ string, mo
 		h.P(g.Attr("role", "status"), h.Class("text-xs font-semibold text-amber-400 mb-2"),
 			g.Text(substituteOfferText(requested, remote))),
 		h.Div(h.Class("mb-3"), confirm),
-		resolveModelFragment(query, res, mode),
+		resolveModelFragment(query, res, mr),
 	)
 }
 
@@ -438,10 +438,10 @@ func (s *Server) resolveMissingModels(parent context.Context, models []comfy.Mis
 // ("Install and run") and the installed-library substitutes ("Use this & run").
 // Every untrusted string (filename, model name, choice string) is escaped via
 // g.Text / attribute-escaping.
-func missingModelsPanel(models []comfy.MissingModel, resolved map[string]missingResolution, libMeta map[string]store.LocalModelMeta, wfID int64, csrf string, dlEligible bool, mode string) g.Node {
+func missingModelsPanel(models []comfy.MissingModel, resolved map[string]missingResolution, libMeta map[string]store.LocalModelMeta, wfID int64, csrf string, dlEligible bool, mr maturityRange) g.Node {
 	rows := make([]g.Node, 0, len(models))
 	for i, mm := range models {
-		rows = append(rows, fixModelRow(i, mm, resolved[mm.Filename], libMeta, wfID, csrf, dlEligible, mode))
+		rows = append(rows, fixModelRow(i, mm, resolved[mm.Filename], libMeta, wfID, csrf, dlEligible, mr))
 	}
 	return h.Div(h.Class("mt-2 space-y-2"),
 		h.Div(h.Class("text-xs font-semibold text-slate-200"), g.Text("Missing model files")),
@@ -461,7 +461,7 @@ func fixModelDialogID(idx int) string { return "fix-model-" + strconv.Itoa(idx) 
 // (hidden) Fix <dialog>. The dialog lives inside the terminal run-status fragment,
 // which carries NO poller (the run poll stops on the terminal state), so a later
 // swap can never nuke an open popover.
-func fixModelRow(idx int, mm comfy.MissingModel, res missingResolution, libMeta map[string]store.LocalModelMeta, wfID int64, csrf string, dlEligible bool, mode string) g.Node {
+func fixModelRow(idx int, mm comfy.MissingModel, res missingResolution, libMeta map[string]store.LocalModelMeta, wfID int64, csrf string, dlEligible bool, mr maturityRange) g.Node {
 	dlgID := fixModelDialogID(idx)
 	// The label says what the click DOES. It used to read "Fix", which named neither
 	// the outcome nor the difference from the other "Fix" beside it — with two missing
@@ -479,13 +479,13 @@ func fixModelRow(idx int, mm comfy.MissingModel, res missingResolution, libMeta 
 		h.Div(h.Class("font-mono text-xs text-slate-300 break-all"), g.Text(mm.Filename)),
 		fixBtn,
 	)
-	return h.Div(row, fixModelDialog(dlgID, mm, res, libMeta, wfID, csrf, dlEligible, mode))
+	return h.Div(row, fixModelDialog(dlgID, mm, res, libMeta, wfID, csrf, dlEligible, mr))
 }
 
 // fixModelDialog is the chrome-less native <dialog> (transparent shell around a
 // theme-aware card) holding the two labeled Fix sections. It mirrors the
 // workflowImportPanel dialog pattern.
-func fixModelDialog(dlgID string, mm comfy.MissingModel, res missingResolution, libMeta map[string]store.LocalModelMeta, wfID int64, csrf string, dlEligible bool, mode string) g.Node {
+func fixModelDialog(dlgID string, mm comfy.MissingModel, res missingResolution, libMeta map[string]store.LocalModelMeta, wfID int64, csrf string, dlEligible bool, mr maturityRange) g.Node {
 	return h.Dialog(
 		h.ID(dlgID),
 		h.Class("bg-transparent p-0 border-0 w-full max-w-3xl"),
@@ -497,8 +497,8 @@ func fixModelDialog(dlgID string, mm comfy.MissingModel, res missingResolution, 
 					civButton("subtle", "sm", []g.Node{h.Type("submit"),
 						g.Attr("aria-label", "Close")}, g.Text("✕"))),
 			),
-			civitaiMatchSection(mm, res, wfID, csrf, dlEligible, mode),
-			h.Div(h.Class("mt-6"), librarySubstituteSection(mm, libMeta, wfID, csrf, mode)),
+			civitaiMatchSection(mm, res, wfID, csrf, dlEligible, mr),
+			h.Div(h.Class("mt-6"), librarySubstituteSection(mm, libMeta, wfID, csrf, mr)),
 		),
 	)
 }
@@ -507,7 +507,7 @@ func fixModelDialog(dlgID string, mm comfy.MissingModel, res missingResolution, 
 // auto-resolved match as a primary card (with an Install-and-run CTA), up to
 // fixAltCap smaller pickable alternates, a clear zero-match state with a Search
 // link, and a "couldn't reach CivitAI" degraded state.
-func civitaiMatchSection(mm comfy.MissingModel, res missingResolution, wfID int64, csrf string, dlEligible bool, mode string) g.Node {
+func civitaiMatchSection(mm comfy.MissingModel, res missingResolution, wfID int64, csrf string, dlEligible bool, mr maturityRange) g.Node {
 	body := []g.Node{
 		h.H3(h.Class("text-sm font-semibold text-slate-200"),
 			g.Text("Use matched model from CivitAI")),
@@ -528,7 +528,7 @@ func civitaiMatchSection(mm comfy.MissingModel, res missingResolution, wfID int6
 		primary := items[0]
 		// Primary: install THIS card's model (its id rides along) — see
 		// installAndRunButton for why a card never resolves by filename alone.
-		body = append(body, modelCardCore(primary, images[primary.ID], mode, updated[primary.ID],
+		body = append(body, modelCardCore(primary, images[primary.ID], mr, updated[primary.ID],
 			installAndRunButton(mm, primary.ID, dlEligible, wfID, csrf)))
 		alts := items[1:]
 		if len(alts) > fixAltCap {
@@ -538,7 +538,7 @@ func civitaiMatchSection(mm comfy.MissingModel, res missingResolution, wfID int6
 			cards := make([]g.Node, 0, len(alts))
 			for _, it := range alts {
 				// Alternate: install passes model_id to disambiguate to THIS model.
-				cards = append(cards, modelCardCore(it, images[it.ID], mode, updated[it.ID],
+				cards = append(cards, modelCardCore(it, images[it.ID], mr, updated[it.ID],
 					installAndRunButton(mm, it.ID, dlEligible, wfID, csrf)))
 			}
 			body = append(body,
@@ -621,7 +621,7 @@ func civitaiModelURL(modelID int) string {
 // the installed substitute candidates as model cards (same-base first; the long
 // tail collapsed in a <details>), each with a "Use this & run" CTA that swaps the
 // missing filename for that installed file via the run-substitute endpoint.
-func librarySubstituteSection(mm comfy.MissingModel, libMeta map[string]store.LocalModelMeta, wfID int64, csrf string, mode string) g.Node {
+func librarySubstituteSection(mm comfy.MissingModel, libMeta map[string]store.LocalModelMeta, wfID int64, csrf string, mr maturityRange) g.Node {
 	body := []g.Node{
 		h.H3(h.Class("text-sm font-semibold text-slate-200"),
 			g.Text("Replace with a model from my library")),
@@ -644,22 +644,22 @@ func librarySubstituteSection(mm comfy.MissingModel, libMeta map[string]store.Lo
 			visible, collapsed = collapsed, nil
 		}
 	}
-	body = append(body, libraryCardGrid(visible, mm.Filename, libMeta, wfID, csrf, mode))
+	body = append(body, libraryCardGrid(visible, mm.Filename, libMeta, wfID, csrf, mr))
 	if len(collapsed) > 0 {
 		body = append(body, h.Details(h.Class("mt-2"),
 			h.Summary(h.Class("cursor-pointer text-xs text-slate-400"),
 				g.Text(strconv.Itoa(len(collapsed))+" more installed models")),
-			h.Div(h.Class("mt-2"), libraryCardGrid(collapsed, mm.Filename, libMeta, wfID, csrf, mode)),
+			h.Div(h.Class("mt-2"), libraryCardGrid(collapsed, mm.Filename, libMeta, wfID, csrf, mr)),
 		))
 	}
 	return h.Div(g.Group(body))
 }
 
 // libraryCardGrid renders a responsive grid of installed-model substitute cards.
-func libraryCardGrid(candidates []string, filename string, libMeta map[string]store.LocalModelMeta, wfID int64, csrf string, mode string) g.Node {
+func libraryCardGrid(candidates []string, filename string, libMeta map[string]store.LocalModelMeta, wfID int64, csrf string, mr maturityRange) g.Node {
 	cards := make([]g.Node, 0, len(candidates))
 	for _, c := range candidates {
-		cards = append(cards, libraryCard(c, filename, libMeta, wfID, csrf, mode))
+		cards = append(cards, libraryCard(c, filename, libMeta, wfID, csrf, mr))
 	}
 	return h.Div(h.Class("grid gap-4 sm:grid-cols-2 lg:grid-cols-3"), g.Group(cards))
 }
@@ -668,7 +668,7 @@ func libraryCardGrid(candidates []string, filename string, libMeta map[string]st
 // basename resolves to a CivitAI-linked, cached model it is a rich card (preview
 // image + name link + base-model badge); otherwise it is a minimal card (the
 // choice string + a base-model guess). Both carry the "Use this & run" CTA.
-func libraryCard(candidate, filename string, libMeta map[string]store.LocalModelMeta, wfID int64, csrf string, mode string) g.Node {
+func libraryCard(candidate, filename string, libMeta map[string]store.LocalModelMeta, wfID int64, csrf string, mr maturityRange) g.Node {
 	meta, ok := libMeta[strings.ToLower(path.Base(strings.ReplaceAll(candidate, "\\", "/")))]
 	useBtn := civButton("filled", "sm", []g.Node{
 		h.Type("button"),
@@ -681,7 +681,7 @@ func libraryCard(candidate, filename string, libMeta map[string]store.LocalModel
 
 	children := []g.Node{h.Class("flex flex-col gap-2")}
 	if ok {
-		if img := libraryPreviewImg(meta, mode); img != nil {
+		if img := libraryPreviewImg(meta, mr); img != nil {
 			children = append(children, img)
 		}
 		name := meta.Name
@@ -708,31 +708,29 @@ func libraryCard(candidate, filename string, libMeta map[string]store.LocalModel
 }
 
 // libraryPreviewImg renders an installed model's preview thumbnail honoring the
-// NSFW mode: an NSFW preview is OMITTED under "hide", blurred under "blur", shown
-// under "show" (a safe preview always renders). Returns nil when there is no image
-// (or it is omitted), so the card gracefully has no image slot.
-func libraryPreviewImg(meta store.LocalModelMeta, mode string) g.Node {
+// maturity range: a preview whose level falls outside the band is OMITTED — the
+// URL never reaches the DOM — and everything inside renders plain. A preview with
+// no parseable level counts as UNKNOWN and is omitted too (fail closed: this is
+// CivitAI-sourced metadata whose rating we expected and did not get, unlike the
+// user's own outputs, which carry no level by nature and are never filtered).
+// Returns nil when there is no image (or it is omitted), so the card gracefully
+// has no image slot.
+func libraryPreviewImg(meta store.LocalModelMeta, mr maturityRange) g.Node {
 	if strings.TrimSpace(meta.ImageURL) == "" {
 		return nil
 	}
 	level := meta.NSFWLevel
 	if !meta.NSFWLevelKnown {
-		level = nsfwLevelUnknown // fail-closed
+		level = browsingLevelUnknown // fail-closed
 	}
-	nsfw := isNSFWLevel(level)
-	if nsfw && mode == NSFWHide {
-		return nil // hide: OMIT server-side (not just CSS-hidden)
-	}
-	cls := "w-full h-32 object-cover rounded border border-slate-800 bg-slate-900"
-	// Blur any NSFW preview unless the mode is an explicit "show" (safe default).
-	if nsfw && mode != NSFWShow {
-		cls += " cm-blur"
+	if !mr.containsBrowsingLevel(level) {
+		return nil // outside the range: OMIT server-side (not just CSS-hidden)
 	}
 	return h.Img(
 		h.Src(civitaiThumbURL(meta.ImageURL, 300)),
 		h.Alt("installed model preview"),
 		h.Loading("lazy"),
-		h.Class(cls),
+		h.Class("w-full h-32 object-cover rounded border border-slate-800 bg-slate-900"),
 	)
 }
 

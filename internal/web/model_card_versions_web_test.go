@@ -104,7 +104,7 @@ func TestBuildVersionBreakdown(t *testing.T) {
 func TestVersionBreakdownRendersSection(t *testing.T) {
 	m := &civitai.ModelDetail{ID: 7, Name: "Great Model", ModelVersions: threeVersions()}
 	// User owns only v1 → update to v3 is available.
-	view := buildMatchedModelCardView(7, m, nil, []store.LocalFile{localFile(10, 50)}, NSFWBlur, nil)
+	view := buildMatchedModelCardView(7, m, nil, []store.LocalFile{localFile(10, 50)}, fullMaturityRange(), nil)
 	out := renderString(t, matchedModelCard(view, "csrf"))
 
 	for _, want := range []string{

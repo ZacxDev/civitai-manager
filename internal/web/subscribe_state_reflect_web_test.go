@@ -122,7 +122,7 @@ func TestSearchCardsReflectSubscribedState(t *testing.T) {
 	mid := 10
 	subs := map[int]*store.Subscription{10: {Kind: store.KindModel, ModelID: &mid, AutoDownload: true}}
 
-	out := renderString(t, searchResults(res, subs, NSFWBlur, "csrf", ""))
+	out := renderString(t, searchResults(res, subs, fullMaturityRange(), "csrf", ""))
 	// Subscribed card (10) → Unsubscribe.
 	if !strings.Contains(out, `hx-post="/models/10/unsubscribe"`) {
 		t.Errorf("subscribed card should render Unsubscribe:\n%s", out)

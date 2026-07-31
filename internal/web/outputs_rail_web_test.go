@@ -140,7 +140,7 @@ func TestRailEmptyStateRendersNothing(t *testing.T) {
 	}
 }
 
-func TestRailHonorsNSFWModes(t *testing.T) {
+func TestRailIsNeverFilteredByMaturity(t *testing.T) {
 	srv, root := newOutputsServer(t, "127.0.0.1:8787")
 	wf := seedWF(t, srv, "wf")
 	genID, _ := seedGen(t, srv, root, &wf, "wf", []byte("X"))
@@ -151,50 +151,44 @@ func TestRailHonorsNSFWModes(t *testing.T) {
 		t.Fatalf("fixture: rail has %d entries, want 1", len(rd.Groups))
 	}
 
-	t.Run("hide OMITS the rail server-side", func(t *testing.T) {
-		// Rendered through a real page builder, so the shell class and the nav
-		// control are covered too — not only the aside.
-		out := renderString(t, dashboardPage(nil, nil, "csrf", "dark", NSFWHide, rd))
-		for _, bad := range []string{
-			`id="cm-rail"`, "cm-rail-item", "cm-shell-rail", `id="cm-rail-open"`,
-			"cmRailDrawer", // the drawer script ships with the rail — it must go too
-			imgURL, "/outputs/" + strconv.FormatInt(genID, 10),
-		} {
-			if strings.Contains(out, bad) {
-				t.Errorf("NSFW hide must OMIT the rail markup entirely, found %q", bad)
+	// 🔴 THE RAIL IS NEVER FILTERED BY THE MATURITY RANGE.
+	//
+	// It shows the user's OWN local generations, which carry no maturity level
+	// from anyone. "No level" here is NOT maturityUnknown (the fail-closed
+	// sentinel for CivitAI content whose rating we expected and did not get) — it
+	// means the content is out of scope of a scale describing CivitAI material.
+	// Filtering it would silently blank the user's own work.
+	for _, rng := range []string{"pg:xxx", "pg:pg", "xxx:xxx", "r:r"} {
+		t.Run("range "+rng+" still renders the rail", func(t *testing.T) {
+			_ = srv.store.SetSetting(maturitySettingKey, rng)
+			mr, ok := parseMaturityRange(rng)
+			if !ok {
+				t.Fatalf("fixture range %q did not parse", rng)
 			}
-		}
-		// And the component itself renders nothing at all.
-		if n := outputsRail(rd, "csrf", NSFWHide); n != nil {
-			t.Error("outputsRail must return nil under NSFW hide")
-		}
-		if rd.visible(NSFWHide) {
-			t.Error("railData.visible must be false under NSFW hide")
-		}
-	})
-
-	t.Run("blur renders blurred", func(t *testing.T) {
-		out := renderString(t, dashboardPage(nil, nil, "csrf", "dark", NSFWBlur, rd))
-		if !strings.Contains(out, `id="cm-rail"`) {
-			t.Fatal("blur mode must still render the rail")
-		}
-		if !strings.Contains(out, `data-nsfw="blur"`) {
-			t.Error("blur mode must mark the rail so .cm-out-thumb is blurred")
-		}
-		if !strings.Contains(out, imgURL) {
-			t.Error("blur mode blurs the pixels but still serves the thumbnail")
-		}
-	})
-
-	t.Run("show renders plain", func(t *testing.T) {
-		out := renderString(t, dashboardPage(nil, nil, "csrf", "dark", NSFWShow, rd))
-		if !strings.Contains(out, `id="cm-rail"`) {
-			t.Fatal("show mode must render the rail")
-		}
-		if strings.Contains(out, `data-nsfw="blur"`) {
-			t.Error("show mode must render plain — no blur marker")
-		}
-	})
+			out := renderString(t, dashboardPage(nil, nil, "csrf", "dark", mr, rd))
+			for _, want := range []string{`id="cm-rail"`, "cm-rail-item", "cm-shell-rail", imgURL} {
+				if !strings.Contains(out, want) {
+					t.Errorf("range %s dropped %q from the rail — the user's own outputs are "+
+						"never filtered by maturity", rng, want)
+				}
+			}
+			if !strings.Contains(out, "/outputs/"+strconv.FormatInt(genID, 10)) {
+				t.Errorf("range %s dropped the rail tile's link", rng)
+			}
+			if outputsRail(rd, "csrf") == nil {
+				t.Errorf("range %s made outputsRail return nil", rng)
+			}
+			if !rd.visible() {
+				t.Errorf("range %s made railData.visible false", rng)
+			}
+			// …and nothing is obscured client-side either: blur is gone entirely.
+			for _, dead := range []string{`data-nsfw="blur"`, "cm-blur"} {
+				if strings.Contains(out, dead) {
+					t.Errorf("range %s emitted the dead blur marker %q", rng, dead)
+				}
+			}
+		})
+	}
 }
 
 func TestRailIsBoundedToLimit(t *testing.T) {
@@ -621,7 +615,7 @@ func TestRailNeverBreaksAPageOnStoreError(t *testing.T) {
 	if len(rd.Groups) != 0 {
 		t.Errorf("a failed rail query must degrade to no rail, got %d entries", len(rd.Groups))
 	}
-	if rd.visible(NSFWBlur) {
+	if rd.visible() {
 		t.Error("a degraded rail must not be visible")
 	}
 }
