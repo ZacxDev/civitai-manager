@@ -2837,3 +2837,261 @@ a.cm-res-chip .cm-res-name {
   outline: 2px solid var(--civitai-color-primary);
   outline-offset: 2px;
 }
+
+/*
+ * ===========================================================================
+ * NAV REWORK + /disks  (appended block — see brand.go, layout.go, disks_pages.go)
+ * ===========================================================================
+ *
+ * Appended as ONE delimited block at the end of the file on purpose: another
+ * branch was editing app.css concurrently, and an append-vs-append merge is
+ * trivial where an interleaved edit is not. Nothing above this banner was
+ * reordered or reformatted.
+ *
+ * Every colour resolves from a --civitai-* token, so both data-theme paths are
+ * styled, and none of this is a Tailwind utility, so the purged output.css
+ * cannot drop it.
+ *
+ * TOKEN SPLIT (see the WCAG block above): anything that paints TEXT or an ICON
+ * uses a `-text` token; the base token appears only as a FILL (the capacity
+ * meter) or a border.
+ */
+
+/* --- Brand mark + wordmark -------------------------------------------------
+ *
+ * The <svg> is stroked with `currentColor`, so it inherits the anchor's colour
+ * (text-indigo-400 -> --civitai-color-primary-text) and re-themes with
+ * data-theme without a single colour declaration of its own. That is why there
+ * is no `.cm-brand-mark { stroke: ... }` rule here and why there must never be
+ * one: adding it would freeze the mark to one theme.
+ */
+.cm-brand {
+  text-decoration: none;
+}
+.cm-brand-mark {
+  flex: none;
+  /* Optical alignment: the diamond's visual centre sits slightly above its
+   * bounding-box centre next to lowercase text. */
+  margin-top: -1px;
+}
+.cm-brand-name {
+  letter-spacing: -0.01em;
+}
+
+/* --- Nav "Library" dropdown (<details>/<summary>) --------------------------
+ *
+ * 🔴 THE PANEL'S POSITIONING IS TWO-MODE BECAUSE OF A CLIPPING TRAP, not for
+ * looks. Its parent .cm-navlinks is `overflow-x: auto`, and per CSS Overflow a
+ * non-`visible` overflow-x computes overflow-y to `auto` too — so the strip is a
+ * scroll container in BOTH axes and would clip an absolutely-positioned panel at
+ * the bar's bottom edge. (Same rule that forced .cm-version-tabs to stop being
+ * `overflow-x: auto` when it grew a popover.)
+ *
+ *   < 1024px: the panel is `position: fixed`, a full-width sheet pinned under
+ *             the bar. A fixed box's containing block is the viewport, so an
+ *             ancestor's overflow cannot clip it. (This holds only because no
+ *             ancestor sets transform/filter/perspective/will-change/contain —
+ *             .cm-nav is `position: sticky`, which does NOT create a containing
+ *             block for fixed descendants. If a transform is ever added to the
+ *             nav, this breaks and the panel starts being clipped again.)
+ *
+ *  >= 1024px: .cm-navlinks switches to `overflow: visible` — at that width the
+ *             five short links cannot overflow, so the scroll behaviour it gives
+ *             up was already unreachable — and the panel becomes a normal
+ *             absolute box anchored under its summary.
+ *
+ * STACKING: `z-index: 1` here is LOCAL to the nav's own stacking context
+ * (.cm-nav is sticky at z-30) and spends nothing from the global budget in the
+ * STACKING ORDER ledger. The whole nav subtree paints at 30 — above page content
+ * and .cm-lift's 25, below the rail drawer (44/45) and the popover tier (50),
+ * which is where an app-chrome menu belongs. Do NOT promote this to a global
+ * value; it would not help (a descendant cannot escape its context) and would
+ * misrepresent the budget.
+ */
+.cm-navmenu {
+  position: relative;
+}
+.cm-navmenu-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+  font-size: 0.875rem;
+  color: var(--civitai-color-text);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+/* Suppress the UA disclosure triangle in both engine families; the caret span
+ * is the affordance, so two markers would be one too many. */
+.cm-navmenu-summary::-webkit-details-marker {
+  display: none;
+}
+.cm-navmenu-summary::marker {
+  content: "";
+}
+.cm-navmenu-summary:hover {
+  color: var(--civitai-color-primary-text);
+}
+.cm-navmenu-summary:focus-visible {
+  outline: 2px solid var(--civitai-color-primary);
+  outline-offset: 2px;
+  border-radius: 0.25rem;
+}
+.cm-navmenu-caret {
+  font-size: 0.625rem;
+  line-height: 1;
+  color: var(--civitai-color-text-dimmed);
+  transition: transform 120ms ease;
+}
+.cm-navmenu[open] .cm-navmenu-caret {
+  transform: rotate(180deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-navmenu-caret {
+    transition: none;
+  }
+}
+
+.cm-navmenu-panel {
+  position: fixed;
+  top: var(--cm-nav-h);
+  left: 0;
+  right: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 0.25rem;
+  border-top: 1px solid var(--civitai-color-border);
+  border-bottom: 1px solid var(--civitai-color-border);
+  background: var(--civitai-color-surface);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.cm-navmenu-item {
+  padding: 0.625rem 0.75rem;
+  border-radius: 0.25rem;
+  font-size: 0.875rem;
+  color: var(--civitai-color-text);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.cm-navmenu-item:hover,
+.cm-navmenu-item:focus-visible {
+  background: var(--civitai-color-surface-2);
+  color: var(--civitai-color-primary-text);
+}
+
+@media (min-width: 1024px) {
+  /* Five short links cannot overflow at this width, so the scroll container is
+   * unnecessary here — and dropping it is what lets the panel escape the clip.
+   * Below this breakpoint .cm-navlinks keeps `overflow-x: auto` (set by the
+   * Tailwind utility in layout.go) and the panel stays `position: fixed`. */
+  .cm-navlinks {
+    overflow: visible;
+  }
+  .cm-navmenu-panel {
+    position: absolute;
+    top: calc(100% + 0.625rem);
+    left: 0;
+    right: auto;
+    min-width: 12rem;
+    padding: 0.25rem;
+    border: 1px solid var(--civitai-color-border);
+    border-radius: 0.5rem;
+  }
+}
+
+/* --- Recent-outputs rail: the heading is now a link ------------------------
+ *
+ * "Outputs" left the top nav, so this is the gallery's primary entry point (see
+ * navbar's comment). It inherits .cm-rail-title's size/weight/colour — only the
+ * anchor defaults need undoing, plus an arrow that slides on hover.
+ */
+.cm-rail-title-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  text-decoration: none;
+}
+.cm-rail-title-link:hover {
+  color: var(--civitai-color-primary-text);
+}
+.cm-rail-title-arrow {
+  font-size: 0.75rem;
+  transition: transform 120ms ease;
+}
+.cm-rail-title-link:hover .cm-rail-title-arrow {
+  transform: translateX(2px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-rail-title-arrow {
+    transition: none;
+  }
+}
+
+/* --- /disks: per-filesystem capacity --------------------------------------
+ *
+ * One row per configured directory: a label, the path, a meter, and the
+ * used/free/total figures. The meter is a plain <div> pair rather than a
+ * <progress>, because <progress> cannot be restyled consistently across engines
+ * and its implicit ARIA role would announce a percentage the row already states
+ * in words. The row states the numbers as TEXT, so the meter is decoration and
+ * carries aria-hidden — colour is never the only signal.
+ */
+.cm-disk-row {
+  display: grid;
+  gap: 0.375rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--civitai-color-border);
+}
+.cm-disk-row:last-child {
+  border-bottom: none;
+}
+.cm-disk-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.cm-disk-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--civitai-color-text);
+}
+.cm-disk-path {
+  min-width: 0;
+  font-size: 0.75rem;
+  color: var(--civitai-color-text-dimmed);
+  /* A model root is routinely 60+ characters; wrap instead of forcing the card
+   * to scroll sideways. */
+  overflow-wrap: anywhere;
+}
+.cm-disk-figures {
+  font-size: 0.8125rem;
+  color: var(--civitai-color-text-dimmed);
+}
+.cm-disk-unknown {
+  font-size: 0.8125rem;
+  color: var(--civitai-color-warning-text);
+}
+
+/* The meter track/fill. The FILL is the one place the base (non-`-text`) intent
+ * token is correct: it is a block of colour, not a glyph. */
+.cm-meter {
+  position: relative;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--civitai-color-surface-2);
+  overflow: hidden;
+}
+.cm-meter-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--civitai-color-primary);
+}
+.cm-meter-fill[data-level="warn"] {
+  background: var(--civitai-color-warning);
+}
+.cm-meter-fill[data-level="full"] {
+  background: var(--civitai-color-error);
+}

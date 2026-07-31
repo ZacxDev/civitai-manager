@@ -57,6 +57,10 @@ func page(title, theme, csrf string, mr maturityRange, rail railData, body ...g.
 			h.Link(h.Rel("stylesheet"), h.Href("/assets/civitai-components.css")),
 			// app.css @imports the Tailwind build into layer(app).
 			h.Link(h.Rel("stylesheet"), h.Href("/assets/app.css")),
+			// The tab icon — the SAME geometric mark the nav's brand link renders,
+			// embedded and served from /assets (see brand.go). Declaring it stops the
+			// browser probing /favicon.ico and 404ing on every page load.
+			h.Link(h.Rel("icon"), h.Type("image/svg+xml"), h.Href(faviconHref)),
 			h.Script(h.Src("/assets/htmx.min.js"), h.Defer()),
 		),
 		h.Body(
@@ -87,29 +91,48 @@ const shellMeasure = "max-w-[1800px]"
 // .cm-nav (app.css) alongside --cm-nav-h, which the rail's top offset and the
 // anchor scroll-margin both derive from — keep those in sync.
 //
-// MOBILE: the seven destinations stay in ONE horizontally scrollable strip
+// MOBILE: the destinations stay in ONE horizontally scrollable strip
 // (.cm-navlinks) rather than collapsing into a hamburger drawer. At 390px that
 // keeps every destination reachable in one gesture with no JS, no focus trap and
 // no second overlay competing with the rail drawer for the same corner of the
-// screen; only the brand shortens. The controls (rail/NSFW/theme) never scroll.
+// screen; only the brand shortens. The controls (rail/maturity/theme) never scroll.
+//
+// THE STRIP HOLDS FIVE ENTRIES, NOT SEVEN, and the difference is the point:
+//
+//   - The BRAND is the home link. "Dashboard" was a second control going to the
+//     same place as the wordmark beside it, so it is gone and the wordmark grew a
+//     mark (brandLink).
+//   - "Models"/"Workflows" read as "my models"/"my workflows" next to a Library
+//     entry that is also about models and workflows. They are RENAMED
+//     "Find models"/"Find workflows" — the routes (/search,
+//     /workflows/discover) are unchanged.
+//   - "Library" became a <details> DISCLOSURE over its two real surfaces
+//     (libraryMenu), because /library has always been a two-tab page and the tab
+//     was invisible from the nav.
+//   - "Outputs" left the strip. /outputs is STILL ROUTED and still linked — from
+//     the recent-outputs rail's heading and its foot link (outputs_rail.go). The
+//     rail is app chrome on every page, so the destination did not lose its
+//     entry point. HONEST LIMIT, recorded because it is a real gap: the rail
+//     renders only when at least one generation exists (railData.visible()), so
+//     on a fresh install /outputs is reachable by URL but has no in-app link.
+//     That is the state in which the page has nothing to show anyway, and its own
+//     empty state points at the Library — but it IS a reachability edge, not a
+//     clean win.
+//   - "Trash" became "Disks", which absorbs the quarantine table it used to show
+//     and adds per-disk capacity. /trash redirects there (handleTrashRedirect).
 func navbar(theme, csrf string, mr maturityRange, rail railData) g.Node {
 	return h.Nav(
 		h.Class("cm-nav border-b border-slate-800 bg-slate-900"),
 		h.Div(
 			h.Class("cm-nav-inner mx-auto "+shellMeasure+" px-4 py-3 flex items-center gap-4"),
-			h.A(h.Href("/"), h.Class("shrink-0 font-semibold text-indigo-400"),
-				h.Span(h.Class("hidden sm:inline"), g.Text("civitai-manager")),
-				h.Span(h.Class("sm:hidden"), g.Text("cm")),
-			),
+			brandLink(),
 			h.Div(
 				h.Class("cm-navlinks flex min-w-0 flex-1 items-center gap-4 overflow-x-auto"),
-				navLink("/", "Dashboard"),
-				navLink("/search", "Models"),
-				navLink("/workflows/discover", "Workflows"),
-				navLink("/outputs", "Outputs"),
+				navLink("/search", "Find models"),
+				navLink("/workflows/discover", "Find workflows"),
 				navLink("/apps/discover", "Apps"),
-				navLink("/library", "Library"),
-				navLink("/trash", "Trash"),
+				libraryMenu(),
+				navLink("/disks", "Disks"),
 			),
 			h.Div(h.Class("flex shrink-0 items-center gap-2"),
 				g.If(rail.visible(), railNavToggle()),
@@ -201,6 +224,64 @@ func maturityEnd(id, name, label string, selected, lo, hi maturityLevel) g.Node 
 			h.ID(id), h.Name(name), h.Class("cm-maturity-select"),
 		}, opts...)...),
 	})
+}
+
+// libraryModelFilesHref / libraryWorkflowsHref are the two real Library
+// surfaces. /library is ONE page with a tab query param (see handleLibrary,
+// which reads ?tab=), so these are the canonical deep links into each half —
+// the same hrefs the app's own empty-state CTAs already use.
+const (
+	libraryModelFilesHref = "/library?tab=files"
+	libraryWorkflowsHref  = "/library?tab=workflows"
+)
+
+// libraryMenu renders the nav's "Library" dropdown as a native <details>
+// disclosure over the two Library tabs.
+//
+// 🔴 IT IS <details>/<summary>, NOT A JS CONTROLLER, AND THAT IS DELIBERATE.
+// The app ships htmx and a couple of tiny page scripts, nothing more. A bespoke
+// dropdown would need a click-outside handler, Escape handling, focus
+// management, aria-expanded bookkeeping and a re-open guard after every htmx
+// swap. <details> gives all of that natively: it opens on click AND on
+// Enter/Space, exposes its expanded state to assistive tech, and is fully
+// operable with JavaScript disabled. It also closes itself on navigation for
+// free — every page render emits it WITHOUT the `open` attribute, so following
+// an item leaves a closed menu with no state to reset.
+//
+// 🔴 THE PANEL WOULD BE CLIPPED IF IT WERE A PLAIN ABSOLUTE BOX. Its parent
+// .cm-navlinks is `overflow-x: auto`, and per CSS Overflow a non-visible
+// overflow-x forces overflow-y to `auto` as well — the same rule that made the
+// version tab strip clip its popover (see the .cm-version-tabs note in
+// app.css). So a panel hanging below the bar would be cut off at the bar's
+// bottom edge at narrow widths. The CSS answers that WITHOUT touching the
+// scroll strip: below 1024px the panel is `position: fixed` (fixed boxes are
+// laid out against the viewport and are not clipped by an ancestor's overflow),
+// rendering as a full-width sheet under the bar; at >=1024px, where five short
+// links cannot overflow, .cm-navlinks switches to `overflow: visible` and the
+// panel anchors under its summary. Both live in the NAV MENU block of app.css.
+//
+// STACKING: the panel spends NOTHING from the app's global z-index budget. The
+// whole nav is one stacking context at z-30 (.cm-nav is `position: sticky` with
+// a z-index), so every descendant paints inside it — above page content and
+// below the rail drawer (44/45) and the popover tier (50), which is exactly
+// where a nav menu belongs. The panel's own z-index is a local 1, meaningful
+// only against its nav siblings. See the STACKING ORDER ledger in app.css.
+func libraryMenu() g.Node {
+	return h.Details(
+		h.Class("cm-navmenu shrink-0"),
+		h.Summary(
+			h.Class("cm-navmenu-summary"),
+			g.Text("Library"),
+			// aria-hidden: the caret is pure affordance. <summary> already exposes its
+			// open/closed state, so announcing "down triangle" would be noise.
+			h.Span(h.Class("cm-navmenu-caret"), g.Attr("aria-hidden", "true"), g.Text("▾")),
+		),
+		h.Div(
+			h.Class("cm-navmenu-panel"),
+			h.A(h.Href(libraryModelFilesHref), h.Class("cm-navmenu-item"), g.Text("Model files")),
+			h.A(h.Href(libraryWorkflowsHref), h.Class("cm-navmenu-item"), g.Text("Workflows")),
+		),
+	)
 }
 
 func navLink(href, label string) g.Node {
