@@ -2780,6 +2780,18 @@ a.cm-res-chip .cm-res-name {
   line-height: 1.35;
   cursor: pointer;
 }
+/*
+ * The folder ICON inside that button. It is an inline SVG (folderIconSVG), not a
+ * text glyph: U+1F5C0 has no glyph in the common Linux font stacks and rendered
+ * as tofu. Sized here rather than by font-size so it cannot inherit a surprise
+ * scale from a caller's text context; colour comes from the button via
+ * stroke="currentColor", so the hover/focus rules below still tint it.
+ */
+.cm-res-open-ico {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
 .cm-res-open-btn:hover {
   border-color: var(--civitai-color-primary);
   color: var(--civitai-color-text);
