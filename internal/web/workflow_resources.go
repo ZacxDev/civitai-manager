@@ -2,7 +2,6 @@ package web
 
 import (
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -178,7 +177,11 @@ func resourceOpenControl(fileID int64, csrf, msg, state string) g.Node {
 // A resolved local file additionally gets an "open containing folder" control
 // (loopback-gated, CSRF-protected, id-only) as a SIBLING of the chip.
 func workflowResourceChip(res string, resolver workflowResolver) g.Node {
-	base := filepath.Base(strings.ReplaceAll(res, "\\", "/"))
+	// store.ResourceBasename is the SINGLE definition of "which part of a resource
+	// entry is the filename" — shared with the model page's "workflows that use
+	// this model" query, so a chip's ✓/✗ and that list can never disagree about
+	// what a resource is called.
+	base := store.ResourceBasename(res)
 	have := resolver.have(base)
 	info, _ := resolver.resource(base)
 

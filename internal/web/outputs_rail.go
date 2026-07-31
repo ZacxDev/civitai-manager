@@ -190,23 +190,36 @@ func outputsRail(rd railData, csrf, nsfwMode string) g.Node {
 		tiles = append(tiles, railTile(gr))
 	}
 
-	// Collapse control: POSTs the NEXT state with the CSRF token and replies
-	// HX-Refresh, exactly like the theme and NSFW toggles.
-	next, glyph, label := "true", "›", "Collapse recent outputs"
+	// Collapse / expand control: POSTs the NEXT state with the CSRF token and
+	// replies HX-Refresh, exactly like the theme and NSFW toggles.
+	//
+	// The two states get DIFFERENT controls, and that asymmetry is the whole point:
+	//
+	//   - EXPANDED → a small `›` button in the head. The rail body is full of tile
+	//     links, so the collapse affordance must stay a small, targeted control —
+	//     making the body clickable would swallow every tile click.
+	//   - COLLAPSED → the ENTIRE 2.25rem edge is the control (railExpandControl).
+	//     There is nothing else on that edge to click, so requiring the user to hit
+	//     a ~24px button inside a 36px-wide strip was pure friction.
+	//
+	// Both are real <button>s carrying an accessible name, so keyboard operation
+	// (Enter/Space → click → htmx) comes for free; neither is a clickable <div>.
+	var collapse g.Node
 	if rd.Collapsed {
-		next, glyph, label = "false", "‹", "Expand recent outputs"
+		collapse = railExpandControl(csrf)
+	} else {
+		collapse = civButton("subtle", "sm",
+			[]g.Node{
+				h.Type("button"),
+				h.Class("cm-rail-collapse"),
+				hx("post", "/settings/outputs-rail"),
+				hx("vals", fmt.Sprintf(`{"collapsed":%q,"csrf_token":%q}`, "true", csrf)),
+				hx("swap", "none"),
+				g.Attr("aria-label", "Collapse recent outputs"),
+			},
+			h.Span(g.Attr("aria-hidden", "true"), g.Text("›")),
+		)
 	}
-	collapse := civButton("subtle", "sm",
-		[]g.Node{
-			h.Type("button"),
-			h.Class("cm-rail-collapse"),
-			hx("post", "/settings/outputs-rail"),
-			hx("vals", fmt.Sprintf(`{"collapsed":%q,"csrf_token":%q}`, next, csrf)),
-			hx("swap", "none"),
-			g.Attr("aria-label", label),
-		},
-		h.Span(g.Attr("aria-hidden", "true"), g.Text(glyph)),
-	)
 
 	// Mobile-only close control for the drawer. It is also the element focus moves
 	// to when the drawer opens (see railDrawerScript), so it carries a stable id.
@@ -230,16 +243,21 @@ func outputsRail(rd railData, csrf, nsfwMode string) g.Node {
 		g.Attr("aria-label", "Recent outputs"),
 		h.Div(h.Class("cm-rail-head"),
 			h.Span(h.Class("cm-rail-title"), g.Text("Recent outputs")),
-			collapse,
+			// Only the EXPANDED head carries a control; the collapsed edge's control
+			// is the full-edge overlay emitted last (see railExpandControl).
+			g.If(!rd.Collapsed, collapse),
 			closeBtn,
 		),
-		// Vertical label shown only while the desktop rail is collapsed, so the thin
-		// edge still says what it is.
-		h.Span(h.Class("cm-rail-vlabel"), g.Text("Recent outputs")),
 		h.Div(h.Class("cm-rail-body"), g.Group(tiles)),
 		h.Div(h.Class("cm-rail-foot"),
 			h.A(h.Href("/outputs"), h.Class("cm-rail-all"), g.Text("View all outputs →")),
 		),
+		// LAST in DOM order, deliberately: it is an absolutely-positioned overlay
+		// covering the whole collapsed edge, and following its siblings is what
+		// paints it above them WITHOUT a z-index — the same DOM-order trick
+		// .cm-rail-cap uses. Adding a z-index here would put a value inside the
+		// rail's stacking context for no reason (see the STACKING ORDER ledger).
+		g.If(rd.Collapsed, collapse),
 	)
 
 	return g.Group([]g.Node{
@@ -250,6 +268,42 @@ func outputsRail(rd railData, csrf, nsfwMode string) g.Node {
 		aside,
 		railDrawerScript(),
 	})
+}
+
+// railExpandControl is the COLLAPSED desktop rail's edge: one full-height
+// <button> that expands the rail from a click anywhere on the strip.
+//
+// Why a real <button> and not a clickable wrapper <div>: it must be reachable by
+// Tab, activate on Enter/Space, and expose an accessible name to assistive tech.
+// A <div onclick> has none of those, and role/tabindex/keydown plumbing would be
+// a hand-rolled reimplementation of what the element already does.
+//
+// It carries the SAME request as the head's collapse button — a CSRF-protected
+// hx-post to /settings/outputs-rail whose handler replies HX-Refresh — because
+// the collapse state is SERVER state (a settings row). A client-side class toggle
+// would look right until the next navigation and then silently revert.
+//
+// The vertical label lives INSIDE it, so the thing that says "Recent outputs" is
+// the thing you click. It is desktop-only in CSS (.cm-rail-expand is display:none
+// below 1024px): on narrow screens the rail is an off-canvas drawer where
+// data-collapsed means nothing, and a full-height overlay there would sit on top
+// of the drawer's tiles and eat their clicks.
+func railExpandControl(csrf string) g.Node {
+	const label = "Expand recent outputs"
+	return h.Button(
+		h.Type("button"),
+		h.Class("cm-rail-expand"),
+		hx("post", "/settings/outputs-rail"),
+		hx("vals", fmt.Sprintf(`{"collapsed":%q,"csrf_token":%q}`, "false", csrf)),
+		hx("swap", "none"),
+		g.Attr("aria-label", label),
+		h.Title(label),
+		h.Span(h.Class("cm-rail-expand-glyph"), g.Attr("aria-hidden", "true"), g.Text("‹")),
+		// The vertical label of the collapsed edge. aria-hidden: the button's
+		// aria-label is already its accessible name, so leaving this exposed would
+		// make a screen reader announce "Recent outputs" twice.
+		h.Span(h.Class("cm-rail-vlabel"), g.Attr("aria-hidden", "true"), g.Text("Recent outputs")),
+	)
 }
 
 // railTile is one rail entry: the representative row's first image as a lazy

@@ -671,6 +671,12 @@ func workflowCard(wf store.Workflow, csrf string, resolver workflowResolver) g.N
 	// <details>, which pushed every following card down when opened.
 	if len(wf.Resources) > 0 {
 		meta = append(meta, workflowResourcesPopover(wf.Resources, resolver))
+		// The reverse link-back, in its compact list form. It reads "uses <model>" —
+		// never "from <model>", which two entries above means the workflow was
+		// IMPORTED from that model. Nil when no resource resolved to a local model.
+		if uses := workflowUsesChips(wf, resolver); uses != nil {
+			meta = append(meta, uses)
+		}
 	}
 
 	// PRIMARY CTA — Run. It is an anchor styled as a button (not a <button> inside
@@ -959,6 +965,10 @@ func workflowDetailPage(wf *store.Workflow, csrf, theme, nsfwMode string, genera
 	body = append(body, card(
 		sectionTitle("Details"),
 		workflowSourceLinks(wf, resolver),
+		// The OTHER direction, deliberately adjacent to (and never merged with) the
+		// provenance row above: "Source … from <model>" is where the workflow CAME
+		// FROM, "Uses" is which models its files belong to. Nil when nothing resolved.
+		workflowUsesRow(wf, resolver),
 		workflowDetailsReveal(wf),
 		workflowAttachReveal(wf, csrf),
 	))

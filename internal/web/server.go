@@ -523,6 +523,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /models/{id}/version-status", s.handleModelVersionStatus)
 	mux.HandleFunc("GET /models/{id}/card-images", s.handleModelCardImages)
 	mux.HandleFunc("GET /models/{id}/community", s.handleModelCommunity)
+	// The lazy "Workflows for this model" fragment. GET-only, read-only; its facet
+	// params are whitelist-validated against the curated taxonomy in the handler.
+	mux.HandleFunc("GET /models/{id}/related-workflows", s.handleModelRelatedWorkflows)
 	mux.HandleFunc("GET /models/{id}/subscribe-options", s.handleModelSubscribeOptions)
 	mux.HandleFunc("GET /models/{id}/subscribe-control", s.handleModelSubscribeControl)
 	mux.HandleFunc("POST /models/{id}/download", s.handleModelDownload)

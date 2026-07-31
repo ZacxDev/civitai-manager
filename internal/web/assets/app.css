@@ -1798,6 +1798,23 @@ html {
 .cm-rail-collapse {
   display: none;
 }
+/*
+ * The COLLAPSED edge's expand control (railExpandControl): a full-height button
+ * overlaying the 2.25rem strip, so a click anywhere on it expands the rail rather
+ * than only on the small chevron.
+ *
+ * Desktop-only, and that is load-bearing: below 1024px the rail is an off-canvas
+ * DRAWER where data-collapsed carries no meaning, so this overlay would sit on
+ * top of the drawer's tiles and swallow their clicks. It is only ever RENDERED in
+ * the collapsed state, and only ever DISPLAYED at the desktop breakpoint.
+ *
+ * No z-index: it is the last child of .cm-rail and every sibling it covers is
+ * statically positioned, so DOM order already paints it on top (the same reason
+ * .cm-rail-cap needs none).
+ */
+.cm-rail-expand {
+  display: none;
+}
 
 .cm-rail-body {
   display: grid;
@@ -1944,6 +1961,42 @@ html {
   }
   .cm-rail[data-collapsed="true"] .cm-rail-vlabel {
     display: block;
+  }
+  .cm-rail[data-collapsed="true"] .cm-rail-expand {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.5rem 0.25rem;
+    border: 0;
+    background: transparent;
+    color: var(--civitai-color-text-dimmed);
+    font: inherit;
+    cursor: pointer;
+  }
+  /*
+   * Hover/focus feedback: the whole strip is the target, so it must LOOK like one.
+   * A SURFACE change (not an intent colour) is what reads as "this box is the
+   * button" — and it deliberately introduces NO new foreground/background token
+   * pair: surface-2 under --civitai-color-text is already an asserted pair in
+   * contrast_web_test.go, so this cannot open a new WCAG hole.
+   */
+  .cm-rail[data-collapsed="true"] .cm-rail-expand:hover {
+    background: var(--civitai-color-surface-2);
+    color: var(--civitai-color-text);
+  }
+  .cm-rail[data-collapsed="true"] .cm-rail-expand:focus-visible {
+    outline: 2px solid var(--civitai-color-primary);
+    outline-offset: -2px;
+    background: var(--civitai-color-surface-2);
+    color: var(--civitai-color-text);
+  }
+  .cm-rail-expand-glyph {
+    flex: none;
+    font-size: 1rem;
+    line-height: 1;
   }
   /* EXACTLY ONE of these lands on <body> (see railShellClass). */
   .cm-shell-rail {
@@ -2185,6 +2238,57 @@ html {
  * contrast_web_test.go's table). The have/missing mark is the ONLY coloured text
  * and uses the `-text` intent tokens, which the table already pins on surface.
  */
+/*
+ * .cm-uses-* — the workflow<->model LINKAGE surfaces (workflow_model_links.go):
+ * the model page's "Workflows that use this model" list, and the workflow page /
+ * list card's reverse "Uses <model>" link.
+ *
+ * NO NEW TOKEN PAIR enters contrast_web_test.go's table: the link ink is
+ * --civitai-color-primary-text on the card surface (the pair the table already
+ * pins as "status pill / active tab (brand) on surface") and the filename line
+ * reuses --civitai-color-text-dimmed, exactly as the resource chips do.
+ */
+.cm-uses-link {
+  color: var(--civitai-color-primary-text);
+  text-decoration: none;
+}
+.cm-uses-link:hover,
+.cm-uses-link:focus-visible {
+  text-decoration: underline;
+}
+.cm-uses-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.cm-uses-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--civitai-color-border);
+}
+.cm-uses-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+/*
+ * The matched FILENAME — the entire basis of the "uses" claim, so it is shown
+ * rather than implied. Monospace like the resource chips (it is the same kind of
+ * string) and break-anywhere, because a model filename is an arbitrary long
+ * unbroken token with no guaranteed break opportunity.
+ */
+.cm-uses-file {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  color: var(--civitai-color-text-dimmed);
+  overflow-wrap: anywhere;
+}
+
 .cm-res-chips {
   display: flex;
   flex-wrap: wrap;
