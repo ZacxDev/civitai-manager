@@ -223,8 +223,6 @@ func workflowsPanel(lw libraryWorkflowsView, csrf string, extraAllowed bool) g.N
 
 	return browseSurface(browseSurfaceSpec{
 		// No Title: the Library page already owns the single <h1> above the tab strip.
-		Blurb: "Locally-curated ComfyUI workflows. Import an API/UI graph, extract one from a ComfyUI PNG, " +
-			"or scan your ComfyUI installs to index and auto-link saved workflows.",
 		Aside:     workflowImportTrigger(extraAllowed),
 		Controls:  g.Group(controls),
 		Notice:    notice,
@@ -259,7 +257,7 @@ func workflowImportTrigger(extraAllowed bool) g.Node {
 		// Inline open — no external script. showModal() gives the native top-layer
 		// modal + backdrop; the dialog id is a constant, not user input.
 		g.Attr("onclick", "document.getElementById('"+workflowImportDialogID+"').showModal()"),
-		g.Attr("aria-label", "Add a workflow — paste JSON or upload a ComfyUI PNG"),
+		g.Attr("title", "Add a workflow — paste JSON or upload a ComfyUI PNG"),
 	},
 		h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("＋ ")),
 		g.Text("Add a workflow"),
@@ -446,7 +444,6 @@ func workflowEmptyState(extraAllowed bool) g.Node {
 		children = append(children, civButton("filled", "md", []g.Node{
 			h.Type("button"),
 			g.Attr("onclick", "document.getElementById('"+workflowImportDialogID+"').showModal()"),
-			g.Attr("aria-label", "Add your first workflow"),
 		},
 			h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("＋ ")),
 			g.Text("Add a workflow"),
@@ -782,7 +779,6 @@ func workflowCardWith(wf store.Workflow, csrf string, resolver workflowResolver,
 		h.Href(workflowRunDeepLink(id)),
 		dataAttr("civitai-ui", "button"), dataAttr("variant", "filled"), dataAttr("size", ctaSize),
 		g.Attr("title", "Run on your local ComfyUI"),
-		g.Attr("aria-label", "Run "+name+" on your local ComfyUI"),
 		h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("▶ ")),
 		g.Text("Run"),
 	)

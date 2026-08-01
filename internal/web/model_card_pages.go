@@ -598,9 +598,9 @@ func subscribeToggle(modelID int, sub *store.Subscription, csrf string) g.Node {
 // forged one cannot grant anything.
 func subscribeControlCollapsed(modelID int, csrf, note string, workflow bool) g.Node {
 	id := subscribeControlID(modelID)
-	label, aria := "Subscribe", "Subscribe to this model"
+	label, aria, detail := "Subscribe", "Subscribe", ""
 	if workflow {
-		label, aria = "Notify me", "Get notified about new versions of this workflow post"
+		label, aria, detail = "Notify me", "Notify me", "Get notified about new versions of this workflow post"
 	}
 	btn := civButton("outline", "md",
 		[]g.Node{
@@ -609,6 +609,7 @@ func subscribeControlCollapsed(modelID int, csrf, note string, workflow bool) g.
 			hx("target", "#"+id),
 			hx("swap", "outerHTML"),
 			g.Attr("aria-label", aria),
+			g.If(detail != "", g.Attr("title", detail)),
 		},
 		g.Text(label),
 	)
@@ -809,7 +810,6 @@ func subscribeControlSubscribed(modelID int, sub *store.Subscription, csrf, note
 			hx("vals", vals),
 			hx("target", "#"+id),
 			hx("swap", "outerHTML"),
-			g.Attr("aria-label", "Unsubscribe from this model"),
 		},
 		g.Text("Unsubscribe"),
 	)

@@ -386,7 +386,6 @@ func railExpandControl(csrf string) g.Node {
 		hx("vals", fmt.Sprintf(`{"collapsed":%q,"csrf_token":%q}`, "false", csrf)),
 		hx("swap", "none"),
 		g.Attr("aria-label", label),
-		h.Title(label),
 		h.Span(h.Class("cm-rail-expand-glyph"), g.Attr("aria-hidden", "true"), g.Text("‹")),
 		// The vertical label of the collapsed edge. aria-hidden: the button's
 		// aria-label is already its accessible name, so leaving this exposed would

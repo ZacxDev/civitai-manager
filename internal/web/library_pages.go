@@ -415,8 +415,6 @@ func scanRescanControl(csrf string, matchRemote bool) g.Node {
 					civButton("subtle", "sm", []g.Node{h.Type("submit"),
 						g.Attr("aria-label", "Close")}, g.Text("✕"))),
 			),
-			h.P(h.Class("mb-3 text-sm text-slate-400"),
-				g.Text("Re-run the scan to pick up new, changed, or removed files.")),
 			modelScanForm(csrf, matchRemote),
 		),
 	)
@@ -492,7 +490,7 @@ func modelScanForm(csrf string, matchRemote bool) g.Node {
 			g.Text("Match against CivitAI (sends file hashes to civitai.com)"),
 		),
 		h.P(h.Class("text-xs text-slate-500"),
-			g.Text("Matches your files against CivitAI by hash (sends file hashes to civitai.com). Uncheck to scan offline.")),
+			g.Text("Uncheck to scan offline.")),
 		btnPrimary(g.Text("Scan for model files")),
 	)
 }
@@ -1214,9 +1212,6 @@ func candidatesTable(cands []store.LocalFile, csrf string) g.Node {
 			),
 		),
 		renderCapNote(len(shown), total),
-		// When capped, tell the user the tail is still actionable via "Quarantine all".
-		g.If(capped, h.P(h.Class("mt-1 text-xs text-slate-500"),
-			g.Text(`Use "Quarantine all" to act on every candidate.`))),
 		h.Div(
 			h.Class("mt-3 flex flex-wrap items-center gap-2"),
 			civButton("light", "md", []g.Node{

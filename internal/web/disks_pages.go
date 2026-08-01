@@ -56,9 +56,6 @@ func disksPage(rows []diskRow, batches []batchView, gated bool, csrf string, mr 
 		),
 		card(
 			sectionTitle("Quarantine"),
-			h.P(h.Class("mb-3 text-sm text-slate-400"),
-				g.Text("Quarantining a model file MOVES it to the trash directory instead of "+
-					"deleting it. Every batch below is restorable to its original locations.")),
 			h.Div(h.ID("trash-content"), trashTable(batches, csrf)),
 		),
 	)

@@ -49,7 +49,7 @@ func Views(app *App) []View {
 		{Name: "workflows-list", Path: "/library?tab=workflows"},
 		// Paste-JSON import — the native <dialog> opened from the Workflows tab.
 		{Name: "workflow-import", Path: "/library?tab=workflows", Prep: func(*App) []chromedp.Action {
-			trigger := `button[aria-label^="Add a workflow"]`
+			trigger := `button[title^="Add a workflow"]`
 			return []chromedp.Action{
 				chromedp.WaitVisible(trigger, chromedp.ByQuery),
 				chromedp.Click(trigger, chromedp.ByQuery),

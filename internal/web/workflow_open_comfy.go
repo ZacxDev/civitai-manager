@@ -696,7 +696,6 @@ func openInComfyForm(ids, csrf, variant, size string) g.Node {
 		csrfInput(csrf),
 		civButton(variant, size, []g.Node{
 			h.Type("submit"),
-			g.Attr("aria-label", "Open this workflow in the ComfyUI editor"),
 		},
 			g.Text("Open in ComfyUI "),
 			h.Span(h.Class("cm-cta-icon"), g.Attr("aria-hidden", "true"), g.Text("↗")),

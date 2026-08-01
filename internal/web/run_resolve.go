@@ -511,8 +511,6 @@ func civitaiMatchSection(mm comfy.MissingModel, res missingResolution, wfID int6
 	body := []g.Node{
 		h.H3(h.Class("text-sm font-semibold text-slate-200"),
 			g.Text("Use matched model from CivitAI")),
-		h.P(h.Class("text-xs text-slate-400 mb-3"),
-			g.Text("Matched from filename — verify this is the model you want.")),
 	}
 	switch {
 	case !res.Reached:

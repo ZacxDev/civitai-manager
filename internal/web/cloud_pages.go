@@ -115,8 +115,7 @@ func cloudPanelFragment(v cloudPanelView, csrf string) g.Node {
 		return h.Div(
 			alert("info", "Cloud run is off",
 				h.P(h.Class("text-sm"),
-					g.Text("Running on CivitAI's cloud is opt-in. Turn it on with the "+
-						"toggle above — no restart needed. You can also set "),
+					g.Text("Turn it on with the toggle above. You can also set "),
 					h.Span(h.Class("font-mono"), g.Text("comfy_cloud: true")),
 					g.Text(" in your config file, which then takes precedence over the toggle."),
 				),

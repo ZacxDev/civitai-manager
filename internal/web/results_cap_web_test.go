@@ -317,15 +317,16 @@ func TestQuarantineAllButtonsSingleReason(t *testing.T) {
 	}
 }
 
-// TestCandidatesCapHint proves the capped candidates table appends the "Quarantine
-// all" actionability hint, and that the hint is ABSENT when under the cap.
+// TestCandidatesCapHint proves the capped candidates table does NOT include a
+// narrating hint — the "Quarantine all" buttons are immediately visible in the
+// next element and the text was redundant copy.
 func TestCandidatesCapHint(t *testing.T) {
 	// g.Text HTML-escapes the quotes, so match the stable unquoted tail.
 	const hint = `to act on every candidate.`
 
 	capped := renderString(t, candidatesTable(makeCandidates(maxRenderedCandidateRows+10), "csrf-tok"))
-	if !strings.Contains(capped, hint) {
-		t.Errorf("capped candidates table must include the actionability hint %q", hint)
+	if strings.Contains(capped, hint) {
+		t.Errorf("capped candidates table must NOT include the actionability hint %q (buttons are visible)", hint)
 	}
 
 	under := renderString(t, candidatesTable(makeCandidates(5), "csrf-tok"))
