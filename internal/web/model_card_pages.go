@@ -286,7 +286,6 @@ func versionStatusFragment(modelID int, bd versionBreakdown, raw []byte) g.Node 
 		g.Attr("tabindex", "0"),
 		// Accessible summary for AT / non-hover users (escaped).
 		g.Attr("aria-label", "Update available: latest version "+latest),
-		g.Attr("title", "Update available: "+latest),
 		h.Span(h.Class("cm-vstatus-badge"), g.Text("⟳ new version")),
 		h.Span(h.Class("cm-vstatus-pop"), g.Attr("role", "tooltip"), g.Group(pop)),
 	)
