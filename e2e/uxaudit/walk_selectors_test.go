@@ -107,6 +107,12 @@ func TestWalkSelectorsMatchTheServedApp(t *testing.T) {
 // TestWalkViewPathsAreServable asserts every view the walk navigates to answers 200.
 // A view path that 404s still produces a screenshot and an axe scan — of an ERROR
 // page — which is silently pushed as if it were the real surface.
+//
+// ⚠ Honest limit, measured: this catches a path the app no longer ROUTES (mutating a
+// view to /no-such-route-at-all fails it with a 404). It does NOT catch a routed path
+// whose subject does not exist — the lab's fakeReader answers ANY creator username or
+// model id with seeded data, so /creators/does-not-exist returns a fully-rendered 200.
+// Do not read a pass here as "every view shows the intended content".
 func TestWalkViewPathsAreServable(t *testing.T) {
 	app := bootLabApp(t)
 
