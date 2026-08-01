@@ -99,18 +99,20 @@ const shellMeasure = "max-w-[1800px]"
 //
 // THE STRIP HOLDS FIVE ENTRIES, NOT SEVEN, and the difference is the point:
 //
-//   - The BRAND is the home link. "Dashboard" was a second control going to the
-//     same place as the wordmark beside it, so it is gone and the wordmark grew a
-//     mark (brandLink).
+//   - The BRAND is the home link, and "/" is the SEARCH experience (handleHome).
+//     "Dashboard" was a second control going to the same place as the wordmark
+//     beside it, so it is gone and the wordmark grew a mark (brandLink). The page
+//     it used to open now lives at /subscriptions, in the Library menu.
 //   - "Models"/"Workflows" read as "my models"/"my workflows" next to a Library
 //     entry that is also about models and workflows. They are RENAMED
 //     "Find models"/"Find workflows" — the routes (/search,
 //     /workflows/discover) are unchanged.
-//   - "Library" became a DROPDOWN over its two real surfaces (libraryMenu),
-//     because /library has always been a two-tab page and the tab was invisible
-//     from the nav. It shipped as a <details> disclosure and is now a `popover`
-//     — see libraryMenu for why (light-dismiss and Escape, which <details> has
-//     neither of).
+//   - "Library" became a DROPDOWN (libraryMenu), first over /library's two real
+//     surfaces — because /library has always been a two-tab page and the tab was
+//     invisible from the nav — and now over three, since /subscriptions moved in
+//     when "/" stopped being it. It shipped as a <details> disclosure and is now
+//     a `popover` — see libraryMenu for why (light-dismiss and Escape, which
+//     <details> has neither of).
 //   - "Outputs" left the strip. /outputs is STILL ROUTED and still linked — from
 //     the recent-outputs rail's heading and its foot link (outputs_rail.go). The
 //     rail is app chrome on every page, so the destination did not lose its
@@ -232,9 +234,18 @@ func maturityEnd(id, name, label string, selected, lo, hi maturityLevel) g.Node 
 // surfaces. /library is ONE page with a tab query param (see handleLibrary,
 // which reads ?tab=), so these are the canonical deep links into each half —
 // the same hrefs the app's own empty-state CTAs already use.
+//
+// librarySubscriptionsHref is the THIRD entry, and it is the page that used to
+// be "/". When "/" became the search experience (handleHome) this page lost its
+// only entry point — the brand wordmark — and would have been reachable by URL
+// alone. It belongs in THIS menu rather than the top-level strip because the
+// strip's entries are all "find something on civitai" and this one is "what I
+// have asked this app to watch, and what it is doing about it", which is the
+// same possessive sense as the two Library tabs beside it.
 const (
-	libraryModelFilesHref = "/library?tab=files"
-	libraryWorkflowsHref  = "/library?tab=workflows"
+	libraryModelFilesHref    = "/library?tab=files"
+	libraryWorkflowsHref     = "/library?tab=workflows"
+	librarySubscriptionsHref = "/subscriptions"
 )
 
 // libraryMenuPanelID is the popover's id. The trigger's popovertarget and the
@@ -309,6 +320,9 @@ func libraryMenu() g.Node {
 			h.Class("cm-navmenu-panel"),
 			h.A(h.Href(libraryModelFilesHref), h.Class("cm-navmenu-item"), g.Text("Model files")),
 			h.A(h.Href(libraryWorkflowsHref), h.Class("cm-navmenu-item"), g.Text("Workflows")),
+			// The label comes from the PAGE's own title constant, so the menu entry and
+			// the <h1> it opens can never say different things.
+			h.A(h.Href(librarySubscriptionsHref), h.Class("cm-navmenu-item"), g.Text(subscriptionsPageTitle)),
 		),
 	)
 }

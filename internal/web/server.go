@@ -583,7 +583,9 @@ func (s *Server) Handler() http.Handler {
 	// Embedded static assets under /assets/.
 	mux.Handle("GET /assets/", http.FileServer(http.FS(assetsFS)))
 
-	mux.HandleFunc("GET /{$}", s.handleDashboard)
+	// "/" is the app's FRONT DOOR and it is the search experience — see
+	// handleHome for why it redirects rather than rendering /search in place.
+	mux.HandleFunc("GET /{$}", s.handleHome)
 	mux.HandleFunc("GET /search", s.handleSearch)
 	mux.HandleFunc("GET /models/{id}", s.handleModel)
 	mux.HandleFunc("GET /models/{id}/title", s.handleModelTitle)
@@ -606,6 +608,10 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("POST /subscribe", s.handleSubscribe)
 	mux.HandleFunc("GET /subscribe/search", s.handleSubscribeSearch)
+	// The subscriptions page — what "/" used to serve. It is reachable from the
+	// nav's Library menu (libraryMenu); it has no other in-app entry point, which
+	// is why nav_reachability_web_test.go guards that link.
+	mux.HandleFunc("GET /subscriptions", s.handleDashboard)
 	mux.HandleFunc("POST /subscriptions/{id}/flags", s.handleFlags)
 	mux.HandleFunc("POST /subscriptions/{id}/delete", s.handleDelete)
 

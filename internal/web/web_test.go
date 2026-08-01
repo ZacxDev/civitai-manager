@@ -146,7 +146,8 @@ func newTestServer(t *testing.T) *Server {
 func TestDashboardHandler(t *testing.T) {
 	srv := newTestServer(t)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	// The dashboard is /subscriptions now; "/" redirects to /search (handleHome).
+	req := httptest.NewRequest(http.MethodGet, librarySubscriptionsHref, nil)
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)

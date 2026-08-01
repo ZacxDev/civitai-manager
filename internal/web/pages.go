@@ -59,31 +59,45 @@ func librarySubscribeSuggestions(files []store.LocalFile, subs []store.Subscript
 	return out
 }
 
-// homePageTitle is the user-facing name of "/" — both the <title> and the <h1>,
-// from one constant so the tab and the heading can never disagree.
+// subscriptionsPageTitle is the user-facing name of the page at /subscriptions —
+// both the <title> and the <h1>, from one constant so the tab and the heading
+// can never disagree. It is ALSO the nav label (libraryMenu reads this constant),
+// so a menu entry and the page it opens cannot drift apart.
 //
-// IT IS "Overview", NOT "Dashboard", AND THE RENAME IS THE POINT. The nav rework
-// deleted the "Dashboard" entry outright (the brand wordmark is the home link —
-// see navbar's comment), so the word survived only as a heading naming a control
-// that no longer exists. "Overview" describes what the page actually is: a
-// read-at-a-glance stack of subscriptions, activity and queue.
+// IT HAS BEEN "Dashboard", THEN "Overview", AND IS NOW "Subscriptions", and each
+// rename tracked where the page actually lives:
+//
+//   - "Dashboard" named a nav entry that the nav rework deleted, leaving the word
+//     describing a control the user could no longer see.
+//   - "Overview" described the page while it WAS "/" — a read-at-a-glance stack
+//     you land on. It is no longer "/" (that is the search experience now, see
+//     handleHome), so "an overview of what?" has no answer from the menu it is
+//     reached through.
+//   - "Subscriptions" names its subject. Everything on it — the add-a-subscription
+//     box, the library-derived suggestions, the subscription list, the download
+//     queue those subscriptions fill and the activity they generate — is one
+//     topic, and that topic is the reason the page sits in the Library menu.
 //
 // The GO IDENTIFIERS stay dashboard* — handleDashboard, dashboardPage,
 // dashboard_search_web_test.go. Renaming them would be a large diff across
 // files this change has no other reason to touch, and the internal name is not
 // what the user reads.
-const homePageTitle = "Overview"
+const subscriptionsPageTitle = "Subscriptions"
 
-// dashboardPage is the full home page ("/"): add-a-subscription (integrated
+// dashboardPage is the full /subscriptions page: add-a-subscription (integrated
 // civitai search + library-derived suggestions + a demoted manual form),
 // subscriptions, activity feed, and queue.
+//
+// ⚠ Its LAYOUT is deliberately untouched by the move: the activity feed and the
+// queue are slated to become left-sidebar widgets, at which point this page loses
+// two of its four cards. Relabelling and rehoming it now, redesigning it later.
 func dashboardPage(subs []store.Subscription, suggestions []suggestion, csrf, theme string, mr maturityRange, rail ...railData) g.Node {
-	return page(homePageTitle, theme, csrf, mr, railOf(rail),
-		// The page's single <h1>. The home page is a stack of equal-weight cards with
-		// no natural title card, so the heading is emitted on its own above them —
-		// otherwise the outline would start at <h2> ("Add a subscription") with no
-		// level-1 heading anywhere on the page.
-		pageTitle(homePageTitle),
+	return page(subscriptionsPageTitle, theme, csrf, mr, railOf(rail),
+		// The page's single <h1>. It is a stack of equal-weight cards with no natural
+		// title card, so the heading is emitted on its own above them — otherwise the
+		// outline would start at <h2> ("Add a subscription") with no level-1 heading
+		// anywhere on the page.
+		pageTitle(subscriptionsPageTitle),
 		card(
 			sectionTitle("Add a subscription"),
 			// Primary: search civitai and subscribe with one click.
@@ -106,7 +120,11 @@ func dashboardPage(subs []store.Subscription, suggestions []suggestion, csrf, th
 			suggestionsList(suggestions, csrf),
 		)),
 		card(
-			sectionTitle("Subscriptions"),
+			// "Your subscriptions", not "Subscriptions": the page's own <h1> is now
+			// "Subscriptions" (subscriptionsPageTitle), and an <h2> repeating the <h1>
+			// verbatim reads to a screen-reader user walking the outline as if the
+			// heading level had been emitted twice by mistake.
+			sectionTitle("Your subscriptions"),
 			subscriptionsTable(subs, "", csrf),
 		),
 		h.Div(
