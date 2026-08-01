@@ -20,6 +20,22 @@ All three are `MERGEABLE/CLEAN` with green CI, and another agent opened them fro
 
 ⚠ **#32 and #33 are based on `origin/main`, which is 2 commits behind local `main`** (see Current state). Push local `main` first, then merge, then re-gate — the integration check above was run against local `main`, so it already reflects the correct order.
 
+## ⚠ Unsaved work OUTSIDE this repo — two files in `devrc`, both uncommitted
+`~/workspace/devrc` has **two modified tracked files**, neither committed. Your `RULES.md` treats a doc/lesson sitting in a working tree as one routine `checkout` away from silent, unreported deletion, and that repo uses PRs:
+- `scripts/browser-bridge/SKILL.md` — the re-throttle-after-reload warning (htmx silently stops firing until you `wake` again). **This edit is LIVE right now** — see the resolution rule below.
+- `claude/RULES.md` — widens the shared-checkout branch rule to cover `commit`, and records the live-vs-copy test. **This edit is NOT live until a home-manager switch.**
+
+🔴 **How to tell whether a managed-dotfile edit is live: `readlink -f <path>`.** Terminates inside `~/workspace/devrc` → the working copy IS the live file (`mkOutOfStoreSymlink`), edit is immediate. Terminates in `/nix/store` → it is a read-only copy, needs a switch. An agent this session asserted the browser skill was a copy because the two files were byte-identical — identity was simply the consequence of their being **one file**. `diff` cannot answer this; `readlink -f` can.
+
+## 🔴 A subagent switched the shared checkout and a commit landed on ITS branch
+Recorded because it nearly cost the handoff, and because the global rule did not cover it.
+
+A docs subagent ran `git checkout -b <branch>` **in the shared main checkout** (docs-only work, so no worktree isolation). The parent then wrote this handoff and committed it — **onto the agent's branch**, believing it was on `main`. There is no error, no conflict, and `git log` afterwards looks exactly right, because you are reading the branch you accidentally landed on. `main`'s own reflog showed it had **never moved**.
+
+Nothing was lost only because it was noticed. **A `git push origin main` at that moment would have reported success and silently left the handoff behind.** The fix was a fast-forward; the habit that prevents it is `git branch --show-current` immediately before any commit in a shared checkout, and `git reflog` is the one-command diagnosis when a branch looks like it moved backwards.
+
+⚠ The global rule covers `pull`/`rebase`/`checkout` by "other sessions" — **not `commit`, and not your own subagent**. Both halves are being widened.
+
 ## Current state
 - **Latest release: v0.1.98** (tag = `47c7cb0` = `origin/main`). **Tarball verified** — `checksums.txt` OK, binary runs `0.1.98 (commit 47c7cb0…)`, `gh attestation verify` on the TARBALL exits 0.
 - ⚠ **Local `main` (`297ccd2`) is 2 commits AHEAD of `origin/main` and unpushed.** Both close findings from `claudedocs/BREADCRUMBS-AND-COPY-DESIGN.md`: `98a9d13` deletes the unreachable `trashPage`/`handleTrash`, `297ccd2` drops the `title=` that raced the CSS popover on `versionStatusFragment`. Gated green. **Push these before merging the PRs** — two of the three are based on the older `origin/main`.
