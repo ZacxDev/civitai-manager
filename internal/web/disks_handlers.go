@@ -81,7 +81,7 @@ func (s *Server) handleDisks(w http.ResponseWriter, r *http.Request) {
 	if !gated {
 		rows = s.diskRows()
 	}
-	s.render(w, http.StatusOK, disksPage(rows, batches, gated, s.csrf, s.currentTheme(), s.maturity(), s.rail(r.Context())))
+	s.render(w, http.StatusOK, disksPage(rows, batches, gated, s.csrf, s.maturity(), s.rail(r.Context())))
 }
 
 // handleTrashRedirect keeps the old /trash bookmark working after the nav rework

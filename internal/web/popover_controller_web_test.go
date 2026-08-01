@@ -34,11 +34,11 @@ func TestPopoverControllerScript(t *testing.T) {
 // TestPopoverControllerLoadsOnBothPages proves the controller ships on BOTH the
 // dashboard and the search page (both host the lazy popovers), via modelPageScript.
 func TestPopoverControllerLoadsOnBothPages(t *testing.T) {
-	dash := renderString(t, dashboardPage(nil, nil, "csrf", "dark", fullMaturityRange()))
+	dash := renderString(t, dashboardPage(nil, nil, "csrf", fullMaturityRange()))
 	if !strings.Contains(dash, "cm-pop-open") {
 		t.Errorf("dashboard should ship the popover controller")
 	}
-	search := renderString(t, searchPage("", nil, nil, "csrf", "dark", fullMaturityRange(), "", "", ""))
+	search := renderString(t, searchPage("", nil, nil, "csrf", fullMaturityRange(), "", "", ""))
 	if !strings.Contains(search, "cm-pop-open") {
 		t.Errorf("search page should ship the popover controller")
 	}

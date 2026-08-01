@@ -108,7 +108,7 @@ func TestSanitizeWorkflowFilename(t *testing.T) {
 // render "we saved it — now click this OTHER link".
 func TestOpenComfyControlIsAFormThatOpensANewTab(t *testing.T) {
 	uiWF := &store.Workflow{ID: 3, Name: "ui", Format: store.WorkflowFormatUI, Graph: "{}", Source: store.WorkflowSourceImported}
-	got := renderString(t, detailPageNode(uiWF, "csrf", "dark", fullMaturityRange(), true, comfyHelperView{}, workflowResolver{}))
+	got := renderString(t, detailPageNode(uiWF, "csrf", fullMaturityRange(), true, comfyHelperView{}, workflowResolver{}))
 
 	if !strings.Contains(got, `<form method="post" action="/workflows/3/open-in-comfyui" target="_blank"`) {
 		t.Errorf("the open control must be a form POST that opens a new tab:\n%s", got)
@@ -241,7 +241,7 @@ func TestOpenComfyNeverEmitsWorkflowParam(t *testing.T) {
 		},
 		"detail page": func(t *testing.T) string {
 			wf := &store.Workflow{ID: 3, Name: "ui", Format: store.WorkflowFormatUI, Graph: "{}", Source: store.WorkflowSourceImported}
-			return renderString(t, detailPageNode(wf, "csrf", "dark", fullMaturityRange(), true, comfyHelperView{}, workflowResolver{}))
+			return renderString(t, detailPageNode(wf, "csrf", fullMaturityRange(), true, comfyHelperView{}, workflowResolver{}))
 		},
 	}
 	for name, render := range variants {
@@ -588,17 +588,17 @@ func TestWorkflowDetailOpenComfyButtonGating(t *testing.T) {
 	apiWF := &store.Workflow{ID: 4, Name: "api", Format: store.WorkflowFormatAPI, Graph: "{}", Source: store.WorkflowSourceImported}
 
 	// UI + comfy configured → control present.
-	got := renderString(t, detailPageNode(uiWF, "csrf", "dark", fullMaturityRange(), true, comfyHelperView{}, workflowResolver{}))
+	got := renderString(t, detailPageNode(uiWF, "csrf", fullMaturityRange(), true, comfyHelperView{}, workflowResolver{}))
 	if !strings.Contains(got, "/workflows/3/open-in-comfyui") || !strings.Contains(got, "Open in ComfyUI") {
 		t.Errorf("UI + comfy should show the Open-in-ComfyUI control:\n%s", got)
 	}
 	// API + comfy configured → no control (API graphs don't load into the editor).
-	gotAPI := renderString(t, detailPageNode(apiWF, "csrf", "dark", fullMaturityRange(), true, comfyHelperView{}, workflowResolver{}))
+	gotAPI := renderString(t, detailPageNode(apiWF, "csrf", fullMaturityRange(), true, comfyHelperView{}, workflowResolver{}))
 	if strings.Contains(gotAPI, "open-in-comfyui") {
 		t.Errorf("API-format detail must not show the Open-in-ComfyUI control:\n%s", gotAPI)
 	}
 	// UI + comfy NOT configured → no control.
-	gotNoComfy := renderString(t, detailPageNode(uiWF, "csrf", "dark", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{}))
+	gotNoComfy := renderString(t, detailPageNode(uiWF, "csrf", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{}))
 	if strings.Contains(gotNoComfy, "open-in-comfyui") {
 		t.Errorf("no comfy_url should hide the Open-in-ComfyUI control:\n%s", gotNoComfy)
 	}
@@ -677,7 +677,7 @@ func TestComfyHelperDisclosureIsTheManagementSurface(t *testing.T) {
 
 	t.Run("not installed: status + install only", func(t *testing.T) {
 		hv := comfyHelperView{disk: comfyext.Inspect(root), rootSet: true, csrf: "csrf"}
-		got := renderString(t, detailPageNode(uiWF, "csrf", "dark", fullMaturityRange(), true, hv, workflowResolver{}))
+		got := renderString(t, detailPageNode(uiWF, "csrf", fullMaturityRange(), true, hv, workflowResolver{}))
 		if !strings.Contains(got, "<summary") || !strings.Contains(got, "ComfyUI helper (advanced)") {
 			t.Errorf("management must sit behind a labelled disclosure:\n%s", got)
 		}
@@ -697,7 +697,7 @@ func TestComfyHelperDisclosureIsTheManagementSurface(t *testing.T) {
 			t.Fatalf("install: %v", err)
 		}
 		hv := comfyHelperView{disk: comfyext.Inspect(root), rootSet: true, csrf: "csrf"}
-		got := renderString(t, detailPageNode(uiWF, "csrf", "dark", fullMaturityRange(), true, hv, workflowResolver{}))
+		got := renderString(t, detailPageNode(uiWF, "csrf", fullMaturityRange(), true, hv, workflowResolver{}))
 		if !strings.Contains(got, "Status: installed (v"+comfyext.ExtensionVersion+")") {
 			t.Errorf("the disclosure must state the installed version:\n%s", got)
 		}
@@ -718,7 +718,7 @@ func TestComfyHelperDisclosureIsTheManagementSurface(t *testing.T) {
 	})
 
 	t.Run("no comfy_root: explains why management is unavailable", func(t *testing.T) {
-		got := renderString(t, detailPageNode(uiWF, "csrf", "dark", fullMaturityRange(), true, comfyHelperView{}, workflowResolver{}))
+		got := renderString(t, detailPageNode(uiWF, "csrf", fullMaturityRange(), true, comfyHelperView{}, workflowResolver{}))
 		if !strings.Contains(got, "no ComfyUI install directory configured") {
 			t.Errorf("expected the unset-root status:\n%s", got)
 		}

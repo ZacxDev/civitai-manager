@@ -310,7 +310,31 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
 - **Offline / no-CDN.** The civitai theme+components CSS and `htmx.min.js` are
   **vendored** and served via `go:embed` (`internal/web/assets/`). Do not
   reintroduce external CDN/script/style/font references.
-- **Theme-aware.** UI honors `data-theme` (light/dark) — keep both paths styled.
+- **Theme: DARK ONLY in the UI; the light CSS is RETAINED AND DORMANT.** This
+  invariant used to read "UI honors `data-theme` (light/dark) — keep both paths
+  styled". The light path was retired from the UI deliberately (see `shellTheme`
+  in `internal/web/layout.go`): `<html data-theme>` is now pinned to `dark`, the
+  nav toggle is gone, and `POST /settings/theme` / `currentTheme()` /
+  `themeSettingKey` are **deleted** — the route was removed rather than kept as a
+  no-op, because a 204 that changes nothing reads as working plumbing forever.
+  🔴 **What must NOT change:**
+  - **Every `[data-theme='light']` block stays.** Nothing was stripped from
+    `civitai-theme.css` or `app.css`. Deleting them is what this bullet forbids.
+  - **`contrast_web_test.go` is UNTOUCHED and still gates BOTH themes**, its 25
+    accepted light-theme debt entries included. It parses the REAL shipped CSS,
+    so a light pair whose ratio *moves* still fails the build even though no user
+    can see it. That is precisely why the CSS was kept — a dormant path that
+    nothing checks would rot silently. **Never weaken it to "dark only".**
+  - **A new coloured pair still goes in the contrast table**, both themes, exactly
+    as before. "Light is dormant" is not licence to skip the light half.
+  - `TestLightThemeRetiredFromTheUI` (served-routes sweep: pinned `data-theme`,
+    no toggle artifact, route 404s) and `TestLightThemeCSSIsRetainedNotDeleted`
+    are the two guards. Both are mutation-verified.
+  **Re-enabling is a UI change, not a CSS one** — restore a persisted setting +
+  reader, a CSRF-protected POST that replies `HX-Refresh`, a control in `navbar`,
+  and thread the value down to `page()`. The old stored `theme` settings row is
+  deliberately left in place (no migration deletes it), so a returning user's
+  preference is still there to read.
 - **Tailwind is a committed, purged static build.** `internal/web/assets/output.css`
   is a purged **Tailwind v3.4.17** build (content glob `./*.go`) — NOT regenerated
   automatically, so a NEW utility class in a `h.Class("…")` string is **unstyled until

@@ -70,7 +70,7 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 		s.buildPresetView(r.Context(), wf, 0, nil, true),
 		comfyConfigured, s.comfyHelperState())
 	s.render(w, http.StatusOK, workflowDetailPage(wf,
-		s.csrf, s.currentTheme(), s.maturity(), generate, recent, s.workflowResolver(),
+		s.csrf, s.maturity(), generate, recent, s.workflowResolver(),
 		s.rail(r.Context())))
 }
 

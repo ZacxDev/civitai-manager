@@ -21,7 +21,7 @@ func TestCivitaiContractMarkup(t *testing.T) {
 	}
 
 	// Dashboard exercises button (Subscribe), card, badge (flags), text-input.
-	dash := renderString(t, dashboardPage(subs, nil, "csrf", "dark", fullMaturityRange()))
+	dash := renderString(t, dashboardPage(subs, nil, "csrf", fullMaturityRange()))
 	for name, want := range map[string]string{
 		"button ui":          `data-civitai-ui="button"`,
 		"button variant":     `data-variant="filled"`,
@@ -163,65 +163,105 @@ func TestVendored012DesignSystemFixes(t *testing.T) {
 	}
 }
 
-// TestThemeToggleRendersAndPersists covers: the toggle control renders,
-// data-theme is wired on the <html> ancestor for both themes, both render
-// without panic, and the persisted setting round-trips through the store + the
-// POST /settings/theme handler.
-func TestThemeToggleRendersAndPersists(t *testing.T) {
-	subs := []store.Subscription{}
+// themeRetiredRoutes are the SERVED, network-free GET routes the light-mode
+// retirement guard sweeps. Real routes, not page builders: the builders take no
+// theme argument any more, so calling one could not observe a handler that had
+// somehow reintroduced a light path. Only the served bytes can.
+var themeRetiredRoutes = []string{
+	librarySubscriptionsHref,
+	libraryModelFilesHref,
+	libraryWorkflowsHref,
+	"/search",
+	"/disks",
+	"/outputs",
+}
 
-	dark := renderString(t, dashboardPage(subs, nil, "csrf", "dark", fullMaturityRange()))
-	if !strings.Contains(dark, `<html lang="en" data-theme="dark"`) {
-		t.Errorf("dark page missing <html data-theme=\"dark\">")
-	}
-	// In dark, the toggle offers a switch to light.
-	if !strings.Contains(dark, `aria-label="Switch to light theme"`) || !strings.Contains(dark, `data-civitai-ui="button"`) {
-		t.Errorf("dark page missing the light-theme toggle control")
-	}
-	// The dark toggle renders a SUN glyph (click → light) — no text label.
-	if !strings.Contains(dark, "☀") {
-		t.Errorf("dark theme toggle should render the sun glyph")
-	}
-
-	light := renderString(t, dashboardPage(subs, nil, "csrf", "light", fullMaturityRange()))
-	if !strings.Contains(light, `data-theme="light"`) {
-		t.Errorf("light page missing data-theme=\"light\"")
-	}
-	if !strings.Contains(light, `aria-label="Switch to dark theme"`) {
-		t.Errorf("light page missing the dark-theme toggle control")
-	}
-	// The light toggle renders a MOON glyph (click → dark).
-	if !strings.Contains(light, "☾") {
-		t.Errorf("light theme toggle should render the moon glyph")
-	}
-
-	// Round-trip through the handler + store.
+// TestLightThemeRetiredFromTheUI is the Task-1 guard. It asserts the THREE things
+// the retirement means, each independently:
+//
+//  1. every served page pins <html data-theme="dark"> and NO served page ever
+//     emits data-theme="light";
+//  2. the toggle control is gone — no "Switch to <x> theme" accessible name, no
+//     sun/moon glyph, and no hx-post to /settings/theme anywhere in the markup;
+//  3. POST /settings/theme is no longer routed at all (405), rather than kept as
+//     a no-op that would answer 204 and change nothing.
+//
+// It deliberately does NOT assert anything about the light CSS — that is the
+// point of the retirement, and contrast_web_test.go remains its (untouched)
+// gate. See TestLightThemeCSSIsRetainedNotDeleted below for the dormancy half.
+func TestLightThemeRetiredFromTheUI(t *testing.T) {
 	srv := newTestServer(t)
-	if got := srv.currentTheme(); got != "dark" {
-		t.Fatalf("default theme = %q, want dark", got)
+
+	for _, route := range themeRetiredRoutes {
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, route, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want 200 (fixture must actually reach a rendered page)", route, rec.Code)
+		}
+		body := rec.Body.String()
+
+		// (1) the pinned attribute, and the absence of its alternative.
+		if !strings.Contains(body, `<html lang="en" data-theme="dark"`) {
+			t.Errorf("GET %s: missing the pinned <html lang=\"en\" data-theme=\"dark\">", route)
+		}
+		if strings.Contains(body, `data-theme="light"`) {
+			t.Errorf("GET %s: emitted data-theme=\"light\" — the light path is retired from the UI", route)
+		}
+
+		// (2) no toggle, in any of the three shapes it could come back as.
+		for _, gone := range []string{
+			`aria-label="Switch to light theme"`,
+			`aria-label="Switch to dark theme"`,
+			"/settings/theme",
+			"☀",
+			"☾",
+		} {
+			if strings.Contains(body, gone) {
+				t.Errorf("GET %s: still renders theme-toggle artifact %q", route, gone)
+			}
+		}
 	}
+
+	// (3) the route is REMOVED, not a no-op. A no-op would answer 204 here and
+	// read as working plumbing forever. Sent WITH a valid CSRF token on purpose —
+	// a 403 would prove nothing about routing, only about the CSRF middleware.
+	//
+	// The expected code is 404, NOT 405: net/http's ServeMux answers 405 only when
+	// the PATH matches a registered pattern under a different method, and
+	// /settings/theme is now registered under no method at all. (Measured — this
+	// assertion was written as 405 first and the test caught it.)
 	rec := httptest.NewRecorder()
-	form := strings.NewReader("theme=light&csrf_token=" + srv.csrf)
-	req := httptest.NewRequest(http.MethodPost, "/settings/theme", form)
+	req := httptest.NewRequest(http.MethodPost, "/settings/theme",
+		strings.NewReader("theme=light&csrf_token="+srv.csrf))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("POST /settings/theme status = %d, want 204", rec.Code)
+	if rec.Code == http.StatusNoContent {
+		t.Errorf("POST /settings/theme answered 204 — the route was kept as a no-op; it must be removed")
 	}
-	if rec.Header().Get("HX-Refresh") != "true" {
-		t.Errorf("POST /settings/theme should reply HX-Refresh: true")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("POST /settings/theme status = %d, want 404 (route removed entirely)", rec.Code)
 	}
-	if got := srv.currentTheme(); got != "light" {
-		t.Fatalf("persisted theme = %q, want light", got)
-	}
+}
 
-	// A bad value coerces to dark; missing CSRF is rejected.
-	recNoCSRF := httptest.NewRecorder()
-	reqNoCSRF := httptest.NewRequest(http.MethodPost, "/settings/theme", strings.NewReader("theme=light"))
-	reqNoCSRF.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	srv.Handler().ServeHTTP(recNoCSRF, reqNoCSRF)
-	if recNoCSRF.Code != http.StatusForbidden {
-		t.Errorf("theme POST without CSRF = %d, want 403", recNoCSRF.Code)
+// TestLightThemeCSSIsRetainedNotDeleted is the other half of the decision: the
+// light path left the UI, and the CSS that implements it stayed. Deleting those
+// blocks would silently gut contrast_web_test.go — its 25 light-theme debt
+// entries resolve tokens out of these very bytes, and a token that no longer
+// exists cannot have a ratio that "moves".
+//
+// It reads the EMBEDDED assets (what actually ships in the binary), not the
+// files on disk.
+func TestLightThemeCSSIsRetainedNotDeleted(t *testing.T) {
+	for _, asset := range []string{"assets/civitai-theme.css", "assets/app.css"} {
+		b, err := assetsFS.ReadFile(asset)
+		if err != nil {
+			t.Fatalf("read embedded %s: %v", asset, err)
+		}
+		if !strings.Contains(string(b), "data-theme='light'") &&
+			!strings.Contains(string(b), `data-theme="light"`) {
+			t.Errorf("%s carries no [data-theme=light] rules — the dormant light path was deleted; "+
+				"it is deliberately retained so contrast_web_test.go keeps gating it", asset)
+		}
 	}
 }
 
@@ -263,10 +303,10 @@ func TestNoExternalCDNInShippedHTML(t *testing.T) {
 	evs := []store.Event{{ID: 1, TS: time.Now(), Level: store.LevelInfo, Kind: "x", Message: "hi"}}
 
 	pages := map[string]g.Node{
-		"dashboard": dashboardPage(subs, nil, "csrf", "dark", fullMaturityRange()),
-		"search":    searchPage("", nil, nil, "csrf", "light", fullMaturityRange(), "", "Most Downloaded", "Month"),
-		"library":   libraryPage(buildLibraryView(nil), "csrf", true, nil, "dark", "sources", nil, false, nil, fullMaturityRange(), libraryWorkflowsView{}),
-		"trash":     trashPage(nil, "csrf", "light", fullMaturityRange()),
+		"dashboard": dashboardPage(subs, nil, "csrf", fullMaturityRange()),
+		"search":    searchPage("", nil, nil, "csrf", fullMaturityRange(), "", "Most Downloaded", "Month"),
+		"library":   libraryPage(buildLibraryView(nil), "csrf", true, nil, "sources", nil, false, nil, fullMaturityRange(), libraryWorkflowsView{}),
+		"trash":     trashPage(nil, "csrf", fullMaturityRange()),
 		"queue":     queueFragment(items),
 		"events":    eventsFragment(evs),
 	}

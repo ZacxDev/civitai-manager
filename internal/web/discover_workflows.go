@@ -93,7 +93,7 @@ func (s *Server) handleDiscoverWorkflows(w http.ResponseWriter, r *http.Request)
 		s.render(w, http.StatusOK, workflowDiscoverResults(v))
 		return
 	}
-	s.render(w, http.StatusOK, workflowDiscoverPage(v, s.currentTheme(), s.rail(r.Context())))
+	s.render(w, http.StatusOK, workflowDiscoverPage(v, s.rail(r.Context())))
 }
 
 // discoverFeedHeading labels a no-query browse feed. The unfaceted default keeps
@@ -115,8 +115,8 @@ func discoverFeedHeading(sort, period string, f workflowFacets) string {
 // sort/period, wired to GET /workflows/discover) and the results container. The
 // facet chips live INSIDE the results container so an htmx search re-renders them
 // and a chip href can never go stale against the query in the box.
-func workflowDiscoverPage(v workflowDiscoverView, theme string, rail ...railData) g.Node {
-	return page("Discover workflows", theme, v.CSRF, v.Mode, railOf(rail),
+func workflowDiscoverPage(v workflowDiscoverView, rail ...railData) g.Node {
+	return page("Discover workflows", v.CSRF, v.Mode, railOf(rail),
 		browseSurface(browseSurfaceSpec{
 			Title: "Discover workflows",
 			// ⚠ EGRESS DISCLOSURE — READ BEFORE EDITING EITHER HALF.

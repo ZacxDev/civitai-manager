@@ -1,8 +1,6 @@
 package web
 
 import (
-	"fmt"
-
 	g "maragu.dev/gomponents"
 	h "maragu.dev/gomponents/html"
 )
@@ -23,18 +21,16 @@ func dataFlag(name string) g.Node { return g.Attr("data-" + name) }
 // CDN, fully offline): @civitai/theme's design tokens, @civitai/components'
 // attribute-driven component CSS, and app.css which pulls the Tailwind build
 // into the `app` cascade layer so the component layer wins where it must (see
-// app.css for the cascade rationale). `theme` ("light"|"dark") is reflected onto
-// <html data-theme> so every --civitai-* token re-resolves; `csrf` powers the
-// persisted theme toggle in the nav.
+// app.css for the cascade rationale).
+//
+// 🔴 <html data-theme> IS PINNED TO shellTheme — see that constant for why the
+// light path was retired from the UI, and for what re-enabling it would take.
 //
 // `rail` is the app shell's global "Recent outputs" sidebar state (see
 // outputs_rail.go). Its zero value renders no rail — the shell is then
 // byte-identical to the pre-rail one, which is what page builders called without
 // shell state (unit tests) produce.
-func page(title, theme, csrf string, mr maturityRange, rail railData, body ...g.Node) g.Node {
-	if theme != "light" {
-		theme = "dark"
-	}
+func page(title, csrf string, mr maturityRange, rail railData, body ...g.Node) g.Node {
 	// One predicate decides the rail markup, the shell's reserved width and the
 	// nav's drawer button, so they can never disagree.
 	bodyClass := "min-h-screen bg-slate-950 text-slate-100 antialiased"
@@ -43,7 +39,7 @@ func page(title, theme, csrf string, mr maturityRange, rail railData, body ...g.
 	}
 	return g.El("html",
 		h.Lang("en"),
-		dataAttr("theme", theme),
+		dataAttr("theme", shellTheme),
 		h.Head(
 			h.Meta(h.Charset("utf-8")),
 			h.Meta(h.Name("viewport"), h.Content("width=device-width, initial-scale=1")),
@@ -65,7 +61,7 @@ func page(title, theme, csrf string, mr maturityRange, rail railData, body ...g.
 		),
 		h.Body(
 			h.Class(bodyClass),
-			navbar(theme, csrf, mr, rail),
+			navbar(csrf, mr, rail),
 			h.Main(
 				h.Class("mx-auto "+shellMeasure+" px-4 py-6 space-y-6"),
 				g.Group(body),
@@ -87,6 +83,31 @@ func page(title, theme, csrf string, mr maturityRange, rail railData, body ...g.
 // SAME class so their left/right edges line up at every viewport.
 const shellMeasure = "max-w-[1800px]"
 
+// shellTheme is the ONE value <html data-theme> ever carries. Every --civitai-*
+// token resolves from that attribute, so this constant alone decides the whole
+// app's palette.
+//
+// 🔴 THE LIGHT PATH IS RETIRED FROM THE UI, NOT DELETED FROM THE CSS. There is no
+// theme toggle, no `theme` setting read, and no POST /settings/theme route any
+// more — the app is dark, always, for everyone. What was deliberately KEPT:
+//
+//   - Every `[data-theme='light']` block in the vendored civitai-theme.css and in
+//     app.css stays exactly as shipped. Nothing was stripped.
+//   - contrast_web_test.go still parses that REAL CSS and still resolves BOTH
+//     themes, including its 25 accepted light-theme debt entries. It is unchanged
+//     and stays the gate: a light pair that silently changes ratio still fails the
+//     build even though no user can currently see it. That is the point — the
+//     dormant path cannot rot unnoticed.
+//
+// RE-ENABLING is therefore a UI change, not a CSS one. It needs, in order: a
+// persisted setting + reader (the old `theme` settings key and currentTheme), a
+// CSRF-protected POST route that writes it and replies HX-Refresh, a control in
+// navbar, and threading the chosen value back down to this attribute. The stored
+// `theme` row from before the retirement is left UNTOUCHED in the settings table
+// — no migration deletes it — so an existing user's old preference is still there
+// to be read if that day comes.
+const shellTheme = "dark"
+
 // navbar renders the sticky top bar. Sticky positioning + stacking order live in
 // .cm-nav (app.css) alongside --cm-nav-h, which the rail's top offset and the
 // anchor scroll-margin both derive from — keep those in sync.
@@ -95,7 +116,8 @@ const shellMeasure = "max-w-[1800px]"
 // (.cm-navlinks) rather than collapsing into a hamburger drawer. At 390px that
 // keeps every destination reachable in one gesture with no JS, no focus trap and
 // no second overlay competing with the rail drawer for the same corner of the
-// screen; only the brand shortens. The controls (rail/maturity/theme) never scroll.
+// screen; only the brand shortens. The controls (rail/maturity) never scroll.
+// (The theme toggle used to sit beside them — see shellTheme for why it is gone.)
 //
 // THE STRIP HOLDS FIVE ENTRIES, NOT SEVEN, and the difference is the point:
 //
@@ -124,7 +146,7 @@ const shellMeasure = "max-w-[1800px]"
 //     clean win.
 //   - "Trash" became "Disks", which absorbs the quarantine table it used to show
 //     and adds per-disk capacity. /trash redirects there (handleTrashRedirect).
-func navbar(theme, csrf string, mr maturityRange, rail railData) g.Node {
+func navbar(csrf string, mr maturityRange, rail railData) g.Node {
 	return h.Nav(
 		h.Class("cm-nav border-b border-slate-800 bg-slate-900"),
 		h.Div(
@@ -141,7 +163,6 @@ func navbar(theme, csrf string, mr maturityRange, rail railData) g.Node {
 			h.Div(h.Class("flex shrink-0 items-center gap-2"),
 				g.If(rail.visible(), railNavToggle()),
 				maturityControl(mr, csrf),
-				themeToggle(theme, csrf),
 			),
 		),
 	)
@@ -338,34 +359,7 @@ func navLink(href, label string) g.Node {
 	)
 }
 
-// themeToggle renders the light/dark switch: a civitai outline button that POSTs
-// the NEXT theme (with the CSRF token) to /settings/theme; the handler persists
-// it in the settings store and replies HX-Refresh so the page re-renders under
-// the new <html data-theme>. civitai resolves all tokens from that ancestor
-// attribute, so one round-trip re-themes everything.
-//
-// The control shows a glyph (not text): in dark it shows a SUN "☀" (click →
-// light), in light a MOON "☾" (click → dark). A unicode glyph keeps it
-// offline-safe. Since the visible label is now an icon, the aria-label carries
-// the "Switch to <next> theme" wording for assistive tech.
-func themeToggle(theme, csrf string) g.Node {
-	// Default (light): show a moon → switching to dark.
-	next, glyph := "dark", "☾"
-	if theme == "dark" {
-		// In dark: show a sun → switching to light.
-		next, glyph = "light", "☀"
-	}
-	return civButton("outline", "sm",
-		[]g.Node{
-			h.Type("button"),
-			hx("post", "/settings/theme"),
-			hx("vals", fmt.Sprintf(`{"theme":%q,"csrf_token":%q}`, next, csrf)),
-			hx("swap", "none"),
-			g.Attr("aria-label", "Switch to "+next+" theme"),
-		},
-		h.Span(g.Attr("aria-hidden", "true"), g.Text(glyph)),
-	)
-}
+// (The light/dark themeToggle that used to live here is GONE — see shellTheme.)
 
 // civButton renders a button per the @civitai/components contract:
 //

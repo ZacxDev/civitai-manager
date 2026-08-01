@@ -91,8 +91,8 @@ const subscriptionsPageTitle = "Subscriptions"
 // ⚠ Its LAYOUT is deliberately untouched by the move: the activity feed and the
 // queue are slated to become left-sidebar widgets, at which point this page loses
 // two of its four cards. Relabelling and rehoming it now, redesigning it later.
-func dashboardPage(subs []store.Subscription, suggestions []suggestion, csrf, theme string, mr maturityRange, rail ...railData) g.Node {
-	return page(subscriptionsPageTitle, theme, csrf, mr, railOf(rail),
+func dashboardPage(subs []store.Subscription, suggestions []suggestion, csrf string, mr maturityRange, rail ...railData) g.Node {
+	return page(subscriptionsPageTitle, csrf, mr, railOf(rail),
 		// The page's single <h1>. It is a stack of equal-weight cards with no natural
 		// title card, so the heading is emitted on its own above them — otherwise the
 		// outline would start at <h2> ("Add a subscription") with no level-1 heading
@@ -564,8 +564,8 @@ func progressBar(it store.QueueItem) g.Node {
 // mr is the app's PG..XXX maturity range, threaded to the showcase
 // carousels on each card. heading, when set, labels the result grid (e.g.
 // "Popular this month" for the empty-query default feed).
-func searchPage(query string, res *civitai.ModelSearchResult, subs map[int]*store.Subscription, csrf, theme string, mr maturityRange, heading, sortSel, periodSel string, rail ...railData) g.Node {
-	return page("Models", theme, csrf, mr, railOf(rail),
+func searchPage(query string, res *civitai.ModelSearchResult, subs map[int]*store.Subscription, csrf string, mr maturityRange, heading, sortSel, periodSel string, rail ...railData) g.Node {
+	return page("Models", csrf, mr, railOf(rail),
 		// ONE continuous surface: the page's single <h1>, the filter row, then the
 		// results flowing on below a hairline rule — the same browseSurface shape
 		// /workflows/discover and the Library Workflows tab use. searchResults' own
@@ -716,8 +716,8 @@ const (
 // creatorPage renders a creator's models with a subscribe-to-creator button. subs
 // is the per-render model-subscription map used by each result card's subscribe
 // control (built once by the handler, not per card).
-func creatorPage(username string, res *civitai.ModelSearchResult, subs map[int]*store.Subscription, csrf, theme string, mr maturityRange, rail ...railData) g.Node {
-	return page("@"+username, theme, csrf, mr, railOf(rail),
+func creatorPage(username string, res *civitai.ModelSearchResult, subs map[int]*store.Subscription, csrf string, mr maturityRange, rail ...railData) g.Node {
+	return page("@"+username, csrf, mr, railOf(rail),
 		card(
 			// flex-wrap + gap, NOT bare justify-between: subscribeCreatorInline grew
 			// Auto-download/Notify-only radios (so notify-only is reachable at all on

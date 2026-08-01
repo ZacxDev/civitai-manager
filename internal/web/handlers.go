@@ -77,48 +77,32 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			suggestions[i].Name = ent.Name
 		}
 	}
-	s.render(w, http.StatusOK, dashboardPage(subs, suggestions, s.csrf, s.currentTheme(), s.maturity(), s.rail(r.Context())))
+	s.render(w, http.StatusOK, dashboardPage(subs, suggestions, s.csrf, s.maturity(), s.rail(r.Context())))
 }
 
 // subscribeSuggestionLimit caps how many library-derived subscribe suggestions
 // the dashboard shows.
 const subscribeSuggestionLimit = 12
 
-// themeSettingKey persists the UI light/dark choice.
-const themeSettingKey = "theme"
-
-// currentTheme returns the persisted UI theme ("light"|"dark"), defaulting to
-// dark (civitai-manager's established look). Reflected onto <html data-theme>.
-func (s *Server) currentTheme() string {
-	v, _ := s.store.GetSettingDefault(themeSettingKey, "dark")
-	if v != "light" {
-		v = "dark"
-	}
-	return v
-}
-
-// handleSetTheme persists the light/dark choice and asks htmx to refresh so the
-// page re-renders under the new <html data-theme> (from which every --civitai-*
-// token re-resolves). CSRF-protected like every other state-changing POST.
-func (s *Server) handleSetTheme(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
-		return
-	}
-	if !s.verifyCSRF(w, r) {
-		return
-	}
-	theme := "dark"
-	if strings.EqualFold(strings.TrimSpace(r.FormValue("theme")), "light") {
-		theme = "light"
-	}
-	if err := s.store.SetSetting(themeSettingKey, theme); err != nil {
-		s.renderError(w, "save theme setting", err)
-		return
-	}
-	w.Header().Set("HX-Refresh", "true")
-	w.WriteHeader(http.StatusNoContent)
-}
+// THE THEME SETTING AND ITS HANDLER ARE GONE. `themeSettingKey`, `currentTheme`
+// and `handleSetTheme` (POST /settings/theme) were removed when the light path
+// left the UI — see shellTheme in layout.go for the rationale and the re-enable
+// checklist.
+//
+// THE ROUTE WAS REMOVED RATHER THAN KEPT AS A NO-OP, deliberately. A route that
+// still accepts a CSRF-protected POST, still answers 204, and changes nothing is
+// a worse artifact than a dead path: it reads as working plumbing to the next
+// reader and to any test that only checks the status code. Nothing in the app
+// emits the request any more, so the only caller that could hit it is a browser
+// tab left open across the upgrade — which gets ONE 404 on one click and is fixed
+// by a reload. Local, single-user, transient.
+//
+// (404, not 405 — measured. net/http's ServeMux answers 405 only when the PATH
+// matches a pattern registered under another method, and this path is now
+// registered under none. TestLightThemeRetiredFromTheUI pins that.)
+//
+// The stored `theme` row (if a user ever set one) is left ALONE in the settings
+// table. No migration touches it; it is simply never read.
 
 // searchSortOptions / searchPeriodOptions back the search page's sort + period
 // filter dropdowns. Each option's Value is the EXACT CivitAI query string sent to
@@ -210,7 +194,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			s.render(w, http.StatusOK, searchResults(res, subs, mr, s.csrf, heading))
 			return
 		}
-		s.render(w, http.StatusOK, searchPage("", res, subs, s.csrf, s.currentTheme(), mr, heading, sortSel, periodSel, s.rail(r.Context())))
+		s.render(w, http.StatusOK, searchPage("", res, subs, s.csrf, mr, heading, sortSel, periodSel, s.rail(r.Context())))
 		return
 	}
 
@@ -232,14 +216,14 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			s.render(w, http.StatusOK, errorNote("Search failed: "+err.Error()))
 			return
 		}
-		s.render(w, http.StatusOK, searchPage(query, nil, subs, s.csrf, s.currentTheme(), mr, "", sortSel, periodSel, s.rail(r.Context())))
+		s.render(w, http.StatusOK, searchPage(query, nil, subs, s.csrf, mr, "", sortSel, periodSel, s.rail(r.Context())))
 		return
 	}
 	if isHX {
 		s.render(w, http.StatusOK, searchResults(res, subs, mr, s.csrf, ""))
 		return
 	}
-	s.render(w, http.StatusOK, searchPage(query, res, subs, s.csrf, s.currentTheme(), mr, "", sortSel, periodSel, s.rail(r.Context())))
+	s.render(w, http.StatusOK, searchPage(query, res, subs, s.csrf, mr, "", sortSel, periodSel, s.rail(r.Context())))
 }
 
 // searchFeed fetches a no-query model feed for a chosen sort/period (the empty-
@@ -427,7 +411,7 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 		}
 		// railData{} — an error page skips the outputs rail rather than paying its
 		// two extra queries to decorate a "Not found".
-		s.render(w, status, page("Not found", s.currentTheme(), s.csrf, s.maturity(), railData{}, errNode))
+		s.render(w, status, page("Not found", s.csrf, s.maturity(), railData{}, errNode))
 		return
 	}
 	// Mark which of this model's versions the user already has locally, so the
@@ -462,7 +446,7 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 	if mid, cerr := strconv.Atoi(id); cerr == nil {
 		view.UsedByWorkflows = s.workflowsUsingModel(r.Context(), mid)
 	}
-	s.render(w, http.StatusOK, modelDetailPage(view, sub, s.csrf, s.currentTheme(), s.cfg.BaseURL, s.rail(r.Context())))
+	s.render(w, http.StatusOK, modelDetailPage(view, sub, s.csrf, s.cfg.BaseURL, s.rail(r.Context())))
 }
 
 // communityCacheTTL bounds how long a cached community-image feed is served
@@ -876,13 +860,13 @@ func (s *Server) handleCreator(w http.ResponseWriter, r *http.Request) {
 	res, err := s.reader.SearchModels(ctx, q)
 	if err != nil {
 		// railData{} — see handleModel: error pages skip the rail's queries.
-		s.render(w, http.StatusBadGateway, page("@"+username, s.currentTheme(), s.csrf, s.maturity(), railData{}, errorNote("Could not load creator: "+err.Error())))
+		s.render(w, http.StatusBadGateway, page("@"+username, s.csrf, s.maturity(), railData{}, errorNote("Could not load creator: "+err.Error())))
 		return
 	}
 	// One ListSubscriptions query per render → each model card reflects real
 	// subscribe state (the creator-subscribe button in the header is separate).
 	subs := s.modelSubscriptions()
-	s.render(w, http.StatusOK, creatorPage(username, res, subs, s.csrf, s.currentTheme(), s.maturity(), s.rail(r.Context())))
+	s.render(w, http.StatusOK, creatorPage(username, res, subs, s.csrf, s.maturity(), s.rail(r.Context())))
 }
 
 func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {

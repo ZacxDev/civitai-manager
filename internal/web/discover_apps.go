@@ -129,15 +129,15 @@ func (s *Server) handleDiscoverApps(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusOK, results)
 		return
 	}
-	s.render(w, http.StatusOK, appsDiscoverPage(results, s.currentTheme(), mr, kindSel, catSel, sortSel, s.csrf, s.rail(r.Context())))
+	s.render(w, http.StatusOK, appsDiscoverPage(results, mr, kindSel, catSel, sortSel, s.csrf, s.rail(r.Context())))
 }
 
 // appsDiscoverPage renders the full Apps browse page: the filter form (kind /
 // category / sort dropdowns wired to GET /apps/discover) and the results
 // container. The container id is stable — the form and the cursor "next" control
 // both swap its innerHTML, never the container itself (streaming-job invariant).
-func appsDiscoverPage(results g.Node, theme string, mr maturityRange, kindSel, catSel, sortSel, csrf string, rail ...railData) g.Node {
-	return page("Apps", theme, csrf, mr, railOf(rail),
+func appsDiscoverPage(results g.Node, mr maturityRange, kindSel, catSel, sortSel, csrf string, rail ...railData) g.Node {
+	return page("Apps", csrf, mr, railOf(rail),
 		card(
 			pageTitle("Apps"), // the page's single <h1>
 			h.P(h.Class("text-sm text-slate-400 mb-3"),

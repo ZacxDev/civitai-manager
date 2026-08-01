@@ -169,7 +169,7 @@ func TestMaturityControlNormalizesAnInvalidStoredRange(t *testing.T) {
 // TestNavbarRendersTheMaturityControl proves every page's navbar carries it,
 // alongside the theme toggle — and that the dead NSFW toggle is gone.
 func TestNavbarRendersTheMaturityControl(t *testing.T) {
-	out := renderString(t, navbar("dark", "csrf-tok", fullMaturityRange(), railData{}))
+	out := renderString(t, navbar("csrf-tok", fullMaturityRange(), railData{}))
 	if !strings.Contains(out, `hx-post="/settings/maturity"`) {
 		t.Errorf("navbar should render the maturity control:\n%s", out)
 	}

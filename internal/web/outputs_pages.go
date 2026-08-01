@@ -330,7 +330,7 @@ func generationGrid(gens []store.Generation, empty g.Node) g.Node {
 // outputsGalleryPage is the global /outputs page: a paginated masonry grid,
 // newest-first, with an optional workflow filter. Render-plain (no NSFW blur).
 func outputsGalleryPage(gens []store.Generation, wfRefs []store.GenerationWorkflowRef,
-	selectedWorkflow string, pageNum, total int, csrf, theme string, mr maturityRange, rail ...railData) g.Node {
+	selectedWorkflow string, pageNum, total int, csrf string, mr maturityRange, rail ...railData) g.Node {
 
 	// Workflow filter select. An empty value = all.
 	opts := []selectOption{{Value: "", Label: "All workflows"}}
@@ -377,7 +377,7 @@ func outputsGalleryPage(gens []store.Generation, wfRefs []store.GenerationWorkfl
 		body = append(body, outputsPagination(selectedWorkflow, pageNum, total))
 	}
 
-	return page("Outputs", theme, csrf, mr, railOf(rail), body...)
+	return page("Outputs", csrf, mr, railOf(rail), body...)
 }
 
 // batchLabel is the human name of a batch: the run preset's snapshotted label
@@ -452,7 +452,7 @@ func batchParamsNote(first store.Generation) string {
 // gens is never empty: the handler 404s a batch with zero rows, so gens[0] is
 // safe. The grid's empty branch is therefore unreachable and only exists so a
 // direct unit-test call cannot panic.
-func batchGalleryPage(gens []store.Generation, csrf, theme string, mr maturityRange, rail ...railData) g.Node {
+func batchGalleryPage(gens []store.Generation, csrf string, mr maturityRange, rail ...railData) g.Node {
 	first := gens[0]
 	label := batchLabel(first)
 
@@ -481,7 +481,7 @@ func batchGalleryPage(gens []store.Generation, csrf, theme string, mr maturityRa
 			"/outputs", "Back to all outputs"))),
 	}
 
-	return page("Batch "+label, theme, csrf, mr, railOf(rail), body...)
+	return page("Batch "+label, csrf, mr, railOf(rail), body...)
 }
 
 // outputsPagination renders Prev/Next controls preserving the workflow filter.
@@ -521,7 +521,7 @@ func outputsPagination(selectedWorkflow string, page, total int) g.Node {
 // link. Its zero value is safe (nothing about a file is then claimed), which is what
 // a unit test calling this without a server gets.
 func generationDetailPage(gen *store.Generation, images []store.GenerationImage,
-	csrf, theme string, mr maturityRange, resolver workflowResolver, rail ...railData) g.Node {
+	csrf string, mr maturityRange, resolver workflowResolver, rail ...railData) g.Node {
 
 	id := strconv.FormatInt(gen.ID, 10)
 
@@ -556,7 +556,7 @@ func generationDetailPage(gen *store.Generation, images []store.GenerationImage,
 		lightboxOverlay(),
 		modelPageScript(),
 	}
-	return page("Output "+id, theme, csrf, mr, railOf(rail), body...)
+	return page("Output "+id, csrf, mr, railOf(rail), body...)
 }
 
 // generationDetailMedia renders ONE stored output at full size on the detail page.

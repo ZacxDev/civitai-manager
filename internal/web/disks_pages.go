@@ -48,8 +48,8 @@ type diskRow struct {
 // The quarantine table keeps its "#trash-content" container id and its
 // POST /trash/{id}/restore action UNCHANGED — the restore button's htmx target
 // is that id, so renaming either would break the swap for no benefit.
-func disksPage(rows []diskRow, batches []batchView, gated bool, csrf, theme string, mr maturityRange, rail ...railData) g.Node {
-	return page("Disks", theme, csrf, mr, railOf(rail),
+func disksPage(rows []diskRow, batches []batchView, gated bool, csrf string, mr maturityRange, rail ...railData) g.Node {
+	return page("Disks", csrf, mr, railOf(rail),
 		card(
 			pageTitle("Disks"), // the page's single <h1>
 			disksCapacityCard(rows, gated),

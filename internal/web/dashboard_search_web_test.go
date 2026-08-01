@@ -398,7 +398,7 @@ func TestSubscriptionsPageTitle(t *testing.T) {
 }
 
 func TestDashboardManualFormDemotedAndSearchBox(t *testing.T) {
-	out := renderString(t, dashboardPage(nil, nil, "test-csrf", "dark", fullMaturityRange()))
+	out := renderString(t, dashboardPage(nil, nil, "test-csrf", fullMaturityRange()))
 	for _, want := range []string{
 		"<details",                   // manual form is demoted into a details
 		"Add by model id / URL",      // the summary label
@@ -508,7 +508,7 @@ func TestDashboardRendersSuggestions(t *testing.T) {
 		{ModelID: 42, FileCount: 2, TotalBytes: 1500, Name: "Resolved Model"}, // cached name
 		{ModelID: 7, FileCount: 1, TotalBytes: 500},                           // cache miss -> lazy
 	}
-	out := renderString(t, dashboardPage(nil, suggestions, "test-csrf", "dark", fullMaturityRange()))
+	out := renderString(t, dashboardPage(nil, suggestions, "test-csrf", fullMaturityRange()))
 	if !strings.Contains(out, "Subscribe suggestions from your library") {
 		t.Error("suggestions section heading missing")
 	}
@@ -570,7 +570,7 @@ func TestModelTitleHandler(t *testing.T) {
 }
 
 func TestDashboardHidesEmptySuggestions(t *testing.T) {
-	out := renderString(t, dashboardPage(nil, nil, "test-csrf", "dark", fullMaturityRange()))
+	out := renderString(t, dashboardPage(nil, nil, "test-csrf", fullMaturityRange()))
 	if strings.Contains(out, "Subscribe suggestions from your library") {
 		t.Error("suggestions section should be hidden when there are none")
 	}
