@@ -1,7 +1,7 @@
 package web
 
 import (
-	"fmt"
+	"strconv"
 
 	g "maragu.dev/gomponents"
 	h "maragu.dev/gomponents/html"
@@ -23,18 +23,16 @@ func dataFlag(name string) g.Node { return g.Attr("data-" + name) }
 // CDN, fully offline): @civitai/theme's design tokens, @civitai/components'
 // attribute-driven component CSS, and app.css which pulls the Tailwind build
 // into the `app` cascade layer so the component layer wins where it must (see
-// app.css for the cascade rationale). `theme` ("light"|"dark") is reflected onto
-// <html data-theme> so every --civitai-* token re-resolves; `csrf` powers the
-// persisted theme toggle in the nav.
+// app.css for the cascade rationale).
+//
+// 🔴 <html data-theme> IS PINNED TO shellTheme — see that constant for why the
+// light path was retired from the UI, and for what re-enabling it would take.
 //
 // `rail` is the app shell's global "Recent outputs" sidebar state (see
 // outputs_rail.go). Its zero value renders no rail — the shell is then
 // byte-identical to the pre-rail one, which is what page builders called without
 // shell state (unit tests) produce.
-func page(title, theme, csrf string, mr maturityRange, rail railData, body ...g.Node) g.Node {
-	if theme != "light" {
-		theme = "dark"
-	}
+func page(title, csrf string, mr maturityRange, rail railData, body ...g.Node) g.Node {
 	// One predicate decides the rail markup, the shell's reserved width and the
 	// nav's drawer button, so they can never disagree.
 	bodyClass := "min-h-screen bg-slate-950 text-slate-100 antialiased"
@@ -43,7 +41,7 @@ func page(title, theme, csrf string, mr maturityRange, rail railData, body ...g.
 	}
 	return g.El("html",
 		h.Lang("en"),
-		dataAttr("theme", theme),
+		dataAttr("theme", shellTheme),
 		h.Head(
 			h.Meta(h.Charset("utf-8")),
 			h.Meta(h.Name("viewport"), h.Content("width=device-width, initial-scale=1")),
@@ -65,7 +63,7 @@ func page(title, theme, csrf string, mr maturityRange, rail railData, body ...g.
 		),
 		h.Body(
 			h.Class(bodyClass),
-			navbar(theme, csrf, mr, rail),
+			navbar(csrf, mr, rail),
 			h.Main(
 				h.Class("mx-auto "+shellMeasure+" px-4 py-6 space-y-6"),
 				g.Group(body),
@@ -87,6 +85,31 @@ func page(title, theme, csrf string, mr maturityRange, rail railData, body ...g.
 // SAME class so their left/right edges line up at every viewport.
 const shellMeasure = "max-w-[1800px]"
 
+// shellTheme is the ONE value <html data-theme> ever carries. Every --civitai-*
+// token resolves from that attribute, so this constant alone decides the whole
+// app's palette.
+//
+// 🔴 THE LIGHT PATH IS RETIRED FROM THE UI, NOT DELETED FROM THE CSS. There is no
+// theme toggle, no `theme` setting read, and no POST /settings/theme route any
+// more — the app is dark, always, for everyone. What was deliberately KEPT:
+//
+//   - Every `[data-theme='light']` block in the vendored civitai-theme.css and in
+//     app.css stays exactly as shipped. Nothing was stripped.
+//   - contrast_web_test.go still parses that REAL CSS and still resolves BOTH
+//     themes, including its 25 accepted light-theme debt entries. It is unchanged
+//     and stays the gate: a light pair that silently changes ratio still fails the
+//     build even though no user can currently see it. That is the point — the
+//     dormant path cannot rot unnoticed.
+//
+// RE-ENABLING is therefore a UI change, not a CSS one. It needs, in order: a
+// persisted setting + reader (the old `theme` settings key and currentTheme), a
+// CSRF-protected POST route that writes it and replies HX-Refresh, a control in
+// navbar, and threading the chosen value back down to this attribute. The stored
+// `theme` row from before the retirement is left UNTOUCHED in the settings table
+// — no migration deletes it — so an existing user's old preference is still there
+// to be read if that day comes.
+const shellTheme = "dark"
+
 // navbar renders the sticky top bar. Sticky positioning + stacking order live in
 // .cm-nav (app.css) alongside --cm-nav-h, which the rail's top offset and the
 // anchor scroll-margin both derive from — keep those in sync.
@@ -95,7 +118,8 @@ const shellMeasure = "max-w-[1800px]"
 // (.cm-navlinks) rather than collapsing into a hamburger drawer. At 390px that
 // keeps every destination reachable in one gesture with no JS, no focus trap and
 // no second overlay competing with the rail drawer for the same corner of the
-// screen; only the brand shortens. The controls (rail/maturity/theme) never scroll.
+// screen; only the brand shortens. The controls (rail/maturity) never scroll.
+// (The theme toggle used to sit beside them — see shellTheme for why it is gone.)
 //
 // THE STRIP HOLDS FIVE ENTRIES, NOT SEVEN, and the difference is the point:
 //
@@ -124,7 +148,7 @@ const shellMeasure = "max-w-[1800px]"
 //     clean win.
 //   - "Trash" became "Disks", which absorbs the quarantine table it used to show
 //     and adds per-disk capacity. /trash redirects there (handleTrashRedirect).
-func navbar(theme, csrf string, mr maturityRange, rail railData) g.Node {
+func navbar(csrf string, mr maturityRange, rail railData) g.Node {
 	return h.Nav(
 		h.Class("cm-nav border-b border-slate-800 bg-slate-900"),
 		h.Div(
@@ -141,93 +165,222 @@ func navbar(theme, csrf string, mr maturityRange, rail railData) g.Node {
 			h.Div(h.Class("flex shrink-0 items-center gap-2"),
 				g.If(rail.visible(), railNavToggle()),
 				maturityControl(mr, csrf),
-				themeToggle(theme, csrf),
 			),
 		),
 	)
 }
 
-// maturityControlID / maturityControlMaxID are the stable ids the two ends of the
-// range control carry. Exported as constants because both the markup and the
-// tests that assert the accessible names key off them.
+// maturityControlMinID / maturityControlMaxID are the stable ids the two ends of
+// the range control carry — now the two TRACK groups rather than two <select>s.
+// They are constants because both the markup and the tests that assert the
+// accessible names key off them.
+//
+// maturityMenuPanelID is the popover's id. As with libraryMenuPanelID, the
+// trigger's popovertarget and the panel's id are the ENTIRE wiring of this
+// control, so they come from ONE constant — a typo in either renders a button
+// that does nothing at all, silently, with no console error.
 const (
 	maturityControlMinID = "cm-maturity-min"
 	maturityControlMaxID = "cm-maturity-max"
+	maturityMenuPanelID  = "cm-maturity-menu"
 )
 
-// maturityControl renders the app-wide PG..XXX maturity RANGE as TWO NATIVE
-// <select>s inside one <form> — a "from" end and a "to" end. It replaced the old
-// 2-state NSFW blur⇄show button outright: one concept, one stored setting.
+// maturityControl renders the app-wide PG..XXX maturity RANGE as an ICON BUTTON
+// opening a POPOVER that holds a two-sided slider. It replaced the old 2-state
+// NSFW blur⇄show button outright: one concept, one stored setting. It previously
+// shipped as two bare <select>s sitting permanently in the nav bar.
 //
-// WHY TWO <select>s AND NOT A SLIDER. HTML has no two-thumb range input, so a
-// dual slider means two overlapping <input type=range> plus JavaScript to keep
-// them apart — and this app ships htmx and nothing else. Two selects are:
+// 🔴 WHAT THE SLIDER IS, AND WHY IT IS NOT TWO <input type="range">. HTML has no
+// two-thumb range input. The obvious dual-slider — two overlapping range inputs —
+// was considered and REJECTED for two concrete reasons, not on taste:
 //
-//   - keyboard-operable for free (Tab to reach, arrows/Home/End to change,
-//     type-ahead to jump) with no key handling of our own;
-//   - individually named for assistive tech — each end carries its OWN <label>,
-//     so a screen reader announces "Maturity from" / "Maturity to" rather than one
-//     ambiguous "slider";
-//   - offline and framework-free — native elements, no CDN, no polyfill;
-//   - and readable at a glance: the current band is literally spelled out.
+//   - To keep the MARKUP incapable of inverting (see below), each input's own
+//     min/max must be clamped to the other end's current value. Two range inputs
+//     with DIFFERENT min/max spans have different value-space-to-pixel scales, so
+//     their tracks do not line up; making them line up means sizing each by a
+//     percentage of the span and fighting the UA's thumb inset at both ends.
+//   - Dropping that clamp so the two tracks DO align means JavaScript becomes the
+//     only thing keeping the thumbs apart — i.e. the safety property would depend
+//     on script, which is exactly what must not happen here.
 //
-// 🔴 THE CONTROL CANNOT EMIT AN INVERTED RANGE. Each end only offers the levels
-// that keep the band valid — the "from" select stops at the current Max, the "to"
-// select starts at the current Min — so every single change from a valid state
-// lands on another valid state. (Widening past the other end therefore takes two
-// steps, which is the deliberate trade for never being able to submit nonsense.)
-// The handler ALSO rejects an inverted submission with 400; the two are belt and
-// braces, because the markup constraint only binds a browser.
+// So each end is a 5-STOP SEGMENTED TRACK built from native radio inputs, and the
+// two tracks share ONE 5-column grid — they align BY CONSTRUCTION rather than by
+// arithmetic. A radio track is a slider in every way that matters here: Tab
+// reaches the group, the arrow keys move between stops and commit as they go
+// (native radiogroup behaviour, no key handling of our own), Home/End jump to the
+// ends, and each stop carries a real accessible name. It also submits the level
+// SLUG directly, so the wire format is UNCHANGED and handleSetMaturity did not
+// have to be touched at all.
 //
-// Changing either end submits the WHOLE form (both values + the CSRF token) to
+// 🔴 THE CONTROL STILL CANNOT EMIT AN INVERTED RANGE — the same rule as the
+// selects it replaces, expressed differently: a stop that would invert the band
+// is rendered `disabled`. A disabled radio is not submittable, not selectable and
+// is skipped by arrow-key navigation, so every reachable change from a valid
+// state lands on another valid state. (Widening past the other end therefore
+// takes two steps — the same deliberate trade as before.) It is RENDERED rather
+// than omitted so the unreachable region is visible, which is a strict
+// improvement on the selects: they silently offered a shorter list, giving the
+// user no idea the other end was in the way.
+//
+// The handler ALSO rejects an inverted submission with 400, and that is the REAL
+// guard — the markup constraint only binds a browser. Both halves are tested
+// independently; never collapse them into one test.
+//
+// Changing any stop submits the WHOLE form (both ends + the CSRF token) to
 // POST /settings/maturity, which persists and replies HX-Refresh so the current
-// page re-renders under the new band — the same idiom as the theme toggle, so the
-// one control works on every page.
+// page re-renders under the new band — so the one control works on every page.
+//
+// STACKING: the panel is a `popover`, so it renders in the TOP LAYER and declares
+// NO z-index — see libraryMenu and the STACKING ORDER ledger in app.css. It
+// spends nothing from the budget.
 func maturityControl(mr maturityRange, csrf string) g.Node {
 	if !mr.valid() {
 		mr = fullMaturityRange()
 	}
-	return h.Form(
+	return h.Div(
 		h.Class("cm-maturity"),
-		hx("post", "/settings/maturity"),
-		hx("trigger", "change"),
-		hx("swap", "none"),
-		// The CSRF token rides in the form, not in hx-vals, so the control is one
-		// self-contained POST body — hx-include is not needed and cannot go stale.
-		h.Input(h.Type("hidden"), h.Name("csrf_token"), h.Value(csrf)),
-		h.Span(h.Class("cm-maturity-legend"), g.Attr("aria-hidden", "true"), g.Text("Maturity")),
-		maturityEnd(maturityControlMinID, "min", "Maturity from", mr.Min, maturityPG, mr.Max),
-		h.Span(h.Class("cm-maturity-dash"), g.Attr("aria-hidden", "true"), g.Text("–")),
-		maturityEnd(maturityControlMaxID, "max", "Maturity to", mr.Max, mr.Min, maturityXXX),
+		h.Button(
+			// A real <button type=button>: focusable, activated by click AND by
+			// Enter/Space with no key handling of our own. type=button is load-bearing
+			// — the default is `submit`, and this button sits in a nav that carries
+			// forms.
+			h.Type("button"),
+			h.Class("cm-maturity-trigger"),
+			g.Attr("popovertarget", maturityMenuPanelID),
+			// The accessible name CARRIES THE CURRENT STATE. The old control spelled
+			// the band out in two visible selects; an icon button announcing only
+			// "Maturity" would lose that, so the band goes into the name.
+			g.Attr("aria-label", "Maturity: "+mr.label()),
+			maturityGlyph(),
+			// The compact band, shown beside the icon at wider viewports and hidden on
+			// narrow ones (CSS). aria-hidden because the button's aria-label already
+			// says it — announcing it twice would be noise.
+			h.Span(h.Class("cm-maturity-band"), g.Attr("aria-hidden", "true"),
+				g.Text(mr.Min.label()+"–"+mr.Max.label())),
+		),
+		h.Div(
+			h.ID(maturityMenuPanelID),
+			// VALUELESS = `auto` = light-dismiss + Escape. Do NOT give it a value:
+			// popover="manual" has neither, and would silently return this control to a
+			// panel that can only be closed by finding the trigger again.
+			g.Attr("popover"),
+			h.Class("cm-maturity-panel"),
+			h.Form(
+				hx("post", "/settings/maturity"),
+				hx("trigger", "change"),
+				hx("swap", "none"),
+				// The CSRF token rides in the form, not in hx-vals, so the control is one
+				// self-contained POST body — hx-include is not needed and cannot go stale.
+				h.Input(h.Type("hidden"), h.Name("csrf_token"), h.Value(csrf)),
+				h.Div(h.Class("cm-maturity-head"),
+					h.Span(h.Class("cm-maturity-title"), g.Text("Maturity")),
+					h.Span(h.Class("cm-maturity-current"), g.Text(mr.label())),
+				),
+				h.P(h.Class("cm-maturity-note"),
+					g.Text("Content outside this band is never fetched or shown. Your own generations are unrated and always render.")),
+				maturityTrack(maturityControlMinID, "min", "Maturity from", mr.Min, maturityPG, mr.Max),
+				maturityTrack(maturityControlMaxID, "max", "Maturity to", mr.Max, mr.Min, maturityXXX),
+			),
+		),
 	)
 }
 
-// maturityEnd renders one end of the range control: a visually-hidden but REAL
-// <label> bound to the <select> (so the end has an accessible name), offering
-// only the levels between lo and hi inclusive — which is what makes an inverted
-// range unreachable from the UI.
-func maturityEnd(id, name, label string, selected, lo, hi maturityLevel) g.Node {
-	opts := make([]g.Node, 0, len(maturityScale))
-	for _, l := range maturityScale {
+// maturityGlyph is the trigger's icon: a shield outline stroked in currentColor,
+// so it re-themes with the surrounding text for free and adds NO coloured pair to
+// contrast_web_test.go's table. aria-hidden + focusable=false keeps it out of the
+// accessibility tree — the button's aria-label is the name (the same contract the
+// brand mark uses; see brand.go).
+func maturityGlyph() g.Node {
+	return g.El("svg",
+		g.Attr("viewBox", "0 0 16 16"),
+		g.Attr("width", "14"), g.Attr("height", "14"),
+		g.Attr("fill", "none"),
+		g.Attr("stroke", "currentColor"),
+		g.Attr("stroke-width", "1.5"),
+		g.Attr("stroke-linejoin", "round"),
+		g.Attr("aria-hidden", "true"),
+		g.Attr("focusable", "false"),
+		g.El("path", g.Attr("d", "M8 1.75 2.75 3.5v4c0 3 2.1 5.6 5.25 6.75 3.15-1.15 5.25-3.75 5.25-6.75v-4L8 1.75Z")),
+	)
+}
+
+// maturityTrack renders ONE end of the range as a 5-stop segmented slider: a
+// <fieldset> (so the group has a real, announced name from its <legend>) holding
+// one radio per level on a shared 5-column grid.
+//
+// 🔴 lo/hi are the INCLUSIVE bounds that keep the band valid. A level outside them
+// renders as an INERT stop — same grid cell, same dot and tick, so the geometry
+// stays uniform and the user can see where the track ends — but it emits **NO
+// <input> at all**. It is therefore not a member of the radio group: unsubmittable,
+// unselectable, and *unreachable by the keyboard*.
+//
+// 🔴 IT USED TO BE A `disabled` RADIO, AND THAT SHIPPED A CONTENT-GATING CONTROL
+// THAT FAILED OPEN. A disabled radio is skipped by arrow-key navigation — but a
+// native radio group also WRAPS AROUND, so "skipped" at a boundary means the focus
+// lands on the far end of the scale. Proved live in Brave: with the band at "X
+// only", one **ArrowLeft** on the max track — the *reducing* direction — moved to
+// `xxx`, committed, and persisted **"X to XXX"**. One keypress intended to lower
+// the ceiling silently admitted XXX content, with the page reloading immediately
+// and focus dumped to <body>, so nothing announced what had happened.
+// The two <select>s this control replaced could not do that: they OMITTED
+// out-of-range options, and a <select> does not wrap at its first option. Emitting
+// no input restores exactly that property.
+//
+// Note the inverted-range guard alone could never catch this — `x:xxx` IS a valid
+// band. It asks "does every reachable stop yield a valid range?", never "can a
+// keypress reach a stop the user did not intend?". That is why the guard below
+// asserts the ABSENCE of an input, not the presence of `disabled`.
+//
+// The selected level is ALWAYS inside [lo,hi] for any valid range, so the checked
+// stop can never be an inert one. If it ever were, that end would submit NOTHING
+// and the handler would 400 on an empty slug — a real failure mode, which is why
+// maturityControl normalizes an invalid range before calling this.
+func maturityTrack(id, name, label string, selected, lo, hi maturityLevel) g.Node {
+	stops := make([]g.Node, 0, len(maturityScale))
+	for i, l := range maturityScale {
+		kids := []g.Node{
+			// The dot is the thumb; the tick is the level's name. For a real stop the
+			// tick is the label's TEXT, so it is the radio's accessible name — no
+			// aria-label needed and none should be added.
+			h.Span(h.Class("cm-mat-dot"), g.Attr("aria-hidden", "true")),
+			h.Span(h.Class("cm-mat-tick"), g.Text(l.label())),
+		}
 		if l < lo || l > hi {
+			// Out of band: no input, so the keyboard cannot reach it and a forged
+			// submit cannot name it. A <span>, not a <label> — a label with no control
+			// is meaningless to AT.
+			stops = append(stops, h.Span(
+				h.Class("cm-mat-stop cm-mat-stop-out"),
+				dataAttr("step", strconv.Itoa(i)),
+				g.Group(kids),
+			))
 			continue
 		}
-		attrs := []g.Node{h.Value(l.slug())}
-		if l == selected {
-			attrs = append(attrs, g.Attr("selected"))
+		attrs := []g.Node{
+			h.Type("radio"),
+			h.Name(name),
+			h.Value(l.slug()),
+			h.Class("cm-mat-radio"),
+			h.ID(id + "-" + l.slug()),
 		}
-		attrs = append(attrs, g.Text(l.label()))
-		opts = append(opts, h.Option(attrs...))
+		if l == selected {
+			attrs = append(attrs, g.Attr("checked"))
+		}
+		stops = append(stops, h.Label(
+			h.Class("cm-mat-stop"),
+			dataAttr("step", strconv.Itoa(i)),
+			g.Group(append([]g.Node{h.Input(attrs...)}, kids...)),
+		))
 	}
-	return g.Group([]g.Node{
-		// A real <label for=…>, not an aria-label: it is the element assistive tech
-		// prefers, and .cm-sr-only keeps it out of the visual nav strip without
-		// removing it from the accessibility tree (display:none would).
-		h.Label(h.Class("cm-sr-only"), h.For(id), g.Text(label)),
-		h.Select(append([]g.Node{
-			h.ID(id), h.Name(name), h.Class("cm-maturity-select"),
-		}, opts...)...),
-	})
+	return h.FieldSet(
+		h.Class("cm-mat-track"),
+		h.ID(id),
+		// A real <legend>, not an aria-label: it is what assistive tech prefers, and
+		// it names WHICH end the user is on ("Maturity from" vs "Maturity to").
+		// Ambiguity there was the original reason each end got its own label.
+		h.Legend(h.Class("cm-mat-legend"), g.Text(label)),
+		h.Div(h.Class("cm-mat-stops"), g.Group(stops)),
+	)
 }
 
 // libraryModelFilesHref / libraryWorkflowsHref are the two real Library
@@ -338,34 +491,7 @@ func navLink(href, label string) g.Node {
 	)
 }
 
-// themeToggle renders the light/dark switch: a civitai outline button that POSTs
-// the NEXT theme (with the CSRF token) to /settings/theme; the handler persists
-// it in the settings store and replies HX-Refresh so the page re-renders under
-// the new <html data-theme>. civitai resolves all tokens from that ancestor
-// attribute, so one round-trip re-themes everything.
-//
-// The control shows a glyph (not text): in dark it shows a SUN "☀" (click →
-// light), in light a MOON "☾" (click → dark). A unicode glyph keeps it
-// offline-safe. Since the visible label is now an icon, the aria-label carries
-// the "Switch to <next> theme" wording for assistive tech.
-func themeToggle(theme, csrf string) g.Node {
-	// Default (light): show a moon → switching to dark.
-	next, glyph := "dark", "☾"
-	if theme == "dark" {
-		// In dark: show a sun → switching to light.
-		next, glyph = "light", "☀"
-	}
-	return civButton("outline", "sm",
-		[]g.Node{
-			h.Type("button"),
-			hx("post", "/settings/theme"),
-			hx("vals", fmt.Sprintf(`{"theme":%q,"csrf_token":%q}`, next, csrf)),
-			hx("swap", "none"),
-			g.Attr("aria-label", "Switch to "+next+" theme"),
-		},
-		h.Span(g.Attr("aria-hidden", "true"), g.Text(glyph)),
-	)
-}
+// (The light/dark themeToggle that used to live here is GONE — see shellTheme.)
 
 // civButton renders a button per the @civitai/components contract:
 //

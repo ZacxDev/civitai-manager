@@ -28,7 +28,7 @@ func TestWorkflowDetailShowsShowcaseWhenModelHasImages(t *testing.T) {
 		ID: 1, Name: "portrait", Format: store.WorkflowFormatUI, Graph: "{}",
 		Source: store.WorkflowSourceCivitai, ModelID: intp(42), VersionID: intp(99),
 	}
-	got := renderString(t, detailPageNode(wf, "csrf", "dark", fullMaturityRange(), false,
+	got := renderString(t, detailPageNode(wf, "csrf", fullMaturityRange(), false,
 		comfyHelperView{}, showcaseResolver(rawWithImages, fullMaturityRange())))
 
 	if !strings.Contains(got, "cm-showcase-lg") {
@@ -49,7 +49,7 @@ func TestWorkflowDetailShowsShowcaseWhenModelHasImages(t *testing.T) {
 func TestWorkflowDetailNoShowcaseWithoutModelOrImages(t *testing.T) {
 	// No linked model.
 	noModel := &store.Workflow{ID: 2, Name: "x", Format: store.WorkflowFormatUI, Graph: "{}", Source: store.WorkflowSourceImported}
-	got := renderString(t, detailPageNode(noModel, "csrf", "dark", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{}))
+	got := renderString(t, detailPageNode(noModel, "csrf", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{}))
 	if strings.Contains(got, "cm-showcase-lg") {
 		t.Error("no linked model → no showcase card")
 	}
@@ -60,7 +60,7 @@ func TestWorkflowDetailNoShowcaseWithoutModelOrImages(t *testing.T) {
 	// Linked model but uncached (no images).
 	linkedUncached := &store.Workflow{ID: 3, Name: "y", Format: store.WorkflowFormatUI, Graph: "{}",
 		Source: store.WorkflowSourceCivitai, ModelID: intp(42)}
-	got2 := renderString(t, detailPageNode(linkedUncached, "csrf", "dark", fullMaturityRange(), false,
+	got2 := renderString(t, detailPageNode(linkedUncached, "csrf", fullMaturityRange(), false,
 		comfyHelperView{}, workflowResolver{cachedModel: func(int) (string, []byte, bool) { return "", nil, false }}))
 	if strings.Contains(got2, "cm-showcase-lg") {
 		t.Error("uncached model → no showcase card")
@@ -76,7 +76,7 @@ func TestWorkflowDetailShowcaseRespectsTheRange(t *testing.T) {
 		Source: store.WorkflowSourceCivitai, ModelID: intp(42)}
 
 	full := fullMaturityRange()
-	show := renderString(t, detailPageNode(wf, "csrf", "dark", full, false,
+	show := renderString(t, detailPageNode(wf, "csrf", full, false,
 		comfyHelperView{}, showcaseResolver(rawWithNSFWImage, full)))
 	if !strings.Contains(show, "img/x.jpg") {
 		t.Errorf("the full range should render the tile:\n%s", show)
@@ -88,7 +88,7 @@ func TestWorkflowDetailShowcaseRespectsTheRange(t *testing.T) {
 	}
 
 	pgOnly := maturityRange{maturityPG, maturityPG}
-	body := renderString(t, detailPageNode(wf, "csrf", "dark", pgOnly, false,
+	body := renderString(t, detailPageNode(wf, "csrf", pgOnly, false,
 		comfyHelperView{}, showcaseResolver(rawWithNSFWImage, pgOnly)))
 	if strings.Contains(body, "img/x.jpg") {
 		t.Errorf("a PG-only range LEAKED the out-of-band tile URL:\n%s", body)

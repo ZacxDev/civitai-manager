@@ -1068,7 +1068,7 @@ func workflowModelNameText(modelID int, resolver workflowResolver) g.Node {
 // `generate` is the combined run section (nil renders no run controls at all).
 // `recent` is this workflow's most recent captured outputs (bounded by the handler);
 // empty renders no strip at all.
-func workflowDetailPage(wf *store.Workflow, csrf, theme string, mr maturityRange, generate g.Node,
+func workflowDetailPage(wf *store.Workflow, csrf string, mr maturityRange, generate g.Node,
 	recent []store.Generation, resolver workflowResolver, rail ...railData) g.Node {
 	id := strconv.FormatInt(wf.ID, 10)
 	name := wf.Name
@@ -1165,7 +1165,7 @@ func workflowDetailPage(wf *store.Workflow, csrf, theme string, mr maturityRange
 		body = append(body, lightboxOverlay(), modelPageScript(), libraryCarouselScript())
 	}
 
-	return page(name+" · Workflow", theme, csrf, mr, railOf(rail), body...)
+	return page(name+" · Workflow", csrf, mr, railOf(rail), body...)
 }
 
 // workflowGraphSection picks the best graph rendering: an SVG for a UI-format

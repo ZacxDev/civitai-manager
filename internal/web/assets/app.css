@@ -978,55 +978,274 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 
 /*
  * MATURITY RANGE CONTROL (.cm-maturity) — the nav's PG..XXX band picker; see
- * maturityControl in layout.go. It replaced the old NSFW blur/show button.
+ * maturityControl in layout.go. It replaced the old NSFW blur/show button, and
+ * then replaced its OWN first form (two bare <select>s parked in the nav bar).
  *
- * Two NATIVE <select>s in one <form>, not a dual slider: HTML has no two-thumb
- * range input, and this app ships htmx and nothing else. Native selects are
- * keyboard-operable and screen-reader-nameable for free, and each end offers only
- * the levels that keep the band valid, so the control cannot emit an inverted
- * range without a line of JavaScript.
+ * It is now an ICON BUTTON opening a `popover` that holds a TWO-SIDED SLIDER:
+ * two 5-stop segmented tracks, "from" over "to", built from native radio inputs.
  *
- * Colours are the already-audited text-on-surface-2 pair (see
- * contrast_web_test.go), so this adds no new coloured pair in either theme. It
- * lives beside the theme toggle in the nav's non-scrolling control group; at
- * narrow widths the level labels are short enough (PG / PG-13 / R / X / XXX) that
- * both ends still fit without collapsing into a menu.
+ * 🔴 WHY RADIOS AND NOT TWO <input type="range">. To keep the MARKUP incapable of
+ * emitting an inverted band, each end must be bounded by the other end's current
+ * value. Two range inputs with different min/max spans have different
+ * value-to-pixel scales, so their tracks cannot align without per-render
+ * percentage sizing that also has to fight the UA thumb inset; and dropping the
+ * bound so they DO align would leave JavaScript as the only thing keeping the
+ * thumbs apart. Radios on a SHARED 5-column grid align by construction, keep the
+ * bound as a plain `disabled` attribute, and need no script at all. An
+ * out-of-band stop is drawn (dimmed) rather than removed, so the user can SEE
+ * where the other end is blocking — the selects silently offered a shorter list.
+ *
+ * COLOURS. Every value here is an existing token pair that contrast_web_test.go
+ * already resolves — text / text-dimmed on surface and surface-2, and the brand
+ * `primary` fill under `primary-fg` for the selected thumb. NO NEW COLOURED PAIR
+ * is introduced, so the contrast table needs no new row. The 12% brand tint on
+ * the in-band track is the same mix the nav menu's hover uses, chosen for the
+ * same reason: on the LIGHT theme surface, surface-2 and body are all #FEFEFE, so
+ * a surface-2 tint would be completely invisible there while looking correct in
+ * dark.
+ *
+ * STACKING: the panel is in the TOP LAYER and declares NO z-index. See the
+ * STACKING ORDER ledger in the APP SHELL block — this control spends nothing from
+ * the budget, exactly like .cm-navmenu-panel.
  */
 .cm-maturity {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 0.25rem;
   margin: 0;
 }
-.cm-maturity-legend {
+.cm-maturity-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
   font-size: 0.75rem;
-  color: var(--civitai-color-text-dimmed);
-  white-space: nowrap;
-}
-.cm-maturity-dash {
-  font-size: 0.75rem;
-  color: var(--civitai-color-text-dimmed);
-}
-.cm-maturity-select {
-  appearance: auto;
-  font-size: 0.75rem;
+  font-family: inherit;
   line-height: 1.2;
-  padding: 0.2rem 0.3rem;
+  padding: 0.3rem 0.45rem;
   border-radius: var(--civitai-radius-sm, 0.25rem);
   border: 1px solid var(--civitai-color-border);
   background: var(--civitai-color-surface-2);
   color: var(--civitai-color-text);
+  cursor: pointer;
+  white-space: nowrap;
 }
-.cm-maturity-select:focus-visible {
+.cm-maturity-trigger:hover {
+  border-color: var(--civitai-color-primary);
+}
+.cm-maturity-trigger:focus-visible {
   outline: 2px solid var(--civitai-color-primary);
-  outline-offset: 1px;
+  outline-offset: 2px;
 }
-/* Below the nav's first breakpoint the legend word is redundant chrome — the two
- * selects and the dash still read as a range, and the <label>s keep the
- * accessible names regardless. */
+/* Below the nav's first breakpoint the button collapses to the icon alone: the
+ * accessible name still carries the band, so nothing is lost to assistive tech. */
 @media (max-width: 640px) {
-  .cm-maturity-legend {
+  .cm-maturity-band {
     display: none;
+  }
+}
+
+/*
+ * 🔴 THE BASE PANEL RULE MUST NOT DECLARE `display`. The UA sheet closes a
+ * popover with `[popover]:not(:popover-open) { display: none }`, and an AUTHOR
+ * `display` beats a UA one at any specificity — so `display: block` here would
+ * pin the panel permanently open, on every page, at every width. Same trap as the
+ * `hidden` .cm-vgroup panel that was still `display: flex` (see the
+ * .cm-version-tabs[hidden] block). The layout lives on the :popover-open rule.
+ *
+ * The rest undoes the [popover] UA sheet, which centres a fit-content bordered
+ * box in the middle of the viewport (inset: 0 + margin: auto + width/height:
+ * fit-content + border: solid + padding: 0.25em).
+ */
+.cm-maturity-panel {
+  position: fixed;
+  top: var(--cm-nav-h);
+  left: 0;
+  right: 0;
+  bottom: auto;
+  width: auto;
+  height: auto;
+  margin: 0;
+  border: none;
+  overflow: visible;
+  padding: 0.85rem;
+  border-top: 1px solid var(--civitai-color-border);
+  border-bottom: 1px solid var(--civitai-color-border);
+  background: var(--civitai-color-surface);
+  color: var(--civitai-color-text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.cm-maturity-panel:popover-open {
+  display: block;
+}
+.cm-maturity-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.cm-maturity-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--civitai-color-text);
+}
+.cm-maturity-current {
+  font-size: 0.75rem;
+  color: var(--civitai-color-primary-text);
+}
+.cm-maturity-note {
+  margin: 0.3rem 0 0.75rem;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--civitai-color-text-dimmed);
+}
+
+/*
+ * ONE END of the slider. The <fieldset> reset is chrome removal only — the
+ * <legend> stays in the accessibility tree and stays visible, because "from" vs
+ * "to" is the one thing a two-sided control must not leave ambiguous.
+ */
+.cm-mat-track {
+  margin: 0 0 0.6rem;
+  padding: 0;
+  border: none;
+}
+.cm-mat-track:last-of-type {
+  margin-bottom: 0;
+}
+.cm-mat-legend {
+  padding: 0;
+  margin-bottom: 0.2rem;
+  font-size: 0.6875rem;
+  color: var(--civitai-color-text-dimmed);
+}
+/*
+ * THE SHARED GRID IS THE WHOLE ALIGNMENT STORY. Both tracks are
+ * `repeat(5, 1fr)`, so the "from" and "to" thumbs sit on exactly the same five
+ * x-positions with no arithmetic, at any width. This is what two <input
+ * type=range> with different spans could not do.
+ */
+.cm-mat-stops {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  align-items: center;
+  position: relative;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--civitai-color-primary) 12%, transparent);
+}
+.cm-mat-stop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.3rem 0.1rem;
+  cursor: pointer;
+  min-width: 0;
+}
+/*
+ * The radio is visually replaced by .cm-mat-dot but must STAY in the
+ * accessibility tree and stay focusable — so it is clipped, NOT `display: none`
+ * or `visibility: hidden`, either of which would remove it from the tab order and
+ * from assistive tech, taking the entire keyboard story with it.
+ */
+.cm-mat-radio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+.cm-mat-dot {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 999px;
+  border: 1px solid var(--civitai-color-border);
+  background: var(--civitai-color-surface);
+}
+.cm-mat-tick {
+  font-size: 0.625rem;
+  line-height: 1;
+  color: var(--civitai-color-text-dimmed);
+}
+/* SELECTED = the thumb. Brand fill under the brand foreground token — an already
+ * audited pair. */
+.cm-mat-radio:checked ~ .cm-mat-dot {
+  background: var(--civitai-color-primary);
+  border-color: var(--civitai-color-primary);
+  box-shadow: 0 0 0 2px var(--civitai-color-surface);
+}
+.cm-mat-radio:checked ~ .cm-mat-tick {
+  color: var(--civitai-color-text);
+  font-weight: 600;
+}
+/*
+ * OUT OF BAND. The stop is drawn but unreachable: `disabled` already makes it
+ * unsubmittable, unselectable and skipped by arrow keys — this only makes that
+ * state legible. `cursor: not-allowed` on the label matters because the LABEL is
+ * what the pointer meets, not the clipped input.
+ */
+/* An OUT-OF-BAND stop. It carries no <input> at all — see maturityTrack: a
+ * `disabled` radio is skipped by arrow keys but a native radio group WRAPS, so at a
+ * boundary "skipped" meant focus landed on the far end of the scale and one
+ * ArrowLeft raised the ceiling to XXX. These selectors therefore key on the stop's
+ * own class, NOT on :disabled, because there is no input left to be disabled.
+ * Styling is unchanged from the disabled look it replaces — the stop must still
+ * read as present-but-unavailable so the track's geometry stays legible. */
+.cm-mat-stop-out .cm-mat-dot {
+  opacity: 0.35;
+  border-style: dashed;
+}
+.cm-mat-stop-out .cm-mat-tick {
+  opacity: 0.45;
+}
+.cm-mat-stop-out {
+  cursor: not-allowed;
+}
+/* The focus ring has to land on the DOT, since the input itself is clipped to a
+ * 1px box — without this the control would be operable by keyboard but give no
+ * visible indication of where focus is. */
+.cm-mat-radio:focus-visible ~ .cm-mat-dot {
+  outline: 2px solid var(--civitai-color-primary);
+  outline-offset: 2px;
+}
+
+@media (min-width: 1024px) {
+  /*
+   * The desktop MATURITY panel anchors under its trigger instead of spanning the
+   * bar — same mechanism, and same reasoning, as .cm-navmenu-panel.
+   *
+   * (The wording deliberately differs from the nav menu's block: cssMediaBlock in
+   * the CSS tests keys on the opening comment, and two blocks sharing a prefix
+   * silently hand the wrong one to the wrong test. That helper now fails on an
+   * ambiguous key, but keeping the text distinct costs nothing.)
+   *
+   * 🔴 @supports IS LOAD-BEARING, NOT DECORATION. A top-layer element's
+   * containing block is the VIEWPORT, so `top: calc(100% + …)` would resolve
+   * against the viewport height and drop the panel below the fold. CSS anchor
+   * positioning is the only way to say "under that button" for a top-layer box,
+   * and it is Chromium-only at time of writing — in an engine without it
+   * `anchor()` makes the whole declaration invalid and it drops. The guard makes
+   * the fallback the DELIBERATE full-width sheet (identical to the <1024px
+   * layout) instead of a half-applied mixture of the two.
+   */
+  @supports (anchor-name: --cm-maturity-anchor) {
+    .cm-maturity-trigger {
+      anchor-name: --cm-maturity-anchor;
+    }
+    .cm-maturity-panel {
+      position-anchor: --cm-maturity-anchor;
+      top: calc(anchor(bottom) + 0.625rem);
+      /* Anchored to the trigger's RIGHT edge: this control sits in the nav's
+       * right-hand group, so a left anchor would push the panel off-screen. */
+      right: anchor(right);
+      left: auto;
+      width: 20rem;
+      border: 1px solid var(--civitai-color-border);
+      border-radius: 0.5rem;
+    }
   }
 }
 
@@ -2104,7 +2323,7 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  * STACKING ORDER (the app's whole z-index budget, lowest -> highest):
  *    4  .cm-video-badge, 5 .cm-carousel-btn  - decoration inside a card
  *   10  in-tile reveal overlay (z-10/z-20)   - scoped to one tile
- *   20  .cm-rail (desktop column)            - page chrome, BELOW the nav
+ *   20  .cm-rail (desktop LEFT column)       - page chrome, BELOW the nav
  *   25  .cm-lift WITH AN OPEN POPOVER        - clears the NEXT card's escaping
  *       in-tile decoration (max 20) and nothing else; transient (open state
  *       only) and always below the nav, so it never covers app chrome. The
@@ -2112,7 +2331,12 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  *       traps it in the card's stacking context. See the POPOVER ESCAPE block.
  *   30  .cm-nav (sticky header)              - above page content
  *   44  .cm-rail-scrim / 45 .cm-rail (mobile drawer) - above the nav, so the
- *       sticky header can never cover an open drawer
+ *       sticky header can never cover an open drawer. UNCHANGED by the move to
+ *       the left side: the rail's SIDE is `left`/`border-right`/`translateX`, not
+ *       a z-index, so this budget did not move and nothing was added to it. The
+ *       rail's widgets (.cm-rail-widget and everything inside) declare NO
+ *       z-index at all — they are in normal flow inside the rail, which already
+ *       owns its layer.
  *   50  .cm-vstatus-pop / .cm-updated-pop / .cm-dl-menu-pop (the model header's
  *       multi-file download menu) / the run Fix popover, and the
  *       #cm-lightbox overlay                 - above everything else
@@ -2187,12 +2411,18 @@ html {
 /*
  * The rail, mobile-first: an off-canvas drawer over a scrim, opened from the nav
  * (cmRailDrawer). At >=1024px the desktop block below turns it into a fixed
- * right-hand column whose width <body> reserves.
+ * LEFT-hand column whose width <body> reserves.
+ *
+ * 🔴 THE SIDE LIVES HERE AND NOWHERE ELSE. outputsRail's markup encodes no side;
+ * moving the rail is this rule's `left`/`border-right`/negative `translateX`, the
+ * matching box-shadow direction, and the `padding-left` on the shell classes in
+ * the desktop block. If you move it back, all five change together — a half-moved
+ * rail reserves space on one side and paints on the other.
  */
 .cm-rail {
   position: fixed;
   top: 0;
-  right: 0;
+  left: 0;
   bottom: 0;
   z-index: 45;
   width: min(20rem, 85vw);
@@ -2201,11 +2431,12 @@ html {
   gap: 0.5rem;
   padding: 0.75rem;
   overflow-y: auto;
-  border-left: 1px solid var(--civitai-color-border);
+  border-right: 1px solid var(--civitai-color-border);
   background: var(--civitai-color-surface);
   color: var(--civitai-color-text);
-  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
-  transform: translateX(100%);
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.35);
+  /* Off-canvas to the LEFT — the drawer slides in from the left edge. */
+  transform: translateX(-100%);
   transition: transform 180ms ease;
 }
 .cm-rail[data-open="true"] {
@@ -2420,7 +2651,7 @@ html {
  *      (see railData.visible). There is no per-rail NSFW state left to style.
  */
 
-/* Desktop: a real right-hand column that reserves its own width. */
+/* Desktop: a real LEFT-hand column that reserves its own width. */
 @media (min-width: 1024px) {
   .cm-rail {
     top: var(--cm-nav-h);
@@ -2444,9 +2675,11 @@ html {
     padding: 0.5rem 0.25rem;
     overflow: hidden;
   }
-  .cm-rail[data-collapsed="true"] .cm-rail-title,
-  .cm-rail[data-collapsed="true"] .cm-rail-body,
-  .cm-rail[data-collapsed="true"] .cm-rail-foot {
+  /* Collapsed hides the whole widget STACK plus the container's own title; what
+   * remains on the 2.25rem edge is the vertical label, the single most-recent
+   * output preview (.cm-rail-preview) and the full-edge expand control. */
+  .cm-rail[data-collapsed="true"] .cm-rail-shelltitle,
+  .cm-rail[data-collapsed="true"] .cm-rail-widgets {
     display: none;
   }
   .cm-rail[data-collapsed="true"] .cm-rail-head {
@@ -2491,12 +2724,13 @@ html {
     font-size: 1rem;
     line-height: 1;
   }
-  /* EXACTLY ONE of these lands on <body> (see railShellClass). */
+  /* EXACTLY ONE of these lands on <body> (see railShellClass). padding-LEFT,
+   * matching the rail's `left: 0` — these two must always name the same side. */
   .cm-shell-rail {
-    padding-right: 18rem;
+    padding-left: 18rem;
   }
   .cm-shell-rail-collapsed {
-    padding-right: 2.25rem;
+    padding-left: 2.25rem;
   }
 }
 
@@ -3728,4 +3962,175 @@ a.cm-res-chip .cm-res-name {
 }
 .cm-meter-fill[data-level="full"] {
   background: var(--civitai-color-error);
+}
+
+/*
+ * ===========================================================================
+ * RAIL WIDGETS — the left sidebar is a CONTAINER, not one list
+ * ===========================================================================
+ *
+ * See outputsRail / railWidget / railActivityWidget. The rail hosts a stack of
+ * widgets; each is a <section> with a head and a body, and adding a third is one
+ * more railWidget call plus nothing here.
+ *
+ * NO z-index anywhere in this block, deliberately: these are in normal flow inside
+ * .cm-rail, which already owns its layer (20 desktop / 45 drawer). See the
+ * STACKING ORDER ledger in the APP SHELL block.
+ *
+ * Every colour is an existing --civitai-* pair that contrast_web_test.go already
+ * resolves — text / text-dimmed / primary-text on surface. No new coloured pair,
+ * so the contrast table needs no new row.
+ */
+.cm-rail-shelltitle {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--civitai-color-text-dimmed);
+}
+.cm-rail-widgets {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  /* min-height:0 lets a widget's own overflow work inside the flex column instead
+   * of the whole rail growing past its fixed height. */
+  min-height: 0;
+}
+.cm-rail-widget {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-height: 0;
+}
+.cm-rail-whead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex: none;
+}
+.cm-rail-wtitle {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--civitai-color-text);
+}
+.cm-rail-wbody {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-height: 0;
+}
+.cm-rail-empty {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--civitai-color-text-dimmed);
+}
+
+/*
+ * The activity feed. .cm-rail-activity is the STABLE poll target — its inner HTML
+ * is replaced every 10s and the element itself never is (see railActivityBodyID);
+ * an outerHTML swap here would delete the node carrying the hx-trigger and stop
+ * the loop after one tick.
+ */
+.cm-rail-activity {
+  min-height: 0;
+}
+.cm-rail-acts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.cm-rail-act {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  min-width: 0;
+}
+.cm-rail-act-glyph {
+  flex: none;
+  width: 0.85rem;
+  text-align: center;
+  color: var(--civitai-color-text-dimmed);
+}
+.cm-rail-act-link {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  min-width: 0;
+  flex: 1 1 auto;
+  color: var(--civitai-color-text);
+  text-decoration: none;
+}
+a.cm-rail-act-link:hover .cm-rail-act-text {
+  color: var(--civitai-color-primary-text);
+  text-decoration: underline;
+}
+/* A workflow name / civitai filename is arbitrary and routinely long: truncate
+ * rather than let one entry wrap to four lines in an 18rem column. The <li>'s
+ * title= carries the full text plus the age. */
+.cm-rail-act-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cm-rail-act-when {
+  flex: none;
+  font-size: 0.6875rem;
+  color: var(--civitai-color-text-dimmed);
+}
+
+/*
+ * The COLLAPSED edge's single most-recent output preview (railCollapsedPreview).
+ * Desktop-only and collapsed-only: below 1024px the rail is a drawer where
+ * data-collapsed carries no meaning, and expanded it would duplicate the first
+ * tile of the outputs widget.
+ *
+ * It is BELOW the full-edge .cm-rail-expand overlay in paint order (that element
+ * is emitted last), which is intentional — the overlay owns the click and the
+ * accessible name, and this is decoration behind it.
+ */
+.cm-rail-preview {
+  display: none;
+}
+@media (min-width: 1024px) {
+  .cm-rail[data-collapsed="true"] .cm-rail-preview {
+    display: block;
+    flex: none;
+    width: 1.75rem;
+    height: 1.75rem;
+    margin: 0.25rem auto 0;
+    /*
+     * 🔴 `position: relative` IS LOAD-BEARING — WITHOUT IT THE `overflow: hidden`
+     * BELOW CLIPS NOTHING. The shared thumbnail `.cm-out-thumb` is
+     * `position: absolute` (it is built to fill a positioned tile wrapper), and an
+     * absolutely positioned box is clipped by an ancestor's overflow ONLY if that
+     * ancestor is in its containing-block chain. With no positioned ancestor here,
+     * the thumbnail resolved against a box further up and escaped completely:
+     * measured live in Brave at 35x862px inside a 28x28px preview, bleeding down
+     * the entire left edge of the app. Every server-side test still passed — they
+     * assert that exactly one thumbnail is PRESENT, which it was.
+     *
+     * It is deliberately left at `z-index: auto`, so it creates NO stacking
+     * context and spends nothing from the STACKING ORDER budget. Re-hit-tested
+     * after the fix at three points down the collapsed edge (including over the
+     * preview itself): `.cm-rail-expand` still wins every one, so the full-edge
+     * expand control keeps its click.
+     */
+    position: relative;
+    overflow: hidden;
+    border-radius: 0.25rem;
+    border: 1px solid var(--civitai-color-border);
+  }
+  .cm-rail[data-collapsed="true"] .cm-rail-preview img,
+  .cm-rail[data-collapsed="true"] .cm-rail-preview video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
 }

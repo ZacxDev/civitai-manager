@@ -94,11 +94,16 @@ func TestRailDrawerHasModalSemantics(t *testing.T) {
 	shell := pageShell(get(t, srv, librarySubscriptionsHref).Body.String())
 
 	for _, want := range []string{
-		`aria-controls="cm-rail"`,     // the opener names its target
-		`aria-expanded="false"`,       // …and reports state
-		`id="cm-rail-close"`,          // focus lands here on open
-		`aria-label="Recent outputs"`, // the rail is a labelled landmark
-		"cmRailPrevFocus",             // focus is restored on close
+		`aria-controls="cm-rail"`, // the opener names its target
+		`aria-expanded="false"`,   // …and reports state
+		`id="cm-rail-close"`,      // focus lands here on open
+		// The rail is a labelled landmark. Its label is "Sidebar", not "Recent
+		// outputs", since it became a widget CONTAINER: "Recent outputs" is now the
+		// name of ONE widget inside it, and labelling the whole landmark after one
+		// of its children would misdescribe the region to a screen-reader user
+		// walking the landmarks.
+		`aria-label="Sidebar"`,
+		"cmRailPrevFocus", // focus is restored on close
 		`setAttribute('role', 'dialog')`,
 		`setAttribute('aria-modal', 'true')`,
 		"inert",              // the rest of the page is removed from the tab order
@@ -169,7 +174,7 @@ func TestRailIsNeverFilteredByMaturity(t *testing.T) {
 			if !ok {
 				t.Fatalf("fixture range %q did not parse", rng)
 			}
-			out := renderString(t, dashboardPage(nil, nil, "csrf", "dark", mr, rd))
+			out := renderString(t, dashboardPage(nil, nil, "csrf", mr, rd))
 			for _, want := range []string{`id="cm-rail"`, "cm-rail-item", "cm-shell-rail", imgURL} {
 				if !strings.Contains(out, want) {
 					t.Errorf("range %s dropped %q from the rail — the user's own outputs are "+

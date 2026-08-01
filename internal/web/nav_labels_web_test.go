@@ -21,7 +21,7 @@ import (
 // ("Library" is a <summary> whose text is followed by the caret <span>, so its
 // closing "<" is that tag rather than a </a>; the assertion holds either way.)
 func TestNavbarLabels(t *testing.T) {
-	body := renderString(t, navbar("dark", "csrf-token", fullMaturityRange(), railData{}))
+	body := renderString(t, navbar("csrf-token", fullMaturityRange(), railData{}))
 
 	// New / kept labels, with the route each must point at. The routes are pinned
 	// beside the labels because a rename that also moved the href would otherwise
@@ -112,7 +112,7 @@ func navMenuFragment(t *testing.T, body string) string {
 // closes and returns focus to the trigger. No markup assertion can see any of
 // that — this guards the WIRING those behaviours depend on.
 func TestNavLibraryDropdown(t *testing.T) {
-	body := renderString(t, navbar("dark", "csrf-token", fullMaturityRange(), railData{}))
+	body := renderString(t, navbar("csrf-token", fullMaturityRange(), railData{}))
 
 	menu := navMenuFragment(t, body)
 

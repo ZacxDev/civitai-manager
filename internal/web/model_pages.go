@@ -583,10 +583,10 @@ func updatedCardLine(modelID, versionID int, rel, absDate, versionName, versionD
 // modelDetailPage renders the rich model detail page: header + stats, sanitized
 // description, tags, a version selector with per-version detail, and a showcase
 // image gallery with NSFW handling + a lightbox.
-func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, theme, baseURL string, rail ...railData) g.Node {
+func modelDetailPage(v modelDetailView, sub *store.Subscription, csrf, baseURL string, rail ...railData) g.Node {
 	m := v.Model
 
-	return page(m.Name, theme, csrf, v.Maturity, railOf(rail),
+	return page(m.Name, csrf, v.Maturity, railOf(rail),
 		// The header is now INSIDE the version region: the header card and the
 		// version tab strip are ONE card (see modelHeaderCard), and the active tab's
 		// highlight has to re-render on every version swap — so the whole combined

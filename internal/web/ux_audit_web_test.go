@@ -68,20 +68,20 @@ func fullPages(t *testing.T) map[string]string {
 	wf := &store.Workflow{ID: 3, Name: "My workflow", Format: store.WorkflowFormatAPI, Graph: "{}"}
 
 	return map[string]string{
-		"dashboard":  renderString(t, dashboardPage(subs, nil, "csrf", "dark", fullMaturityRange())),
-		"search":     renderString(t, searchPage("q", searchRes, nil, "csrf", "dark", fullMaturityRange(), "", "", "")),
-		"creator":    renderString(t, creatorPage("dave", searchRes, nil, "csrf", "dark", fullMaturityRange())),
-		"model":      renderString(t, modelDetailPage(detail, nil, "csrf", "dark", "https://civitai.com")),
-		"library":    renderString(t, libraryPage(libraryView{}, "csrf", true, []string{"/m"}, "dark", "files", nil, true, nil, fullMaturityRange(), libraryWorkflowsView{})),
-		"trash":      renderString(t, trashPage(nil, "csrf", "dark", fullMaturityRange())),
-		"outputs":    renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", "dark", fullMaturityRange())),
-		"generation": renderString(t, generationDetailPage(gen, nil, "csrf", "dark", fullMaturityRange(), workflowResolver{})),
-		"workflow":   renderString(t, detailPageNode(wf, "csrf", "dark", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{})),
+		"dashboard":  renderString(t, dashboardPage(subs, nil, "csrf", fullMaturityRange())),
+		"search":     renderString(t, searchPage("q", searchRes, nil, "csrf", fullMaturityRange(), "", "", "")),
+		"creator":    renderString(t, creatorPage("dave", searchRes, nil, "csrf", fullMaturityRange())),
+		"model":      renderString(t, modelDetailPage(detail, nil, "csrf", "https://civitai.com")),
+		"library":    renderString(t, libraryPage(libraryView{}, "csrf", true, []string{"/m"}, "files", nil, true, nil, fullMaturityRange(), libraryWorkflowsView{})),
+		"trash":      renderString(t, trashPage(nil, "csrf", fullMaturityRange())),
+		"outputs":    renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", fullMaturityRange())),
+		"generation": renderString(t, generationDetailPage(gen, nil, "csrf", fullMaturityRange(), workflowResolver{})),
+		"workflow":   renderString(t, detailPageNode(wf, "csrf", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{})),
 		"discover-workflow": renderString(t, workflowDiscoverPage(workflowDiscoverView{
 			Res: searchRes, Mode: fullMaturityRange(), CSRF: "csrf",
 			Sort: "Most Downloaded", Period: "Month",
-		}, "dark")),
-		"discover-apps": renderString(t, appsDiscoverPage(nil, "dark", fullMaturityRange(), "", "", "", "csrf")),
+		})),
+		"discover-apps": renderString(t, appsDiscoverPage(nil, fullMaturityRange(), "", "", "", "csrf")),
 
 		// /disks in ALL THREE of its shapes. It was missing from this inventory
 		// entirely while `trash` — the page it replaced, now reachable only through
@@ -99,9 +99,9 @@ func fullPages(t *testing.T) map[string]string {
 				{Label: "Library path", Path: "/l", Err: "boom"},
 			},
 			[]batchView{{Batch: store.QuarantineBatch{ID: 1, Reason: store.CandidateDuplicate}, Files: 2}},
-			false, "csrf", "dark", fullMaturityRange())),
-		"disks-gated": renderString(t, disksPage(nil, nil, true, "csrf", "dark", fullMaturityRange())),
-		"disks-empty": renderString(t, disksPage(nil, nil, false, "csrf", "dark", fullMaturityRange())),
+			false, "csrf", fullMaturityRange())),
+		"disks-gated": renderString(t, disksPage(nil, nil, true, "csrf", fullMaturityRange())),
+		"disks-empty": renderString(t, disksPage(nil, nil, false, "csrf", fullMaturityRange())),
 	}
 }
 
@@ -428,7 +428,7 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 		"workflow resources": renderString(t, detailPageNode(
 			&store.Workflow{ID: 1, Name: "w", Format: store.WorkflowFormatAPI, Graph: "{}",
 				Resources: []string{long}},
-			"csrf", "dark", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{})),
+			"csrf", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{})),
 		"run preflight missing list": renderString(t, missingList("Missing", []string{long})),
 		// The model header's download MENU prints civitai's file names, which are
 		// arbitrary and routinely unbreakable. TWO files, because the single-file
@@ -446,7 +446,7 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 		"batch page header": pageMain(renderString(t, batchGalleryPage(
 			[]store.Generation{{ID: 1, WorkflowID: &wfID, WorkflowName: long, PromptID: "p",
 				BatchID: "b", BatchIndex: 1, BatchTotal: 2}},
-			"csrf", "dark", fullMaturityRange()))),
+			"csrf", fullMaturityRange()))),
 		"structured graph listing": renderString(t, workflowGraphSection(
 			[]byte(`{"nodes":[{"id":1,"type":"`+long+`","inputs":[{"name":"`+long+`"}]}]}`),
 			store.WorkflowFormatAPI)),
@@ -547,7 +547,7 @@ func TestLongUntrustedStringsCanBreak(t *testing.T) {
 func TestFixedWidthControlsCanShrink(t *testing.T) {
 	pages := map[string]string{
 		"labeledInput":   renderString(t, labeledInput("model", "Model id", "12345", true)),
-		"outputs filter": renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", "dark", fullMaturityRange())),
+		"outputs filter": renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", fullMaturityRange())),
 	}
 	for name, html := range pages {
 		for _, chunk := range strings.Split(html, "<") {
@@ -758,7 +758,7 @@ func TestEmptyStatesGuideTheUser(t *testing.T) {
 		cta     string
 	}{
 		"trash": {
-			renderString(t, trashPage(nil, "csrf", "dark", fullMaturityRange())),
+			renderString(t, trashPage(nil, "csrf", fullMaturityRange())),
 			"Nothing in the trash", "/library?tab=files",
 		},
 		// /disks is where that quarantine table now LIVES (trashPage's own route
@@ -766,7 +766,7 @@ func TestEmptyStatesGuideTheUser(t *testing.T) {
 		// covered too — the empty state must survive on the surface a user can
 		// actually reach.
 		"disks quarantine": {
-			renderString(t, disksPage(nil, nil, false, "csrf", "dark", fullMaturityRange())),
+			renderString(t, disksPage(nil, nil, false, "csrf", fullMaturityRange())),
 			"Nothing in the trash", "/library?tab=files",
 		},
 		// The capacity half has its OWN empty state — an unconfigured install must
@@ -776,7 +776,7 @@ func TestEmptyStatesGuideTheUser(t *testing.T) {
 			"No model directories configured", "/library?tab=files",
 		},
 		"outputs": {
-			renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", "dark", fullMaturityRange())),
+			renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", fullMaturityRange())),
 			"No generations yet", "/library?tab=workflows",
 		},
 		"search no results": {

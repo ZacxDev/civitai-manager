@@ -132,7 +132,7 @@ func TestFaviconIsEmbeddedAndLinked(t *testing.T) {
 		}
 	}
 
-	head := renderString(t, page("X", "dark", "csrf", fullMaturityRange(), railData{}))
+	head := renderString(t, page("X", "csrf", fullMaturityRange(), railData{}))
 	if !strings.Contains(head, `<link rel="icon" type="image/svg+xml" href="`+faviconHref+`">`) {
 		t.Errorf("the document head must declare the favicon:\n%s", firstN(head, 1200))
 	}

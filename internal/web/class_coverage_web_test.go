@@ -359,17 +359,33 @@ func TestShellMeasureIsInTheBuiltCSS(t *testing.T) {
 	for _, want := range []string{
 		".cm-nav {", "position: sticky", "--cm-nav-h", "scroll-padding-top",
 		".cm-rail {", ".cm-rail-scrim", ".cm-shell-rail {", ".cm-shell-rail-collapsed {",
+		// The rail became a WIDGET CONTAINER (left-hand side). Presence checks only;
+		// the load-bearing behaviour — which SIDE the rail is on, and that the
+		// activity poller targets a stable container — is guarded by
+		// TestRailIsALeftHandColumn and
+		// TestRailActivityPollerTargetsAStableContainer in rail_widgets_web_test.go.
+		".cm-rail-widgets {", ".cm-rail-widget {", ".cm-rail-whead {", ".cm-rail-wbody {",
+		".cm-rail-acts {", ".cm-rail-act {", ".cm-rail-preview {", ".cm-rail-empty {",
 		// The nav's maturity range control is hand-written .cm-* CSS for the same
 		// reason the rail is: output.css is a purged static build, so a Tailwind
 		// utility added here would be unstyled until someone regenerates it.
 		//
-		// These three replaced a `.cm-rail[data-nsfw="blur"] .cm-out-thumb`
-		// assertion that guarded the rail's NSFW blur. That rule is GONE, not
-		// broken: the blur/show toggle was replaced by a maturity range that omits
-		// out-of-band content server-side, and the rail (the user's own outputs)
-		// is not filtered by it at all. Nothing else asserted the control's CSS,
-		// so the coverage moves here rather than disappearing.
-		".cm-maturity {", ".cm-maturity-select {", ".cm-maturity-legend {",
+		// These replaced a `.cm-rail[data-nsfw="blur"] .cm-out-thumb` assertion that
+		// guarded the rail's NSFW blur. That rule is GONE, not broken: the
+		// blur/show toggle was replaced by a maturity range that omits out-of-band
+		// content server-side, and the rail (the user's own outputs) is not
+		// filtered by it at all. Nothing else asserted the control's CSS, so the
+		// coverage moves here rather than disappearing.
+		//
+		// The control has since become an icon button + popover holding a two-sided
+		// segmented slider, so `.cm-maturity-select`/`-legend` (the two <select>s it
+		// used to be) are gone and the track classes take their place. As above,
+		// these are PRESENCE checks; the load-bearing behaviour — the popover's
+		// two-mode positioning, the no-`display`-in-the-base-rule trap, and the
+		// clipped-not-hidden radio — is guarded by
+		// TestMaturityPopoverPositionsAndKeepsItsRadiosReachable.
+		".cm-maturity {", ".cm-maturity-trigger {", ".cm-maturity-panel {",
+		".cm-mat-track {", ".cm-mat-stops {", ".cm-mat-dot {", ".cm-mat-radio {",
 		".cm-cardgrid {",
 		// The nav rework's hand-written CSS, here for the same purge-proofing
 		// reason as everything above it. These are PRESENCE checks only — the

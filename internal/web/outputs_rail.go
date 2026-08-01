@@ -72,6 +72,11 @@ type railData struct {
 	// outputsRailLimit). Empty means a fresh install / nothing captured yet — the
 	// rail is then omitted entirely rather than rendered as a dead empty column.
 	Groups []railGroup
+	// Activity is the coalesced "what has this app been doing" feed backing the
+	// second widget (see rail_activity.go). It is built from the SAME generation
+	// rows Groups came from plus one bounded RecentEvents read — no extra
+	// unbounded query is added to a surface that renders on every page.
+	Activity []activityEntry
 	// Collapsed is the persisted collapse state (desktop rail width; the mobile
 	// drawer's open/closed state is ephemeral and lives in the DOM).
 	Collapsed bool
@@ -140,8 +145,13 @@ func groupRailGenerations(gens []store.Generation, limit int) []railGroup {
 // range would silently blank the user's own outputs — content they made, on their
 // own disk, that no filter was ever asked to hide. The same reasoning covers the
 // /outputs gallery and the per-batch gallery.
+// It is now an OR over the rail's widgets, because the rail is a widget CONTAINER
+// rather than the outputs list it started as: a user with subscription activity
+// but no generations yet still gets a rail — and with it the only in-app link to
+// /outputs, closing the reachability gap navbar's comment records, since the
+// outputs widget renders its heading link even when it has no tiles to show.
 func (rd railData) visible() bool {
-	return len(rd.Groups) > 0
+	return len(rd.Groups) > 0 || len(rd.Activity) > 0
 }
 
 // railShellClass is the <body> class that reserves the rail's width on desktop.
@@ -166,30 +176,31 @@ func railOf(rd []railData) railData {
 	return railData{}
 }
 
-// outputsRail renders the global right-hand "Recent outputs" sidebar: the most
-// recent generations across ALL workflows, each linking to its detail page exactly
-// like a gallery tile. It returns nil when the rail is not visible.
+// outputsRail renders the global LEFT-HAND sidebar. It is a WIDGET CONTAINER, not
+// a single list: today it hosts the "Recent outputs" widget and the "Recent
+// activity" widget, and adding a third is a matter of appending one railWidget.
+// It returns nil when the rail is not visible.
 //
-// Layout is CSS-only (.cm-rail in app.css): a fixed right column on desktop that
-// collapses to a thin labelled edge, and an off-canvas drawer below 1024px opened
-// from the nav. It is a sibling of <main>, never inside it, so it cannot interfere
-// with any htmx poll target in the page body.
+// 🔴 IT IS ON THE LEFT NOW. The move is CSS-only (.cm-rail in app.css: `left: 0`,
+// `border-right`, and the drawer slides in from `translateX(-100%)`), plus the
+// matching `padding-left` on the shell class. Nothing in this file encodes a
+// side — do not reintroduce a side-specific name here.
+//
+// Layout is CSS-only: a fixed column on desktop that collapses to a thin labelled
+// edge, and an off-canvas drawer below 1024px opened from the nav. It is a sibling
+// of <main>, never inside it, so it cannot interfere with any htmx poll target in
+// the page body.
 func outputsRail(rd railData, csrf string) g.Node {
 	if !rd.visible() {
 		return nil
 	}
 
-	tiles := make([]g.Node, 0, len(rd.Groups))
-	for _, gr := range rd.Groups {
-		tiles = append(tiles, railTile(gr))
-	}
-
 	// Collapse / expand control: POSTs the NEXT state with the CSRF token and
-	// replies HX-Refresh, exactly like the theme and maturity controls.
+	// replies HX-Refresh, exactly like the maturity control.
 	//
 	// The two states get DIFFERENT controls, and that asymmetry is the whole point:
 	//
-	//   - EXPANDED → a small `›` button in the head. The rail body is full of tile
+	//   - EXPANDED → a small `‹` button in the head. The rail body is full of tile
 	//     links, so the collapse affordance must stay a small, targeted control —
 	//     making the body clickable would swallow every tile click.
 	//   - COLLAPSED → the ENTIRE 2.25rem edge is the control (railExpandControl).
@@ -209,9 +220,9 @@ func outputsRail(rd railData, csrf string) g.Node {
 				hx("post", "/settings/outputs-rail"),
 				hx("vals", fmt.Sprintf(`{"collapsed":%q,"csrf_token":%q}`, "true", csrf)),
 				hx("swap", "none"),
-				g.Attr("aria-label", "Collapse recent outputs"),
+				g.Attr("aria-label", "Collapse sidebar"),
 			},
-			h.Span(g.Attr("aria-hidden", "true"), g.Text("›")),
+			h.Span(g.Attr("aria-hidden", "true"), g.Text("‹")),
 		)
 	}
 
@@ -223,7 +234,7 @@ func outputsRail(rd railData, csrf string) g.Node {
 			h.ID("cm-rail-close"),
 			h.Class("cm-rail-close"),
 			g.Attr("onclick", "cmRailDrawer(false)"),
-			g.Attr("aria-label", "Close recent outputs"),
+			g.Attr("aria-label", "Close sidebar"),
 		},
 		h.Span(g.Attr("aria-hidden", "true"), g.Text("✕")),
 	)
@@ -233,29 +244,24 @@ func outputsRail(rd railData, csrf string) g.Node {
 		h.Class("cm-rail"),
 		dataAttr("collapsed", strconv.FormatBool(rd.Collapsed)),
 		dataAttr("open", "false"),
-		g.Attr("aria-label", "Recent outputs"),
+		g.Attr("aria-label", "Sidebar"),
 		h.Div(h.Class("cm-rail-head"),
-			// 🔴 THE HEADING IS A LINK TO /outputs, AND THAT IS LOAD-BEARING.
-			// "Outputs" left the top nav (see navbar), so the rail is now the app's
-			// primary entry point to the gallery. It used to be an inert <span> with
-			// the only link buried in the rail's FOOT, below twelve tiles — reachable,
-			// but not where a user looks. Making the title itself the link puts the
-			// affordance at the top of the column that is already labelled with the
-			// destination's name. The foot link stays: it is the "I have scrolled to
-			// the end of the tiles" case, and duplicating a destination costs nothing.
-			h.A(h.Href("/outputs"), h.Class("cm-rail-title cm-rail-title-link"),
-				g.Text("Recent outputs"),
-				h.Span(h.Class("cm-rail-title-arrow"), g.Attr("aria-hidden", "true"), g.Text("→")),
-			),
+			h.Span(h.Class("cm-rail-shelltitle"), g.Text("Sidebar")),
 			// Only the EXPANDED head carries a control; the collapsed edge's control
 			// is the full-edge overlay emitted last (see railExpandControl).
 			g.If(!rd.Collapsed, collapse),
 			closeBtn,
 		),
-		h.Div(h.Class("cm-rail-body"), g.Group(tiles)),
-		h.Div(h.Class("cm-rail-foot"),
-			h.A(h.Href("/outputs"), h.Class("cm-rail-all"), g.Text("View all outputs →")),
+		// THE WIDGET STACK. Everything below is per-widget; the container itself owns
+		// only the chrome above and the collapsed edge below.
+		h.Div(h.Class("cm-rail-widgets"),
+			railOutputsWidget(rd),
+			railActivityWidget(rd.Activity),
 		),
+		// The COLLAPSED edge's single most-recent preview. It sits outside the widget
+		// stack because the stack is hidden wholesale when collapsed — see the
+		// data-collapsed rules in app.css.
+		g.If(rd.Collapsed, railCollapsedPreview(rd)),
 		// LAST in DOM order, deliberately: it is an absolutely-positioned overlay
 		// covering the whole collapsed edge, and following its siblings is what
 		// paints it above them WITHOUT a z-index — the same DOM-order trick
@@ -272,6 +278,85 @@ func outputsRail(rd railData, csrf string) g.Node {
 		aside,
 		railDrawerScript(),
 	})
+}
+
+// railWidget is ONE widget in the rail's stack: a head, then a body. It exists so
+// every widget shares one shape — a third widget is `railWidget(head, body)` and
+// nothing else. The head is passed whole rather than as a title string because
+// the outputs widget's head is a LINK and the activity widget's is not.
+func railWidget(head g.Node, body ...g.Node) g.Node {
+	return h.Section(
+		h.Class("cm-rail-widget"),
+		head,
+		h.Div(h.Class("cm-rail-wbody"), g.Group(body)),
+	)
+}
+
+// railOutputsWidget is the "Recent outputs" widget — what the whole rail used to
+// be, now one card in the stack.
+//
+// 🔴 THE HEADING IS A LINK TO /outputs, AND THAT IS LOAD-BEARING. "Outputs" left
+// the top nav (see navbar), so this is the app's primary entry point to the
+// gallery. It used to be an inert <span> with the only link buried in the foot,
+// below twelve tiles — reachable, but not where a user looks. The foot link stays:
+// it is the "I have scrolled to the end of the tiles" case, and duplicating a
+// destination costs nothing.
+//
+// The heading link renders even when there are NO tiles, which is what lets the
+// rail exist for a user who has activity but has never run a workflow — that user
+// previously had no in-app route to /outputs at all.
+func railOutputsWidget(rd railData) g.Node {
+	tiles := make([]g.Node, 0, len(rd.Groups))
+	for _, gr := range rd.Groups {
+		tiles = append(tiles, railTile(gr))
+	}
+	var body g.Node
+	if len(tiles) == 0 {
+		body = h.P(h.Class("cm-rail-empty"), g.Text("No generations yet."))
+	} else {
+		body = h.Div(h.Class("cm-rail-body"), g.Group(tiles))
+	}
+	return railWidget(
+		h.Div(h.Class("cm-rail-whead"),
+			h.A(h.Href("/outputs"), h.Class("cm-rail-title cm-rail-title-link"),
+				g.Text("Recent outputs"),
+				h.Span(h.Class("cm-rail-title-arrow"), g.Attr("aria-hidden", "true"), g.Text("→")),
+			),
+		),
+		body,
+		h.Div(h.Class("cm-rail-foot"),
+			h.A(h.Href("/outputs"), h.Class("cm-rail-all"), g.Text("View all outputs →")),
+		),
+	)
+}
+
+// railCollapsedPreview is the collapsed edge's SINGLE most-recent output.
+//
+// Exactly one, deliberately: the collapsed edge is 2.25rem wide, so a grid of
+// tiles there would be a column of unreadable slivers. One thumbnail answers the
+// only question the collapsed state can usefully answer — "did my last run
+// produce something?" — and links straight to it.
+//
+// It renders NOTHING when there are no generations: an empty placeholder box on a
+// 36px strip is noise, and the expand control already occupies that edge.
+//
+// aria-hidden, and that is deliberate: this element sits UNDERNEATH the full-edge
+// railExpandControl overlay, which owns the click and carries the edge's
+// accessible name. Exposing a second, unreachable link here would put a control in
+// the accessibility tree that a pointer user can never activate.
+func railCollapsedPreview(rd railData) g.Node {
+	if len(rd.Groups) == 0 {
+		return nil
+	}
+	gr := rd.Groups[0]
+	return h.Div(
+		h.Class("cm-rail-preview"),
+		g.Attr("aria-hidden", "true"),
+		// generationThumb is the SHARED thumbnail (outputs_pages.go): a video renders
+		// as a lazy data-src <video> plus the ▶ badge, never a broken <img>, and
+		// never an eager src — `preload="metadata"` does NOT bound the fetch.
+		generationThumb(gr.Rep, generationLabel(gr.Rep)),
+	)
 }
 
 // railExpandControl is the COLLAPSED desktop rail's edge: one full-height

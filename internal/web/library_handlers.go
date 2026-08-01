@@ -402,7 +402,7 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	s.render(w, http.StatusOK, libraryPage(s.annotateLibrary(buildLibraryView(files)), s.csrf, s.extraPathsAllowed(), selected, s.currentTheme(), tab, discoverInitial, s.matchRemoteEnabled(), scanInitial, s.maturity(), lw, s.rail(r.Context())))
+	s.render(w, http.StatusOK, libraryPage(s.annotateLibrary(buildLibraryView(files)), s.csrf, s.extraPathsAllowed(), selected, tab, discoverInitial, s.matchRemoteEnabled(), scanInitial, s.maturity(), lw, s.rail(r.Context())))
 }
 
 func (s *Server) handleLibraryScan(w http.ResponseWriter, r *http.Request) {
@@ -622,7 +622,7 @@ func (s *Server) handleTrash(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, "load trash", err)
 		return
 	}
-	s.render(w, http.StatusOK, trashPage(batches, s.csrf, s.currentTheme(), s.maturity(), s.rail(r.Context())))
+	s.render(w, http.StatusOK, trashPage(batches, s.csrf, s.maturity(), s.rail(r.Context())))
 }
 
 func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {

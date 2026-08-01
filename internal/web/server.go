@@ -603,7 +603,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /creators/{username}", s.handleCreator)
 
 	mux.HandleFunc("POST /settings/maturity", s.handleSetMaturity)
-	mux.HandleFunc("POST /settings/theme", s.handleSetTheme)
+	// POST /settings/theme is deliberately ABSENT — the light path left the UI.
+	// See shellTheme in layout.go; it was removed rather than kept as a no-op.
 	mux.HandleFunc("POST /settings/outputs-rail", s.handleSetOutputsRail)
 
 	mux.HandleFunc("POST /subscribe", s.handleSubscribe)
@@ -616,6 +617,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /subscriptions/{id}/delete", s.handleDelete)
 
 	mux.HandleFunc("GET /fragments/events", s.handleEventsFragment)
+	mux.HandleFunc("GET /fragments/rail-activity", s.handleRailActivityFragment)
 	mux.HandleFunc("GET /fragments/queue", s.handleQueueFragment)
 
 	mux.HandleFunc("GET /library", s.handleLibrary)
