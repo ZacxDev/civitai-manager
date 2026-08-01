@@ -44,7 +44,9 @@ func TestRailRendersOnEveryPage(t *testing.T) {
 	genID, _ := seedGen(t, srv, root, &wf, "alpha", []byte("X"))
 
 	paths := []string{
-		"/",
+		// "/" is a 302 into /search (handleHome), so the two pages behind the front
+		// door are asserted directly — a redirect has no shell to check.
+		librarySubscriptionsHref,
 		"/search?q=x",
 		"/library",
 		// /trash is now a 302 into /disks (handleTrashRedirect), so the rail is
@@ -89,7 +91,7 @@ func TestRailDrawerHasModalSemantics(t *testing.T) {
 	srv, root := newOutputsServer(t, "127.0.0.1:8787")
 	wf := seedWF(t, srv, "wf")
 	seedGen(t, srv, root, &wf, "wf", []byte("X"))
-	shell := pageShell(get(t, srv, "/").Body.String())
+	shell := pageShell(get(t, srv, librarySubscriptionsHref).Body.String())
 
 	for _, want := range []string{
 		`aria-controls="cm-rail"`,     // the opener names its target
@@ -129,7 +131,7 @@ func TestRailEmptyStateRendersNothing(t *testing.T) {
 	srv, _ := newOutputsServer(t, "127.0.0.1:8787")
 	seedWF(t, srv, "wf") // a workflow but no generations — a fresh install
 
-	for _, p := range []string{"/", "/outputs", "/library"} {
+	for _, p := range []string{librarySubscriptionsHref, "/outputs", "/library"} {
 		body := get(t, srv, p).Body.String()
 		for _, bad := range []string{
 			`id="cm-rail"`, `id="cm-rail-scrim"`, `id="cm-rail-open"`,
@@ -204,7 +206,7 @@ func TestRailIsBoundedToLimit(t *testing.T) {
 	if len(rd.Groups) != outputsRailLimit {
 		t.Fatalf("rail loaded %d entries, want the bounded %d", len(rd.Groups), outputsRailLimit)
 	}
-	shell := pageShell(get(t, srv, "/").Body.String())
+	shell := pageShell(get(t, srv, librarySubscriptionsHref).Body.String())
 	if n := strings.Count(shell, `class="cm-rail-item"`); n != outputsRailLimit {
 		t.Errorf("rail rendered %d tiles, want at most %d", n, outputsRailLimit)
 	}
@@ -267,7 +269,7 @@ func TestRailCollapsesABatchToOneEntry(t *testing.T) {
 		t.Errorf("solo entry collapsed %d rows, want 1", rd.Groups[1].Count)
 	}
 
-	shell := pageShell(get(t, srv, "/").Body.String())
+	shell := pageShell(get(t, srv, librarySubscriptionsHref).Body.String())
 	if n := strings.Count(shell, `class="cm-rail-item"`); n != 2 {
 		t.Fatalf("rail rendered %d tiles, want 2 — a 3-item batch must not take 3 slots", n)
 	}
@@ -322,7 +324,7 @@ func TestRailOverFetchesSoBatchesCannotUnderFillIt(t *testing.T) {
 			t.Errorf("entry %d collapsed %d rows, want 2", i, gr.Count)
 		}
 	}
-	shell := pageShell(get(t, srv, "/").Body.String())
+	shell := pageShell(get(t, srv, librarySubscriptionsHref).Body.String())
 	if n := strings.Count(shell, `class="cm-rail-item"`); n != outputsRailLimit {
 		t.Errorf("rail rendered %d tiles, want a full %d", n, outputsRailLimit)
 	}
@@ -363,7 +365,7 @@ func TestRailStaysFullAfterOneMaxSizeBatch(t *testing.T) {
 			"contradicts the batch page it links to", got, maxBatchCount)
 	}
 
-	shell := pageShell(get(t, srv, "/").Body.String())
+	shell := pageShell(get(t, srv, librarySubscriptionsHref).Body.String())
 	if n := strings.Count(shell, `class="cm-rail-item"`); n != outputsRailLimit {
 		t.Errorf("rail rendered %d tiles, want a full %d", n, outputsRailLimit)
 	}
@@ -387,7 +389,7 @@ func TestRailGroupingPreservesNewestFirstOrder(t *testing.T) {
 	seedBatch(t, srv, root, "midbatch", "preset", 3, 3)
 	newID, _ := seedGen(t, srv, root, &wf, "newer", []byte("N"))
 
-	shell := pageShell(get(t, srv, "/").Body.String())
+	shell := pageShell(get(t, srv, librarySubscriptionsHref).Body.String())
 	got := railItemHrefs(t, shell)
 	want := []string{
 		"/outputs/" + strconv.FormatInt(newID, 10),
@@ -417,7 +419,7 @@ func TestRailSingleItemBatchRendersAsOrdinaryTile(t *testing.T) {
 		t.Fatalf("rail groups = %+v, want one entry collapsing one row", rd.Groups)
 	}
 
-	shell := pageShell(get(t, srv, "/").Body.String())
+	shell := pageShell(get(t, srv, librarySubscriptionsHref).Body.String())
 	if !strings.Contains(shell, `href="/outputs/`+strconv.FormatInt(ids[0], 10)+`"`) {
 		t.Error("a one-run batch must render as an ordinary tile linking to the run")
 	}
@@ -473,7 +475,7 @@ func TestRailCollapseTogglePersistsAndRerenders(t *testing.T) {
 	seedGen(t, srv, root, &wf, "wf", []byte("X"))
 
 	// Default: expanded.
-	shell := pageShell(get(t, srv, "/").Body.String())
+	shell := pageShell(get(t, srv, librarySubscriptionsHref).Body.String())
 	if !strings.Contains(shell, `data-collapsed="false"`) ||
 		!strings.Contains(shell, "cm-shell-rail") ||
 		strings.Contains(shell, "cm-shell-rail-collapsed") {
@@ -499,7 +501,7 @@ func TestRailCollapseTogglePersistsAndRerenders(t *testing.T) {
 	}
 
 	// Re-render: collapsed markup + the narrow shell reservation.
-	shell = pageShell(get(t, srv, "/").Body.String())
+	shell = pageShell(get(t, srv, librarySubscriptionsHref).Body.String())
 	if !strings.Contains(shell, `data-collapsed="true"`) {
 		t.Error("re-rendered rail missing data-collapsed=true")
 	}
@@ -519,7 +521,7 @@ func TestRailCollapseTogglePersistsAndRerenders(t *testing.T) {
 	if rec := post(t, srv, "/settings/outputs-rail", url.Values{"collapsed": {"false"}}, true); rec.Code != http.StatusNoContent {
 		t.Fatalf("expand POST status = %d, want 204", rec.Code)
 	}
-	shell = pageShell(get(t, srv, "/").Body.String())
+	shell = pageShell(get(t, srv, librarySubscriptionsHref).Body.String())
 	if !strings.Contains(shell, `data-collapsed="false"`) || strings.Contains(shell, "cm-shell-rail-collapsed") {
 		t.Error("rail did not return to the expanded state")
 	}
@@ -571,7 +573,7 @@ func TestWorkflowDetailStripAndGlobalRailCoexist(t *testing.T) {
 
 func TestShellIsStickyAndWide(t *testing.T) {
 	srv, _ := newOutputsServer(t, "127.0.0.1:8787")
-	body := get(t, srv, "/").Body.String()
+	body := get(t, srv, librarySubscriptionsHref).Body.String()
 
 	if strings.Contains(body, "max-w-6xl") {
 		t.Error("the shell must no longer use the 1152px measure")

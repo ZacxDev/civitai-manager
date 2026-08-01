@@ -34,6 +34,30 @@ func setNSFWParam(q url.Values, nsfw bool) {
 	}
 }
 
+// handleHome serves "/", the app's front door, by REDIRECTING to /search.
+//
+// WHY "/" IS SEARCH AT ALL. The brand wordmark is the home link (see navbar),
+// so whatever "/" resolves to is what the logo means. Finding a model is the
+// thing this app is opened to do; the subscriptions/queue page that used to sit
+// here is a management surface, and it now lives at /subscriptions with a real
+// nav entry (libraryMenu) instead of being reachable only through the logo.
+//
+// WHY A REDIRECT AND NOT RENDERING THE SEARCH PAGE IN PLACE. /search already
+// OWNS its state: the query, the sort/period selects and the pagination links
+// are all built as /search URLs (searchPage / discoverHref). Rendering the same
+// page at "/" would create a SECOND url for one surface that silently converts
+// itself to /search on the first interaction — the address bar would change
+// under the user for no reason they could see, and "am I on the home page or
+// the search page" would have two answers. One canonical url has none of that,
+// and the cost is a single local round trip.
+//
+// 302, NOT 301: a permanent redirect is cached by the browser indefinitely, so
+// changing our mind later would strand every user who ever visited. Same
+// reasoning as handleTrashRedirect.
+func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/search", http.StatusFound)
+}
+
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	subs, err := s.store.ListSubscriptions()
 	if err != nil {
@@ -949,21 +973,62 @@ func (s *Server) workflowPostFlag(r *http.Request, id int) bool {
 	return r.FormValue(workflowParamName) == "1" || s.modelIsWorkflowPost(id)
 }
 
+// subscribeFactsTimeout bounds the model-detail resolution behind the subscribe
+// options panel. cachedModelDetail applies its own 20s ceiling, which is right
+// for a page but far too long for a disclosure panel that opens on a click — a
+// derived context that expires first wins, so this is the effective bound.
+//
+// On expiry the panel still renders; it just says the size is unknown instead of
+// inventing one. Slow is allowed to degrade the disclosure, never to block the
+// control.
+const subscribeFactsTimeout = 6 * time.Second
+
 // handleModelSubscribeOptions (GET) renders the subscribe options panel (state 2
-// of the shared control): the auto-download vs notify-only choice + Confirm/Cancel.
-// The heading resolves the model name from the local model_cache only (zero
-// civitai calls), falling back to "this model" on a cache miss. Read-only; no CSRF.
+// of the shared control): the auto-download vs notify-only choice, the disclosure
+// of what that choice would actually download, and Confirm/Cancel. Read-only in
+// the app's own state; no CSRF.
+//
+// ⚠ IT IS NO LONGER CACHE-ONLY, and that is a deliberate trade. It used to read
+// only the model_cache name column so the panel cost zero civitai calls. But the
+// panel's whole job now is to state what subscribing will fetch, and the surface
+// where a user most needs that — a SEARCH CARD — is exactly the surface with a
+// COLD cache: search results never write model_cache. A cache-only panel would
+// therefore answer "size unknown" precisely when the model is unfamiliar.
+//
+// So it resolves cache-first through cachedModelDetail (one GET /api/v1/models/
+// {id} on a miss or a stale entry, bounded by subscribeFactsTimeout) — the same
+// posture handleModelTitle and handleModelVersionStatus already take on this
+// page, against the same endpoint, so this adds no capability the server did not
+// already have.
+//
+// The warm cache is a second, real win: modelIsWorkflowPost answers from the
+// cache and FAILS OPEN on a miss, so before this a workflow post reached from a
+// search card was notify-only only because the client sent the ?workflow=1 hint.
+// Now the server-side check has something to read.
 func (s *Server) handleModelSubscribeOptions(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil || id <= 0 {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	name := "this model"
-	if ent, _ := s.store.GetModelCache(id); ent != nil && ent.Name != "" {
-		name = ent.Name
+	ctx, cancel := context.WithTimeout(r.Context(), subscribeFactsTimeout)
+	defer cancel()
+	m, raw, mErr := s.cachedModelDetail(ctx, id)
+	if mErr != nil {
+		// Not fatal: the panel is still the control the user clicked for. It renders
+		// with the honest unknown rather than failing the click.
+		s.log.Warn("subscribe options: model detail", "model", id, "err", mErr)
 	}
-	s.render(w, http.StatusOK, subscribeOptionsPanel(id, name, s.csrf, s.workflowPostFlag(r, id)))
+	name := "this model"
+	if m != nil && m.Name != "" {
+		name = m.Name
+	}
+	// The request hint can only ever NARROW to notify-only (see workflowPostFlag);
+	// the server-side half is re-derived from the detail just resolved rather than
+	// from a second cache read.
+	workflow := r.FormValue(workflowParamName) == "1" || (m != nil && civitai.IsWorkflowPost(m.Type))
+	s.render(w, http.StatusOK, subscribeOptionsPanel(id, name, s.csrf, workflow,
+		modelSubscribeDownload(m, raw, s.cfg.MaxFileSizeBytes)))
 }
 
 // handleModelSubscribeControl (GET) re-renders the shared subscribe control in its
@@ -1029,8 +1094,22 @@ func (s *Server) handleModelSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Re-render from the persisted state so the control reflects reality
-	// (subscribed on success / already-subscribed).
-	s.render(w, http.StatusOK, subscribeControl(id, s.modelSubscription(id), s.csrf, workflow))
+	// (subscribed on success / already-subscribed), plus the follow-up: the model
+	// is committed to, so "what do I run it in?" is the next question.
+	//
+	// The detail read is a CACHE HIT in the normal flow — the options panel the
+	// user just Confirmed from resolved and stored it one request ago. A miss
+	// costs one bounded fetch, and a failure costs only the follow-up link:
+	// subscribeWorkflowLink returns nil for a nil model, so the subscribe itself
+	// (already persisted above) is never affected by it.
+	fctx, fcancel := context.WithTimeout(r.Context(), subscribeFactsTimeout)
+	defer fcancel()
+	m, _, ferr := s.cachedModelDetail(fctx, id)
+	if ferr != nil {
+		s.log.Warn("subscribe follow-up: model detail", "model", id, "err", ferr)
+	}
+	s.render(w, http.StatusOK, subscribeControlWithFollowup(id, s.modelSubscription(id), s.csrf,
+		workflow, subscribeWorkflowLink(id, m)))
 }
 
 // handleModelUnsubscribe removes the model subscription and returns the collapsed

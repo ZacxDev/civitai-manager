@@ -306,49 +306,93 @@ func TestPopularDefaultAndCache(t *testing.T) {
 
 // --- D. Dashboard structure + subscribe search ---
 
-// TestHomePageIsCalledOverview pins the rename of "/" and, more importantly, the
-// ABSENCE of the old word.
+// TestHomeIsTheSearchPage pins the front door: GET "/" is the SEARCH experience.
 //
-// WHY THE RENAME. "Dashboard" was a nav entry pointing at the same place as the
-// brand wordmark beside it. The nav rework deleted the entry (see navbar's
-// comment), which left the word surviving only as this page's <title> and <h1> —
-// vocabulary naming a control the user can no longer see.
+// The brand wordmark links to "/" (brandLink), so whatever "/" resolves to is
+// what the logo means. This asserts the redirect AND that its target actually
+// serves a page — a redirect into a 404 would satisfy a Location check alone.
 //
-// 🔴 THE ABSENCE HALF IS WHAT MAKES THIS A GUARD. Asserting only that "Overview"
-// appears would stay green if a later edit put "Dashboard" back in the tab title,
-// or added a "Dashboard" heading to one of the cards — both of which reintroduce
-// exactly the split vocabulary this removes. It scans the WHOLE rendered page,
-// not the heading, and it deliberately does NOT ban the substring "dashboard":
-// the Go identifiers (handleDashboard, dashboardPage) keep that name and are not
-// user-visible, so banning it would be a rename-everything mandate this change
-// never agreed to.
-func TestHomePageIsCalledOverview(t *testing.T) {
+// 🔴 THE STATUS CODE IS PINNED, not just "some 3xx". A 301 is cached by the
+// browser indefinitely: shipping one and changing our mind later would strand
+// every user who had ever visited, with no server-side fix available. Same
+// reasoning that keeps handleTrashRedirect on 302.
+func TestHomeIsTheSearchPage(t *testing.T) {
 	srv := newTestServer(t)
+
 	rec := get(t, srv, "/")
+	if rec.Code != http.StatusFound {
+		t.Fatalf("GET / = %d, want 302 Found (301 would be cached indefinitely — see handleHome)", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/search" {
+		t.Fatalf("GET / Location = %q, want /search", loc)
+	}
+	// The destination must really be the search page, not merely routed.
+	dest := get(t, srv, "/search")
+	if dest.Code != http.StatusOK {
+		t.Fatalf("the redirect target /search returned %d", dest.Code)
+	}
+	if body := dest.Body.String(); !strings.Contains(body, `name="q"`) {
+		t.Errorf("/search does not render a query box — the front door leads somewhere that is not search:\n%s",
+			firstN(body, 800))
+	}
+
+	// 🔴 THE ABSENCE HALF. "/" must not ALSO render the subscriptions page: two
+	// urls for one surface is the state this replaced, and a handler that renders
+	// the old page while emitting a Location header would pass every check above.
+	if strings.Contains(rec.Body.String(), ">"+subscriptionsPageTitle+"</h1>") {
+		t.Errorf("GET / still renders the subscriptions page body:\n%s", firstN(rec.Body.String(), 800))
+	}
+}
+
+// TestSubscriptionsPageTitle pins the page that used to be "/" — its url, its
+// name, and the ABSENCE of the two names it has already outgrown.
+//
+// WHY THE NAMES KEEP CHANGING. "Dashboard" was a nav entry pointing at the same
+// place as the brand wordmark beside it; the nav rework deleted the entry, which
+// left the word naming a control the user could no longer see. "Overview"
+// replaced it and described the page while it WAS the landing page. It is not the
+// landing page any more (handleHome), so it is now named for its subject.
+//
+// 🔴 THE ABSENCE HALF IS WHAT MAKES THIS A GUARD. Asserting only that
+// "Subscriptions" appears would stay green if a later edit put "Dashboard" back
+// in the tab title or left an "Overview" heading on a card — both of which
+// reintroduce exactly the split vocabulary this removes. It scans the WHOLE
+// rendered page, and it deliberately does NOT ban the substring "dashboard": the
+// Go identifiers (handleDashboard, dashboardPage) keep that name and are not
+// user-visible.
+func TestSubscriptionsPageTitle(t *testing.T) {
+	srv := newTestServer(t)
+	rec := get(t, srv, librarySubscriptionsHref)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET / = %d, want 200", rec.Code)
+		t.Fatalf("GET %s = %d, want 200", librarySubscriptionsHref, rec.Code)
 	}
 	body := rec.Body.String()
 
-	// The browser tab and the page heading, both from homePageTitle.
-	if !strings.Contains(body, "<title>"+homePageTitle+" · civitai-manager</title>") {
-		t.Errorf("the home page's <title> must read %q:\n%s", homePageTitle, firstN(body, 600))
+	// The browser tab and the page heading, both from subscriptionsPageTitle.
+	if !strings.Contains(body, "<title>"+subscriptionsPageTitle+" · civitai-manager</title>") {
+		t.Errorf("the page's <title> must read %q:\n%s", subscriptionsPageTitle, firstN(body, 600))
 	}
-	if !strings.Contains(body, ">"+homePageTitle+"</h1>") {
-		t.Errorf("the home page's <h1> must read %q:\n%s", homePageTitle, firstN(body, 3000))
+	if !strings.Contains(body, ">"+subscriptionsPageTitle+"</h1>") {
+		t.Errorf("the page's <h1> must read %q:\n%s", subscriptionsPageTitle, firstN(body, 3000))
 	}
 	// FIXTURE REACH: exactly one <h1>, which is also what
 	// TestEveryFullPageHasExactlyOneH1 requires — deleting the heading is not an
 	// available way to satisfy the absence check below.
 	if n := strings.Count(body, "<h1 "); n != 1 {
-		t.Errorf("the home page must have exactly one <h1>, got %d", n)
+		t.Errorf("the page must have exactly one <h1>, got %d", n)
+	}
+	// FIXTURE REACH: it really is the old dashboard, not some stub that happens to
+	// carry the right title.
+	for _, want := range []string{"Add a subscription", "Download queue", "Activity"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the fixture is not the subscriptions page (missing %q) — the checks above prove nothing", want)
+		}
 	}
 
-	// GONE: no user-visible occurrence of the old word anywhere on the page.
-	for _, gone := range []string{">Dashboard<", ">Dashboard</h1>", "<title>Dashboard"} {
+	// GONE: no user-visible occurrence of either retired name anywhere on the page.
+	for _, gone := range []string{">Dashboard<", ">Dashboard</h1>", "<title>Dashboard", ">Overview<", "<title>Overview"} {
 		if strings.Contains(body, gone) {
-			t.Errorf("the home page still shows the removed word via %q — the nav entry it named "+
-				"no longer exists:\n%s", gone, firstN(body, 3000))
+			t.Errorf("the page still shows the retired name via %q:\n%s", gone, firstN(body, 3000))
 		}
 	}
 }

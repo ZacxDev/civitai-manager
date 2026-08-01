@@ -79,10 +79,22 @@ func TestSubscribeOptionsPanel(t *testing.T) {
 	}
 }
 
-// TestSubscribeOptionsPanelUnknownName falls back to "this model" when there is
-// no cached name (zero civitai calls).
+// TestSubscribeOptionsPanelUnknownName falls back to "this model" when the model
+// cannot be resolved AT ALL — no cache entry and a reader that fails.
+//
+// The fixture needs the failing reader now that the panel is cache-FIRST rather
+// than cache-ONLY (see handleModelSubscribeOptions): with a cache miss alone the
+// handler simply fetches the name, so an empty store no longer reaches the
+// fallback this test is about.
 func TestSubscribeOptionsPanelUnknownName(t *testing.T) {
-	srv := newSubscribeServer(t)
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	srv := NewServer(st, errModelReader{}, storeSubscriber{st: st},
+		Config{BaseURL: "https://civitai.com", DefaultPollInterval: time.Hour, Addr: "127.0.0.1:8787"}, nil)
+
 	rec := get(t, srv, "/models/99/subscribe-options")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("options = %d", rec.Code)

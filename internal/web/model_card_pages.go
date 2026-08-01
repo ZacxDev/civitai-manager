@@ -547,8 +547,23 @@ func subscribeControlID(modelID int) string {
 // deduped or quarantined). Offering an Auto-download choice whose only possible
 // outcome is a skip event is exactly the affordance that shipped the bug.
 func subscribeControl(modelID int, sub *store.Subscription, csrf string, workflow bool) g.Node {
+	return subscribeControlWithFollowup(modelID, sub, csrf, workflow, nil)
+}
+
+// subscribeControlWithFollowup is subscribeControl plus an optional follow-up
+// node rendered under the subscribed feedback (subscribe_followup.go).
+//
+// ONLY THE SUBSCRIBE POST PASSES ONE, and that is the point: the follow-up is a
+// "you just did this, here is the natural next step" nudge, so it belongs to the
+// moment of subscribing rather than to the control's steady state. Every
+// page-load render — the model page, a search card, a suggestion card, the
+// Cancel round trip — goes through subscribeControl and passes nil, which keeps
+// an already-subscribed card exactly as compact as it is today. Nothing is lost
+// by that: the model page the link points at carries the same section
+// permanently.
+func subscribeControlWithFollowup(modelID int, sub *store.Subscription, csrf string, workflow bool, followup g.Node) g.Node {
 	if sub != nil {
-		return subscribeControlSubscribed(modelID, sub, csrf, "", workflow)
+		return subscribeControlSubscribed(modelID, sub, csrf, "", workflow, followup)
 	}
 	return subscribeControlCollapsed(modelID, csrf, "", workflow)
 }
@@ -699,7 +714,16 @@ func subscribeInfoPopover(workflow bool) g.Node {
 // will happen and posts a hidden mode=notify_only. Removing the choice (rather
 // than pre-selecting Notify only) is deliberate: a disabled-looking radio still
 // reads as "this is a mode you could pick".
-func subscribeOptionsPanel(modelID int, name, csrf string, workflow bool) g.Node {
+//
+// `dl` is the download disclosure — what an auto-download subscription would
+// really fetch and how big it is (subscribe_disclosure.go). It is rendered ONLY
+// beside the mode chooser, i.e. never for a workflow post: that arm has no
+// Auto-download option to describe, and its own copy already says nothing is
+// downloaded. Passing a populated `dl` for a workflow post cannot leak a size
+// here — modelSubscribeDownload refuses to produce one — but the two guards are
+// deliberately independent, because this is the exact place a plausible,
+// specific, wrong number would appear.
+func subscribeOptionsPanel(modelID int, name, csrf string, workflow bool, dl subscribeDownload) g.Node {
 	id := subscribeControlID(modelID)
 	radio := func(value, label string, checked bool) g.Node {
 		attrs := []g.Node{
@@ -723,6 +747,7 @@ func subscribeOptionsPanel(modelID int, name, csrf string, workflow bool) g.Node
 			radio("auto_download", "Auto-download", true),
 			radio("notify_only", "Notify only", false),
 		),
+		subscribeDownloadDisclosure(dl),
 	}
 	if workflow {
 		heading = "Notify me about " + name + "?"
@@ -763,7 +788,12 @@ func subscribeOptionsPanel(modelID int, name, csrf string, workflow bool) g.Node
 // The workflow flag rides along in the Unsubscribe hx-vals so the collapsed
 // control the user lands back on keeps its "Notify me" shape instead of
 // reverting to a plain "Subscribe" for one render.
-func subscribeControlSubscribed(modelID int, sub *store.Subscription, csrf, note string, workflow bool) g.Node {
+// followup, when non-nil, is the post-subscribe "now find workflows for this
+// model" link. It sits on its OWN ROW under the status line rather than beside
+// Unsubscribe: the row above is state (subscribed, and how) plus the one control
+// that undoes it, and a third item there reads as a third thing that might
+// change something.
+func subscribeControlSubscribed(modelID int, sub *store.Subscription, csrf, note string, workflow bool, followup g.Node) g.Node {
 	id := subscribeControlID(modelID)
 	mode := "auto-download"
 	if sub != nil && sub.NotifyOnly {
@@ -793,6 +823,7 @@ func subscribeControlSubscribed(modelID int, sub *store.Subscription, csrf, note
 			unsub,
 		),
 		subscribeNote(note),
+		followup,
 	)
 }
 

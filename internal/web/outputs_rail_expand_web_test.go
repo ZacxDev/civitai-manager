@@ -39,7 +39,7 @@ func collapseRailState(t *testing.T, srv *Server) string {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("collapse POST status = %d, want 204", rec.Code)
 	}
-	return pageShell(get(t, srv, "/").Body.String())
+	return pageShell(get(t, srv, librarySubscriptionsHref).Body.String())
 }
 
 // TestCollapsedRailEdgeIsOneOperableControl pins the collapsed edge: a single
@@ -119,7 +119,7 @@ func TestExpandedRailBodyIsNotWrappedInAToggle(t *testing.T) {
 	wf := seedWF(t, srv, "wf")
 	seedGen(t, srv, root, &wf, "wf", []byte("X"))
 
-	shell := pageShell(get(t, srv, "/").Body.String())
+	shell := pageShell(get(t, srv, librarySubscriptionsHref).Body.String())
 	if !strings.Contains(shell, `data-collapsed="false"`) {
 		t.Fatalf("precondition: the rail should render expanded; shell = %q", firstN(shell, 400))
 	}
