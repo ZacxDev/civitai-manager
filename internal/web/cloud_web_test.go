@@ -324,11 +324,23 @@ func TestCloudWhatifInsufficientBuzz(t *testing.T) {
 	id := seedWorkflow(t, srv, store.WorkflowFormatAPI, `{"1":{"class_type":"X","inputs":{}}}`)
 	rec := post(t, srv, "/workflows/"+id+"/cloud/whatif", url.Values{"resources": {"u"}}, true)
 	body := rec.Body.String()
-	if !strings.Contains(body, "Insufficient Buzz") {
+	if !strings.Contains(body, "Not enough Buzz") {
 		t.Errorf("missing insufficient-Buzz state:\n%s", body)
 	}
 	if strings.Contains(body, "Run for real") {
 		t.Errorf("Run-for-real must be disabled when Buzz is insufficient:\n%s", body)
+	}
+	// 🔴 The button's ABSENCE must not be the only signal. The old copy was a bare
+	// "Your account does not have enough Buzz to run this workflow." — true, but it
+	// never said that a control had been withheld, so a page missing its primary
+	// action for an unstated reason reads as broken rather than as blocked.
+	if !strings.Contains(body, "the run button is deliberately not shown") {
+		t.Errorf("the block must SAY the run control was withheld, not just omit it:\n%s", body)
+	}
+	// …and it must name whose balance this is, because there is no sign-in on this
+	// page and the account is entirely implicit otherwise.
+	if !strings.Contains(body, "API token") {
+		t.Errorf("the block must name the account the Buzz belongs to:\n%s", body)
 	}
 }
 

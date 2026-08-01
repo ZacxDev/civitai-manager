@@ -3105,12 +3105,16 @@ a.cm-res-chip .cm-res-name {
 /*
  * The primary button's label carries the chosen count, so the ONE button says what
  * it will do. Pure CSS: the count radios are descendants of .cm-runbar, so :has()
- * reads the segment's state from the button's ancestor. A margin (not a leading
- * space inside the content string) because the button is an inline-flex container,
- * where leading whitespace in generated content collapses away.
+ * reads the segment's state from the button's ancestor.
+ *
+ * NO margin and NO leading space in the content string. Measured in the browser:
+ * the civitai button is `display: flex; gap: 8px`, so the ::after box is a flex
+ * ITEM and the gap already separates it — a leading space would be collapsed away
+ * by flex layout, and an added margin-left rendered a visibly doubled 13.6px gap
+ * ("Generate  batch").
  */
 .cm-run-go::after {
-  margin-left: 0.35rem;
+  content: none;
 }
 .cm-runbar:has(#cm-count-2:checked) .cm-run-go::after {
   content: "×2";

@@ -388,6 +388,14 @@ func isCloudAffordabilityReject(err error) bool {
 // cloudErrorMessage renders a cloud error for display. A *comfy.CloudProblem
 // yields its title/detail; other errors yield their text. Both are UNTRUSTED
 // (remote) and escaped at render time.
+//
+// A 401/403 gets a SERVER-AUTHORED prefix naming the real cause. It is the one
+// remote failure whose fix is entirely local and entirely unguessable from the
+// remote text: CivitAI answers a bad, expired or revoked token with bodies like
+// "Unauthorized" or a bare string, which tells a user nothing about the fact that
+// this app resolves a token from four different layers and one of them is stale.
+// The remote detail is still shown after it, never replaced — the API is the
+// authority on what went wrong, we only add what it cannot know.
 func cloudErrorMessage(err error) string {
 	var p *comfy.CloudProblem
 	if errors.As(err, &p) {
@@ -397,6 +405,12 @@ func cloudErrorMessage(err error) string {
 		}
 		if detail == "" {
 			detail = fmt.Sprintf("orchestration API returned status %d", p.StatusCode)
+		}
+		if p.StatusCode == http.StatusUnauthorized || p.StatusCode == http.StatusForbidden {
+			return "CivitAI rejected your API token (HTTP " + strconv.Itoa(p.StatusCode) + "). " +
+				"It is missing, expired, revoked, or lacks access — check the token shown above, " +
+				"replace it (CIVITAI_TOKEN, --token, or `token:` in your config file) and restart. " +
+				"CivitAI said: " + detail
 		}
 		return detail
 	}

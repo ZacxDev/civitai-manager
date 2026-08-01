@@ -143,6 +143,9 @@ func cloudPanelFragment(v cloudPanelView, csrf string) g.Node {
 	return h.Div(
 		h.Class("space-y-4"),
 		cloudEgressWarning(),
+		// 🔴 THE NODEPACK BLOCKER GOES FIRST — ABOVE the resource table, not below it.
+		// Placement is the entire point (see cloudNodepackBlocker).
+		cloudNodepackBlocker(v.rows),
 		g.If(v.willConvert, cloudWillConvertNote()),
 		cloudResourceTable(v.rows),
 		h.Form(
@@ -187,6 +190,53 @@ func cloudConversionWarnings(warnings []string) g.Node {
 		g.Text("Cloud run converts UI-format workflows to API format via your local ComfyUI, "+
 			"but this workflow has nodes that could not be converted. It was not submitted."),
 		missingList("Conversion warnings", warnings),
+	)
+}
+
+// cloudNodepackBlocker names the ONE limitation that makes a cloud run impossible
+// rather than merely unresolved, and it renders ABOVE the resource table.
+//
+// 🔴 PLACEMENT IS THE POINT. A custom-node row renders a "custom node" badge and
+// "(fill in below)" in the AIR URN column — which reads as *your* unfinished
+// homework: find the nodepack URN, paste it in, run. It is not. CivitAI's
+// CustomComfy step REJECTS a bare `comfy:nodepack` URN at submit; making it work
+// needs a `comfyNodepackSnapshot` step producing a `nodepacklayer` AIR, which this
+// app does not build (see COMFYUI-INTEGRATION-DESIGN.md). So the user could fill in
+// every one of those rows perfectly and the submit would still fail. Telling them
+// AFTER the table would be telling them after the effort.
+//
+// It does not disable anything. The whatif estimate is free, and it is the only way
+// to find out what CivitAI does today rather than what this repo recorded — so the
+// path stays open and the alert says what we know, sourced, without claiming to have
+// re-measured it.
+//
+// Every class_type here is untrusted graph text and goes through g.Text.
+func cloudNodepackBlocker(rows []comfy.ResolvedResource) g.Node {
+	var names []string
+	for _, r := range rows {
+		if r.Status == comfy.ResolveCustomNode {
+			names = append(names, r.Filename)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	noun := "node"
+	if len(names) > 1 {
+		noun = "nodes"
+	}
+	return alert("warning",
+		"This workflow needs custom "+noun+", which CivitAI Cloud cannot run yet",
+		h.P(h.Class("text-sm"),
+			g.Text("Cloud runs go through CivitAI's CustomComfy step, which rejects a plain "),
+			h.Span(h.Class("font-mono text-xs"), g.Text("urn:air:comfy:nodepack:…")),
+			g.Text(" at submit — it needs a node-pack SNAPSHOT that this app does not build yet. "+
+				"Filling in the URN column below will not change that, so do not spend time on "+
+				"these rows: the submit is expected to fail however they are filled in.")),
+		h.P(h.Class("text-sm"),
+			g.Text("Run it on your local ComfyUI above instead, where these nodes are already "+
+				"installed (or can be).")),
+		missingList("Custom node types in this workflow", names),
 	)
 }
 
@@ -279,9 +329,20 @@ func cloudEstimateFragment(v cloudEstimateView, csrf string) g.Node {
 			g.Text("Estimated cost: "), h.Span(h.Class("font-semibold"), g.Text(costStr+" Buzz"))))
 	}
 	if v.insufficientBuzz {
+		// 🔴 This is a BLOCK, and it has to read like one. `insufficientBuzz` used to
+		// render a bare one-line "Your account does not have enough Buzz" with no
+		// statement that the run button had been withheld — so the button's ABSENCE
+		// was the only signal that nothing would happen, which is exactly the kind of
+		// thing a user reads as a broken page. Say what was withheld and why, and name
+		// the account the balance belongs to (the configured API token's).
 		body = append(body,
-			alert("error", "Insufficient Buzz",
-				g.Text("Your account does not have enough Buzz to run this workflow.")))
+			alert("error", "Not enough Buzz — this run was not offered",
+				h.P(h.Class("text-sm"),
+					g.Text("CivitAI reports that the account behind your configured API token "+
+						"does not have enough Buzz for this workflow, so the run button is "+
+						"deliberately not shown. Top the account up on civitai.com and estimate "+
+						"again, or run it on your local ComfyUI above, which costs nothing.")),
+			))
 	} else {
 		body = append(body, cloudRunForRealButton(v.wfID, v.urns, csrf))
 	}
