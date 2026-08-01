@@ -198,15 +198,17 @@ func resourceOpenControl(fileID int64, csrf, msg, state string) g.Node {
 func workflowResourceChip(res string, resolver workflowResolver) g.Node {
 	// store.ResourceBasename is the SINGLE definition of "which part of a resource
 	// entry is the filename" — shared with the model page's "workflows that use
-	// this model" query, so a chip's ✓/✗ and that list can never disagree about
+	// this model" query, so a chip's ✓/◎/✗ and that list can never disagree about
 	// what a resource is called.
 	base := store.ResourceBasename(res)
 	have := resolver.have(base)
 	info, _ := resolver.resource(base)
 
-	mark, state, state1 := "✗", "no", "not in your library"
+	mark, state, state1 := "✗", "no", "not found"
 	if have {
-		mark, state, state1 = "✓", "yes", "present in your library"
+		mark, state, state1 = "✓", "yes", "in your library"
+	} else if resolver.comfyResource != nil && resolver.comfyResource(base) {
+		mark, state, state1 = "◎", "comfy", "in ComfyUI"
 	}
 
 	// Hover reveals the ABSOLUTE on-disk path when we know it; otherwise the chip
@@ -265,15 +267,66 @@ func workflowResourceChip(res string, resolver workflowResolver) g.Node {
 		chip = h.Span(append(attrs, body...)...)
 	}
 
+	// Rich hover popover with details about the resource.
+	popover := resourceChipPopover(res, state1, info, hasHF, hfHref)
+
 	// --- PR C2: the native "open containing folder" control --------------------
 	// Offered only when a CONCRETE contained file is known (never for an ambiguous
 	// basename, which resolves to no id and no path) and only on a loopback bind,
 	// because the server execs a file manager on its OWN machine.
 	// ---------------------------------------------------------------------------
 	if resolver.openFolder && info.revealable() {
-		return h.Span(h.Class("cm-res-item"), chip, resourceOpenControl(info.FileID, resolver.csrf, "", ""))
+		return h.Span(h.Class("cm-updated cm-res-item"),
+			chip,
+			resourceOpenControl(info.FileID, resolver.csrf, "", ""),
+			popover,
+		)
 	}
-	return chip
+
+	return h.Span(h.Class("cm-updated"),
+		chip,
+		popover,
+	)
+}
+
+// resourceChipPopover renders the detail popover for a resource chip. It
+// follows the .cm-updated/.cm-updated-pop pattern (hover/focus-within shows
+// the child).
+func resourceChipPopover(res, state string, info resourceInfo, hasHF bool, hfHref string) g.Node {
+	rows := []g.Node{
+		// Source row
+		h.Div(h.Class("cm-res-detail-row"),
+			h.Span(h.Class("cm-res-detail-label"), g.Text("Source")),
+			h.Span(h.Class("cm-res-detail-value"), g.Text(state)),
+		),
+	}
+
+	// Path row (only if we have a path)
+	if info.Path != "" {
+		rows = append(rows, h.Div(h.Class("cm-res-detail-row"),
+			h.Span(h.Class("cm-res-detail-label"), g.Text("Path")),
+			h.Span(h.Class("cm-res-detail-value break-all"), g.Text(info.Path)),
+		))
+	}
+
+	// CivitAI link row
+	if info.linked() {
+		civhref := "/models/" + strconv.Itoa(info.ModelID) + "?modelVersionId=" + strconv.Itoa(info.VersionID)
+		rows = append(rows, h.Div(h.Class("cm-res-detail-row"),
+			h.Span(h.Class("cm-res-detail-label"), g.Text("CivitAI")),
+			h.A(h.Class("cm-res-detail-link"), h.Href(civhref), g.Text("View model")),
+		))
+	}
+
+	// HuggingFace link row
+	if hasHF && hfHref != "" {
+		rows = append(rows, h.Div(h.Class("cm-res-detail-row"),
+			h.Span(h.Class("cm-res-detail-label"), g.Text("HuggingFace")),
+			h.A(h.Class("cm-res-detail-link"), h.Href(hfHref), h.Target("_blank"), g.Attr("rel", "noopener noreferrer"), g.Text("View on HF")),
+		))
+	}
+
+	return h.Span(h.Class("cm-updated-pop cm-res-chip-pop"), g.Group(rows))
 }
 
 // shortRevision abbreviates a commit sha for display. A full 40-hex sha in a

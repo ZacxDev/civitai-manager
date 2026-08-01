@@ -276,10 +276,20 @@ func maturityControl(mr maturityRange, csrf string) g.Node {
 					h.Span(h.Class("cm-maturity-title"), g.Text("Maturity")),
 					h.Span(h.Class("cm-maturity-current"), g.Text(mr.label())),
 				),
-				h.P(h.Class("cm-maturity-note"),
-					g.Text("Content outside this band is never fetched or shown. Your own generations are unrated and always render.")),
 				maturityTrack(maturityControlMinID, "min", "Maturity from", mr.Min, maturityPG, mr.Max),
 				maturityTrack(maturityControlMaxID, "max", "Maturity to", mr.Max, mr.Min, maturityXXX),
+				h.Div(h.Class("mt-3 pt-3 border-t border-slate-800"),
+					civButton("outline", "sm", []g.Node{
+						h.Type("button"),
+						h.ID("cm-maturity-safe"),
+						g.Attr("onclick", `javascript:void(function(){
+							var min=document.getElementById('cm-maturity-min-pg');
+							var max=document.getElementById('cm-maturity-max-pg13');
+							if(min)min.click();
+							if(max)max.click();
+						})()`),
+					}, g.Text("Safe mode")),
+				),
 			),
 		),
 	)

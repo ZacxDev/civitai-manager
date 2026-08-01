@@ -826,9 +826,10 @@ func TestResourceChipFolderButtonVisibility(t *testing.T) {
 				}
 			}
 			// The button must NOT be nested inside the chip's anchor/span — it is a
-			// sibling inside the .cm-res-item wrapper.
-			if !strings.HasPrefix(got, `<span class="cm-res-item">`) {
-				t.Errorf("expected the chip+button wrapper, got:\n%s", got)
+			// sibling inside the .cm-updated.cm-res-item wrapper (cm-updated for the
+			// per-chip popover, cm-res-item for the open-folder button).
+			if !strings.Contains(got, `class="cm-updated cm-res-item"`) {
+				t.Errorf("expected the chip+button+popover wrapper, got:\n%s", got)
 			}
 			// The request carries an id and a token, never a path.
 			if strings.Contains(got, "/models/loras/a.safetensors\"") && strings.Contains(got, "hx-vals") {

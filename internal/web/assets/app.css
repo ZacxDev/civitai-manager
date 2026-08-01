@@ -1148,7 +1148,7 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  * "to" is the one thing a two-sided control must not leave ambiguous.
  */
 .cm-mat-track {
-  margin: 0 0 0.6rem;
+  margin: 0 0 0.25rem;
   padding: 0;
   border: none;
 }
@@ -3092,6 +3092,9 @@ a.cm-res-chip:focus-visible {
 .cm-res-chip[data-have="yes"] .cm-res-mark {
   color: var(--civitai-color-success-text);
 }
+.cm-res-chip[data-have="comfy"] .cm-res-mark {
+  color: var(--civitai-color-warning-text);
+}
 .cm-res-chip[data-have="no"] .cm-res-mark {
   color: var(--civitai-color-error-text);
 }
@@ -4176,4 +4179,38 @@ a.cm-rail-act-link:hover .cm-rail-act-text {
     height: 100%;
     object-fit: cover;
   }
+}
+
+/*
+ * .cm-res-chip-pop — rich hover popover for resource chips. Reuses the
+ * .cm-updated/.cm-updated-pop mechanism so the shared hover controller in
+ * modelPageScript applies automatically.
+ */
+.cm-res-chip-pop {
+  min-width: 14rem;
+  max-width: 22rem;
+  padding: 0.5rem;
+}
+.cm-res-detail-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  padding: 0.25rem 0;
+}
+.cm-res-detail-label {
+  color: var(--civitai-color-text-dimmed);
+}
+.cm-res-detail-value {
+  color: var(--civitai-color-text);
+}
+.cm-res-detail-link {
+  color: var(--civitai-color-primary-text);
+  text-decoration: none;
+}
+.cm-res-detail-link:hover {
+  text-decoration: underline;
+}
+
+#cm-maturity-safe {
+  width: 100%;
 }

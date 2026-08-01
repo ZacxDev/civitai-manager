@@ -27,6 +27,12 @@ type workflowResolver struct {
 	// basename is unknown OR ambiguous — the chip then renders without a path and
 	// without a source link rather than guessing.
 	localResource func(basename string) (resourceInfo, bool)
+	// comfyResource reports whether a basename appears in any loader node's
+	// object_info combo choices (i.e. ComfyUI can resolve the file). ok=false
+	// means the cache is empty or the basename was not found — the chip renders
+	// the "not found" state. This check is derived from cached data, never a live
+	// ComfyUI fetch, so page rendering stays offline-first.
+	comfyResource func(basename string) bool
 	// mr is the persisted PG..XXX maturity range threaded to the
 	// list-item showcase carousels so they honor it (carried on the resolver to
 	// avoid threading it through workflowList/Item/Card + the scan-terminal path).

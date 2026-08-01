@@ -245,17 +245,17 @@ func modelSatisfied(ref string, nodes map[string]apiNode, info ObjectInfo, local
 		if !ok {
 			continue
 		}
-		if choicesContain(sch, ref) {
+		if ChoicesContain(sch, ref) {
 			return true
 		}
 	}
 	return false
 }
 
-// choicesContain reports whether any input's combo choices in a node schema include
+// ChoicesContain reports whether any input's combo choices in a node schema include
 // filename (exact match, or by basename to tolerate a choices entry that carries a
 // subdirectory prefix like "flux/foo.safetensors").
-func choicesContain(sch NodeSchema, filename string) bool {
+func ChoicesContain(sch NodeSchema, filename string) bool {
 	base := filepath.Base(filename)
 	check := func(specs map[string]InputSpec) bool {
 		for _, spec := range specs {

@@ -219,12 +219,12 @@ func TestWorkflowResourceChipRenderStates(t *testing.T) {
 		},
 		{
 			name: "present but ambiguous basename", resource: "ambiguous.safetensors",
-			wantSubstr: []string{`data-have="yes"`, "present in your library"},
+			wantSubstr: []string{`data-have="yes"`, "in your library"},
 			notSubstr:  []string{"href="},
 		},
 		{
 			name: "not in the library", resource: "gone.safetensors",
-			wantSubstr: []string{`data-have="no"`, "not in your library", "✗"},
+			wantSubstr: []string{`data-have="no"`, "not found", "✗"},
 			notSubstr:  []string{"href="},
 		},
 		{
@@ -235,10 +235,10 @@ func TestWorkflowResourceChipRenderStates(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := renderString(t, workflowResourceChip(tc.resource, res))
-			if tc.wantLink && !strings.HasPrefix(got, "<a ") {
+			if tc.wantLink && !strings.Contains(got, "<a ") {
 				t.Errorf("expected a linked chip, got:\n%s", got)
 			}
-			if !tc.wantLink && !strings.HasPrefix(got, "<span ") {
+			if !tc.wantLink && strings.Contains(got, "<a ") {
 				t.Errorf("expected a non-linked chip, got:\n%s", got)
 			}
 			for _, w := range tc.wantSubstr {

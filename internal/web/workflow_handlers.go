@@ -353,6 +353,27 @@ func (s *Server) workflowResolver() workflowResolver {
 			}
 			return info, true
 		},
+		// comfyResource checks the cached /object_info for a basename in any loader
+		// node's combo choices. This tells us whether ComfyUI can resolve the file
+		// even though it's not in civitai-manager's local index. The cache is
+		// populated from /object_info fetched during preflight/run or a manual
+		// refresh — never a live fetch at page-render time.
+		comfyResource: func(basename string) bool {
+			ent, err := s.store.GetComfyObjectInfo()
+			if err != nil || ent == nil {
+				return false
+			}
+			var oi comfy.ObjectInfo
+			if err := json.Unmarshal(ent.ObjectInfoJSON, &oi); err != nil {
+				return false
+			}
+			for _, sch := range oi {
+				if comfy.ChoicesContain(sch, basename) {
+					return true
+				}
+			}
+			return false
+		},
 		mr:         s.maturity(),
 		csrf:       s.csrf,
 		openFolder: openFolder,
