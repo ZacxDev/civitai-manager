@@ -699,7 +699,16 @@ func subscribeInfoPopover(workflow bool) g.Node {
 // will happen and posts a hidden mode=notify_only. Removing the choice (rather
 // than pre-selecting Notify only) is deliberate: a disabled-looking radio still
 // reads as "this is a mode you could pick".
-func subscribeOptionsPanel(modelID int, name, csrf string, workflow bool) g.Node {
+//
+// `dl` is the download disclosure — what an auto-download subscription would
+// really fetch and how big it is (subscribe_disclosure.go). It is rendered ONLY
+// beside the mode chooser, i.e. never for a workflow post: that arm has no
+// Auto-download option to describe, and its own copy already says nothing is
+// downloaded. Passing a populated `dl` for a workflow post cannot leak a size
+// here — modelSubscribeDownload refuses to produce one — but the two guards are
+// deliberately independent, because this is the exact place a plausible,
+// specific, wrong number would appear.
+func subscribeOptionsPanel(modelID int, name, csrf string, workflow bool, dl subscribeDownload) g.Node {
 	id := subscribeControlID(modelID)
 	radio := func(value, label string, checked bool) g.Node {
 		attrs := []g.Node{
@@ -723,6 +732,7 @@ func subscribeOptionsPanel(modelID int, name, csrf string, workflow bool) g.Node
 			radio("auto_download", "Auto-download", true),
 			radio("notify_only", "Notify only", false),
 		),
+		subscribeDownloadDisclosure(dl),
 	}
 	if workflow {
 		heading = "Notify me about " + name + "?"
