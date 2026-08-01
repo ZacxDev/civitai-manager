@@ -65,6 +65,8 @@ func fullPages(t *testing.T) map[string]string {
 		Version: &civitai.ModelVersionDetail{ID: 1, BaseModel: "SDXL"}}
 	wfID := int64(3)
 	gen := &store.Generation{ID: 5, WorkflowID: &wfID, WorkflowName: "wf", PromptID: "p1", ImageCount: 1}
+	batchGen := &store.Generation{ID: 6, WorkflowID: &wfID, WorkflowName: "wf", PromptID: "p2", ImageCount: 1,
+		BatchID: "batch-1", BatchIndex: 1, BatchTotal: 3, PresetName: "Hi-res 8-step"}
 	wf := &store.Workflow{ID: 3, Name: "My workflow", Format: store.WorkflowFormatAPI, Graph: "{}"}
 
 	return map[string]string{
@@ -74,6 +76,7 @@ func fullPages(t *testing.T) map[string]string {
 		"model":      renderString(t, modelDetailPage(detail, nil, "csrf", "https://civitai.com")),
 		"library":    renderString(t, libraryPage(libraryView{}, "csrf", true, []string{"/m"}, "files", nil, true, nil, fullMaturityRange(), libraryWorkflowsView{})),
 		"outputs":    renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", fullMaturityRange())),
+		"batch":      renderString(t, batchGalleryPage([]store.Generation{*batchGen}, "csrf", fullMaturityRange())),
 		"generation": renderString(t, generationDetailPage(gen, nil, "csrf", fullMaturityRange(), workflowResolver{})),
 		"workflow":   renderString(t, detailPageNode(wf, "csrf", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{})),
 		"discover-workflow": renderString(t, workflowDiscoverPage(workflowDiscoverView{

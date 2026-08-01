@@ -218,7 +218,7 @@ func (s *Server) handleWorkflowOpenInComfyUI(w http.ResponseWriter, r *http.Requ
 	// response lands in a freshly opened tab rather than an htmx swap target.
 	if !s.extraPathsAllowed() {
 		s.renderOpenComfyPage(w, openComfyNote("amber",
-			"This control is disabled when the server is bound to a non-loopback address."), nil)
+			"This control is disabled when the server is bound to a non-loopback address."), 0, "")
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -236,16 +236,20 @@ func (s *Server) handleWorkflowOpenInComfyUI(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	backLink := openComfyBackLink(id)
+	wfName := wf.Name
+	if strings.TrimSpace(wfName) == "" {
+		wfName = "workflow #" + strconv.FormatInt(id, 10)
+	}
+
 	if wf.Format != store.WorkflowFormatUI {
 		s.renderOpenComfyPage(w, openComfyNote("amber",
-			"Only UI-format workflows can be opened in the ComfyUI editor (API graphs don’t load into it)."), backLink)
+			"Only UI-format workflows can be opened in the ComfyUI editor (API graphs don’t load into it)."), id, wfName)
 		return
 	}
 	client := s.comfy()
 	if client == nil {
 		s.renderOpenComfyPage(w, openComfyNote("amber",
-			"ComfyUI is not configured (set comfy_url)."), backLink)
+			"ComfyUI is not configured (set comfy_url)."), id, wfName)
 		return
 	}
 
@@ -255,7 +259,7 @@ func (s *Server) handleWorkflowOpenInComfyUI(w http.ResponseWriter, r *http.Requ
 	defer cancel()
 	if err := client.SaveUserWorkflow(ctx, relPath, json.RawMessage(wf.Graph)); err != nil {
 		s.renderOpenComfyPage(w, openComfyNote("amber",
-			"Could not reach ComfyUI to save the workflow — is it running at "+s.cfg.ComfyURL+"?"), backLink)
+			"Could not reach ComfyUI to save the workflow — is it running at "+s.cfg.ComfyURL+"?"), id, wfName)
 		return
 	}
 
@@ -300,7 +304,7 @@ func (s *Server) handleWorkflowOpenInComfyUI(w http.ResponseWriter, r *http.Requ
 		out.usable = false
 		out.badURL = true
 	}
-	s.renderOpenComfyPage(w, openComfyResult(out), backLink)
+	s.renderOpenComfyPage(w, openComfyResult(out), id, wfName)
 }
 
 // openComfyView is everything the result page needs. It is built entirely
@@ -327,20 +331,17 @@ type openComfyView struct {
 // renderOpenComfyPage renders a standalone page. The "Open in ComfyUI" click is a
 // form submit with target="_blank", so whatever this handler returns is a WHOLE
 // new tab — a bare htmx fragment would land there unstyled and contextless.
-func (s *Server) renderOpenComfyPage(w http.ResponseWriter, body, backLink g.Node) {
-	nodes := []g.Node{pageTitle("Open in ComfyUI"), card(body)}
-	if backLink != nil {
-		nodes = append(nodes, backLink)
+func (s *Server) renderOpenComfyPage(w http.ResponseWriter, body g.Node, workflowID int64, workflowName string) {
+	nodes := []g.Node{
+		breadcrumbs(
+			crumb{Label: "Workflows", Href: "/workflows/" + strconv.FormatInt(workflowID, 10)},
+			crumb{Label: workflowName},
+			crumb{Label: "Open in ComfyUI"},
+		),
+		pageTitle("Open in ComfyUI"),
+		card(body),
 	}
 	s.render(w, http.StatusOK, page("Open in ComfyUI", s.csrf, s.maturity(), railData{}, nodes...))
-}
-
-func openComfyBackLink(id int64) g.Node {
-	return h.A(
-		h.Href("/workflows/"+strconv.FormatInt(id, 10)),
-		h.Class("text-sm text-indigo-400 hover:text-indigo-300"),
-		g.Text("← Back to the workflow"),
-	)
 }
 
 // openComfyNote renders a single-line outcome. tone is "amber" (nothing happened)

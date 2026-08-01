@@ -259,6 +259,49 @@ input[type="radio"] {
 }
 
 /*
+ * BREADCRUMBS
+ *
+ * .cm-crumbs is a horizontal <ol> with CSS separators (li+li::before).
+ * Ancestor crumbs are flex: 0 0 auto (short constants, never clip). The last
+ * crumb is flex: 1 1 auto with overflow hidden + text-overflow ellipsis for
+ * untrusted names. On narrow viewports (<640px) all but the last 2 crumbs
+ * hide. All classes use --civitai-* tokens so both themes stay in sync.
+ */
+.cm-crumbs {
+  display: flex;
+  flex-wrap: nowrap;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+  gap: 0.5rem;
+}
+.cm-crumbs li + li::before {
+  content: "›";
+  margin-right: 0.5rem;
+  color: var(--civitai-color-text-dimmed);
+}
+.cm-crumb {
+  flex: 0 0 auto;
+}
+.cm-crumb:last-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.cm-crumb-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+  min-width: 0;
+}
+@media (max-width: 640px) {
+  .cm-crumbs li:not(:nth-last-child(-n+2)) {
+    display: none;
+  }
+}
+
+/*
  * ===========================================================================
  * TOUCH TARGETS
  * ===========================================================================

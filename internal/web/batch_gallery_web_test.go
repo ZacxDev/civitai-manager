@@ -93,12 +93,12 @@ func TestBatchPageRendersEveryRunAndParamsOnce(t *testing.T) {
 				"missing %q in:\n%s", want, main)
 		}
 	}
-	// Header uses the preset name snapshot; back link present.
+	// Header uses the preset name snapshot; breadcrumb present.
 	if !strings.Contains(main, "Hi-res 8-step") {
 		t.Error("batch header should use the snapshotted preset name")
 	}
-	if !strings.Contains(main, "← All outputs") || !strings.Contains(main, `href="/outputs"`) {
-		t.Error("batch page missing the back link to /outputs")
+	if !strings.Contains(main, `aria-label="Breadcrumb"`) || !strings.Contains(main, `href="/outputs"`) {
+		t.Error("batch page missing the breadcrumb trail to /outputs")
 	}
 	// Render-plain, like every other outputs surface.
 	for _, bad := range []string{"cm-blur", "data-blurred", "cmReveal"} {
