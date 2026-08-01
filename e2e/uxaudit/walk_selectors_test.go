@@ -53,15 +53,25 @@ func fetchPage(t *testing.T, app *App, path string) (string, int) {
 
 // hasButtonWith reports whether some `<button …>` OPEN TAG in html contains attr.
 //
-// 🔴 The walk's selectors are `button[hx-post=…]` / `button[title^=…]` — they match a
-// BUTTON. A bare strings.Contains over the whole body does not: the same
-// hx-post="/workflows/N/run-with-params" is also emitted on the preset FORM
-// (internal/web/run_preset_pages.go), so a body-wide substring search would keep
-// passing after the button itself disappeared. That is CLAUDE.md's "assertion matched
-// a DIFFERENT element's attribute" mode, which shipped a permanently-open sheet once.
+// The walk's selectors are `button[hx-post=…]` / `button[title^=…]` — they match a
+// BUTTON, so the guard should too.
 //
-// ⚠ Limit: this splits on the first `>` after `<button`, so it would mis-parse an
-// attribute VALUE containing a literal `>`. None of the attributes asserted here can.
+// ⚠ Be honest about what this buys TODAY: **nothing**. Measured on the two bodies
+// actually guarded — the comfy-status fragment carries exactly one `<button`, zero
+// `<form` and one occurrence of the hx-post; `/workflows/1` carries none at all — so
+// swapping this for a bare strings.Contains leaves both real guards green (only the
+// table test below reddens). An earlier version of this comment claimed the preset
+// FORM (internal/web/run_preset_pages.go) emits the same hx-post INTO this fragment
+// and that a body-wide search would therefore keep passing; that is false for these
+// bodies, and citing CLAUDE.md's "assertion matched a DIFFERENT element's attribute"
+// precedent for it was wrong. This is defence against such a carrier APPEARING —
+// which is cheap and strictly safer — not a bug it currently prevents.
+//
+// ⚠ Two measured limits, neither reachable in the guarded bodies:
+//   - it splits on the first `>` after a button tag, so an attribute VALUE containing
+//     a literal `>` would mis-parse (none asserted here can);
+//   - the tag name must be exactly `button`; the delimiter check below is what stops
+//     `<button-group attr>` from counting (it did, before that check).
 func hasButtonWith(html, attr string) bool {
 	rest := html
 	for {
@@ -70,6 +80,16 @@ func hasButtonWith(html, attr string) bool {
 			return false
 		}
 		rest = rest[i:]
+		// Tag-name boundary: the byte after "<button" must end the name, otherwise
+		// this is <button-group>/<buttonbar>/… and not a <button> at all.
+		if len(rest) > len("<button") {
+			switch rest[len("<button")] {
+			case ' ', '\t', '\n', '\r', '>', '/':
+			default:
+				rest = rest[len("<button"):]
+				continue
+			}
+		}
 		j := strings.Index(rest, ">")
 		if j < 0 {
 			return false
@@ -99,7 +119,17 @@ func TestHasButtonWithDiscriminatesTheElement(t *testing.T) {
 		// A non-matching button must not shadow a later matching one.
 		{"second button matches", `<button id="a">A</button><button ` + attr + `>B</button>`, true},
 		// A form carrying it must not make a non-matching button look like a hit.
+		// ⚠ This case is WEAKER than its name suggests: the scan jumps straight to the
+		// first `<button`, so the form's attribute is never in scope at all. Kept
+		// because it still discriminates against a bare Contains, but the row below is
+		// the one that exercises the hard shape.
 		{"form matches, button does not", `<form ` + attr + `><button id="b">B</button></form>`, false},
+		// The hard shape: a non-button carrier appearing AFTER a button open tag, so
+		// the scan has to actually reject it rather than never reach it.
+		{"non-button carrier after a button", `<button id="a">A</button><form ` + attr + `></form>`, false},
+		// Tag-name boundary — `<button-group` starts with "<button" but is not a button.
+		{"button-prefixed tag name", `<button-group ` + attr + `></button-group>`, false},
+		{"button-prefixed tag then a real one", `<button-group x></button-group><button ` + attr + `>B</button>`, true},
 		{"no buttons at all", `<p>nothing here</p>`, false},
 	}
 	for _, tc := range cases {
@@ -196,6 +226,11 @@ func TestWalkSelectorsMatchTheServedApp(t *testing.T) {
 	// internal/web (workflowImportDialogID), and it drifts silently: a rename reddens
 	// internal/web's own tests while this module keeps compiling and dies later, in a
 	// browser, as the same opaque WaitVisible timeout.
+	//
+	// ⚠ Honest limit: this asserts the ID EXISTS, not that it is a <dialog> nor that
+	// the trigger opens it. Re-homing the id onto a <div popover> would keep this green
+	// and still hang the walk, because `[open]` is a <dialog> attribute. Guarding that
+	// properly needs the browser; this covers the rename, which is the likely drift.
 	t.Run("import dialog container", func(t *testing.T) {
 		const path = "/library?tab=workflows"
 		body, status := fetchPage(t, app, path)
@@ -240,8 +275,16 @@ func TestWalkViewPathsAreServable(t *testing.T) {
 		t.Run(v.Name, func(t *testing.T) {
 			body, status := fetchPage(t, app, v.Path)
 			if status != http.StatusOK {
-				t.Errorf("view %q: GET %s returned %d, want 200 — the walk would audit an error page",
-					v.Name, v.Path, status)
+				hint := "the walk would audit an error page"
+				// fetchPage does not follow redirects on purpose, so a 3xx here means the
+				// view MOVED — the browser walk would silently audit wherever it landed.
+				// Say so, otherwise this reads as a broken guard rather than moved content.
+				if status >= 300 && status < 400 {
+					hint = "this view now REDIRECTS (the guard deliberately does not follow it) — " +
+						"the walk would follow it and audit a different surface under this view's name; " +
+						"point the view at its new path"
+				}
+				t.Errorf("view %q: GET %s returned %d, want 200 — %s", v.Name, v.Path, status, hint)
 			}
 			if len(body) == 0 {
 				t.Errorf("view %q: GET %s returned an empty body", v.Name, v.Path)

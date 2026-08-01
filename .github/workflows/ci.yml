@@ -65,9 +65,12 @@ jobs:
   # never runs reports no failures.
   #
   # It gets its OWN job rather than extra steps in `test` because it declares a
-  # newer Go directive (go 1.26 vs the root module's 1.25.0); bumping the shared
-  # job's toolchain to satisfy it would change how the SHIPPED binary is built,
-  # which is not a side effect a test-coverage fix should have.
+  # newer Go directive (go 1.26 vs the root module's 1.25.0), and bumping the shared
+  # job's toolchain to satisfy it would silently change the compiler every existing
+  # root-module check runs under. (It would NOT change the shipped binary — that is
+  # built by GoReleaser in release.yml, which this file does not feed. An earlier
+  # version of this comment claimed otherwise.) Keeping them separate means adding
+  # coverage cannot perturb a gate that already works.
   #
   # gofmt is deliberately NOT repeated here — `gofmt -l .` in the `test` job walks
   # the directory tree, not the module graph, so it already covers these files.
