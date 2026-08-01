@@ -235,6 +235,19 @@ func cssMediaBlock(t *testing.T, css, open string) string {
 	if i < 0 {
 		t.Fatalf("app.css has no media block opening with %q", open)
 	}
+	// 🔴 AMBIGUITY IS A SILENT WRONG-BLOCK BUG, so it is fatal rather than
+	// first-match-wins. This is the "matched the FIRST @media block" vacuity mode:
+	// a second media query whose opening comment happens to share this prefix
+	// would be handed to the caller instead, and every assertion after it would be
+	// checking the wrong rules while still reading green. It happened for real —
+	// the maturity popover's desktop block was added with a comment starting "The
+	// desktop panel anchors under its trigger", the same words as the nav menu's,
+	// and this helper silently returned it to the nav menu's test.
+	if j := strings.Index(css[i+1:], open); j >= 0 {
+		t.Fatalf("app.css has MORE THAN ONE media block opening with %q (next at offset %d) — "+
+			"the key must identify exactly one block, or this helper returns the wrong one silently",
+			open, i+1+j)
+	}
 	depth := 0
 	for j := i; j < len(css); j++ {
 		switch css[j] {

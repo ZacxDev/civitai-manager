@@ -105,7 +105,13 @@ func TestLibraryFilesTabChecksRemoteMatchByDefault(t *testing.T) {
 	if !strings.Contains(body, `name="match_remote"`) {
 		t.Fatalf("Tab B should render the match_remote checkbox:\n%s", body)
 	}
-	if !strings.Contains(body, "checked") {
+	// 🔴 SCOPED TO THE match_remote INPUT, not searched across the whole page.
+	// This used to be a bare strings.Contains(body, "checked") over the entire
+	// document, which is only ever correct while NOTHING ELSE on the page says
+	// "checked" — a property no assertion here controls. The nav's maturity slider
+	// (radio inputs, one `checked` per end) made the negative half fail against a
+	// perfectly correct unchecked checkbox. Read the input's own tag.
+	if !matchRemoteInputChecked(t, body) {
 		t.Errorf("Tab B match_remote checkbox should default checked (matching ON):\n%s", body)
 	}
 
@@ -113,9 +119,27 @@ func TestLibraryFilesTabChecksRemoteMatchByDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	body = get(t, srv, "/library?tab=files").Body.String()
-	if strings.Contains(body, "checked") {
+	if matchRemoteInputChecked(t, body) {
 		t.Errorf("Tab B match_remote checkbox should be unchecked when match_remote=false:\n%s", body)
 	}
+}
+
+// matchRemoteInputChecked reports whether the match_remote checkbox's OWN tag
+// carries `checked`. It isolates the single <input …name="match_remote"…> element
+// so the assertion cannot be satisfied — or broken — by the word "checked"
+// appearing anywhere else in the document.
+func matchRemoteInputChecked(t *testing.T, body string) bool {
+	t.Helper()
+	i := strings.Index(body, `name="match_remote"`)
+	if i < 0 {
+		t.Fatalf("no match_remote input in the body")
+	}
+	start := strings.LastIndex(body[:i], "<")
+	end := strings.Index(body[i:], ">")
+	if start < 0 || end < 0 {
+		t.Fatalf("could not isolate the match_remote input tag")
+	}
+	return strings.Contains(body[start:i+end], "checked")
 }
 
 // TestScanTransparencyNoteRendered proves both scan entry points carry the

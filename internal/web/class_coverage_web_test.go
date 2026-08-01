@@ -363,13 +363,22 @@ func TestShellMeasureIsInTheBuiltCSS(t *testing.T) {
 		// reason the rail is: output.css is a purged static build, so a Tailwind
 		// utility added here would be unstyled until someone regenerates it.
 		//
-		// These three replaced a `.cm-rail[data-nsfw="blur"] .cm-out-thumb`
-		// assertion that guarded the rail's NSFW blur. That rule is GONE, not
-		// broken: the blur/show toggle was replaced by a maturity range that omits
-		// out-of-band content server-side, and the rail (the user's own outputs)
-		// is not filtered by it at all. Nothing else asserted the control's CSS,
-		// so the coverage moves here rather than disappearing.
-		".cm-maturity {", ".cm-maturity-select {", ".cm-maturity-legend {",
+		// These replaced a `.cm-rail[data-nsfw="blur"] .cm-out-thumb` assertion that
+		// guarded the rail's NSFW blur. That rule is GONE, not broken: the
+		// blur/show toggle was replaced by a maturity range that omits out-of-band
+		// content server-side, and the rail (the user's own outputs) is not
+		// filtered by it at all. Nothing else asserted the control's CSS, so the
+		// coverage moves here rather than disappearing.
+		//
+		// The control has since become an icon button + popover holding a two-sided
+		// segmented slider, so `.cm-maturity-select`/`-legend` (the two <select>s it
+		// used to be) are gone and the track classes take their place. As above,
+		// these are PRESENCE checks; the load-bearing behaviour — the popover's
+		// two-mode positioning, the no-`display`-in-the-base-rule trap, and the
+		// clipped-not-hidden radio — is guarded by
+		// TestMaturityPopoverPositionsAndKeepsItsRadiosReachable.
+		".cm-maturity {", ".cm-maturity-trigger {", ".cm-maturity-panel {",
+		".cm-mat-track {", ".cm-mat-stops {", ".cm-mat-dot {", ".cm-mat-radio {",
 		".cm-cardgrid {",
 		// The nav rework's hand-written CSS, here for the same purge-proofing
 		// reason as everything above it. These are PRESENCE checks only — the
