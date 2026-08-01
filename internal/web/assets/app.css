@@ -1187,14 +1187,21 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  * state legible. `cursor: not-allowed` on the label matters because the LABEL is
  * what the pointer meets, not the clipped input.
  */
-.cm-mat-radio:disabled ~ .cm-mat-dot {
+/* An OUT-OF-BAND stop. It carries no <input> at all — see maturityTrack: a
+ * `disabled` radio is skipped by arrow keys but a native radio group WRAPS, so at a
+ * boundary "skipped" meant focus landed on the far end of the scale and one
+ * ArrowLeft raised the ceiling to XXX. These selectors therefore key on the stop's
+ * own class, NOT on :disabled, because there is no input left to be disabled.
+ * Styling is unchanged from the disabled look it replaces — the stop must still
+ * read as present-but-unavailable so the track's geometry stays legible. */
+.cm-mat-stop-out .cm-mat-dot {
   opacity: 0.35;
   border-style: dashed;
 }
-.cm-mat-radio:disabled ~ .cm-mat-tick {
+.cm-mat-stop-out .cm-mat-tick {
   opacity: 0.45;
 }
-.cm-mat-stop:has(.cm-mat-radio:disabled) {
+.cm-mat-stop-out {
   cursor: not-allowed;
 }
 /* The focus ring has to land on the DOT, since the input itself is clipped to a

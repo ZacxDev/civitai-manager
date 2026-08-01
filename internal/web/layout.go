@@ -309,18 +309,53 @@ func maturityGlyph() g.Node {
 // one radio per level on a shared 5-column grid.
 //
 // 🔴 lo/hi are the INCLUSIVE bounds that keep the band valid. A level outside them
-// is still RENDERED — the geometry stays uniform and the user can see where the
-// track stops — but carries `disabled`, which makes it unsubmittable,
-// unselectable, and skipped by arrow-key navigation. That is what makes an
-// inverted range unreachable from the UI.
+// renders as an INERT stop — same grid cell, same dot and tick, so the geometry
+// stays uniform and the user can see where the track ends — but it emits **NO
+// <input> at all**. It is therefore not a member of the radio group: unsubmittable,
+// unselectable, and *unreachable by the keyboard*.
+//
+// 🔴 IT USED TO BE A `disabled` RADIO, AND THAT SHIPPED A CONTENT-GATING CONTROL
+// THAT FAILED OPEN. A disabled radio is skipped by arrow-key navigation — but a
+// native radio group also WRAPS AROUND, so "skipped" at a boundary means the focus
+// lands on the far end of the scale. Proved live in Brave: with the band at "X
+// only", one **ArrowLeft** on the max track — the *reducing* direction — moved to
+// `xxx`, committed, and persisted **"X to XXX"**. One keypress intended to lower
+// the ceiling silently admitted XXX content, with the page reloading immediately
+// and focus dumped to <body>, so nothing announced what had happened.
+// The two <select>s this control replaced could not do that: they OMITTED
+// out-of-range options, and a <select> does not wrap at its first option. Emitting
+// no input restores exactly that property.
+//
+// Note the inverted-range guard alone could never catch this — `x:xxx` IS a valid
+// band. It asks "does every reachable stop yield a valid range?", never "can a
+// keypress reach a stop the user did not intend?". That is why the guard below
+// asserts the ABSENCE of an input, not the presence of `disabled`.
 //
 // The selected level is ALWAYS inside [lo,hi] for any valid range, so the checked
-// radio can never be the disabled one. If it ever were, that end would submit
-// NOTHING and the handler would 400 on an empty slug — a real failure mode, which
-// is why maturityControl normalizes an invalid range before calling this.
+// stop can never be an inert one. If it ever were, that end would submit NOTHING
+// and the handler would 400 on an empty slug — a real failure mode, which is why
+// maturityControl normalizes an invalid range before calling this.
 func maturityTrack(id, name, label string, selected, lo, hi maturityLevel) g.Node {
 	stops := make([]g.Node, 0, len(maturityScale))
 	for i, l := range maturityScale {
+		kids := []g.Node{
+			// The dot is the thumb; the tick is the level's name. For a real stop the
+			// tick is the label's TEXT, so it is the radio's accessible name — no
+			// aria-label needed and none should be added.
+			h.Span(h.Class("cm-mat-dot"), g.Attr("aria-hidden", "true")),
+			h.Span(h.Class("cm-mat-tick"), g.Text(l.label())),
+		}
+		if l < lo || l > hi {
+			// Out of band: no input, so the keyboard cannot reach it and a forged
+			// submit cannot name it. A <span>, not a <label> — a label with no control
+			// is meaningless to AT.
+			stops = append(stops, h.Span(
+				h.Class("cm-mat-stop cm-mat-stop-out"),
+				dataAttr("step", strconv.Itoa(i)),
+				g.Group(kids),
+			))
+			continue
+		}
 		attrs := []g.Node{
 			h.Type("radio"),
 			h.Name(name),
@@ -331,18 +366,10 @@ func maturityTrack(id, name, label string, selected, lo, hi maturityLevel) g.Nod
 		if l == selected {
 			attrs = append(attrs, g.Attr("checked"))
 		}
-		if l < lo || l > hi {
-			attrs = append(attrs, g.Attr("disabled"))
-		}
 		stops = append(stops, h.Label(
 			h.Class("cm-mat-stop"),
 			dataAttr("step", strconv.Itoa(i)),
-			h.Input(attrs...),
-			// The dot is the thumb; the tick is the level's name. The tick is the
-			// label's TEXT, so it is the radio's accessible name — no aria-label needed
-			// and none should be added.
-			h.Span(h.Class("cm-mat-dot"), g.Attr("aria-hidden", "true")),
-			h.Span(h.Class("cm-mat-tick"), g.Text(l.label())),
+			g.Group(append([]g.Node{h.Input(attrs...)}, kids...)),
 		))
 	}
 	return h.FieldSet(

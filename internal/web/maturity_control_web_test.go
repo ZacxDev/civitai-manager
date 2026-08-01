@@ -46,7 +46,45 @@ func newFileBackedServer(t *testing.T) *Server {
 
 // matStopRe extracts one radio stop's attributes from a rendered track: the
 // value slug, plus whatever else the tag carries (checked / disabled).
-var matStopRe = regexp.MustCompile(`<input type="radio"[^>]*value="([a-z0-9]+)"([^>]*)>`)
+// matStopOpenRe matches the OPENING tag of one stop — a <label> for a selectable
+// level, a <span class="… cm-mat-stop-out"> for a level outside the valid band.
+// Captures: 1 = tag name, 2 = the extra classes, 3 = the step index.
+//
+// It deliberately matches only the OPEN tag, and callers slice between successive
+// matches. A non-greedy `.*?</span>` would terminate at the first NESTED </span>
+// (the dot), silently truncating every out-of-band stop to nothing.
+var matStopOpenRe = regexp.MustCompile(`<(label|span) class="cm-mat-stop([^"]*)" data-step="(\d+)">`)
+
+// matRadioRe finds a stop's radio input, if it has one.
+var matRadioRe = regexp.MustCompile(`<input type="radio"[^>]*value="([a-z0-9]+)"([^>]*)>`)
+
+// matStop is one rendered stop: its level slug (empty when it has no input at all),
+// whether it is out-of-band, and whether it carries a radio.
+type matStop struct {
+	slug      string
+	outOfBand bool
+	hasInput  bool
+}
+
+// matStops slices a track into its stops. Callers assert on ALL of them, because
+// the property under guard is about which stops carry a control at all.
+func matStops(track string) []matStop {
+	locs := matStopOpenRe.FindAllStringSubmatchIndex(track, -1)
+	out := make([]matStop, 0, len(locs))
+	for i, loc := range locs {
+		end := len(track)
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
+		}
+		seg := track[loc[1]:end]
+		st := matStop{outOfBand: strings.Contains(track[loc[4]:loc[5]], "cm-mat-stop-out")}
+		if m := matRadioRe.FindStringSubmatch(seg); m != nil {
+			st.hasInput, st.slug = true, m[1]
+		}
+		out = append(out, st)
+	}
+	return out
+}
 
 // matTrack slices out ONE end's <fieldset> by its id, using brace-free tag
 // balancing on the fieldset element so the two ends can never bleed into each
@@ -193,33 +231,66 @@ func TestMaturityControlCannotEmitAnInvertedRange(t *testing.T) {
 			maxTrack := matTrack(t, out, maturityControlMaxID)
 
 			check := func(end, track string, band func(maturityLevel) maturityRange) {
-				stops := matStopRe.FindAllStringSubmatch(track, -1)
+				stops := matStops(track)
 				if len(stops) != len(maturityScale) {
 					t.Fatalf("%s: the %s track rendered %d stops, want %d — every level must be "+
 						"DRAWN so the geometry stays uniform and the blocked region is visible:\n%s",
 						mr.String(), end, len(stops), len(maturityScale), track)
 				}
 				enabled := 0
-				for _, s := range stops {
-					l, ok := maturityFromSlug(s[1])
-					if !ok {
-						t.Fatalf("%s: the %s end offered an unknown level %q", mr.String(), end, s[1])
+				for i, st := range stops {
+					// 🔴 THE LOAD-BEARING ASSERTION. An out-of-band stop must emit NO input,
+					// so it is not a member of the radio group. It used to be a `disabled`
+					// radio, which arrow keys skip — but a native radio group WRAPS, so at a
+					// boundary the skip landed on the far end: from "X only", one ArrowLeft
+					// (the REDUCING direction) committed and persisted "X to XXX". A
+					// content-gating control failing open on one keypress.
+					if st.outOfBand && st.hasInput {
+						t.Errorf("%s: the %s end renders step %d as an out-of-band stop that STILL "+
+							"carries a radio (%q). A disabled radio is still a group member, and "+
+							"arrow-key wrap-around reaches it — that is how one keypress raised the "+
+							"ceiling to XXX. Out-of-band stops must emit no input at all.",
+							mr.String(), end, i, st.slug)
+						continue
 					}
-					disabled := strings.Contains(s[2], "disabled")
-					valid := band(l).valid()
-					if !disabled {
-						enabled++
-						if !valid {
-							t.Errorf("%s: the %s end leaves %s ENABLED, and choosing it would invert the range",
-								mr.String(), end, s[1])
+					if !st.hasInput {
+						if !st.outOfBand {
+							t.Errorf("%s: the %s end renders step %d with no input and no "+
+								"out-of-band marker — it is neither selectable nor legibly blocked",
+								mr.String(), end, i)
 						}
-					} else if valid {
-						t.Errorf("%s: the %s end disables %s, which would have been a valid band — "+
-							"the control must not block a reachable state", mr.String(), end, s[1])
+						continue
+					}
+					l, ok := maturityFromSlug(st.slug)
+					if !ok {
+						t.Fatalf("%s: the %s end offered an unknown level %q", mr.String(), end, st.slug)
+					}
+					enabled++
+					if !band(l).valid() {
+						t.Errorf("%s: the %s end leaves %s SELECTABLE, and choosing it would invert the range",
+							mr.String(), end, st.slug)
+					}
+				}
+				// The converse: a level that WOULD be a valid band must stay reachable, or
+				// the control blocks a state the user is entitled to.
+				for _, l := range maturityScale {
+					if !band(l).valid() {
+						continue
+					}
+					found := false
+					for _, st := range stops {
+						if st.hasInput && st.slug == l.slug() {
+							found = true
+						}
+					}
+					if !found {
+						t.Errorf("%s: the %s end has no selectable stop for %s, which would have "+
+							"been a valid band — the control must not block a reachable state",
+							mr.String(), end, l.slug())
 					}
 				}
 				if enabled == 0 {
-					t.Fatalf("%s: the %s end has no enabled stop at all", mr.String(), end)
+					t.Fatalf("%s: the %s end has no selectable stop at all", mr.String(), end)
 				}
 			}
 			check("FROM", minTrack, func(l maturityLevel) maturityRange {
@@ -240,7 +311,7 @@ func TestMaturityControlCannotEmitAnInvertedRange(t *testing.T) {
 				{"TO", maxTrack, hi.slug()},
 			} {
 				var found bool
-				for _, s := range matStopRe.FindAllStringSubmatch(want.track, -1) {
+				for _, s := range matRadioRe.FindAllStringSubmatch(want.track, -1) {
 					if s[1] != want.slug {
 						continue
 					}
@@ -248,10 +319,9 @@ func TestMaturityControlCannotEmitAnInvertedRange(t *testing.T) {
 					if !strings.Contains(s[2], "checked") {
 						t.Errorf("%s: the %s end does not check %s:\n%s", mr.String(), want.end, want.slug, want.track)
 					}
-					if strings.Contains(s[2], "disabled") {
-						t.Errorf("%s: the %s end's CHECKED stop %s is disabled — that end would submit "+
-							"nothing and the handler would 400", mr.String(), want.end, want.slug)
-					}
+					// The selected level is always inside the band, so its stop must be a
+					// real radio — never an out-of-band span. If it were, that end would
+					// submit nothing and the handler would 400 on an empty slug.
 				}
 				if !found {
 					t.Errorf("%s: the %s end has no stop for %s", mr.String(), want.end, want.slug)
