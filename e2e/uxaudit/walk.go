@@ -28,9 +28,6 @@ type View struct {
 	Hero bool
 }
 
-// Views is the ordered funnel the walk captures. workflow-detail is deliberately
-// captured BEFORE run-missing-models: triggering the run mutates the server's global
-// run-job state, so the clean detail view must be captured first.
 // RunPostPath is the hx-post path suffix of the workflow detail page's PRIMARY run
 // control — the "Generate" button of the v0.1.97 one-run-zone rework. The walk's hero
 // selector is built from it, and TestWalkSelectorsMatchTheServedApp asserts the served
@@ -48,6 +45,13 @@ const RunPostPath = "run-with-params"
 // the library Workflows tab. Guarded for the same reason as RunPostPath — it was an
 // aria-label until the copy-reduction pass moved it to title=.
 const ImportTriggerTitlePrefix = "Add a workflow"
+
+// ImportDialogID is the id of the native <dialog> the import trigger opens — a second
+// copy of internal/web's workflowImportDialogID. The import view's prep waits for
+// `#<ImportDialogID>[open]`, so a rename on the app side that reddens only
+// internal/web's tests would leave this module compiling and failing later, in a
+// browser, as an opaque WaitVisible timeout. Guarded browserlessly instead.
+const ImportDialogID = "workflow-import-dialog"
 
 // RunButtonSelector is the hero's run-control selector for a given workflow id.
 func RunButtonSelector(workflowID int64) string {
@@ -68,6 +72,9 @@ func ImportTriggerSelector() string {
 	return fmt.Sprintf(`button[title^=%q]`, ImportTriggerTitlePrefix)
 }
 
+// Views is the ordered funnel the walk captures. workflow-detail is deliberately
+// captured BEFORE run-missing-models: triggering the run mutates the server's global
+// run-job state, so the clean detail view must be captured first.
 func Views(app *App) []View {
 	wfPath := fmt.Sprintf("/workflows/%d", app.WorkflowID)
 	runSel := RunButtonSelector(app.WorkflowID)
@@ -90,7 +97,7 @@ func Views(app *App) []View {
 			return []chromedp.Action{
 				chromedp.WaitVisible(trigger, chromedp.ByQuery),
 				chromedp.Click(trigger, chromedp.ByQuery),
-				chromedp.WaitVisible(`#workflow-import-dialog[open]`, chromedp.ByQuery),
+				chromedp.WaitVisible("#"+ImportDialogID+"[open]", chromedp.ByQuery),
 				chromedp.Sleep(300 * time.Millisecond),
 			}
 		}},

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // This file is the BROWSERLESS rot-guard for the walk's coupling to the app.
@@ -20,9 +21,25 @@ import (
 // fail the moment the app stops rendering something the walk depends on.
 
 // fetchPage GETs an app-relative path and returns the response body + status.
+//
+// It uses its own client rather than http.DefaultClient for two reasons, both of
+// which would otherwise weaken the guards:
+//   - a timeout, so a hung handler fails this test in 10s instead of stalling to the
+//     package timeout with no attribution;
+//   - redirects are NOT followed. The walk's chromedp Navigate does follow them, but
+//     for a guard "this path serves the view" is the property under test — silently
+//     reporting 200 for a path that now 302s elsewhere is exactly the kind of pass
+//     that hides a moved surface.
+var labClient = &http.Client{
+	Timeout: 10 * time.Second,
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
+
 func fetchPage(t *testing.T, app *App, path string) (string, int) {
 	t.Helper()
-	resp, err := http.Get(app.URL + path)
+	resp, err := labClient.Get(app.URL + path)
 	if err != nil {
 		t.Fatalf("GET %s: %v", path, err)
 	}
@@ -32,6 +49,66 @@ func fetchPage(t *testing.T, app *App, path string) (string, int) {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(body), resp.StatusCode
+}
+
+// hasButtonWith reports whether some `<button …>` OPEN TAG in html contains attr.
+//
+// 🔴 The walk's selectors are `button[hx-post=…]` / `button[title^=…]` — they match a
+// BUTTON. A bare strings.Contains over the whole body does not: the same
+// hx-post="/workflows/N/run-with-params" is also emitted on the preset FORM
+// (internal/web/run_preset_pages.go), so a body-wide substring search would keep
+// passing after the button itself disappeared. That is CLAUDE.md's "assertion matched
+// a DIFFERENT element's attribute" mode, which shipped a permanently-open sheet once.
+//
+// ⚠ Limit: this splits on the first `>` after `<button`, so it would mis-parse an
+// attribute VALUE containing a literal `>`. None of the attributes asserted here can.
+func hasButtonWith(html, attr string) bool {
+	rest := html
+	for {
+		i := strings.Index(rest, "<button")
+		if i < 0 {
+			return false
+		}
+		rest = rest[i:]
+		j := strings.Index(rest, ">")
+		if j < 0 {
+			return false
+		}
+		if strings.Contains(rest[:j+1], attr) {
+			return true
+		}
+		rest = rest[j+1:]
+	}
+}
+
+// TestHasButtonWithDiscriminatesTheElement proves the helper does the one thing a
+// bare strings.Contains does not: reject a match that is NOT on a <button>. Without
+// this, "asserted on a button" is a claim in a comment rather than a property.
+func TestHasButtonWithDiscriminatesTheElement(t *testing.T) {
+	const attr = `hx-post="/workflows/1/run-with-params"`
+	cases := []struct {
+		name string
+		html string
+		want bool
+	}{
+		{"on a button", `<div><button class="x" ` + attr + `>Generate</button></div>`, true},
+		// The live shape this exists for: the preset FORM carries the same hx-post.
+		{"on a form only", `<form ` + attr + `><input name="seed"></form>`, false},
+		{"on a div only", `<div ` + attr + `></div>`, false},
+		{"absent entirely", `<button hx-post="/workflows/1/run">Old</button>`, false},
+		// A non-matching button must not shadow a later matching one.
+		{"second button matches", `<button id="a">A</button><button ` + attr + `>B</button>`, true},
+		// A form carrying it must not make a non-matching button look like a hit.
+		{"form matches, button does not", `<form ` + attr + `><button id="b">B</button></form>`, false},
+		{"no buttons at all", `<p>nothing here</p>`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasButtonWith(tc.html, attr); got != tc.want {
+				t.Errorf("hasButtonWith(%q) = %v, want %v", tc.html, got, tc.want)
+			}
+		})
+	}
 }
 
 // bootLabApp boots the hermetic lab app for a test and closes it on cleanup.
@@ -70,15 +147,26 @@ func TestWalkSelectorsMatchTheServedApp(t *testing.T) {
 		// Without this the unreachable branch (no button at all) would render a 200 and
 		// the selector assertion below would report a stale selector instead of a
 		// broken fixture.
-		if !strings.Contains(body, "ComfyUI reachable") {
-			t.Fatalf("GET %s did not render the reachable branch — the lab's fake ComfyUI "+
-				"is not being probed successfully, so this test cannot see the run button at all.\nbody:\n%s",
+		//
+		// 🔴 Assert data-state="ok", NOT the headline text. The reachable headline is
+		// "ComfyUI reachable" and the UNREACHABLE one is "No ComfyUI reachable at <url>"
+		// (internal/web/run_pages.go comfyStatusLines) — so a Contains check for
+		// "ComfyUI reachable" is TRUE ON BOTH BRANCHES and this non-vacuity guard was
+		// itself vacuous. Proven by pointing the lab's ComfyURL at a dead port: the
+		// marker check passed and the test then reported "stale selector" when the truth
+		// was "broken fixture" — the exact confusion this check exists to prevent.
+		// data-state is emitted only by the reachable arm.
+		if !strings.Contains(body, `data-state="ok"`) {
+			t.Fatalf("GET %s did not render the REACHABLE branch (no data-state=\"ok\") — the lab's "+
+				"fake ComfyUI is not being probed successfully, so this test cannot see the run "+
+				"button at all. This is a broken FIXTURE, not a stale selector.\nbody:\n%s",
 				path, truncate(body, 600))
 		}
-		// The exact attribute the walk's RunButtonSelector matches on.
+		// The exact attribute the walk's RunButtonSelector matches on — asserted on a
+		// BUTTON, because that is what the selector matches.
 		want := fmt.Sprintf(`hx-post="/workflows/%d/%s"`, app.WorkflowID, RunPostPath)
-		if !strings.Contains(body, want) {
-			t.Errorf("the run-control fragment does not carry the walk's run control %s\n"+
+		if !hasButtonWith(body, want) {
+			t.Errorf("no <button> in the run-control fragment carries the walk's run control %s\n"+
 				"the hero prep would hang on WaitVisible until the capture context expires "+
 				"(a bare \"context deadline exceeded\"); update RunPostPath to the app's current run control",
 				want)
@@ -96,10 +184,27 @@ func TestWalkSelectorsMatchTheServedApp(t *testing.T) {
 			t.Fatalf("GET %s did not render the workflows tab (no seeded workflow); got %d bytes", path, len(body))
 		}
 		want := fmt.Sprintf(`title="%s`, ImportTriggerTitlePrefix)
-		if !strings.Contains(body, want) {
-			t.Errorf("workflows tab does not carry the walk's import trigger prefix %s\n"+
+		if !hasButtonWith(body, want) {
+			t.Errorf("no <button> on the workflows tab carries the walk's import trigger prefix %s\n"+
 				"the workflow-import view's prep would hang on WaitVisible; "+
 				"update ImportTriggerTitlePrefix to the app's current trigger", want)
+		}
+	})
+
+	// The import view's prep does not stop at clicking the trigger — it then waits for
+	// `#workflow-import-dialog[open]`. That id is a SECOND copy of a string owned by
+	// internal/web (workflowImportDialogID), and it drifts silently: a rename reddens
+	// internal/web's own tests while this module keeps compiling and dies later, in a
+	// browser, as the same opaque WaitVisible timeout.
+	t.Run("import dialog container", func(t *testing.T) {
+		const path = "/library?tab=workflows"
+		body, status := fetchPage(t, app, path)
+		if status != http.StatusOK {
+			t.Fatalf("GET %s: status %d, want 200", path, status)
+		}
+		if !strings.Contains(body, `id="`+ImportDialogID+`"`) {
+			t.Errorf("workflows tab has no id=%q dialog — the workflow-import view's prep "+
+				"would click the trigger and then hang waiting for the dialog to open", ImportDialogID)
 		}
 	})
 }
@@ -115,6 +220,16 @@ func TestWalkSelectorsMatchTheServedApp(t *testing.T) {
 // Do not read a pass here as "every view shows the intended content".
 func TestWalkViewPathsAreServable(t *testing.T) {
 	app := bootLabApp(t)
+
+	// A floor on coverage. Without it, deleting entries from Views() shrinks the audit
+	// silently and every remaining assertion still passes — the walk would report a
+	// clean run over a fraction of the app. Raise this when views are added; it is a
+	// ratchet, not an exact count.
+	const minViews = 10
+	if n := len(Views(app)); n < minViews {
+		t.Errorf("Views() returned %d views, want at least %d — the walk's coverage shrank; "+
+			"if a view was deliberately removed, lower this floor in the same commit", n, minViews)
+	}
 
 	seen := map[string]bool{}
 	for _, v := range Views(app) {
