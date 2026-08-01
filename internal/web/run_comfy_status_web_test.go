@@ -30,8 +30,10 @@ func TestComfyStatusReachable(t *testing.T) {
 	if !strings.Contains(body, "0.27.1") {
 		t.Errorf("green pill should show the ComfyUI version")
 	}
-	// Enabled Run button posts to /run; the disabled tooltip must be absent.
-	if !strings.Contains(body, `hx-post="/workflows/`+id+`/run"`) {
+	// The enabled Run button posts to the params endpoint (this fixture is an
+	// API-format workflow, which the batch endpoint refuses); the disabled tooltip
+	// must be absent.
+	if !strings.Contains(body, `hx-post="/workflows/`+id+`/run-with-params"`) {
 		t.Errorf("reachable fragment should carry an enabled Run button")
 	}
 	if strings.Contains(body, "is not reachable") {

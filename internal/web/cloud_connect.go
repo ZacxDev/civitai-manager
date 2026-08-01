@@ -165,11 +165,23 @@ func cloudConnectFragment(v cloudConnectView, csrf string) g.Node {
 // for the raw value AND for a distinctive fragment of it, and
 // TestCloudTokenLineRendersOnlyTheRedactedTail pins this component directly. If
 // this line ever renders anything but the redaction, both fail.
+// It also states, in the same breath, what that token DOES — because the omission
+// was the whole complaint. A user hit "Run for real (spends Buzz)" and reasonably
+// expected to be asked to authorise the spend; there is no OAuth in this app and no
+// per-run approval step, so the configured API token IS the authorisation. Nothing
+// was broken and nothing needed fixing in the code — it had simply never been said.
 func cloudTokenLine(v cloudConnectView) g.Node {
 	label := "Cloud runs authenticate with your CivitAI API token: "
-	return h.P(h.Class("text-sm text-slate-300"),
-		g.Text(label),
-		h.Span(h.Class("font-mono text-xs text-slate-200"), g.Text(v.redactedToken)),
+	return h.Div(h.Class("space-y-1"),
+		h.P(h.Class("text-sm text-slate-300"),
+			g.Text(label),
+			h.Span(h.Class("font-mono text-xs text-slate-200"), g.Text(v.redactedToken)),
+		),
+		h.P(h.Class("text-xs text-slate-400"),
+			g.Text("That token is also what SPENDS your Buzz. This app has no separate sign-in "+
+				"and CivitAI asks for no per-run approval, so anything you start here is "+
+				"charged straight to the account the token belongs to — the confirmation on "+
+				"the run button is the only one you get.")),
 	)
 }
 

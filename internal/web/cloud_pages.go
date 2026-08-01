@@ -27,11 +27,15 @@ const (
 // (#cloud-panel, same endpoint, same swap) — only the surrounding chrome moved. The
 // loaded fragment itself handles the enabled/disabled (comfy_cloud) and API-format
 // cases.
+// Since the destination control landed (runDestination in run_zone.go) this block
+// no longer draws its own separator or its own "Run on CivitAI Cloud" heading: the
+// tab the user clicked to get here IS the heading, and the separator was the visual
+// grammar of "a different section below", which is exactly the reading the
+// destination control exists to remove. Everything else — the stable container ids,
+// the endpoints, the lazy load — is unchanged.
 func cloudGenerateBlock(wfID int64) g.Node {
 	id := strconv.FormatInt(wfID, 10)
 	return h.Div(
-		h.Class("cm-gen-sep"),
-		h.H3(h.Class("text-sm font-semibold text-slate-200 mb-2"), g.Text("Run on CivitAI Cloud")),
 		// --- PR C2 (filled the C2 SEAM) ----------------------------------------
 		// The CivitAI-cloud CONNECT block. C1 reserved this spot for a "credential
 		// entry" form; the real code says there is NO credential to enter. Cloud
@@ -143,6 +147,9 @@ func cloudPanelFragment(v cloudPanelView, csrf string) g.Node {
 	return h.Div(
 		h.Class("space-y-4"),
 		cloudEgressWarning(),
+		// 🔴 THE NODEPACK BLOCKER GOES FIRST — ABOVE the resource table, not below it.
+		// Placement is the entire point (see cloudNodepackBlocker).
+		cloudNodepackBlocker(v.rows),
 		g.If(v.willConvert, cloudWillConvertNote()),
 		cloudResourceTable(v.rows),
 		h.Form(
@@ -187,6 +194,77 @@ func cloudConversionWarnings(warnings []string) g.Node {
 		g.Text("Cloud run converts UI-format workflows to API format via your local ComfyUI, "+
 			"but this workflow has nodes that could not be converted. It was not submitted."),
 		missingList("Conversion warnings", warnings),
+	)
+}
+
+// cloudNodepackBlocker names the ONE limitation that makes a cloud run impossible
+// rather than merely unresolved, and it renders ABOVE the resource table.
+//
+// 🔴 PLACEMENT IS THE POINT. A custom-node row renders a "custom node" badge and
+// "(fill in below)" in the AIR URN column — which reads as *your* unfinished
+// homework: find the nodepack URN, paste it in, run. It is not. CivitAI's
+// CustomComfy step REJECTS a bare `comfy:nodepack` URN at submit; making it work
+// needs a `comfyNodepackSnapshot` step producing a `nodepacklayer` AIR, which this
+// app does not build (see COMFYUI-INTEGRATION-DESIGN.md). So the user could fill in
+// every one of those rows perfectly and the submit would still fail. Telling them
+// AFTER the table would be telling them after the effort.
+//
+// It does not disable anything. The whatif estimate is free, and it is the only way
+// to find out what CivitAI does today rather than what this repo recorded — so the
+// path stays open and the alert says what we know, sourced, without claiming to have
+// re-measured it.
+//
+// 🔴 THE HEADLINE IS CONDITIONAL, AND THAT IS NOT HEDGING — THE DETECTOR CANNOT
+// SUPPORT AN ASSERTION. `ResolveCustomNode` means only "this class_type is absent
+// from coreNodeClasses", a ~50-entry hand-written table (internal/comfy/resolve.go)
+// whose own comment says "false-positives are acceptable (the user reviews the
+// list)". That tolerance was calibrated for a TABLE ROW reading "custom node ·
+// (fill in below)"; escalating the same signal into a banner that says "do not
+// spend time on these rows" spends the tolerance on a claim it cannot cover.
+// MEASURED against a live ComfyUI (/object_info, 2462 types) and a real 70-workflow
+// library: ComfyUI ships 790 built-in class_types, coreNodeClasses knows 47 of
+// them, and 44 of 70 workflows (62%) contain at least one REAL BUILT-IN that this
+// detector calls custom — `WanImageToVideo` (comfy_extras.nodes_wan) in 14 of them,
+// `CLIPVisionLoader` (nodes) in 6. A flat assertion therefore steers most users off
+// a working paid path.
+// The nodepack limitation itself is real and stays stated in full; what changed is
+// that it now applies IF these are genuinely custom, and the copy says how to find
+// out. Do not restore the flat assertion without first making the detector
+// authoritative — /object_info distinguishes `comfy_extras.*`/`nodes` from
+// `custom_nodes.*`, so the local ComfyUI can answer this when it is reachable.
+//
+// Every class_type here is untrusted graph text and goes through g.Text.
+func cloudNodepackBlocker(rows []comfy.ResolvedResource) g.Node {
+	var names []string
+	for _, r := range rows {
+		if r.Status == comfy.ResolveCustomNode {
+			names = append(names, r.Filename)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	// Singular reads "If this is a custom node", plural "If any of these are custom
+	// nodes" — one shared noun cannot carry both, since subject and verb change
+	// together.
+	lead := "If this is a custom node"
+	if len(names) > 1 {
+		lead = "If any of these are custom nodes"
+	}
+	return alert("warning",
+		lead+", CivitAI Cloud cannot run this workflow yet",
+		h.P(h.Class("text-sm"),
+			g.Text("Cloud runs go through CivitAI's CustomComfy step, which rejects a plain "),
+			h.Span(h.Class("font-mono text-xs"), g.Text("urn:air:comfy:nodepack:…")),
+			g.Text(" at submit — it needs a node-pack SNAPSHOT that this app does not build yet. "+
+				"For a genuinely custom node, filling in the URN column below will not change "+
+				"that, so it is not worth the effort.")),
+		h.P(h.Class("text-sm"),
+			g.Text("These are flagged by a short list of known built-in node types, so some may "+
+				"be built-ins this app simply does not recognise — in which case the cloud run "+
+				"is fine. Estimate is free and is the authoritative check; running on your local "+
+				"ComfyUI above always works, since the nodes are installed (or can be).")),
+		missingList("Node types this app did not recognise as built-in", names),
 	)
 }
 
@@ -279,9 +357,20 @@ func cloudEstimateFragment(v cloudEstimateView, csrf string) g.Node {
 			g.Text("Estimated cost: "), h.Span(h.Class("font-semibold"), g.Text(costStr+" Buzz"))))
 	}
 	if v.insufficientBuzz {
+		// 🔴 This is a BLOCK, and it has to read like one. `insufficientBuzz` used to
+		// render a bare one-line "Your account does not have enough Buzz" with no
+		// statement that the run button had been withheld — so the button's ABSENCE
+		// was the only signal that nothing would happen, which is exactly the kind of
+		// thing a user reads as a broken page. Say what was withheld and why, and name
+		// the account the balance belongs to (the configured API token's).
 		body = append(body,
-			alert("error", "Insufficient Buzz",
-				g.Text("Your account does not have enough Buzz to run this workflow.")))
+			alert("error", "Not enough Buzz — this run was not offered",
+				h.P(h.Class("text-sm"),
+					g.Text("CivitAI reports that the account behind your configured API token "+
+						"does not have enough Buzz for this workflow, so the run button is "+
+						"deliberately not shown. Top the account up on civitai.com and estimate "+
+						"again, or run it on your local ComfyUI above, which costs nothing.")),
+			))
 	} else {
 		body = append(body, cloudRunForRealButton(v.wfID, v.urns, csrf))
 	}

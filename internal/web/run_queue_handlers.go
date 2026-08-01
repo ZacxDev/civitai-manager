@@ -79,7 +79,7 @@ func (s *Server) handleWorkflowRunQueue(w http.ResponseWriter, r *http.Request) 
 		opts.PresetID, opts.PresetName = p.ID, p.Name
 	}
 
-	count, clamped := clampBatchCount(r.FormValue(batchCountField))
+	count, clamped := clampBatchCount(batchCountFromForm(r.Form))
 
 	// EVERY response is a server-authored lead node ABOVE the status fragment, never
 	// instead of it: #run-status is swapped innerHTML, so a response that omits the
@@ -108,6 +108,21 @@ func (s *Server) handleWorkflowRunQueue(w http.ResponseWriter, r *http.Request) 
 	// the raw graph still exposes "a" seed, so nothing fires.
 	// TestQueueSeedKeysComeFromTheModeAppliedGraph is the mutation guard.
 	seedKeys := comfy.SeedWidgetKeys(modeAppliedGraph(wf, modes))
+	// 🔴 A COUNT OF ONE MUST NOT RE-ROLL THE SEED. This endpoint is now the ONE
+	// primary run control's endpoint (see run_zone.go), so count==1 is the ordinary
+	// "Generate once" click — and "Run once" has to run the seed the user can SEE in
+	// the Parameters field. Passing seedKeys unconditionally (which is what this did
+	// while it was only reachable from a "Queue ×N" block) would silently overwrite
+	// that value on every single run, making the field a lie and making a deliberate
+	// re-run of one specific seed impossible.
+	//
+	// batchSpec.SeedKeys documents exactly this: "only the Queue endpoint randomises,
+	// because Run once must run the seed the user can see in the field."
+	// TestSingleRunKeepsTheVisibleSeed is the mutation guard.
+	batchSeedKeys := seedKeys
+	if count <= 1 {
+		batchSeedKeys = nil
+	}
 	if len(seedKeys) == 0 && count > 1 && r.FormValue(batchConfirmNoSeedField) != "1" {
 		// A SIBLING above the status fragment, the way runNoticeLine already is. The
 		// check above has already ruled out a running batch; this closes the window
@@ -120,7 +135,7 @@ func (s *Server) handleWorkflowRunQueue(w http.ResponseWriter, r *http.Request) 
 	started, refusal := s.startBatch(wf, opts, batchSpec{
 		Count:    count,
 		Message:  "Starting run…",
-		SeedKeys: seedKeys,
+		SeedKeys: batchSeedKeys,
 	})
 	notice := refusal.notice()
 	if started {
@@ -137,18 +152,19 @@ func (s *Server) handleWorkflowRunQueue(w http.ResponseWriter, r *http.Request) 
 //     then runs enforceOutputsCap, which deletes the OLDEST generations to stay
 //     under the disk cap. A batch multiplies that pressure N-fold, and finding your
 //     older outputs gone is exactly the kind of thing that must be said up front.
-//   - a count of ONE, which is the surprising case: a click on a control labelled
-//     "Queue ×N" produced an ordinary single run, and the response was otherwise
-//     byte-indistinguishable from Run. That is reachable whenever the count input is
-//     cleared (or a hand-built request omits it) — clampBatchCount reads "" as 1.
-//     runQueueControl's default keeps it off the ordinary path; this line covers the
-//     rest.
+//
+// A count of ONE says NOTHING. It used to say "Started a single run — nothing was
+// queued", which was the right answer while this endpoint was only reachable from a
+// block labelled "Queue ×N": a click there that did one run needed explaining. It is
+// now the ONE run control's endpoint and `1` is a selectable, visible option on it
+// (run_zone.go), so that line would scold the user for doing exactly what the
+// control they used says. An empty notice also keeps the single-run response
+// byte-identical to the plain /run-with-params response it replaced.
 //
 // Nothing from the request is reflected into it.
 func queueStartNotice(count int, clamped, noSeed bool) string {
 	if count <= 1 {
-		return "Started a single run — nothing was queued. Enter a count above 1, " +
-			"or use a quick pick, to queue a batch."
+		return ""
 	}
 	msg := "Queued " + strconv.Itoa(count) + " runs. They run one at a time; Stop cancels the rest."
 	if clamped {
@@ -223,67 +239,10 @@ func noSeedBatchOffer(wfID int64, csrf string, count int) g.Node {
 	)
 }
 
-// runQueueControl is the "Queue ×N" row inside the preset form: quick picks plus a
-// number input, all posting to the queue endpoint.
-//
-// It targets #run-status and swaps innerHTML — identical to the existing Run button
-// — so the tab strip in #run-params is never touched by it, and the 1 s poller
-// still owns #run-status alone. hx-disabled-elt="this" is what stops a double-click
-// from racing the singleton check.
-func runQueueControl(wfID string, csrf string) g.Node {
-	picks := make([]g.Node, 0, len(batchQuickPicks))
-	for _, n := range batchQuickPicks {
-		s := strconv.Itoa(n)
-		picks = append(picks, civButton("outline", "sm", []g.Node{
-			h.Type("button"),
-			g.Attr("title", "Queue "+s+" runs, each with a new random seed"),
-			hx("post", "/workflows/"+wfID+"/run/queue"),
-			hx("target", "#"+runStatusContainerID),
-			hx("swap", "innerHTML"),
-			hx("include", runPresetInclude),
-			hx("disabled-elt", "this"),
-			hx("vals", `{"csrf_token":"`+csrf+`","`+batchCountField+`":"`+s+`"}`),
-		}, g.Text("×"+s)))
-	}
-
-	// The number input is NOT inside the preset form's field set by accident: it is
-	// named `count`, which no other run control submits, so it rides along on every
-	// preset request harmlessly and is read only here.
-	//
-	// It carries defaultBatchCount rather than an empty value: the plain "Queue"
-	// button sends only CSRF in hx-vals, so an EMPTY input made it post count="",
-	// which clampBatchCount reads as 1 — a control labelled "Queue ×N" quietly doing
-	// a single run, with a response indistinguishable from Run's. A pre-filled
-	// default makes the untouched click do what the label says. The quick picks are
-	// unaffected: the vendored htmx merges hx-vals AFTER the included input, so
-	// hx-vals wins.
-	custom := h.Div(dataAttr("civitai-ui", "text-input"), h.Class("cm-param-int"),
-		h.Label(dataFlag("civitai-ui-label"), h.For("cm-batch-count"), g.Text("Custom count")),
-		h.Input(dataFlag("civitai-ui-control"), h.ID("cm-batch-count"),
-			h.Type("number"), h.Name(batchCountField),
-			g.Attr("min", "1"), g.Attr("max", strconv.Itoa(maxBatchCount)),
-			g.Attr("step", "1"), h.Value(strconv.Itoa(defaultBatchCount))),
-	)
-	queue := civButton("outline", "sm", []g.Node{
-		h.Type("button"),
-		hx("post", "/workflows/"+wfID+"/run/queue"),
-		hx("target", "#"+runStatusContainerID),
-		hx("swap", "innerHTML"),
-		hx("include", runPresetInclude),
-		hx("disabled-elt", "this"),
-		csrfInline(csrf),
-	}, g.Text("Queue"))
-
-	return h.Div(h.Class("pt-2 space-y-1"),
-		h.Div(h.Class("text-xs font-semibold text-slate-200"), g.Text("Queue ×N")),
-		h.P(h.Class("text-xs text-slate-500"),
-			g.Text("Runs these parameters N times, one at a time, each with a new random "+
-				"seed. Maximum "+strconv.Itoa(maxBatchCount)+" per batch. Stop cancels the "+
-				"remaining runs; anything already captured is kept.")),
-		h.Div(h.Class("flex flex-wrap items-end gap-2"),
-			g.Group(picks),
-			h.Div(h.Class("w-28"), custom),
-			queue,
-		),
-	)
-}
+// (runQueueControl lived here. It was the "Queue ×N" block — its own heading, its
+// own paragraph, four quick-pick buttons, a number input and a "Queue" button,
+// rendered INSIDE the preset form. It is gone: the count is now a segment on the ONE
+// primary run control, and every reason the block existed is documented at the top
+// of run_zone.go. Two of its properties were kept rather than lost — the count still
+// rides along on the run request, and its Custom field still defaults to a real
+// batch so it cannot silently mean "one".)

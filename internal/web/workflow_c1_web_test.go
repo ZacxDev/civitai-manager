@@ -422,7 +422,11 @@ func TestGenerateSectionCombinesTheThreeRunSurfaces(t *testing.T) {
 		`id="run-comfy-status"`,                 // local run controls
 		`action="/workflows/3/open-in-comfyui"`, // editor hand-off
 		`id="cloud-panel"`,                      // cloud run
-		"Run on CivitAI Cloud",
+		// The cloud surface is now NAMED by the destination tab rather than by a
+		// heading of its own — the heading was the visual grammar of "a different
+		// section below", which is the reading runDestination exists to remove.
+		`for="cm-dest-cloud"`,
+		"CivitAI Cloud",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the Generate section is missing %q:\n%s", want, got)
@@ -434,14 +438,18 @@ func TestGenerateSectionCombinesTheThreeRunSurfaces(t *testing.T) {
 			t.Errorf("a superseded standalone card heading is back (%q):\n%s", gone, got)
 		}
 	}
-	// Document order inside the ONE section: the section opens, then the local run
-	// status, then the cloud sub-block — the cloud run is never a card of its own.
+	// Document order inside the ONE section. The cloud panel now sits in the
+	// destination control ABOVE #run-status rather than below it, because #run-status
+	// was deliberately hoisted OUT of both destination panels so a local run in
+	// flight stays visible on either tab. What is pinned is unchanged in substance:
+	// the cloud run is never a card of its own, and it lives inside #cm-generate.
 	genAt := strings.Index(got, `id="cm-generate"`)
-	statusAt := strings.Index(got, `id="`+runStatusContainerID+`"`)
+	destAt := strings.Index(got, `class="cm-dest"`)
 	cloudAt := strings.Index(got, `id="cloud-panel"`)
-	if genAt < 0 || statusAt < genAt || cloudAt < statusAt {
-		t.Errorf("expected #cm-generate < #run-status < #cloud-panel, got %d/%d/%d",
-			genAt, statusAt, cloudAt)
+	statusAt := strings.Index(got, `id="`+runStatusContainerID+`"`)
+	if genAt < 0 || destAt < genAt || cloudAt < destAt || statusAt < cloudAt {
+		t.Errorf("expected #cm-generate < .cm-dest < #cloud-panel < #run-status, got %d/%d/%d/%d",
+			genAt, destAt, cloudAt, statusAt)
 	}
 }
 
@@ -487,11 +495,17 @@ func TestGenerateSectionDegradesWhenComfyIsUnreachable(t *testing.T) {
 		notWanted []string
 	}{
 		{
+			// canQueue false — an API-format workflow, which the batch endpoint
+			// refuses — so the ONE primary control posts to the params endpoint.
 			name: "reachable",
 			view: comfyStatusView{configured: true, reachable: true, version: "0.27.1"},
 			want: []string{
 				`data-state="ok"`, "ComfyUI reachable", "0.27.1",
-				`hx-post="/workflows/5/run"`, ">Generate<", "cm-generate-cta",
+				`hx-post="/workflows/5/run-with-params"`, ">Generate<", "cm-generate-cta",
+				// 🔴 The include is the whole point of the consolidation: this button
+				// used to carry ONLY #run-modes and silently drop every edit in the
+				// Parameters panel it sits under.
+				`hx-include="` + runZoneInclude + `"`,
 			},
 			// `type="button" disabled` is the discriminator — hx-disabled-elt (which
 			// disables the button only for the duration of its own request) is expected
@@ -515,6 +529,17 @@ func TestGenerateSectionDegradesWhenComfyIsUnreachable(t *testing.T) {
 			view:      comfyStatusView{},
 			want:      []string{`data-state="off"`, "not configured"},
 			notWanted: []string{`hx-post="/workflows/5/run"`, "Recheck"},
+		},
+		{
+			// canQueue true — a UI-format workflow, so the SAME button carries the
+			// count segment's value to the batch endpoint. One button, both jobs.
+			name: "reachable and queueable",
+			view: comfyStatusView{configured: true, reachable: true, canQueue: true},
+			want: []string{
+				`hx-post="/workflows/5/run/queue"`,
+				`hx-include="` + runZoneInclude + `"`,
+			},
+			notWanted: []string{`hx-post="/workflows/5/run-with-params"`},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

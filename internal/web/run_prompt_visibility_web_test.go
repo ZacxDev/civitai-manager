@@ -51,9 +51,22 @@ func TestPromptInputsAreVisibleOnLoad(t *testing.T) {
 	if !strings.Contains(visible, "Prompt (Positive)") {
 		t.Errorf("the prompt label is not in the always-visible region:\n%s", visible)
 	}
-	// The Run CTA rode inside the same old disclosure. It must be reachable too.
-	if !strings.Contains(got, "Run with these parameters") {
-		t.Fatalf("the run CTA vanished:\n%s", got)
+	// The Run CTA rode inside the same old disclosure and had to be reachable too.
+	// It has since LEFT this panel entirely — there is now one run control, in the run
+	// zone below (run_zone.go), and TestRunZoneIsNotBehindADisclosure carries the
+	// "not hidden on load" half of this property at its new home.
+	//
+	// What this test still owns is that the panel did not quietly grow a SECOND
+	// run-starting control back, and that whatever preset actions remain are outside
+	// the disclosure rather than folded into it.
+	if strings.Contains(got, "Run with these parameters") {
+		t.Fatalf("a rival run CTA is back inside the Parameters panel:\n%s", got)
+	}
+	reset := strings.Index(got, `type="reset"`)
+	lastClose := strings.LastIndex(got, "</details>")
+	if reset < 0 || lastClose < 0 || reset < lastClose {
+		t.Errorf("the preset actions must sit outside the advanced disclosure "+
+			"(reset=%d, last </details>=%d):\n%s", reset, lastClose, got)
 	}
 
 	// The advanced knobs are the ones that collapse. The seed is the clearest case:

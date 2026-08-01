@@ -52,7 +52,6 @@ const runGenerateSectionID = "cm-generate"
 // #run-params. Do not collapse or reparent them.
 func generateSection(wf *store.Workflow, snap runSnapshot, csrf string, extraAllowed, dlEligible bool,
 	mr maturityRange, presets presetTabView, comfyConfigured bool, helper comfyHelperView) g.Node {
-	id := strconv.FormatInt(wf.ID, 10)
 	sectionAttrs := []g.Node{h.ID(runGenerateSectionID), h.Class("cm-generate")}
 	if !extraAllowed {
 		return card(append(sectionAttrs,
@@ -65,27 +64,11 @@ func generateSection(wf *store.Workflow, snap runSnapshot, csrf string, extraAll
 	// an API graph does not load into the ComfyUI editor.
 	editable := comfyConfigured && wf.Format == store.WorkflowFormatUI
 
-	// The actions row: the reachability icon + primary Generate (both inside the
-	// lazily-loaded, Recheck-refreshable #run-comfy-status), then the secondary
-	// "Open in ComfyUI" form as a SIBLING so it never depends on that probe.
-	actions := []g.Node{
-		h.Div(h.ID(runComfyStatusID), h.Class("cm-gen-row"),
-			hx("get", "/workflows/"+id+"/run/comfy-status"),
-			hx("trigger", "load"),
-			hx("swap", "innerHTML"),
-			h.Span(h.Class("text-sm text-slate-400"), g.Text("Checking ComfyUI…")),
-		),
-	}
-	if editable {
-		actions = append(actions, openInComfyForm(id, csrf, "outline", "md"))
-	}
-
 	body := append(sectionAttrs,
 		sectionTitle("Generate"),
 		h.P(h.Class("text-xs text-slate-500 mb-3"),
 			g.Text("Runs this workflow on your local ComfyUI ("+comfyDisplayURL(wf)+"). "+
 				"UI-format graphs are converted to API format first; missing nodes or models are reported before submitting.")),
-		h.Div(h.Class("cm-gen-row"), g.Group(actions)),
 	)
 	// Multi-mode template picker (empty container for an ordinary workflow). It sits
 	// ABOVE Parameters because the choice determines which parameters exist.
@@ -100,10 +83,24 @@ func generateSection(wf *store.Workflow, snap runSnapshot, csrf string, extraAll
 	// a multi-mode template before a mode is picked). The container is STABLE so the
 	// mode picker can swap its innerHTML.
 	body = append(body, h.Div(h.ID(runParamsContainerID), runPresetPanel(wf, csrf, presets)))
+	// THE ONE RUN ZONE — the count segment, the single primary control (inside the
+	// stable, lazily-probed #run-comfy-status) and the secondary "Open in ComfyUI".
+	// It sits BETWEEN #run-params and #run-status and is nested in NEITHER, so a
+	// preset-tab swap and the 1 s run poller both leave it alone. See run_zone.go for
+	// why this replaced three competing controls.
+	//
+	// WHERE it runs is ONE decision: the zone and the cloud block are the two panels
+	// of a single destination control (runDestination), not two stacked apparatuses.
+	body = append(body, runDestination(
+		runZone(wf.ID, csrf, wf.Format == store.WorkflowFormatUI, editable),
+		cloudGenerateBlock(wf.ID),
+	))
 	// Run job status container (unchanged): poller drives running → terminal.
+	//
+	// 🔴 It stays OUTSIDE both destination panels. Inside the local one, switching to
+	// Cloud would hide a local run that is still in flight — and the poller would go
+	// on updating an invisible element, which is the shape of "my run vanished".
 	body = append(body, h.Div(h.ID(runStatusContainerID), runStatusFragment(snap, wf.ID, csrf, dlEligible, mr)))
-	// The cloud run, as a separated sub-block of the SAME section.
-	body = append(body, cloudGenerateBlock(wf.ID))
 	// Helper install/remove stays a collapsed "advanced" disclosure and is never
 	// surfaced in a per-click result (an inline "Remove helper" button beside the
 	// success text got clicked by a user who did not know it disabled the feature).
@@ -119,6 +116,11 @@ type comfyStatusView struct {
 	reachable  bool   // SystemStats succeeded
 	version    string // ComfyUIVersion (untrusted — escaped)
 	comfyURL   string // configured comfy_url (escaped)
+	// canQueue is true for a UI-format workflow, i.e. one the batch endpoint
+	// accepts. It decides which endpoint the ONE primary control posts to, and it
+	// must agree with runZone's own canQueue — both read wf.Format, and the count
+	// segment only exists when this is true.
+	canQueue bool
 }
 
 // runComfyStatusFragment renders the reachability INDICATOR + the primary Generate
@@ -143,7 +145,7 @@ func runComfyStatusFragment(wfID int64, csrf string, v comfyStatusView) g.Node {
 	if v.reachable {
 		return g.Group([]g.Node{
 			comfyStatusIcon(v),
-			runButtonEnabled(id, csrf),
+			runButtonEnabled(id, csrf, v.canQueue),
 		})
 	}
 	return g.Group([]g.Node{
@@ -202,17 +204,36 @@ func comfyStatusIcon(v comfyStatusView) g.Node {
 	)
 }
 
-// runButtonEnabled is the live PRIMARY control: posts to /run and swaps #run-status.
-// .cm-generate-cta is the hook the section's `:target` deep-link highlight pulses.
-func runButtonEnabled(id, csrf string) g.Node {
+// runButtonEnabled is THE live primary control — the only button on the page that
+// starts a local run.
+//
+// 🔴 Two things changed here and both were bugs, not polish:
+//
+//   - hx-include was runModesInclude (#run-modes ONLY). This button sat directly
+//     above the Parameters panel and SILENTLY DISCARDED everything typed into it,
+//     while a second, smaller "Run with these parameters" submit inside the panel
+//     did honour it. It now includes runZoneInclude — the parameters form, the mode
+//     picker AND the count segment — so the prominent button runs what is on screen.
+//   - the endpoint was /run, which does not read parameters at all. It is now the
+//     batch endpoint for a UI-format workflow (count==1 is an ordinary single run —
+//     see handleWorkflowRunQueue) and /run-with-params for an API-format one, which
+//     the batch endpoint deliberately refuses.
+//
+// .cm-generate-cta is the hook the section's `:target` deep-link highlight pulses;
+// .cm-run-go is what the count segment's CSS suffixes with " ×4".
+func runButtonEnabled(id, csrf string, canQueue bool) g.Node {
+	post := "/workflows/" + id + "/run-with-params"
+	if canQueue {
+		post = "/workflows/" + id + "/run/queue"
+	}
 	return civButton("filled", "md", []g.Node{
-		h.Class("cm-generate-cta"),
+		h.Class("cm-generate-cta cm-run-go"),
 		h.Type("button"),
-		hx("post", "/workflows/"+id+"/run"),
+		hx("post", post),
 		hx("target", "#"+runStatusContainerID),
 		hx("swap", "innerHTML"),
 		hx("disabled-elt", "this"),
-		hx("include", runModesInclude),
+		hx("include", runZoneInclude),
 		csrfInline(csrf),
 	}, g.Text("Generate"))
 }
@@ -422,13 +443,20 @@ func runTerminal(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mr 
 }
 
 // runAgainButton re-triggers a run into the same stable container.
+//
+// It posts to /run-with-params and hx-includes runPresetInclude for the same reason
+// runButtonEnabled does: /run reads no parameters, so "Run again" used to re-run the
+// workflow's SAVED values and quietly throw away the edits still sitting in the panel
+// above — the one moment a user is most likely to have just changed something.
+// It stays a SINGLE run (runPresetInclude, not runZoneInclude): "again" after a
+// halted 8-item batch must not silently re-queue eight more.
 func runAgainButton(wfID int64, csrf string) g.Node {
 	return civButton("outline", "sm", []g.Node{
 		h.Type("button"),
-		hx("post", fmt.Sprintf("/workflows/%d/run", wfID)),
+		hx("post", fmt.Sprintf("/workflows/%d/run-with-params", wfID)),
 		hx("target", "#"+runStatusContainerID),
 		hx("swap", "innerHTML"),
-		hx("include", runModesInclude),
+		hx("include", runPresetInclude),
 		csrfInline(csrf),
 	}, g.Text("Run again"))
 }

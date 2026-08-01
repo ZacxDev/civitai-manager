@@ -2990,6 +2990,294 @@ a.cm-res-chip .cm-res-name {
 }
 
 /*
+ * .cm-runbar / .cm-count-* / .cm-run-* — THE ONE RUN ZONE (see run_zone.go for
+ * why three competing controls became one).
+ *
+ * NO NEW COLOUR PAIR ENTERS THIS FILE. The pills reuse exactly two pairs the
+ * contrast table already pins: text-dimmed → text at rest/hover (the same pair
+ * .cm-version-tab uses) and primary-fg on primary when selected (the same pair as a
+ * filled button / a selected facet chip). That is deliberate — a bespoke "selected"
+ * colour here would have needed its own row in contrast_web_test.go's table and its
+ * own light-theme debt entry.
+ */
+.cm-runbar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+.cm-count {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+.cm-count-opts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0.25rem;
+  padding: 0.2rem;
+  border: 1px solid var(--civitai-color-border);
+  border-radius: 0.5rem;
+}
+/*
+ * 🔴 The radio is CLIPPED, not `display: none` and not `[hidden]`. Both of those
+ * remove it from the accessibility tree AND from the tab order, which would throw
+ * away the only reason this is a radiogroup rather than five buttons: the browser
+ * gives arrow-key navigation, a group name and a "3 of 6" announcement for free.
+ * Clipping keeps all of that and lets `:checked + label` / `:focus-visible + label`
+ * do the painting.
+ */
+.cm-count-radio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+.cm-count-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.5rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  line-height: 1.25;
+  color: var(--civitai-color-text-dimmed);
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.18s ease, background-color 0.18s ease, transform 0.12s ease;
+}
+.cm-count-pill:hover {
+  color: var(--civitai-color-text);
+  background: var(--civitai-color-surface-2);
+}
+.cm-count-radio:checked + .cm-count-pill {
+  background: var(--civitai-color-primary);
+  color: var(--civitai-color-primary-fg);
+}
+.cm-count-radio:focus-visible + .cm-count-pill {
+  outline: 2px solid var(--civitai-color-primary);
+  outline-offset: 2px;
+}
+.cm-count-radio:active + .cm-count-pill {
+  transform: scale(0.95);
+}
+/*
+ * The custom-count field opens only when the "Custom" pill is selected, via the
+ * 0fr→1fr grid-rows idiom (a real height transition without a magic max-height).
+ *
+ * `visibility` is part of it, not decoration: a 0-height field with
+ * `overflow: hidden` is still FOCUSABLE, so without this a Tab press would land on
+ * an invisible number input and scroll the page to nowhere. visibility:hidden takes
+ * it out of the tab order, and the delayed transition keeps it visible for the
+ * length of the close animation.
+ *
+ * It still SUBMITS while closed — harmlessly: the server only reads count_custom
+ * when `count` carries the "custom" sentinel (batchCountFromForm).
+ */
+.cm-count-custom {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 0.22s ease, opacity 0.22s ease;
+}
+.cm-count-custom > * {
+  min-height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  transition: visibility 0s linear 0.22s;
+}
+.cm-count:has(.cm-count-radio[value="custom"]:checked) .cm-count-custom {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.cm-count:has(.cm-count-radio[value="custom"]:checked) .cm-count-custom > * {
+  visibility: visible;
+  transition-delay: 0s;
+}
+/*
+ * The primary button's label carries the chosen count, so the ONE button says what
+ * it will do. Pure CSS: the count radios are descendants of .cm-runbar, so :has()
+ * reads the segment's state from the button's ancestor.
+ *
+ * NO margin and NO leading space in the content string. Measured in the browser:
+ * the civitai button is `display: flex; gap: 8px`, so the ::after box is a flex
+ * ITEM and the gap already separates it — a leading space would be collapsed away
+ * by flex layout, and an added margin-left rendered a visibly doubled 13.6px gap
+ * ("Generate  batch").
+ */
+.cm-run-go::after {
+  content: none;
+}
+.cm-runbar:has(#cm-count-2:checked) .cm-run-go::after {
+  content: "×2";
+}
+.cm-runbar:has(#cm-count-4:checked) .cm-run-go::after {
+  content: "×4";
+}
+.cm-runbar:has(#cm-count-8:checked) .cm-run-go::after {
+  content: "×8";
+}
+.cm-runbar:has(#cm-count-16:checked) .cm-run-go::after {
+  content: "×16";
+}
+.cm-runbar:has(#cm-count-custom:checked) .cm-run-go::after {
+  content: "batch";
+}
+.cm-run-hint {
+  max-width: 46rem;
+  font-size: 0.75rem;
+  line-height: 1rem;
+  color: var(--civitai-color-text-dimmed);
+}
+
+/*
+ * .cm-dest-* — the DESTINATION control (runDestination in run_zone.go): "this
+ * computer" vs "CivitAI Cloud" as one choice, with CSS-only panel switching.
+ *
+ * The radios sit BEFORE both the tab row and the panels in source order, which is
+ * what makes the `~` general-sibling selectors below possible with no JS. Same
+ * clipping rule as .cm-count-radio and for the same reason — a hidden radio loses
+ * the tab order and the a11y tree.
+ *
+ * Colours reuse the .cm-version-tab pair (text-dimmed at rest → text when active)
+ * plus the primary token for the active underline, so no new pair enters
+ * contrast_web_test.go's table.
+ */
+.cm-dest {
+  margin-top: 1rem;
+}
+.cm-dest-radio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+.cm-dest-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--civitai-color-border);
+}
+.cm-dest-tab {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.5rem 0.9rem;
+  border-top-left-radius: 0.375rem;
+  border-top-right-radius: 0.375rem;
+  margin-bottom: -1px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--civitai-color-text-dimmed);
+  transition: color 0.18s ease, background-color 0.18s ease;
+}
+.cm-dest-tab:hover {
+  color: var(--civitai-color-text);
+  background: var(--civitai-color-surface-2);
+}
+.cm-dest-tab-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.cm-dest-tab-sub {
+  font-size: 0.7rem;
+  line-height: 1.2;
+  opacity: 0.85;
+}
+/* The active underline scales out from the centre — the same one-line motion the
+   version tabs use, so the two tab strips on this app feel like one control. */
+.cm-dest-tab::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--civitai-color-primary);
+  transform: scaleX(0);
+  transition: transform 0.2s ease;
+}
+#cm-dest-local:checked ~ .cm-dest-tabs .cm-dest-tab[for="cm-dest-local"],
+#cm-dest-cloud:checked ~ .cm-dest-tabs .cm-dest-tab[for="cm-dest-cloud"] {
+  color: var(--civitai-color-text);
+}
+#cm-dest-local:checked ~ .cm-dest-tabs .cm-dest-tab[for="cm-dest-local"]::after,
+#cm-dest-cloud:checked ~ .cm-dest-tabs .cm-dest-tab[for="cm-dest-cloud"]::after {
+  transform: scaleX(1);
+}
+/* Each arm keys on its OWN radio id, mirroring the :checked pair above — NOT on the
+ * shared .cm-dest-radio class. Keying both arms on the class was a copy-paste slip
+ * that outlined BOTH tabs whenever EITHER radio had focus, measured live with the
+ * local radio focused: {"active":"cm-dest-local","cloudTabOutlinedByLocalFocus":true}.
+ * A focus ring that cannot say which option you are on is worse than none, because
+ * it is the only signal a keyboard user gets here. */
+#cm-dest-local:focus-visible ~ .cm-dest-tabs .cm-dest-tab[for="cm-dest-local"],
+#cm-dest-cloud:focus-visible ~ .cm-dest-tabs .cm-dest-tab[for="cm-dest-cloud"] {
+  outline: 2px solid var(--civitai-color-primary);
+  outline-offset: -2px;
+}
+/*
+ * display:none on the inactive panel is deliberate over visibility/opacity: it takes
+ * the whole panel out of the tab order and the a11y tree, so the cloud panel's
+ * textarea and buttons cannot be Tabbed into while "This computer" is showing.
+ */
+.cm-dest-panel {
+  display: none;
+  padding-top: 0.75rem;
+}
+#cm-dest-local:checked ~ .cm-dest-panel-local,
+#cm-dest-cloud:checked ~ .cm-dest-panel-cloud {
+  display: block;
+  animation: cm-dest-in 0.22s ease-out;
+}
+@keyframes cm-dest-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-dest-tab,
+  .cm-dest-tab::after {
+    transition: none;
+  }
+  #cm-dest-local:checked ~ .cm-dest-panel-local,
+  #cm-dest-cloud:checked ~ .cm-dest-panel-cloud {
+    animation: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-count-pill,
+  .cm-count-custom,
+  .cm-count-custom > * {
+    transition: none;
+  }
+  .cm-count-radio:active + .cm-count-pill {
+    transform: none;
+  }
+}
+
+
+/*
  * .cm-status-ico — the compact ComfyUI reachability indicator that replaced the
  * wordy green/red pill. The words now live in the popover it carries (the same
  * .cm-updated mechanism as everywhere else), and the icon itself keeps an

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -177,8 +178,21 @@ func TestRunControlsIncludeModePicks(t *testing.T) {
 		// runModesInclude and TestRunPanelHxIncludesAlwaysMatch (issue #28). htmx
 		// collects an included non-form element's descendants, so the picks still ride
 		// along, and the selector matches on an ordinary workflow too.
-		if !strings.Contains(body, `hx-include="`+runModesInclude+`"`) {
-			t.Errorf("%s does not hx-include the mode picks:\n%s", name, body)
+		// The check reads the ACTUAL hx-include attribute values and requires EVERY
+		// one of them to list the mode container — not a bare Contains over the whole
+		// fragment, which "#run-modes" would satisfy from the container's own id= even
+		// if no control included anything. Controls now carry different SUPERSETS of
+		// selectors (the primary run control adds the count segment), so equality
+		// against one fixed string would only pin whichever control happened to match.
+		incs := hxIncludeValues(body)
+		if len(incs) == 0 {
+			t.Errorf("%s carries no hx-include at all:\n%s", name, body)
+			continue
+		}
+		for _, inc := range incs {
+			if !slices.Contains(splitSelectors(inc), runModesInclude) {
+				t.Errorf("%s has an hx-include that drops the mode picks (%q):\n%s", name, inc, body)
+			}
 		}
 	}
 }
