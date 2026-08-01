@@ -462,12 +462,14 @@ func batchGalleryPage(gens []store.Generation, csrf string, mr maturityRange, ra
 	// unbreakable 80-char name is ~1150px and forces the whole PAGE into a
 	// horizontal scroll on a 390px phone; break-all gives it somewhere to wrap.
 	// Same class of bug as metaRow's — see TestLongUntrustedStringsCanBreak.
-	header := h.Div(h.Class("flex items-center justify-between gap-4"),
+	header := g.Group([]g.Node{
+		breadcrumbs(
+			crumb{Label: "Outputs", Href: "/outputs"},
+			crumb{Label: "Batch «" + label + "»"},
+		),
 		h.H1(h.Class("min-w-0 break-all text-2xl font-semibold text-slate-100"),
 			g.Text("Batch «"+label+"»")),
-		h.A(h.Href("/outputs"), h.Class("shrink-0 text-sm text-indigo-400 hover:text-indigo-300"),
-			g.Text("← All outputs")),
-	)
+	})
 
 	body := []g.Node{
 		header,
@@ -538,10 +540,19 @@ func generationDetailPage(gen *store.Generation, images []store.GenerationImage,
 	)
 
 	// Header + back link.
-	header := h.Div(h.Class("flex items-center justify-between"),
+	var trail []crumb
+	trail = append(trail, crumb{Label: "Outputs", Href: "/outputs"})
+	if gen.BatchID != "" {
+		if gen.BatchIndex > 0 && gen.BatchTotal > 0 {
+			trail = append(trail, crumb{Label: "Batch " + strconv.Itoa(gen.BatchIndex) + "/" + strconv.Itoa(gen.BatchTotal), Href: batchHref(gen.BatchID)})
+		} else {
+			trail = append(trail, crumb{Label: "Batch", Href: batchHref(gen.BatchID)})
+		}
+	}
+	trail = append(trail, crumb{Label: generationLabel(*gen)})
+	header := h.Div(h.Class("space-y-2"),
+		breadcrumbs(trail...),
 		h.H1(h.Class("text-2xl font-semibold text-slate-100"), g.Text(generationLabel(*gen))),
-		h.A(h.Href("/outputs"), h.Class("text-sm text-indigo-400 hover:text-indigo-300"),
-			g.Text("← Back to Outputs")),
 	)
 
 	body := []g.Node{

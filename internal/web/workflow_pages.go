@@ -1077,10 +1077,12 @@ func workflowDetailPage(wf *store.Workflow, csrf string, mr maturityRange, gener
 	}
 
 	var body []g.Node
-	body = append(body, h.Div(h.Class("flex items-center justify-between"),
+	body = append(body, h.Div(h.Class("space-y-2"),
+		breadcrumbs(
+			crumb{Label: "Workflows", Href: "/library?tab=workflows#wf-" + id},
+			crumb{Label: name},
+		),
 		h.H1(h.Class("text-2xl font-semibold text-slate-100"), g.Text(name)),
-		h.A(h.Href("/library?tab=workflows#wf-"+id), h.Class("text-sm text-indigo-400 hover:text-indigo-300"),
-			g.Text("← Back to Workflows")),
 	))
 
 	// CivitAI showcase carousel for the linked model — REUSES the exact carousel the
