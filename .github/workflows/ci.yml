@@ -58,6 +58,52 @@ jobs:
       - name: compile integration suite
         run: go build -tags integration ./...
 
+  # 🔴 e2e/uxaudit is a NESTED MODULE (its own go.mod). The `test` job above runs
+  # `go build/vet/test ./...` from the repo root, which does NOT reach it — so for
+  # two releases the ux-audit walk was completely broken (a selector rotted after
+  # the v0.1.97 run-zone rework) and CI was green the whole time. A harness that
+  # never runs reports no failures.
+  #
+  # It gets its OWN job rather than extra steps in `test` because it declares a
+  # newer Go directive (go 1.26 vs the root module's 1.25.0), and bumping the shared
+  # job's toolchain to satisfy it would silently change the compiler every existing
+  # root-module check runs under. (It would NOT change the shipped binary — that is
+  # built by GoReleaser in release.yml, which this file does not feed. An earlier
+  # version of this comment claimed otherwise.) Keeping them separate means adding
+  # coverage cannot perturb a gate that already works.
+  #
+  # gofmt is deliberately NOT repeated here — `gofmt -l .` in the `test` job walks
+  # the directory tree, not the module graph, so it already covers these files.
+  uxaudit:
+    name: e2e/uxaudit (nested module)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+          cache-dependency-path: e2e/uxaudit/go.sum
+
+      # The browser walk (TestUXAuditWalk) is double-gated and SKIPS here: it needs
+      # UXAUDIT_WALK=1 plus a resolvable Chromium, and this job supplies neither.
+      # What does run is the browserless rot-guard (walk_selectors_test.go), which
+      # boots the hermetic lab app in-process and asserts the app still serves what
+      # the walk's selectors key on. That is the part that must not rot unnoticed.
+      - name: go build
+        run: go build ./...
+        working-directory: e2e/uxaudit
+
+      - name: go vet
+        run: go vet ./...
+        working-directory: e2e/uxaudit
+
+      - name: go test
+        run: go test ./...
+        working-directory: e2e/uxaudit
+
   # The flake's vendorHash is a fixed-output hash over the module set. Nothing
   # in the Go build path touches it, so a `go get` silently invalidates it and
   # `nix build github:ZacxDev/civitai-manager` starts failing for everyone with

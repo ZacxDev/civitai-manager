@@ -974,9 +974,15 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   border-color: var(--civitai-color-primary, #818cf8);
   font-weight: 600;
 }
+/* 🔴 NO `opacity` here either — same double-dimming bug as `.cm-dest-tab-sub`, and
+ * worse at 0.75. Measured dark: the pill's `text-dimmed` drops 5.39:1 -> 3.62:1, and
+ * even the ACTIVE pill's `primary-text` drops 6.96:1 -> 4.47:1; light drops
+ * 4.79:1 -> 2.98:1. All below the 4.5:1 floor for 0.6875rem text. axe did NOT flag
+ * this one — the version-group pills render on no surface the walk visits — so it was
+ * found by auditing every `opacity` on text after axe caught the sibling rule. The
+ * smaller font-size already distinguishes the count from the pill label. */
 .cm-vgroup-pill-count {
   font-size: 0.6875rem;
-  opacity: 0.75;
 }
 /*
  * Switching base-model groups fades the newly-shown tab panel in. cmVGroup only
@@ -3471,10 +3477,16 @@ a.cm-res-chip .cm-res-name {
   font-weight: 600;
   line-height: 1.2;
 }
+/* 🔴 NO `opacity` here — it double-dims an ALREADY-dimmed token and breaks AA.
+ * `.cm-dest-tab` is `--civitai-color-text-dimmed`, which is tuned to sit just above
+ * the 4.5:1 floor (dark 5.39:1, light 4.79:1). Compositing that toward the body at
+ * 0.85 drops it to 4.28:1 dark / 3.58:1 light at 0.7rem — small text, so 4.5:1
+ * applies. Caught by axe (`color-contrast`, serious) on the workflow detail page, NOT
+ * by contrast_web_test.go: that checker resolves TOKEN PAIRS and cannot see an
+ * `opacity` on the text element. The size difference alone carries the hierarchy. */
 .cm-dest-tab-sub {
   font-size: 0.7rem;
   line-height: 1.2;
-  opacity: 0.85;
 }
 /* The active underline scales out from the centre — the same one-line motion the
    version tabs use, so the two tab strips on this app feel like one control. */
