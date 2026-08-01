@@ -23,7 +23,35 @@ type fakeReader struct{}
 var _ civitai.Reader = fakeReader{}
 
 func (fakeReader) GetModel(context.Context, string) (*civitai.ModelDetail, []byte, error) {
-	return &civitai.ModelDetail{ID: 4384, Name: "DreamShaper XL", Type: "Checkpoint"}, nil, nil
+	return &civitai.ModelDetail{
+		ID:   4384,
+		Name: "DreamShaper XL",
+		Type: "Checkpoint",
+		Creator: &civitai.Creator{
+			Username: "lab-author",
+		},
+		Stats: civitai.ModelStats{
+			DownloadCount: 1200,
+			ThumbsUpCount: 340,
+			CommentCount:  85,
+		},
+		ModelVersions: []civitai.ModelVersionSummary{
+			{
+				ID:        1,
+				Name:      "v1.0",
+				BaseModel: "SDXL 1.0",
+				Files: []civitai.ModelVersionFile{
+					{
+						ID:      1001,
+						Name:    "dreamshaperXL_v10.safetensors",
+						Type:    "Model",
+						SizeKB:  6500000,
+						Primary: true,
+					},
+				},
+			},
+		},
+	}, nil, nil
 }
 
 func (fakeReader) GetModelVersion(context.Context, string) (*civitai.ModelVersionDetail, []byte, error) {

@@ -35,6 +35,12 @@ func Views(app *App) []View {
 	wfPath := fmt.Sprintf("/workflows/%d", app.WorkflowID)
 	runSel := fmt.Sprintf(`button[hx-post="/workflows/%d/run"]`, app.WorkflowID)
 	return []View{
+		// The app's front door — "/" redirects here.
+		{Name: "search", Path: "/search"},
+		// Creator profile page.
+		{Name: "creator", Path: "/creators/lab-author"},
+		// Model detail page — version tabs, stats, workflow resources.
+		{Name: "model-detail", Path: "/models/4384"},
 		// The subscriptions page — add-a-subscription, the subscription list (seeded
 		// non-empty), the download queue and the activity feed. It used to be "/";
 		// "/" is now a 302 into /search (handleHome), and a redirect is not a view.
