@@ -135,8 +135,20 @@ func TestMaturityControlIsKeyboardOperable(t *testing.T) {
 	}
 	// 🔴 VALUELESS popover = `auto` = light-dismiss + Escape. popover="manual" has
 	// NEITHER, so a value here would silently remove both behaviours.
-	if !strings.Contains(out, ` popover`) {
-		t.Errorf("the panel must carry the popover attribute:\n%s", out)
+	// 🔴 ASSERT THE PANEL ELEMENT, NOT A BARE " popover" SUBSTRING. The loose form
+	// was VACUOUS: it is satisfied by the TRIGGER's ` popovertarget="…"`, so deleting
+	// the panel's own `popover` attribute passed the entire web suite.
+	//
+	// What that hole hid is the control's worst failure mode. The base
+	// .cm-maturity-panel rule deliberately declares no `display` (the documented
+	// UA-display trap — an author `display` would beat `[popover]:not(:popover-open)`
+	// and pin the panel open). Without the attribute the panel is therefore a plain
+	// block at `position: fixed; top: var(--cm-nav-h); left: 0; right: 0` — a
+	// permanently-open sheet across the top of EVERY page in the app.
+	if !strings.Contains(out, `id="`+maturityMenuPanelID+`" popover`) {
+		t.Errorf("the panel element itself must carry the valueless popover attribute — "+
+			"a bare \" popover\" check passes on the trigger's popovertarget and would "+
+			"miss a panel that renders as a permanent full-width sheet:\n%s", out)
 	}
 	if strings.Contains(out, `popover="manual"`) || strings.Contains(out, `popover="hint"`) {
 		t.Errorf("the panel's popover must stay VALUELESS (auto) — manual/hint have no "+
