@@ -686,3 +686,95 @@ func TestModelPageHasExactlyOneMaturityControl(t *testing.T) {
 		t.Error("the removed /settings/nsfw endpoint is still referenced")
 	}
 }
+
+// matPanelOpenTag returns the maturity popover PANEL's own open tag.
+//
+// Scoped deliberately: a bare strings.Contains for `ontoggle` over the whole
+// control could be satisfied by any other element that ever grows one, which is the
+// documented ` popover`-substring vacuity shape. The panel is the element that has
+// to carry it — the toggle event fires on the popover, not on the form.
+func matPanelOpenTag(t *testing.T, out string) string {
+	t.Helper()
+	idx := strings.Index(out, `<div id="`+maturityMenuPanelID+`"`)
+	if idx < 0 {
+		t.Fatalf("no <div id=%q> panel in the maturity control:\n%s", maturityMenuPanelID, out)
+	}
+	rest := out[idx:]
+	gt := strings.Index(rest, ">")
+	if gt < 0 {
+		t.Fatalf("the maturity panel tag is unterminated:\n%s", out)
+	}
+	return rest[:gt+1]
+}
+
+// TestMaturityPanelDiscardsAStagedBandOnClose guards the fail-OPEN path that the
+// staging change introduced.
+//
+// Because the tracks now stage instead of committing, a selection the user never
+// applied survives in the DOM. If the panel is dismissed (Escape / light-dismiss)
+// and later reopened to change the OTHER end, pressing Apply commits the stale end
+// too — persisting a band nobody chose, and in the measured shape a WIDER one:
+// saved "PG to PG-13" → stage max=XXX → Escape → reopen, lower the min → Apply →
+// "R to XXX". Same class as the v0.1.98 arrow-key wrap, so it must not regress.
+//
+// The panel resets its form when the popover closes; form.reset() restores each
+// radio to its server-rendered `checked` ATTRIBUTE, i.e. the saved band.
+func TestMaturityPanelDiscardsAStagedBandOnClose(t *testing.T) {
+	out := renderString(t, maturityControl(fullMaturityRange(), "csrf-tok"))
+	panel := matPanelOpenTag(t, out)
+
+	if !strings.Contains(panel, "ontoggle=") {
+		t.Fatalf("the maturity panel carries no ontoggle handler, so a staged-but-unapplied "+
+			"band survives Escape and can be committed later by an Apply meant for the other "+
+			"end of the range (a content gate failing OPEN).\npanel tag: %s", panel)
+	}
+	// It must react to the CLOSE transition specifically — resetting on open would
+	// be harmless but useless, and resetting unconditionally would wipe a selection
+	// mid-interaction.
+	if !strings.Contains(panel, "newState") || !strings.Contains(panel, "closed") {
+		t.Errorf("the panel's ontoggle does not key on the CLOSED transition; it must only "+
+			"discard staged state when the panel closes.\npanel tag: %s", panel)
+	}
+	// It must be a reset, not a click/submit: .click()ing radios saves nothing now,
+	// and a submit would COMMIT the staged band — the exact opposite of the intent.
+	if !strings.Contains(panel, "reset()") {
+		t.Errorf("the panel's ontoggle does not call reset(); only form.reset() restores the "+
+			"server-rendered checked attributes (the SAVED band).\npanel tag: %s", panel)
+	}
+	if strings.Contains(panel, "submit") || strings.Contains(panel, ".click(") {
+		t.Errorf("the panel's ontoggle must not submit or click — closing the panel must never "+
+			"COMMIT a band the user did not apply.\npanel tag: %s", panel)
+	}
+}
+
+// TestMaturityPanelLabelsTheSavedBand guards the copy that makes staging legible.
+//
+// While the panel is open the radios and this line can legitimately disagree: the
+// radios show what Apply WOULD commit, the line shows what is actually in force.
+// Unlabelled, that reads as a contradiction; it is also the only on-screen cue that
+// a staged change has not been applied.
+func TestMaturityPanelLabelsTheSavedBand(t *testing.T) {
+	mr := maturityRange{Min: maturityPG, Max: maturityR}
+	out := renderString(t, maturityControl(mr, "csrf-tok"))
+
+	idx := strings.Index(out, `class="cm-maturity-current"`)
+	if idx < 0 {
+		t.Fatalf("no current-band line in the maturity panel:\n%s", out)
+	}
+	rest := out[idx:]
+	end := strings.Index(rest, "</span>")
+	if end < 0 {
+		t.Fatalf("the current-band span is not closed:\n%s", out)
+	}
+	line := rest[:end]
+
+	// Fixture reaches the interesting case: this is a real, non-full band.
+	if !strings.Contains(line, mr.label()) {
+		t.Fatalf("the current-band line does not render the band %q at all: %s", mr.label(), line)
+	}
+	if !strings.Contains(line, "Saved") {
+		t.Errorf("the current-band line does not say the band is SAVED: %s\n"+
+			"with staging, an unlabelled band reads as the current SELECTION and contradicts "+
+			"the radios whenever a change is staged", line)
+	}
+}

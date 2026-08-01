@@ -292,6 +292,21 @@ func maturityControl(mr maturityRange, csrf string) g.Node {
 			// panel that can only be closed by finding the trigger again.
 			g.Attr("popover"),
 			h.Class("cm-maturity-panel"),
+			// 🔴 DISCARD A STAGED-BUT-UNAPPLIED BAND WHEN THE PANEL CLOSES.
+			// Staging (above) means the radios can hold a selection the user never
+			// applied. Without this, Escape/light-dismiss leaves that selection sitting
+			// in the DOM: reopen later to change the OTHER end, press Apply, and the
+			// stale end commits too. Measured shape — saved "PG to PG-13", stage max=XXX,
+			// Escape, reopen and lower the min, Apply → persists "R to XXX". That is this
+			// control failing OPEN (a WIDER band than asked for), the same class as the
+			// v0.1.98 arrow-key wrap, so it is fixed rather than documented.
+			//
+			// form.reset() restores every radio to its server-rendered `checked`
+			// ATTRIBUTE — i.e. exactly the saved band the panel's "Saved" line shows — so
+			// the two can no longer disagree across an open/close cycle. It fires no
+			// `change` and no `submit`, so it cannot itself commit, and it is not a
+			// `.click()` (which saves nothing now and is guarded against separately).
+			g.Attr("ontoggle", "if(event.newState==='closed')this.querySelector('form').reset()"),
 			h.Form(
 				h.ID(maturityFormID),
 				hx("post", "/settings/maturity"),
@@ -304,7 +319,13 @@ func maturityControl(mr maturityRange, csrf string) g.Node {
 				h.Input(h.Type("hidden"), h.Name("csrf_token"), h.Value(csrf)),
 				h.Div(h.Class("cm-maturity-head"),
 					h.Span(h.Class("cm-maturity-title"), g.Text("Maturity")),
-					h.Span(h.Class("cm-maturity-current"), g.Text(mr.label())),
+					// "Saved:" is load-bearing copy, not decoration. Because the tracks
+					// stage, this line and the radios can legitimately disagree while the
+					// panel is open — the radios show what Apply WOULD commit, this shows
+					// what is in force. Unlabelled it reads as "current selection" and the
+					// two look contradictory; labelled, the difference is the point. It is
+					// also the only on-screen cue that a staged change is not yet applied.
+					h.Span(h.Class("cm-maturity-current"), g.Text("Saved: "+mr.label())),
 				),
 				h.P(h.Class("cm-maturity-note"),
 					g.Text("Content outside this band is never fetched or shown. Your own generations are unrated and always render.")),
