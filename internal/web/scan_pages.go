@@ -29,8 +29,6 @@ func scanForModelsCTA(csrf string) g.Node {
 			csrfInline(csrf),
 			h.Class("w-full sm:w-auto"),
 		}, g.Text("Scan for models")),
-		h.P(h.Class("mt-1 text-xs text-slate-400"),
-			g.Text("Scan the selected directories for model files (opens the Model files tab).")),
 		h.P(h.Class("mt-1 text-xs text-slate-500"),
 			g.Text("Matches your files against CivitAI by hash (sends file hashes to civitai.com). Turn off “Match against CivitAI” on the Model files tab to scan offline.")),
 	)

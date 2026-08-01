@@ -96,8 +96,6 @@ func discoverControls(csrf string) g.Node {
 				hx("disabled-elt", "this"),
 				csrfInline(csrf),
 			}, g.Text("Discover installs")),
-			h.Span(h.Class("text-xs text-slate-400"),
-				g.Text("Scan all disks for ComfyUI / Automatic1111 installs")),
 		),
 		manualAddInput(csrf),
 		directoryBrowser(csrf),
