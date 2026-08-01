@@ -2316,7 +2316,7 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  * STACKING ORDER (the app's whole z-index budget, lowest -> highest):
  *    4  .cm-video-badge, 5 .cm-carousel-btn  - decoration inside a card
  *   10  in-tile reveal overlay (z-10/z-20)   - scoped to one tile
- *   20  .cm-rail (desktop column)            - page chrome, BELOW the nav
+ *   20  .cm-rail (desktop LEFT column)       - page chrome, BELOW the nav
  *   25  .cm-lift WITH AN OPEN POPOVER        - clears the NEXT card's escaping
  *       in-tile decoration (max 20) and nothing else; transient (open state
  *       only) and always below the nav, so it never covers app chrome. The
@@ -2324,7 +2324,12 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  *       traps it in the card's stacking context. See the POPOVER ESCAPE block.
  *   30  .cm-nav (sticky header)              - above page content
  *   44  .cm-rail-scrim / 45 .cm-rail (mobile drawer) - above the nav, so the
- *       sticky header can never cover an open drawer
+ *       sticky header can never cover an open drawer. UNCHANGED by the move to
+ *       the left side: the rail's SIDE is `left`/`border-right`/`translateX`, not
+ *       a z-index, so this budget did not move and nothing was added to it. The
+ *       rail's widgets (.cm-rail-widget and everything inside) declare NO
+ *       z-index at all — they are in normal flow inside the rail, which already
+ *       owns its layer.
  *   50  .cm-vstatus-pop / .cm-updated-pop / .cm-dl-menu-pop (the model header's
  *       multi-file download menu) / the run Fix popover, and the
  *       #cm-lightbox overlay                 - above everything else
@@ -2399,12 +2404,18 @@ html {
 /*
  * The rail, mobile-first: an off-canvas drawer over a scrim, opened from the nav
  * (cmRailDrawer). At >=1024px the desktop block below turns it into a fixed
- * right-hand column whose width <body> reserves.
+ * LEFT-hand column whose width <body> reserves.
+ *
+ * 🔴 THE SIDE LIVES HERE AND NOWHERE ELSE. outputsRail's markup encodes no side;
+ * moving the rail is this rule's `left`/`border-right`/negative `translateX`, the
+ * matching box-shadow direction, and the `padding-left` on the shell classes in
+ * the desktop block. If you move it back, all five change together — a half-moved
+ * rail reserves space on one side and paints on the other.
  */
 .cm-rail {
   position: fixed;
   top: 0;
-  right: 0;
+  left: 0;
   bottom: 0;
   z-index: 45;
   width: min(20rem, 85vw);
@@ -2413,11 +2424,12 @@ html {
   gap: 0.5rem;
   padding: 0.75rem;
   overflow-y: auto;
-  border-left: 1px solid var(--civitai-color-border);
+  border-right: 1px solid var(--civitai-color-border);
   background: var(--civitai-color-surface);
   color: var(--civitai-color-text);
-  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
-  transform: translateX(100%);
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.35);
+  /* Off-canvas to the LEFT — the drawer slides in from the left edge. */
+  transform: translateX(-100%);
   transition: transform 180ms ease;
 }
 .cm-rail[data-open="true"] {
@@ -2632,7 +2644,7 @@ html {
  *      (see railData.visible). There is no per-rail NSFW state left to style.
  */
 
-/* Desktop: a real right-hand column that reserves its own width. */
+/* Desktop: a real LEFT-hand column that reserves its own width. */
 @media (min-width: 1024px) {
   .cm-rail {
     top: var(--cm-nav-h);
@@ -2656,9 +2668,11 @@ html {
     padding: 0.5rem 0.25rem;
     overflow: hidden;
   }
-  .cm-rail[data-collapsed="true"] .cm-rail-title,
-  .cm-rail[data-collapsed="true"] .cm-rail-body,
-  .cm-rail[data-collapsed="true"] .cm-rail-foot {
+  /* Collapsed hides the whole widget STACK plus the container's own title; what
+   * remains on the 2.25rem edge is the vertical label, the single most-recent
+   * output preview (.cm-rail-preview) and the full-edge expand control. */
+  .cm-rail[data-collapsed="true"] .cm-rail-shelltitle,
+  .cm-rail[data-collapsed="true"] .cm-rail-widgets {
     display: none;
   }
   .cm-rail[data-collapsed="true"] .cm-rail-head {
@@ -2703,12 +2717,13 @@ html {
     font-size: 1rem;
     line-height: 1;
   }
-  /* EXACTLY ONE of these lands on <body> (see railShellClass). */
+  /* EXACTLY ONE of these lands on <body> (see railShellClass). padding-LEFT,
+   * matching the rail's `left: 0` — these two must always name the same side. */
   .cm-shell-rail {
-    padding-right: 18rem;
+    padding-left: 18rem;
   }
   .cm-shell-rail-collapsed {
-    padding-right: 2.25rem;
+    padding-left: 2.25rem;
   }
 }
 
@@ -3940,4 +3955,157 @@ a.cm-res-chip .cm-res-name {
 }
 .cm-meter-fill[data-level="full"] {
   background: var(--civitai-color-error);
+}
+
+/*
+ * ===========================================================================
+ * RAIL WIDGETS — the left sidebar is a CONTAINER, not one list
+ * ===========================================================================
+ *
+ * See outputsRail / railWidget / railActivityWidget. The rail hosts a stack of
+ * widgets; each is a <section> with a head and a body, and adding a third is one
+ * more railWidget call plus nothing here.
+ *
+ * NO z-index anywhere in this block, deliberately: these are in normal flow inside
+ * .cm-rail, which already owns its layer (20 desktop / 45 drawer). See the
+ * STACKING ORDER ledger in the APP SHELL block.
+ *
+ * Every colour is an existing --civitai-* pair that contrast_web_test.go already
+ * resolves — text / text-dimmed / primary-text on surface. No new coloured pair,
+ * so the contrast table needs no new row.
+ */
+.cm-rail-shelltitle {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--civitai-color-text-dimmed);
+}
+.cm-rail-widgets {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  /* min-height:0 lets a widget's own overflow work inside the flex column instead
+   * of the whole rail growing past its fixed height. */
+  min-height: 0;
+}
+.cm-rail-widget {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-height: 0;
+}
+.cm-rail-whead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex: none;
+}
+.cm-rail-wtitle {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--civitai-color-text);
+}
+.cm-rail-wbody {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-height: 0;
+}
+.cm-rail-empty {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--civitai-color-text-dimmed);
+}
+
+/*
+ * The activity feed. .cm-rail-activity is the STABLE poll target — its inner HTML
+ * is replaced every 10s and the element itself never is (see railActivityBodyID);
+ * an outerHTML swap here would delete the node carrying the hx-trigger and stop
+ * the loop after one tick.
+ */
+.cm-rail-activity {
+  min-height: 0;
+}
+.cm-rail-acts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.cm-rail-act {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  min-width: 0;
+}
+.cm-rail-act-glyph {
+  flex: none;
+  width: 0.85rem;
+  text-align: center;
+  color: var(--civitai-color-text-dimmed);
+}
+.cm-rail-act-link {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  min-width: 0;
+  flex: 1 1 auto;
+  color: var(--civitai-color-text);
+  text-decoration: none;
+}
+a.cm-rail-act-link:hover .cm-rail-act-text {
+  color: var(--civitai-color-primary-text);
+  text-decoration: underline;
+}
+/* A workflow name / civitai filename is arbitrary and routinely long: truncate
+ * rather than let one entry wrap to four lines in an 18rem column. The <li>'s
+ * title= carries the full text plus the age. */
+.cm-rail-act-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cm-rail-act-when {
+  flex: none;
+  font-size: 0.6875rem;
+  color: var(--civitai-color-text-dimmed);
+}
+
+/*
+ * The COLLAPSED edge's single most-recent output preview (railCollapsedPreview).
+ * Desktop-only and collapsed-only: below 1024px the rail is a drawer where
+ * data-collapsed carries no meaning, and expanded it would duplicate the first
+ * tile of the outputs widget.
+ *
+ * It is BELOW the full-edge .cm-rail-expand overlay in paint order (that element
+ * is emitted last), which is intentional — the overlay owns the click and the
+ * accessible name, and this is decoration behind it.
+ */
+.cm-rail-preview {
+  display: none;
+}
+@media (min-width: 1024px) {
+  .cm-rail[data-collapsed="true"] .cm-rail-preview {
+    display: block;
+    flex: none;
+    width: 1.75rem;
+    height: 1.75rem;
+    margin: 0.25rem auto 0;
+    overflow: hidden;
+    border-radius: 0.25rem;
+    border: 1px solid var(--civitai-color-border);
+  }
+  .cm-rail[data-collapsed="true"] .cm-rail-preview img,
+  .cm-rail[data-collapsed="true"] .cm-rail-preview video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
 }

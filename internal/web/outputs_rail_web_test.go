@@ -94,11 +94,16 @@ func TestRailDrawerHasModalSemantics(t *testing.T) {
 	shell := pageShell(get(t, srv, librarySubscriptionsHref).Body.String())
 
 	for _, want := range []string{
-		`aria-controls="cm-rail"`,     // the opener names its target
-		`aria-expanded="false"`,       // …and reports state
-		`id="cm-rail-close"`,          // focus lands here on open
-		`aria-label="Recent outputs"`, // the rail is a labelled landmark
-		"cmRailPrevFocus",             // focus is restored on close
+		`aria-controls="cm-rail"`, // the opener names its target
+		`aria-expanded="false"`,   // …and reports state
+		`id="cm-rail-close"`,      // focus lands here on open
+		// The rail is a labelled landmark. Its label is "Sidebar", not "Recent
+		// outputs", since it became a widget CONTAINER: "Recent outputs" is now the
+		// name of ONE widget inside it, and labelling the whole landmark after one
+		// of its children would misdescribe the region to a screen-reader user
+		// walking the landmarks.
+		`aria-label="Sidebar"`,
+		"cmRailPrevFocus", // focus is restored on close
 		`setAttribute('role', 'dialog')`,
 		`setAttribute('aria-modal', 'true')`,
 		"inert",              // the rest of the page is removed from the tab order

@@ -359,6 +359,13 @@ func TestShellMeasureIsInTheBuiltCSS(t *testing.T) {
 	for _, want := range []string{
 		".cm-nav {", "position: sticky", "--cm-nav-h", "scroll-padding-top",
 		".cm-rail {", ".cm-rail-scrim", ".cm-shell-rail {", ".cm-shell-rail-collapsed {",
+		// The rail became a WIDGET CONTAINER (left-hand side). Presence checks only;
+		// the load-bearing behaviour — which SIDE the rail is on, and that the
+		// activity poller targets a stable container — is guarded by
+		// TestRailIsALeftHandColumn and
+		// TestRailActivityPollerTargetsAStableContainer in rail_widgets_web_test.go.
+		".cm-rail-widgets {", ".cm-rail-widget {", ".cm-rail-whead {", ".cm-rail-wbody {",
+		".cm-rail-acts {", ".cm-rail-act {", ".cm-rail-preview {", ".cm-rail-empty {",
 		// The nav's maturity range control is hand-written .cm-* CSS for the same
 		// reason the rail is: output.css is a purged static build, so a Tailwind
 		// utility added here would be unstyled until someone regenerates it.

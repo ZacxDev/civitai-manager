@@ -617,6 +617,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /subscriptions/{id}/delete", s.handleDelete)
 
 	mux.HandleFunc("GET /fragments/events", s.handleEventsFragment)
+	mux.HandleFunc("GET /fragments/rail-activity", s.handleRailActivityFragment)
 	mux.HandleFunc("GET /fragments/queue", s.handleQueueFragment)
 
 	mux.HandleFunc("GET /library", s.handleLibrary)

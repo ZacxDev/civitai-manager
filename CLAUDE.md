@@ -487,7 +487,40 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
 - **Race-safe streaming jobs.** Append to a job's progress AND snapshot it **both
   under the job mutex**. The client poller must target a **stable container**
   element — never `outerHTML`-replace the polling node itself (self-replace breaks
-  the poll loop).
+  the poll loop). **The rail's activity widget is now a second instance of this
+  pattern** (`railActivityBodyID`, `GET /fragments/rail-activity`,
+  `hx-swap="innerHTML"`): the fragment returns the widget's INNER content only, so
+  an innerHTML swap cannot nest a second polling node and double the poll rate on
+  every tick. Guarded by `TestRailActivityPollerTargetsAStableContainer`.
+- **The rail is a LEFT-hand WIDGET CONTAINER, not the outputs list it started as.**
+  It hosts `railOutputsWidget` + `railActivityWidget`; a third is one more
+  `railWidget(head, body)` call.
+  🔴 **The SIDE lives in CSS only, and it is FIVE coupled declarations** —
+  `.cm-rail`'s `left: 0`, `border-right`, negative `translateX`, the box-shadow
+  direction, and `padding-left` on BOTH `.cm-shell-rail*` classes. Move one
+  without the others and you get a rail that reserves space on one side and paints
+  on the other, or (with `left` *and* `right` both set) one that spans the whole
+  viewport. `outputsRail`'s markup encodes no side — keep it that way.
+  `TestRailIsALeftHandColumn` asserts all of them, positively and negatively.
+  - **`railData.visible()` is now an OR over the widgets** (`Groups` or
+    `Activity`) and still takes **no maturity range** — the user's own generations
+    are unrated and out of scope of a CivitAI scale. That widening deliberately
+    **closes** the "/outputs has no in-app link on a fresh install" gap `navbar`'s
+    comment records: a user with activity but no generations now gets a rail, and
+    the outputs widget renders its `/outputs` heading link even with zero tiles.
+  - **The activity widget is built from TWO BOUNDED reads and no others**: the
+    generation rows the outputs widget already fetched, plus
+    `store.RecentEvents(railActivityFetchLimit)`. 🔴 **`store.ListQueue` takes no
+    limit and returns the whole table** — using it here would put an unbounded scan
+    on *every page render*. Downloads reach the feed through the events the queue
+    worker already writes.
+  - **Coalescing merges across the whole window by (kind, subject)**, so eight runs
+    read as "8 runs of X". A FAILURE never merges with a success for the same model
+    (`err:` subject prefix) — "3 downloads" that silently included an error is a
+    lie the user acts on. Same honest limit as `railGroup`: counts cover only the
+    fetch window.
+  - **The collapsed edge shows exactly ONE preview** (the newest group) and it must
+    stay lazy — `data-src`, never an eager `src`.
 - **Hash cache** keyed by `(path, size, mtime)` makes re-scans fast — preserve the
   key; do not invalidate it gratuitously.
 - **Install-and-run must NEVER substitute a file silently.** CivitAI renames files

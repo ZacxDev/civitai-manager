@@ -27,10 +27,34 @@ func (s *Server) rail(ctx context.Context) railData {
 		return railData{}
 	}
 	groups := groupRailGenerations(gens, outputsRailLimit)
-	if len(groups) == 0 {
+	// The activity widget reuses the generation rows already in hand and adds ONE
+	// bounded read. store.ListQueue is deliberately not consulted — it takes no
+	// limit and would put a whole-table scan on every page render (see
+	// rail_activity.go); download activity reaches the feed through the events the
+	// queue worker already writes.
+	evs, err := s.store.RecentEvents(railActivityFetchLimit)
+	if err != nil {
+		// A failed event read degrades to an outputs-only rail rather than dropping
+		// the whole sidebar — the outputs widget's heading is the app's only in-app
+		// link to /outputs.
+		evs = nil
+	}
+	activity := buildRailActivity(groups, evs, railActivityLimit)
+	if len(groups) == 0 && len(activity) == 0 {
 		return railData{}
 	}
-	return railData{Groups: groups, Collapsed: s.railCollapsed()}
+	return railData{Groups: groups, Activity: activity, Collapsed: s.railCollapsed()}
+}
+
+// handleRailActivityFragment serves the activity widget's poll target.
+//
+// 🔴 IT RETURNS THE WIDGET'S INNER CONTENT ONLY — the same railActivityList the
+// first paint renders — because the client swaps it with hx-swap="innerHTML" into
+// a STABLE container. Returning the container itself would make the poller
+// replace the very node carrying its own hx-trigger, and the loop would stop after
+// one tick, silently. See railActivityBodyID.
+func (s *Server) handleRailActivityFragment(w http.ResponseWriter, r *http.Request) {
+	s.render(w, http.StatusOK, railActivityList(s.rail(r.Context()).Activity))
 }
 
 // railCollapsed reads the persisted rail collapse state (default expanded).
