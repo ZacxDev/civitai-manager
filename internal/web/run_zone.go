@@ -64,6 +64,76 @@ const runZoneInclude = runPresetInclude + ", #" + runCountGroupID
 // because the CSS that suffixes the button label (" ×4") selects on these ids.
 func runCountRadioID(v string) string { return "cm-count-" + v }
 
+// runDestLocalID / runDestCloudID are the destination radios' ids. The CSS that
+// shows one panel and hides the other selects on them by id, so they are constants
+// rather than literals in two places.
+const (
+	runDestLocalID = "cm-dest-local"
+	runDestCloudID = "cm-dest-cloud"
+)
+
+// runDestination makes "where does this run" ONE decision instead of two competing
+// surfaces.
+//
+// Local and cloud used to be stacked: the run controls, then a horizontal rule, then
+// a "Run on CivitAI Cloud" heading with its own connect block, its own warnings, its
+// own resource table and its own buttons. Both were permanently on screen, so the
+// page presented two full run apparatuses and left the reader to work out that they
+// are alternatives, not steps.
+//
+// It is a two-radio segmented control with CSS-only panel switching — no JS, nothing
+// vendored, and no new request. Three things are deliberate:
+//
+//   - RADIOS, not ARIA tabs. These really are a radio group ("pick one of two"), and
+//     using the native control means keyboard support, the group name and the
+//     checked-state announcement come from the browser rather than from JS we would
+//     have to write and maintain. The ARIA tab pattern REQUIRES JS key handling to be
+//     correct; a radiogroup that lies about being a tablist would be worse than one
+//     that is honest about being a radiogroup.
+//   - The radios carry a `name` but are NOT hx-included anywhere. runZoneInclude
+//     names #run-preset-form, #run-modes and #cm-run-count only, so this control's
+//     value never reaches a handler — it is pure client-side presentation, and no
+//     endpoint gained a parameter it has to validate.
+//   - #run-status stays OUTSIDE both panels (see generateSection), so a local run in
+//     flight remains visible whichever destination is on screen.
+//
+// ⚠ Honest trade-off, stated because it is real: the CLOUD status container lives
+// inside cloudPanelFragment, so switching to Local while a cloud run is in flight
+// hides that run's progress (its poller keeps running; nothing is lost). The
+// destination is not persisted and nothing switches it automatically, so this only
+// happens if the user deliberately clicks away from a run they just started.
+func runDestination(local, cloud g.Node) g.Node {
+	radio := func(id string, checked bool) g.Node {
+		attrs := []g.Node{
+			h.Class("cm-dest-radio"), h.ID(id), h.Type("radio"), h.Name("cm_dest"),
+		}
+		if checked {
+			attrs = append(attrs, g.Attr("checked"))
+		}
+		return h.Input(attrs...)
+	}
+	tab := func(id, label, sub string) g.Node {
+		return h.Label(h.Class("cm-dest-tab"), h.For(id),
+			h.Span(h.Class("cm-dest-tab-name"), g.Text(label)),
+			h.Span(h.Class("cm-dest-tab-sub"), g.Text(sub)),
+		)
+	}
+	return h.Div(h.Class("cm-dest"),
+		radio(runDestLocalID, true),
+		radio(runDestCloudID, false),
+		h.Div(h.Class("cm-dest-tabs"),
+			g.Attr("role", "radiogroup"), g.Attr("aria-label", "Where to run this workflow"),
+			tab(runDestLocalID, "This computer", "your GPU · free"),
+			// The cost is in the TAB, not only inside the panel: the choice between
+			// these two is a choice about money, and a label that says only
+			// "CivitAI Cloud" hides the one fact that distinguishes them.
+			tab(runDestCloudID, "CivitAI Cloud", "their GPU · spends Buzz"),
+		),
+		h.Div(h.Class("cm-dest-panel cm-dest-panel-local"), local),
+		h.Div(h.Class("cm-dest-panel cm-dest-panel-cloud"), cloud),
+	)
+}
+
 // runZone renders the whole run zone: the count segment (UI-format only), the
 // reachability container that carries the ONE primary button, the secondary
 // "Open in ComfyUI" form, and the hint that explains what a batch costs.

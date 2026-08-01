@@ -3137,6 +3137,128 @@ a.cm-res-chip .cm-res-name {
   line-height: 1rem;
   color: var(--civitai-color-text-dimmed);
 }
+
+/*
+ * .cm-dest-* — the DESTINATION control (runDestination in run_zone.go): "this
+ * computer" vs "CivitAI Cloud" as one choice, with CSS-only panel switching.
+ *
+ * The radios sit BEFORE both the tab row and the panels in source order, which is
+ * what makes the `~` general-sibling selectors below possible with no JS. Same
+ * clipping rule as .cm-count-radio and for the same reason — a hidden radio loses
+ * the tab order and the a11y tree.
+ *
+ * Colours reuse the .cm-version-tab pair (text-dimmed at rest → text when active)
+ * plus the primary token for the active underline, so no new pair enters
+ * contrast_web_test.go's table.
+ */
+.cm-dest {
+  margin-top: 1rem;
+}
+.cm-dest-radio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+.cm-dest-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--civitai-color-border);
+}
+.cm-dest-tab {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.5rem 0.9rem;
+  border-top-left-radius: 0.375rem;
+  border-top-right-radius: 0.375rem;
+  margin-bottom: -1px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--civitai-color-text-dimmed);
+  transition: color 0.18s ease, background-color 0.18s ease;
+}
+.cm-dest-tab:hover {
+  color: var(--civitai-color-text);
+  background: var(--civitai-color-surface-2);
+}
+.cm-dest-tab-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.cm-dest-tab-sub {
+  font-size: 0.7rem;
+  line-height: 1.2;
+  opacity: 0.85;
+}
+/* The active underline scales out from the centre — the same one-line motion the
+   version tabs use, so the two tab strips on this app feel like one control. */
+.cm-dest-tab::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--civitai-color-primary);
+  transform: scaleX(0);
+  transition: transform 0.2s ease;
+}
+#cm-dest-local:checked ~ .cm-dest-tabs .cm-dest-tab[for="cm-dest-local"],
+#cm-dest-cloud:checked ~ .cm-dest-tabs .cm-dest-tab[for="cm-dest-cloud"] {
+  color: var(--civitai-color-text);
+}
+#cm-dest-local:checked ~ .cm-dest-tabs .cm-dest-tab[for="cm-dest-local"]::after,
+#cm-dest-cloud:checked ~ .cm-dest-tabs .cm-dest-tab[for="cm-dest-cloud"]::after {
+  transform: scaleX(1);
+}
+.cm-dest-radio:focus-visible ~ .cm-dest-tabs .cm-dest-tab[for="cm-dest-local"],
+.cm-dest-radio:focus-visible ~ .cm-dest-tabs .cm-dest-tab[for="cm-dest-cloud"] {
+  outline: 2px solid var(--civitai-color-primary);
+  outline-offset: -2px;
+}
+/*
+ * display:none on the inactive panel is deliberate over visibility/opacity: it takes
+ * the whole panel out of the tab order and the a11y tree, so the cloud panel's
+ * textarea and buttons cannot be Tabbed into while "This computer" is showing.
+ */
+.cm-dest-panel {
+  display: none;
+  padding-top: 0.75rem;
+}
+#cm-dest-local:checked ~ .cm-dest-panel-local,
+#cm-dest-cloud:checked ~ .cm-dest-panel-cloud {
+  display: block;
+  animation: cm-dest-in 0.22s ease-out;
+}
+@keyframes cm-dest-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-dest-tab,
+  .cm-dest-tab::after {
+    transition: none;
+  }
+  #cm-dest-local:checked ~ .cm-dest-panel-local,
+  #cm-dest-cloud:checked ~ .cm-dest-panel-cloud {
+    animation: none;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .cm-count-pill,
   .cm-count-custom,

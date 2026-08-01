@@ -88,11 +88,19 @@ func generateSection(wf *store.Workflow, snap runSnapshot, csrf string, extraAll
 	// It sits BETWEEN #run-params and #run-status and is nested in NEITHER, so a
 	// preset-tab swap and the 1 s run poller both leave it alone. See run_zone.go for
 	// why this replaced three competing controls.
-	body = append(body, runZone(wf.ID, csrf, wf.Format == store.WorkflowFormatUI, editable))
+	//
+	// WHERE it runs is ONE decision: the zone and the cloud block are the two panels
+	// of a single destination control (runDestination), not two stacked apparatuses.
+	body = append(body, runDestination(
+		runZone(wf.ID, csrf, wf.Format == store.WorkflowFormatUI, editable),
+		cloudGenerateBlock(wf.ID),
+	))
 	// Run job status container (unchanged): poller drives running → terminal.
+	//
+	// 🔴 It stays OUTSIDE both destination panels. Inside the local one, switching to
+	// Cloud would hide a local run that is still in flight — and the poller would go
+	// on updating an invisible element, which is the shape of "my run vanished".
 	body = append(body, h.Div(h.ID(runStatusContainerID), runStatusFragment(snap, wf.ID, csrf, dlEligible, mr)))
-	// The cloud run, as a separated sub-block of the SAME section.
-	body = append(body, cloudGenerateBlock(wf.ID))
 	// Helper install/remove stays a collapsed "advanced" disclosure and is never
 	// surfaced in a per-click result (an inline "Remove helper" button beside the
 	// success text got clicked by a user who did not know it disabled the feature).

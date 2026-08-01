@@ -422,7 +422,11 @@ func TestGenerateSectionCombinesTheThreeRunSurfaces(t *testing.T) {
 		`id="run-comfy-status"`,                 // local run controls
 		`action="/workflows/3/open-in-comfyui"`, // editor hand-off
 		`id="cloud-panel"`,                      // cloud run
-		"Run on CivitAI Cloud",
+		// The cloud surface is now NAMED by the destination tab rather than by a
+		// heading of its own — the heading was the visual grammar of "a different
+		// section below", which is the reading runDestination exists to remove.
+		`for="cm-dest-cloud"`,
+		"CivitAI Cloud",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the Generate section is missing %q:\n%s", want, got)
@@ -434,14 +438,18 @@ func TestGenerateSectionCombinesTheThreeRunSurfaces(t *testing.T) {
 			t.Errorf("a superseded standalone card heading is back (%q):\n%s", gone, got)
 		}
 	}
-	// Document order inside the ONE section: the section opens, then the local run
-	// status, then the cloud sub-block — the cloud run is never a card of its own.
+	// Document order inside the ONE section. The cloud panel now sits in the
+	// destination control ABOVE #run-status rather than below it, because #run-status
+	// was deliberately hoisted OUT of both destination panels so a local run in
+	// flight stays visible on either tab. What is pinned is unchanged in substance:
+	// the cloud run is never a card of its own, and it lives inside #cm-generate.
 	genAt := strings.Index(got, `id="cm-generate"`)
-	statusAt := strings.Index(got, `id="`+runStatusContainerID+`"`)
+	destAt := strings.Index(got, `class="cm-dest"`)
 	cloudAt := strings.Index(got, `id="cloud-panel"`)
-	if genAt < 0 || statusAt < genAt || cloudAt < statusAt {
-		t.Errorf("expected #cm-generate < #run-status < #cloud-panel, got %d/%d/%d",
-			genAt, statusAt, cloudAt)
+	statusAt := strings.Index(got, `id="`+runStatusContainerID+`"`)
+	if genAt < 0 || destAt < genAt || cloudAt < destAt || statusAt < cloudAt {
+		t.Errorf("expected #cm-generate < .cm-dest < #cloud-panel < #run-status, got %d/%d/%d/%d",
+			genAt, destAt, cloudAt, statusAt)
 	}
 }
 

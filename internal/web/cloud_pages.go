@@ -27,11 +27,15 @@ const (
 // (#cloud-panel, same endpoint, same swap) — only the surrounding chrome moved. The
 // loaded fragment itself handles the enabled/disabled (comfy_cloud) and API-format
 // cases.
+// Since the destination control landed (runDestination in run_zone.go) this block
+// no longer draws its own separator or its own "Run on CivitAI Cloud" heading: the
+// tab the user clicked to get here IS the heading, and the separator was the visual
+// grammar of "a different section below", which is exactly the reading the
+// destination control exists to remove. Everything else — the stable container ids,
+// the endpoints, the lazy load — is unchanged.
 func cloudGenerateBlock(wfID int64) g.Node {
 	id := strconv.FormatInt(wfID, 10)
 	return h.Div(
-		h.Class("cm-gen-sep"),
-		h.H3(h.Class("text-sm font-semibold text-slate-200 mb-2"), g.Text("Run on CivitAI Cloud")),
 		// --- PR C2 (filled the C2 SEAM) ----------------------------------------
 		// The CivitAI-cloud CONNECT block. C1 reserved this spot for a "credential
 		// entry" form; the real code says there is NO credential to enter. Cloud

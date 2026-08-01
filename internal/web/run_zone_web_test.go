@@ -14,7 +14,94 @@ import (
 
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
 	"github.com/ZacxDev/civitai-manager/internal/store"
+	g "maragu.dev/gomponents"
 )
+
+// ── the destination control ──────────────────────────────────────────────────
+
+// TestRunStatusIsOutsideBothDestinationPanels is the one that MATTERS structurally.
+//
+// The tempting arrangement puts #run-status inside the local panel, next to the
+// controls that fill it. That would hide a local run still in flight the moment the
+// user clicks "CivitAI Cloud" — and the 1 s poller would go on updating an invisible
+// element, which is exactly the shape of "my run vanished".
+func TestRunStatusIsOutsideBothDestinationPanels(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, queueSeedGraph)
+	body := get(t, srv, "/workflows/"+id).Body.String()
+
+	_, localEnd := divExtent(t, body, `class="cm-dest-panel cm-dest-panel-local"`)
+	_, cloudEnd := divExtent(t, body, `class="cm-dest-panel cm-dest-panel-cloud"`)
+	statusStart, _ := divExtent(t, body, `id="`+runStatusContainerID+`"`)
+
+	if statusStart < localEnd {
+		t.Errorf("#run-status is inside the LOCAL destination panel (starts at %d, panel "+
+			"closes at %d) — switching to Cloud would hide a run in flight",
+			statusStart, localEnd)
+	}
+	if statusStart < cloudEnd {
+		t.Errorf("#run-status is inside the CLOUD destination panel (starts at %d, panel "+
+			"closes at %d)", statusStart, cloudEnd)
+	}
+}
+
+// TestDestinationRadiosAreNeverSubmitted bounds the blast radius of adding a form
+// control purely for presentation. The destination is a CLIENT-SIDE choice: if it
+// rode along on a run request, every run endpoint would silently gain a parameter it
+// neither validates nor uses.
+func TestDestinationRadiosAreNeverSubmitted(t *testing.T) {
+	srv := newTestServer(t)
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, queueSeedGraph)
+	body := get(t, srv, "/workflows/"+id).Body.String()
+
+	// The radios exist and share a name (that is what makes them exclusive)…
+	if !strings.Contains(body, `name="cm_dest"`) {
+		t.Fatalf("the destination radios are missing:\n%s", body)
+	}
+	// …and they are inside NEITHER container that a run control hx-includes.
+	for _, container := range []string{
+		`id="` + runPresetFormID + `"`,
+		`id="` + runCountGroupID + `"`,
+	} {
+		start, end := divExtent(t, body, container)
+		if strings.Contains(body[start:end], `name="cm_dest"`) {
+			t.Errorf("a destination radio is inside %s, so it would ride along on every "+
+				"run request", container)
+		}
+	}
+	// And no hx-include names them.
+	for _, inc := range hxIncludeValues(body) {
+		for _, sel := range splitSelectors(inc) {
+			if strings.Contains(sel, "dest") {
+				t.Errorf("an hx-include names the destination control (%q)", inc)
+			}
+		}
+	}
+}
+
+// TestDestinationTabsNameTheCost pins the one fact that distinguishes the two
+// destinations. A tab labelled only "CivitAI Cloud" hides it, and the choice between
+// these two IS a choice about money.
+func TestDestinationTabsNameTheCost(t *testing.T) {
+	body := renderString(t, runDestination(g.Text("local"), g.Text("cloud")))
+	for _, want := range []string{"This computer", "free", "CivitAI Cloud", "spends Buzz"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the destination tabs never say %q:\n%s", want, body)
+		}
+	}
+	// Local is the default: cloud costs money, so it can never be what a page lands
+	// on by accident.
+	if !strings.Contains(body, `id="`+runDestLocalID+`" type="radio" name="cm_dest" checked`) {
+		t.Errorf("the LOCAL destination must be the checked default:\n%s", body)
+	}
+	if strings.Contains(body, `id="`+runDestCloudID+`" type="radio" name="cm_dest" checked`) {
+		t.Errorf("the paid destination must never be pre-selected:\n%s", body)
+	}
+	// Same a11y rule as the count segment: clipped, never hidden.
+	if strings.Contains(body, "hidden") {
+		t.Errorf("a hidden radio drops out of the tab order and the a11y tree:\n%s", body)
+	}
+}
 
 // hxIncludeValues returns every hx-include attribute VALUE in a rendered fragment,
 // in document order. Tests use it instead of a raw Contains over the whole body
