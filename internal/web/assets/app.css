@@ -4098,6 +4098,24 @@ a.cm-rail-act-link:hover .cm-rail-act-text {
     width: 1.75rem;
     height: 1.75rem;
     margin: 0.25rem auto 0;
+    /*
+     * 🔴 `position: relative` IS LOAD-BEARING — WITHOUT IT THE `overflow: hidden`
+     * BELOW CLIPS NOTHING. The shared thumbnail `.cm-out-thumb` is
+     * `position: absolute` (it is built to fill a positioned tile wrapper), and an
+     * absolutely positioned box is clipped by an ancestor's overflow ONLY if that
+     * ancestor is in its containing-block chain. With no positioned ancestor here,
+     * the thumbnail resolved against a box further up and escaped completely:
+     * measured live in Brave at 35x862px inside a 28x28px preview, bleeding down
+     * the entire left edge of the app. Every server-side test still passed — they
+     * assert that exactly one thumbnail is PRESENT, which it was.
+     *
+     * It is deliberately left at `z-index: auto`, so it creates NO stacking
+     * context and spends nothing from the STACKING ORDER budget. Re-hit-tested
+     * after the fix at three points down the collapsed edge (including over the
+     * preview itself): `.cm-rail-expand` still wins every one, so the full-edge
+     * expand control keeps its click.
+     */
+    position: relative;
     overflow: hidden;
     border-radius: 0.25rem;
     border: 1px solid var(--civitai-color-border);

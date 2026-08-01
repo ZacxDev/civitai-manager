@@ -198,6 +198,73 @@ func TestRailCollapsedPreviewStaysLazy(t *testing.T) {
 	}
 }
 
+// TestRailCollapsedPreviewActuallyClipsItsThumbnail guards a bug that EVERY
+// server-side test in this file missed and only a real browser found.
+//
+// The shared thumbnail `.cm-out-thumb` is `position: absolute` (built to fill a
+// positioned tile wrapper). An absolutely positioned box is clipped by an
+// ancestor's `overflow` ONLY when that ancestor is in its containing-block chain
+// — so `overflow: hidden` on a `position: static` preview clips NOTHING. Measured
+// live in Brave: the thumbnail rendered 35x862px inside a 28x28px preview and
+// bled down the entire left edge of the app, while
+// TestRailCollapsedShowsExactlyOnePreview stayed green because exactly one
+// thumbnail was indeed present.
+//
+// ⚠ HONEST LIMIT: this is a CSS-TEXT assertion, so it pins the FIX, not the
+// rendering. It cannot see paint. Re-verify the collapsed rail in a browser after
+// touching this rule — a markup assertion structurally cannot replace that.
+func TestRailCollapsedPreviewActuallyClipsItsThumbnail(t *testing.T) {
+	b, err := assetsFS.ReadFile("assets/app.css")
+	if err != nil {
+		t.Fatalf("read app.css: %v", err)
+	}
+	rule := cssRuleIn(t, string(b), `.cm-rail[data-collapsed="true"] .cm-rail-preview {`)
+
+	if !strings.Contains(rule, "overflow: hidden;") {
+		t.Errorf("the collapsed preview must clip its thumbnail. Got:\n%s", rule)
+	}
+	// 🔴 The two are a PAIR. overflow alone is inert here.
+	if !strings.Contains(rule, "position: relative;") {
+		t.Errorf("the collapsed preview must be `position: relative` — the shared .cm-out-thumb is "+
+			"`position: absolute`, so without a positioned ancestor the `overflow: hidden` above "+
+			"clips NOTHING and the thumbnail escapes the box (measured 35x862px inside 28x28px, "+
+			"bleeding down the whole left edge). Got:\n%s", rule)
+	}
+	// It must not buy that clipping with a stacking context: the full-edge expand
+	// control is emitted after it and must keep winning hit-testing.
+	//
+	// ⚠ Read the DECLARATIONS, not the raw rule text. The first version of this
+	// check was `strings.Contains(rule, "z-index")` and it failed against correct
+	// CSS, because the rule's own comment explains why there is no z-index and
+	// contains the phrase. That is the documented "a CSS comment satisfied a
+	// substring search" vacuity mode, running in the false-POSITIVE direction.
+	if strings.Contains(cssDeclarations(rule), "z-index") {
+		t.Errorf("the collapsed preview must declare NO z-index — `position: relative` at "+
+			"`z-index: auto` creates no stacking context and spends nothing from the STACKING "+
+			"ORDER budget. Got:\n%s", rule)
+	}
+}
+
+// cssDeclarations strips /* … */ comments from a rule body so an assertion reads
+// what the browser reads. A property name mentioned in prose is not a
+// declaration, and treating it as one produces failures against correct CSS.
+func cssDeclarations(rule string) string {
+	var b strings.Builder
+	for {
+		i := strings.Index(rule, "/*")
+		if i < 0 {
+			b.WriteString(rule)
+			return b.String()
+		}
+		b.WriteString(rule[:i])
+		j := strings.Index(rule[i:], "*/")
+		if j < 0 {
+			return b.String()
+		}
+		rule = rule[i+j+2:]
+	}
+}
+
 // TestRailActivityPollerTargetsAStableContainer is the streaming-job invariant
 // applied to the rail: the polling node must never replace ITSELF.
 //
