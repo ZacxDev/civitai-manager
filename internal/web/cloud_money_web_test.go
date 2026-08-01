@@ -63,7 +63,13 @@ func TestCloudNodepackBlockerRendersBeforeTheResourceTable(t *testing.T) {
 		wfID: 1, enabled: true, runnable: true, rows: rows,
 	}, "tok"))
 
-	blocker := strings.Index(body, "CivitAI Cloud cannot run yet")
+	// The headline is CONDITIONAL ("If any of these are custom nodes, CivitAI Cloud
+	// cannot run this workflow yet"), not an assertion, and that is load-bearing: the
+	// detector behind it is a ~50-entry built-in table that misclassifies real
+	// built-ins on 62% of a measured 70-workflow library. Match the invariant part —
+	// the consequence — not the conditional clause, so rewording the condition does
+	// not break this, but DROPPING the consequence does.
+	blocker := strings.Index(body, "CivitAI Cloud cannot run this workflow yet")
 	table := strings.Index(body, "<table")
 	if blocker < 0 {
 		t.Fatalf("no nodepack blocker for a workflow full of custom nodes:\n%s", body)

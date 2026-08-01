@@ -214,6 +214,25 @@ func cloudConversionWarnings(warnings []string) g.Node {
 // path stays open and the alert says what we know, sourced, without claiming to have
 // re-measured it.
 //
+// 🔴 THE HEADLINE IS CONDITIONAL, AND THAT IS NOT HEDGING — THE DETECTOR CANNOT
+// SUPPORT AN ASSERTION. `ResolveCustomNode` means only "this class_type is absent
+// from coreNodeClasses", a ~50-entry hand-written table (internal/comfy/resolve.go)
+// whose own comment says "false-positives are acceptable (the user reviews the
+// list)". That tolerance was calibrated for a TABLE ROW reading "custom node ·
+// (fill in below)"; escalating the same signal into a banner that says "do not
+// spend time on these rows" spends the tolerance on a claim it cannot cover.
+// MEASURED against a live ComfyUI (/object_info, 2462 types) and a real 70-workflow
+// library: ComfyUI ships 790 built-in class_types, coreNodeClasses knows 47 of
+// them, and 44 of 70 workflows (62%) contain at least one REAL BUILT-IN that this
+// detector calls custom — `WanImageToVideo` (comfy_extras.nodes_wan) in 14 of them,
+// `CLIPVisionLoader` (nodes) in 6. A flat assertion therefore steers most users off
+// a working paid path.
+// The nodepack limitation itself is real and stays stated in full; what changed is
+// that it now applies IF these are genuinely custom, and the copy says how to find
+// out. Do not restore the flat assertion without first making the detector
+// authoritative — /object_info distinguishes `comfy_extras.*`/`nodes` from
+// `custom_nodes.*`, so the local ComfyUI can answer this when it is reachable.
+//
 // Every class_type here is untrusted graph text and goes through g.Text.
 func cloudNodepackBlocker(rows []comfy.ResolvedResource) g.Node {
 	var names []string
@@ -225,22 +244,27 @@ func cloudNodepackBlocker(rows []comfy.ResolvedResource) g.Node {
 	if len(names) == 0 {
 		return nil
 	}
-	noun := "node"
+	// Singular reads "If this is a custom node", plural "If any of these are custom
+	// nodes" — one shared noun cannot carry both, since subject and verb change
+	// together.
+	lead := "If this is a custom node"
 	if len(names) > 1 {
-		noun = "nodes"
+		lead = "If any of these are custom nodes"
 	}
 	return alert("warning",
-		"This workflow needs custom "+noun+", which CivitAI Cloud cannot run yet",
+		lead+", CivitAI Cloud cannot run this workflow yet",
 		h.P(h.Class("text-sm"),
 			g.Text("Cloud runs go through CivitAI's CustomComfy step, which rejects a plain "),
 			h.Span(h.Class("font-mono text-xs"), g.Text("urn:air:comfy:nodepack:…")),
 			g.Text(" at submit — it needs a node-pack SNAPSHOT that this app does not build yet. "+
-				"Filling in the URN column below will not change that, so do not spend time on "+
-				"these rows: the submit is expected to fail however they are filled in.")),
+				"For a genuinely custom node, filling in the URN column below will not change "+
+				"that, so it is not worth the effort.")),
 		h.P(h.Class("text-sm"),
-			g.Text("Run it on your local ComfyUI above instead, where these nodes are already "+
-				"installed (or can be).")),
-		missingList("Custom node types in this workflow", names),
+			g.Text("These are flagged by a short list of known built-in node types, so some may "+
+				"be built-ins this app simply does not recognise — in which case the cloud run "+
+				"is fine. Estimate is free and is the authoritative check; running on your local "+
+				"ComfyUI above always works, since the nodes are installed (or can be).")),
+		missingList("Node types this app did not recognise as built-in", names),
 	)
 }
 

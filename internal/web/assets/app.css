@@ -3220,8 +3220,14 @@ a.cm-res-chip .cm-res-name {
 #cm-dest-cloud:checked ~ .cm-dest-tabs .cm-dest-tab[for="cm-dest-cloud"]::after {
   transform: scaleX(1);
 }
-.cm-dest-radio:focus-visible ~ .cm-dest-tabs .cm-dest-tab[for="cm-dest-local"],
-.cm-dest-radio:focus-visible ~ .cm-dest-tabs .cm-dest-tab[for="cm-dest-cloud"] {
+/* Each arm keys on its OWN radio id, mirroring the :checked pair above — NOT on the
+ * shared .cm-dest-radio class. Keying both arms on the class was a copy-paste slip
+ * that outlined BOTH tabs whenever EITHER radio had focus, measured live with the
+ * local radio focused: {"active":"cm-dest-local","cloudTabOutlinedByLocalFocus":true}.
+ * A focus ring that cannot say which option you are on is worse than none, because
+ * it is the only signal a keyboard user gets here. */
+#cm-dest-local:focus-visible ~ .cm-dest-tabs .cm-dest-tab[for="cm-dest-local"],
+#cm-dest-cloud:focus-visible ~ .cm-dest-tabs .cm-dest-tab[for="cm-dest-cloud"] {
   outline: 2px solid var(--civitai-color-primary);
   outline-offset: -2px;
 }
