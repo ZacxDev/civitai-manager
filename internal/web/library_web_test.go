@@ -101,7 +101,7 @@ func seedDuplicateCandidate(t *testing.T, srv *Server, root string) (int64, stri
 	return got.ID, dupe
 }
 
-func TestLibraryAndTrashPagesRender(t *testing.T) {
+func TestLibraryPageRenders(t *testing.T) {
 	files := []store.LocalFile{
 		{ID: 1, Path: "/m/a.safetensors", ModelID: intPtr(10), VersionID: intPtr(1), SizeBytes: 1024,
 			Status: store.LocalStatusMatched, Kind: store.LocalKindModel},
@@ -122,15 +122,6 @@ func TestLibraryAndTrashPagesRender(t *testing.T) {
 	for _, unwanted := range []string{"Discover installs", "/library/discover", "Browse server directories"} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("model-files tab must omit discovery UI %q", unwanted)
-		}
-	}
-
-	created := time.Now()
-	batches := []batchView{{Batch: store.QuarantineBatch{ID: 7, CreatedAt: created, Reason: "duplicate"}, Files: 3}}
-	tout := renderString(t, trashPage(batches, "csrf-tok", fullMaturityRange()))
-	for _, want := range []string{"Trash", "Restore", "#7", "duplicate"} {
-		if !strings.Contains(tout, want) {
-			t.Errorf("trash page missing %q", want)
 		}
 	}
 }

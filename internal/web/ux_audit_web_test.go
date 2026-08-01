@@ -73,7 +73,6 @@ func fullPages(t *testing.T) map[string]string {
 		"creator":    renderString(t, creatorPage("dave", searchRes, nil, "csrf", fullMaturityRange())),
 		"model":      renderString(t, modelDetailPage(detail, nil, "csrf", "https://civitai.com")),
 		"library":    renderString(t, libraryPage(libraryView{}, "csrf", true, []string{"/m"}, "files", nil, true, nil, fullMaturityRange(), libraryWorkflowsView{})),
-		"trash":      renderString(t, trashPage(nil, "csrf", fullMaturityRange())),
 		"outputs":    renderString(t, outputsGalleryPage(nil, nil, "", 0, 0, "csrf", fullMaturityRange())),
 		"generation": renderString(t, generationDetailPage(gen, nil, "csrf", fullMaturityRange(), workflowResolver{})),
 		"workflow":   renderString(t, detailPageNode(wf, "csrf", fullMaturityRange(), false, comfyHelperView{}, workflowResolver{})),
@@ -757,14 +756,7 @@ func TestEmptyStatesGuideTheUser(t *testing.T) {
 		heading string
 		cta     string
 	}{
-		"trash": {
-			renderString(t, trashPage(nil, "csrf", fullMaturityRange())),
-			"Nothing in the trash", "/library?tab=files",
-		},
-		// /disks is where that quarantine table now LIVES (trashPage's own route
-		// is a 302 into it). Added rather than swapped so the shared builder stays
-		// covered too — the empty state must survive on the surface a user can
-		// actually reach.
+		// /disks is where the quarantine table LIVES (the old /trash route was a 302 into it).
 		"disks quarantine": {
 			renderString(t, disksPage(nil, nil, false, "csrf", fullMaturityRange())),
 			"Nothing in the trash", "/library?tab=files",

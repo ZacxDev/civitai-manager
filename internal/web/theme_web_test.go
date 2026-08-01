@@ -306,7 +306,6 @@ func TestNoExternalCDNInShippedHTML(t *testing.T) {
 		"dashboard": dashboardPage(subs, nil, "csrf", fullMaturityRange()),
 		"search":    searchPage("", nil, nil, "csrf", fullMaturityRange(), "", "Most Downloaded", "Month"),
 		"library":   libraryPage(buildLibraryView(nil), "csrf", true, nil, "sources", nil, false, nil, fullMaturityRange(), libraryWorkflowsView{}),
-		"trash":     trashPage(nil, "csrf", fullMaturityRange()),
 		"queue":     queueFragment(items),
 		"events":    eventsFragment(evs),
 	}

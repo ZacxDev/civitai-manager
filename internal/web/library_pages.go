@@ -1288,7 +1288,7 @@ func quarantinePreview(plan *library.QuarantinePlan, ids []int64, csrf string) g
 
 	if plan.Applied {
 		return alert("success",
-			fmt.Sprintf("Quarantined %d file(s) (%s) as batch #%d. Restore from the Trash page.",
+			fmt.Sprintf("Quarantined %d file(s) (%s) as batch #%d. Restore from Disks.",
 				len(plan.Moves), humanBytes(plan.TotalBytes), plan.BatchID),
 			h.Ul(h.Class("mt-2 space-y-1"), g.Group(moveRows)),
 			h.Ul(h.Class("mt-2 space-y-1"), g.Group(skipRows)),
@@ -1328,16 +1328,6 @@ func quarantinePreview(plan *library.QuarantinePlan, ids []int64, csrf string) g
 					h.StyleAttr(tokenVarsFilled("warning")),
 				}, g.Text("Confirm quarantine")),
 			),
-		),
-	)
-}
-
-// trashPage lists quarantine batches with restore controls.
-func trashPage(batches []batchView, csrf string, mr maturityRange, rail ...railData) g.Node {
-	return page("Trash", csrf, mr, railOf(rail),
-		card(
-			pageTitle("Quarantine trash"), // the page's single <h1>
-			h.Div(h.ID("trash-content"), trashTable(batches, csrf)),
 		),
 	)
 }

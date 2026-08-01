@@ -616,15 +616,6 @@ func (s *Server) quarantineIDs(r *http.Request) []int64 {
 	return out
 }
 
-func (s *Server) handleTrash(w http.ResponseWriter, r *http.Request) {
-	batches, err := s.loadBatchViews()
-	if err != nil {
-		s.renderError(w, "load trash", err)
-		return
-	}
-	s.render(w, http.StatusOK, trashPage(batches, s.csrf, s.maturity(), s.rail(r.Context())))
-}
-
 func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
