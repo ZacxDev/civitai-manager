@@ -128,7 +128,17 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   **streaming jobs** for scan (`scan_handlers.go`) and discovery
   (`discover_handlers.go`): snapshot-under-lock progress, a **Stop** action, and
   poll endpoints. `server.go`/`handlers.go` wire routes; `sanitize.go` scrubs
-  untrusted model metadata (bluemonday). Discovery surfaces:
+  untrusted model metadata (bluemonday).
+  🔴 **`UGCPolicy` ALLOWS `h1`–`h6`, so a CivitAI description injects its own `<h1>`
+  into our page** — measured live: `/models/1386234` and `/models/4384` each emitted
+  **two `<h1>`s**. **And bluemonday's own source comment — "h1 through h6 are
+  permitted and take no attributes" — is FALSE**: against v1.0.27,
+  `<h1 class="x" id="y" onclick="alert(1)">` sanitizes to `<h1 id="y">`. Because `id`
+  survives, a naive `strings.ReplaceAll("<h1>", "<h3>")` misses every heading carrying
+  one and leaves **mismatched open/close tags**. Demote by rewriting the tag *name*;
+  never delete the heading (that drops the author's text).
+
+  Discovery surfaces:
   `discover_workflows.go` — Discover-workflows browse page (`GET
   /workflows/discover`), reuses the model-search card renderer pinned to
   `types=Workflows`; an empty query shows a cached "Popular this month" feed
@@ -157,6 +167,7 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   (primary/featured first), **NOT by publish date** — positional `[0]` == the primary
   version == what the detail page defaults to. To find the NEWEST version, sort by
   `publishedAt` yourself (assuming `[0]` is newest caused a ship-then-revert).
+  **Not a corner case: `[0] != newest` on 34 of 400 cached models (~8.5%).**
   **More CivitAI API gotchas** (all cost live-caught bugs — green in fake-reader
   tests, broken against reality):
   - The models list API filters by **`types` (PLURAL)** — singular `type=` is
@@ -301,6 +312,13 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   usable from any surface and reflect nothing from the request.
 - **`internal/queue`** — download queue (single active-per-item invariant).
 - **`internal/poller`** — polls subscriptions, diffs version lists, enqueues new.
+  🔴 **A web subscribe downloads NOTHING at subscribe time**, and the poller fetches
+  **ONE file per version**, not the version's file list (`SelectFile` → `PrimaryFile`).
+  `BackfillLatest` is unset on that path, so the first poll takes the seed branch and
+  merely marks existing versions seen — measured: two real subscribes produced **0
+  `download_queue` rows**. So any UI promising a download size at subscribe time is
+  lying, and a per-model "4 files · 54.2 GB" figure is the **local on-disk footprint**
+  — the wrong quantity for a subscription.
 - **`internal/cli`** — cobra commands (`root.go`, `commands.go`, `serve`, `search`,
   `library`, `verify`); `buildinfo.go` resolves `--version`.
 - **`internal/config`** — YAML config load/validate. `internal/hashutil` — hashing.
@@ -475,6 +493,12 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   `min > max` with 400 rather than swapping (which would grant an unasked-for
   band) or clamping to empty (which reads as a fetch failure). Both halves are
   load-bearing — the markup constraint only binds a browser.
+  🔴 **Do not "improve" this into a radio group: a native radio group WRAPS, a
+  `<select>` does not.** Arrow keys skip a `disabled` radio, and at a boundary
+  "skipped" means focus lands on the **far end of the scale** — which shipped a
+  content-gating control failing OPEN: from a band of "X only", one **ArrowLeft**, the
+  *reducing* direction, committed and persisted **"X to XXX"**. The fix is to emit **no
+  input at all** for an out-of-range stop — exactly what omitting the options does.
   **Migration `0018` maps every old stored mode — `blur`, `show` AND `hide` — to
   the FULL range**, so nothing the user could already see disappears on upgrade;
   a fresh install stays setting-less and falls through to the code default. The
@@ -563,6 +587,19 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   around it. `./e2e/` must be named explicitly because `e2e/uxaudit` is a **nested
   module** (`e2e/uxaudit/go.mod`) — a root-module `go test ./...` / `go vet ./...`
   does not reach it either.
+  🔴 **That exclusion is a CI blind spot, not just a formatting footnote: a PR touching
+  only `e2e/uxaudit` can be "green" while the root suite never COMPILED it.** Seen this
+  session — three open PRs, **two of them editing `e2e/uxaudit/walk.go`**. So `build`,
+  `vet` and `test` each need a second invocation inside that module, and an
+  integration-branch gate (below) must run it too or the merged tree is unproven for
+  exactly the files the batch changed.
+- **Gate a multi-PR batch on the MERGED tree** (the general rule is in `RULES.md`; what
+  is repo-specific is that the integration run must include the nested module above).
+  Measured this session: three PRs, all individually green, all `MERGEABLE`/`CLEAN`,
+  **two touching the same file** and **two branched from a `main` that was 2 commits
+  behind**. Building an integration branch, merging all three and running the full
+  suite **plus `e2e/uxaudit`** is what proves it — here it did pass, which is only
+  knowable *because* it was checked.
 - **Agent self-reports about SIDE EFFECTS are unreliable — verify with
   `git status --porcelain` yourself.** A research subagent reported "no files were
   written to your repo" while it had left a fetched upstream `CHANGELOG` in the repo
@@ -631,9 +668,9 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   mutation-verification and window-bounding are complementary, and **neither alone is
   sufficient** — one catches a test that cannot fail, the other a test that fails at
   nothing.
-- 🔴 **Three procedural checks decide whether mutation-verification happened at all —
+- 🔴 **Four procedural checks decide whether mutation-verification happened at all —
   skipping them produced ELEVEN green guard tests that proved nothing in ONE session,
-  each vacuous for a DIFFERENT reason.**
+  and EIGHT more in a later one, each vacuous for a DIFFERENT reason.**
   - **Re-run the mutation YOURSELF.** An agent's "mutation-verified" claim is not
     evidence: TWO agents this session reported it for tests where the mutation had
     never been run at all.
@@ -643,7 +680,14 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   - ⚠ **A `sed`-based mutation that MATCHES NOTHING is indistinguishable from a
     passing test** — a mutation check that didn't mutate looks exactly like a green
     one. Print `git diff --stat` and confirm the mutation LANDED before you believe
-    the red/green.
+    the red/green. **The remedy is to READ the actual line first**: four mutations in
+    one session matched nothing because their author guessed the code's shape — a
+    composed `const` assumed to be a string literal, and `min`/`max` assumed to be
+    variables when they are Go **builtins**.
+  - 🔴 **COMMIT BEFORE YOU MUTATE.** `git checkout -- <file>` to revert a mutation
+    reverts **everything uncommitted in that file** — hit **three times in one
+    session**, once costing an agent a whole in-progress feature it then had to
+    reconstruct. That single habit removes the entire class.
 
   The eleven modes, so you can recognise your own test: calibrated **one row short**
   of the bug (the threshold sat just outside the broken case); a **false
@@ -662,6 +706,43 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   another** (`thumbFragment("x.jpeg")` matched inside `xxx.jpeg`); **15 test servers
   silently shared one `cache=shared` in-memory DB**, so per-server isolation was
   fictional.
+
+  **Eight more from a later session — new SHAPES, not more instances.** (The first is
+  a false RED; the rest are false greens.)
+  - 🔴 **A mutation caught by the COMPILER proves nothing.** Renaming a helper left it
+    unused, so the package failed to build — which reads as "red" in a filtered log
+    while exercising **no assertion at all**. The real regression compiles. **Confirm
+    `go build` still succeeds before believing a red.** (Hit the parent session AND
+    two agents.)
+  - 🔴 **The assertion matched a DIFFERENT element's attribute.**
+    `strings.Contains(out, " popover")` was satisfied by the *trigger's*
+    ` popovertarget="…"`, so deleting the **panel's** own `popover` attribute passed
+    the entire web suite — hiding a panel that, with its base rule deliberately
+    declaring no `display`, renders as a **permanently-open sheet across the top of
+    every page**. Assert the element (`id="…" popover`), never a bare substring.
+  - 🔴 **A guard can FORBID its own fix.** A test asserted `overflow: visible` must NOT
+    appear in a media block — correct about the *panel*, wrong about everything else
+    in the strip, whose **focus rings** are ink overflow. The one-line accessibility
+    fix therefore failed CI. **A guard that over-generalises turns a regression into a
+    rule.**
+  - **Index comparison cannot prove nesting.** `strings.Index(params) < Index(zone) <
+    Index(status)` is equally true when `zone` is **inside** `params` — the exact
+    arrangement the invariant forbade. Use brace-balanced extents (`divExtent` /
+    `cssRuleIn` exist for this).
+  - 🔴 **The fixture could not reach the input.** `TestEveryFullPageHasExactlyOneH1`
+    counts `<h1>` on real pages — a correct assertion — but its model-page fixture has
+    an **empty description**, so a remote-injected heading never appears in what it
+    measures. Live, `/models/1386234` and `/models/4384` each emitted **two `<h1>`s**.
+    **A correct assertion over an unreachable input is green forever.**
+  - **A structural assumption wrong about the markup.** "No `</div>` between the title
+    and the first badge" passed against the *broken* layout, because badges are
+    `<span>`s — the bad slice closed no div at all.
+  - **Calibrated to its own constant.** A concurrency guard derived both its barrier
+    and its expectation from `diskProbeParallelism`, so mutating that constant to 1
+    closed the barrier on the first probe and stayed green.
+  - **"One was present" is not "exactly one, correctly".** The collapsed-rail guard
+    passed because one thumbnail existed — while that thumbnail rendered **35×862px
+    inside a 28×28px box**, bleeding down the whole left edge.
 - **A REAL BROWSER IS AVAILABLE — use it for anything visual.** (This bullet used
   to claim the opposite; that claim is dead. MCP Playwright is still broken on this
   NixOS host and there is still no `chromium` on PATH, but neither of those is the
@@ -793,19 +874,26 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   under test was fine the whole time. **Check the server's IDENTITY, not a bare 200**:
   a version string, the pid, `location.port`. The dogfood-swap sequence below is the
   same lesson one layer down.
-- **Dogfood binary swap is a 4-step SEQUENCE, not a compound:** `pkill -9 -f
-  "dogfood/cm serve"` → confirm the port is free by a `curl` returning `000` (do NOT
-  trust `pgrep`, which matches its own shell) → `cp` the new binary → start. A
-  compound `kill; cp` hits "Text file busy" because the old process still holds the
-  file.
+- **Dogfood binary swap is a SEQUENCE, not a compound:** kill → **wait until
+  `pgrep -x cm` returns NOTHING** → `cp` the new binary → start → **verify the served
+  build** by pid + `/proc/<pid>/exe` + `--version`. A compound `kill; cp` hits
+  "Text file busy" because the old process still holds the file.
+  🔴 **This bullet used to say "wait for the port to return `000`" — that is WRONG and
+  it cost a whole verification round.** A free port does NOT mean the binary is
+  released: the `cp` hit **`Text file busy`**, the restart silently relaunched the
+  **OLD** binary, and it answered `200` looking perfectly healthy. Only the identity
+  check caught it. Wait on the PROCESS, not the port, and confirm which build is
+  actually serving.
 - **zsh loop gotchas that cause flaky verify loops:** unquoted `for x in $var` does
   NOT word-split in zsh (use `while IFS= read -r x` from a file/`<<<`, or
   `${(f)var}`); `curl` inside a loop consumes the loop's stdin — pass `</dev/null`;
   🔴 **`pgrep -f PATTERN` / `pkill -f PATTERN` match the very shell running them —
   and other agents' processes.** A `pkill -f` killed the command issuing it (exit
   **144**), and separately an un-qualified one killed a SIBLING agent's scratch
-  server. **Resolve the PID and kill that**: `pgrep -f` → skip `$$` → confirm each
-  via `/proc/<pid>/cmdline` → `kill "$p"`.
+  server. 🔴 **Resolving the PID is NOT enough** — this bit again on the same day the
+  rule was written, because the shell's own cmdline still contains the pattern.
+  **Match the process NAME instead: `pgrep -x <procname>`, and confirm each candidate
+  via `/proc/<pid>/exe`** (the binary it is actually running) before `kill "$p"`.
 - **Backticks inside a `git commit -m "…"` message are EXECUTED by the shell** — a
   merge commit lost a word to command substitution this session (it committed
   `-  is "video/h264-mp4"`). Use single quotes or `-F <file>`. Recovery if it lands:
@@ -819,6 +907,14 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   `comfy:nodepack` URN** at submit — it needs a `comfyNodepackSnapshot` step →
   `nodepacklayer` AIR (post-paid), so custom-node cloud runs are NOT yet supported
   (see COMFYUI-INTEGRATION-DESIGN.md).
+  🔴 **The custom-node detector behind that is WEAK — keep its banner CONDITIONAL.**
+  `ResolveCustomNode` means only "absent from `coreNodeClasses`", a ~50-entry
+  hand-written table. Measured against a live ComfyUI (2462 node types) and the real
+  70-workflow library: **ComfyUI ships 790 built-ins, the table knows 47, and 44 of 70
+  workflows (62%) contain a real built-in it calls custom** (`WanImageToVideo` in 14,
+  `CLIPVisionLoader` in 6). Do not restore a flat "this needs custom nodes" assertion
+  before making the detector authoritative — `/object_info` distinguishes
+  `comfy_extras.*`/`nodes` from `custom_nodes.*`.
 - **Multi-mode template detection keys on `toggleRestriction`, not on bypass shape**
   (`internal/comfy/modes.go`). Template packs ship several pipelines in ONE graph
   with all but one bypassed. The mode set is derived from an **ACTIVE rgthree `Fast
