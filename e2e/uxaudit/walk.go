@@ -35,9 +35,10 @@ func Views(app *App) []View {
 	wfPath := fmt.Sprintf("/workflows/%d", app.WorkflowID)
 	runSel := fmt.Sprintf(`button[hx-post="/workflows/%d/run"]`, app.WorkflowID)
 	return []View{
-		// Landing / dashboard — also hosts the Subscriptions section (this app renders
-		// subscriptions on the dashboard, not a dedicated page; seeded non-empty).
-		{Name: "dashboard", Path: "/"},
+		// The subscriptions page — add-a-subscription, the subscription list (seeded
+		// non-empty), the download queue and the activity feed. It used to be "/";
+		// "/" is now a 302 into /search (handleHome), and a redirect is not a view.
+		{Name: "dashboard", Path: "/subscriptions"},
 		// Workflows list (the library's Workflows tab).
 		{Name: "workflows-list", Path: "/library?tab=workflows"},
 		// Paste-JSON import — the native <dialog> opened from the Workflows tab.

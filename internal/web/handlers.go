@@ -34,6 +34,30 @@ func setNSFWParam(q url.Values, nsfw bool) {
 	}
 }
 
+// handleHome serves "/", the app's front door, by REDIRECTING to /search.
+//
+// WHY "/" IS SEARCH AT ALL. The brand wordmark is the home link (see navbar),
+// so whatever "/" resolves to is what the logo means. Finding a model is the
+// thing this app is opened to do; the subscriptions/queue page that used to sit
+// here is a management surface, and it now lives at /subscriptions with a real
+// nav entry (libraryMenu) instead of being reachable only through the logo.
+//
+// WHY A REDIRECT AND NOT RENDERING THE SEARCH PAGE IN PLACE. /search already
+// OWNS its state: the query, the sort/period selects and the pagination links
+// are all built as /search URLs (searchPage / discoverHref). Rendering the same
+// page at "/" would create a SECOND url for one surface that silently converts
+// itself to /search on the first interaction — the address bar would change
+// under the user for no reason they could see, and "am I on the home page or
+// the search page" would have two answers. One canonical url has none of that,
+// and the cost is a single local round trip.
+//
+// 302, NOT 301: a permanent redirect is cached by the browser indefinitely, so
+// changing our mind later would strand every user who ever visited. Same
+// reasoning as handleTrashRedirect.
+func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/search", http.StatusFound)
+}
+
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	subs, err := s.store.ListSubscriptions()
 	if err != nil {
