@@ -1094,8 +1094,22 @@ func (s *Server) handleModelSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Re-render from the persisted state so the control reflects reality
-	// (subscribed on success / already-subscribed).
-	s.render(w, http.StatusOK, subscribeControl(id, s.modelSubscription(id), s.csrf, workflow))
+	// (subscribed on success / already-subscribed), plus the follow-up: the model
+	// is committed to, so "what do I run it in?" is the next question.
+	//
+	// The detail read is a CACHE HIT in the normal flow — the options panel the
+	// user just Confirmed from resolved and stored it one request ago. A miss
+	// costs one bounded fetch, and a failure costs only the follow-up link:
+	// subscribeWorkflowLink returns nil for a nil model, so the subscribe itself
+	// (already persisted above) is never affected by it.
+	fctx, fcancel := context.WithTimeout(r.Context(), subscribeFactsTimeout)
+	defer fcancel()
+	m, _, ferr := s.cachedModelDetail(fctx, id)
+	if ferr != nil {
+		s.log.Warn("subscribe follow-up: model detail", "model", id, "err", ferr)
+	}
+	s.render(w, http.StatusOK, subscribeControlWithFollowup(id, s.modelSubscription(id), s.csrf,
+		workflow, subscribeWorkflowLink(id, m)))
 }
 
 // handleModelUnsubscribe removes the model subscription and returns the collapsed
