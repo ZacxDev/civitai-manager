@@ -31,9 +31,46 @@ type View struct {
 // Views is the ordered funnel the walk captures. workflow-detail is deliberately
 // captured BEFORE run-missing-models: triggering the run mutates the server's global
 // run-job state, so the clean detail view must be captured first.
+// RunPostPath is the hx-post path suffix of the workflow detail page's PRIMARY run
+// control — the "Generate" button of the v0.1.97 one-run-zone rework. The walk's hero
+// selector is built from it, and TestWalkSelectorsMatchTheServedApp asserts the served
+// page still carries it.
+//
+// 🔴 This used to be "run", and it went stale for two releases without anything
+// noticing: the app moved to /run-with-params, the selector matched NOTHING at either
+// viewport, the hero prep hung on WaitVisible until the 90s capture context expired,
+// and the whole walk died with a bare "context deadline exceeded". Nothing caught it
+// because `make ux-audit` is double-gated out of `go test ./...` — a harness that
+// never runs reports no failures. That is what the selector guard exists to prevent.
+const RunPostPath = "run-with-params"
+
+// ImportTriggerTitlePrefix is the title= prefix of the paste-JSON import trigger on
+// the library Workflows tab. Guarded for the same reason as RunPostPath — it was an
+// aria-label until the copy-reduction pass moved it to title=.
+const ImportTriggerTitlePrefix = "Add a workflow"
+
+// RunButtonSelector is the hero's run-control selector for a given workflow id.
+func RunButtonSelector(workflowID int64) string {
+	return fmt.Sprintf(`button[hx-post="/workflows/%d/%s"]`, workflowID, RunPostPath)
+}
+
+// RunControlFragmentPath is the htmx fragment that DELIVERS the run control. The
+// button is not in the workflow page's initial HTML — the page ships a placeholder
+// that hx-gets this endpoint, which renders an enabled run button only once the
+// ComfyUI probe succeeds. The selector guard therefore has to assert against this
+// fragment, not the page.
+func RunControlFragmentPath(workflowID int64) string {
+	return fmt.Sprintf("/workflows/%d/run/comfy-status", workflowID)
+}
+
+// ImportTriggerSelector is the paste-JSON import trigger's selector.
+func ImportTriggerSelector() string {
+	return fmt.Sprintf(`button[title^=%q]`, ImportTriggerTitlePrefix)
+}
+
 func Views(app *App) []View {
 	wfPath := fmt.Sprintf("/workflows/%d", app.WorkflowID)
-	runSel := fmt.Sprintf(`button[hx-post="/workflows/%d/run"]`, app.WorkflowID)
+	runSel := RunButtonSelector(app.WorkflowID)
 	return []View{
 		// The app's front door — "/" redirects here.
 		{Name: "search", Path: "/search"},
@@ -49,7 +86,7 @@ func Views(app *App) []View {
 		{Name: "workflows-list", Path: "/library?tab=workflows"},
 		// Paste-JSON import — the native <dialog> opened from the Workflows tab.
 		{Name: "workflow-import", Path: "/library?tab=workflows", Prep: func(*App) []chromedp.Action {
-			trigger := `button[title^="Add a workflow"]`
+			trigger := ImportTriggerSelector()
 			return []chromedp.Action{
 				chromedp.WaitVisible(trigger, chromedp.ByQuery),
 				chromedp.Click(trigger, chromedp.ByQuery),
@@ -66,8 +103,10 @@ func Views(app *App) []View {
 			// run — captured at action time (readRunSeq), then read by waitForNewRunPanel.
 			var preSeq int64
 			return []chromedp.Action{
-				// The Run button appears once the comfy-status htmx fragment reports the
-				// (fake) ComfyUI reachable.
+				// The primary run control ("Generate") arrives with the comfy-status htmx
+				// fragment, not with the initial page HTML — it is rendered only once the
+				// probe reports the (fake) ComfyUI reachable. Measured at both viewports:
+				// visible shortly after load, whole hero chain settling in ~1.5s.
 				chromedp.WaitVisible(runSel, chromedp.ByQuery),
 				// The run job is a server-global SINGLETON, so a fresh navigation can
 				// bootstrap #run-status with a PREVIOUS run's terminal panel. Each run is
