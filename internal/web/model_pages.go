@@ -696,17 +696,14 @@ const workflowImportCardID = "workflow-import"
 // present" (see workflowImportDetailCard).
 func workflowImportJumpLink(imported int) g.Node {
 	label := "Import workflows"
-	aria := "Go to the workflow import section"
 	if imported > 0 {
 		label = "View workflows"
-		aria = "Go to the workflows imported from this model"
 	}
 	return h.A(
 		h.Href("#"+workflowImportCardID),
 		dataAttr("civitai-ui", "button"),
 		dataAttr("variant", "filled"),
 		dataAttr("size", "sm"),
-		g.Attr("aria-label", aria),
 		g.Text(label),
 	)
 }
@@ -1280,7 +1277,6 @@ func versionTabsOlder(v modelDetailView, older []civitai.ModelVersionSummary) g.
 			h.Class("cm-vmore-sum"),
 			// Same chevron idiom as .cm-meta-summary; the CSS rotates it when open.
 			h.Span(h.Class("cm-vmore-chevron"), g.Attr("aria-hidden", "true"), g.Text("›")),
-			g.Attr("aria-label", fmt.Sprintf("Show %d older version%s", len(older), plural(len(older)))),
 			g.Text(label),
 		),
 		h.Div(h.Class("cm-vmore-tabs"), g.Group(tabs)),
