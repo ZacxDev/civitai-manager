@@ -1254,6 +1254,19 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   outline: 2px solid var(--civitai-color-primary);
   outline-offset: 2px;
 }
+/*
+ * THE COMMIT ROW. The tracks only stage a selection now — this is the one control
+ * that saves, so it sits below them, separated by a rule, and is right-aligned to
+ * read as the panel's terminal action. Hand-written .cm-* rather than Tailwind
+ * utilities for the same purge-proofing reason as the rest of this block.
+ */
+.cm-maturity-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.75rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--civitai-color-border);
+}
 
 @media (min-width: 1024px) {
   /*

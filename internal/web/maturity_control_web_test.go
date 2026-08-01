@@ -109,10 +109,11 @@ func matTrack(t *testing.T, out, id string) string {
 
 // TestMaturityControlIsKeyboardOperable proves the control is built from NATIVE
 // form elements, which is the whole keyboard story: a radio group is reached with
-// Tab, moved between stops with the arrow keys (which also COMMIT, firing
-// `change`), and needs no key handling of our own. The trigger is a real
-// <button>, activated by Enter/Space, and the panel is a `popover` in its default
-// `auto` state — which is where light-dismiss and Escape come from.
+// Tab, moved between stops with the arrow keys, and needs no key handling of our
+// own. The trigger is a real <button>, activated by Enter/Space, and the panel is
+// a `popover` in its default `auto` state — which is where light-dismiss and
+// Escape come from. Whether those arrow keys COMMIT is a separate property, and
+// they no longer do: see TestMaturityControlCommitsOnlyOnSubmit.
 //
 // The negative half matters as much: a <div role=slider> or a click-only widget
 // would pass a "does the markup contain the levels" test and be unusable.
@@ -165,12 +166,9 @@ func TestMaturityControlIsKeyboardOperable(t *testing.T) {
 	if strings.Contains(out, `tabindex="-1"`) {
 		t.Error("an end of the range must not be removed from the tab order")
 	}
-	// Changing any stop submits the whole form (both values + the token).
+	// Submitting the form sends the whole band (both values + the token).
 	if !strings.Contains(out, `hx-post="/settings/maturity"`) {
 		t.Errorf("the control must POST /settings/maturity:\n%s", out)
-	}
-	if !strings.Contains(out, `hx-trigger="change"`) {
-		t.Errorf("the control must submit on change (arrow-key changes fire it too):\n%s", out)
 	}
 }
 
@@ -396,6 +394,157 @@ func TestMaturityHandlerRejectsAnInvertedRange(t *testing.T) {
 	// And CSRF is still enforced on this endpoint.
 	if rec := post("min=pg&max=xxx"); rec.Code != http.StatusForbidden {
 		t.Errorf("maturity POST without CSRF = %d, want 403", rec.Code)
+	}
+}
+
+// matForm slices out the maturity control's <form> — its OPENING TAG and its full
+// extent — by the stable id the markup carries.
+//
+// 🔴 It returns the open tag SEPARATELY on purpose. "Does the control commit on
+// change?" is a property of the FORM's own attributes, and a bare
+// strings.Contains(out, `hx-trigger="change"`) over the whole control would be
+// answerable by any other element that ever grows one — the same shape as the
+// vacuous ` popover` substring check documented above, which the trigger's
+// `popovertarget` satisfied.
+func matForm(t *testing.T, out string) (open, extent string) {
+	t.Helper()
+	idx := strings.Index(out, `<form id="`+maturityFormID+`"`)
+	if idx < 0 {
+		t.Fatalf("no <form id=%q> in the maturity control:\n%s", maturityFormID, out)
+	}
+	rest := out[idx:]
+	gt := strings.Index(rest, ">")
+	if gt < 0 {
+		t.Fatalf("the maturity <form> tag is unterminated:\n%s", out)
+	}
+	end := strings.Index(rest, "</form>")
+	if end < 0 {
+		t.Fatalf("the maturity <form> is not closed:\n%s", out)
+	}
+	return rest[:gt+1], rest[:end]
+}
+
+// TestMaturityControlCommitsOnlyOnSubmit is the regression guard for the bug this
+// change fixes.
+//
+// The form used to carry `hx-trigger="change"`, so a radio group — whose arrow
+// keys fire `change` on EVERY step — persisted a band and got back `HX-Refresh`
+// on every keypress. Lowering the ceiling from XXX to PG was four saves and four
+// full page reloads, each one closing the popover and dumping focus to <body>,
+// and each intermediate band was written to the DB. The tracks must therefore
+// only STAGE a selection; the form commits on `submit` alone (htmx's natural
+// trigger for a <form>, which is why no hx-trigger is the correct spelling rather
+// than hx-trigger="submit").
+//
+// Both halves are asserted on the FORM ELEMENT'S OWN OPEN TAG: the absence of a
+// change/keyup/input trigger, AND the presence of the submit path that replaces
+// it. Absence alone would be satisfied by a form that cannot commit at all.
+func TestMaturityControlCommitsOnlyOnSubmit(t *testing.T) {
+	out := renderString(t, maturityControl(fullMaturityRange(), "csrf-tok"))
+	open, extent := matForm(t, out)
+
+	// Sanity: the slice really is the maturity form, not something that merely
+	// contains the id. Without this the assertions below could be true of an empty
+	// or wrongly-located string.
+	if !strings.Contains(open, `hx-post="/settings/maturity"`) {
+		t.Fatalf("the sliced form is not the maturity setter — fixture did not reach the "+
+			"element under guard:\n%s", open)
+	}
+	if !strings.Contains(extent, `id="`+maturityControlMinID+`"`) ||
+		!strings.Contains(extent, `id="`+maturityControlMaxID+`"`) {
+		t.Fatalf("the sliced form does not contain both range tracks, so it is not the "+
+			"element that commits the band:\n%s", extent)
+	}
+
+	// 🔴 NO auto-commit trigger. `change` is the one that shipped the bug; keyup and
+	// input are the same mistake spelled differently for a radio group.
+	if m := regexp.MustCompile(`hx-trigger="([^"]*)"`).FindStringSubmatch(open); m != nil {
+		for _, banned := range []string{"change", "keyup", "input"} {
+			if strings.Contains(m[1], banned) {
+				t.Errorf("the maturity form carries hx-trigger=%q. A radio track fires %q on every "+
+					"arrow keypress, so the band is persisted and the page reloaded mid-adjustment — "+
+					"the popover closes and focus is dumped to <body>. The tracks must only stage; "+
+					"only Apply may commit.", m[1], banned)
+			}
+		}
+	}
+
+	// The submit path that replaces it: a real type=submit INSIDE this form.
+	if !strings.Contains(extent, `id="`+maturityApplyID+`" type="submit"`) &&
+		!strings.Contains(extent, `type="submit" id="`+maturityApplyID+`"`) {
+		t.Errorf("the maturity form has no <button type=submit id=%q> — with the change "+
+			"trigger gone and no submit control, the band could never be saved at all:\n%s",
+			maturityApplyID, extent)
+	}
+}
+
+// TestMaturityControlHasAnApplyButton covers the control the user actually
+// reaches for: it must be a real, keyboard-reachable button that SUBMITS THIS
+// FORM, and it must have a clear accessible name.
+//
+// The name is asserted as a prefix relationship, not equality: WCAG 2.5.3 (Label
+// in Name) wants the visible text to appear at the START of the accessible name,
+// so speech input ("click Apply") still matches.
+func TestMaturityControlHasAnApplyButton(t *testing.T) {
+	out := renderString(t, maturityControl(fullMaturityRange(), "csrf-tok"))
+	_, extent := matForm(t, out)
+
+	btnRe := regexp.MustCompile(`<button([^>]*\bid="` + maturityApplyID + `"[^>]*)>([^<]*)</button>`)
+	m := btnRe.FindStringSubmatch(extent)
+	if m == nil {
+		t.Fatalf("no <button id=%q> inside the maturity form:\n%s", maturityApplyID, extent)
+	}
+	attrs, text := m[1], strings.TrimSpace(m[2])
+
+	if !strings.Contains(attrs, `type="submit"`) {
+		t.Errorf("the Apply button must be type=submit — a type=button would render a control "+
+			"that looks like the commit and does nothing. Got: <button%s>", attrs)
+	}
+	if text == "" {
+		t.Errorf("the Apply button has no visible label:\n<button%s>%s</button>", attrs, m[2])
+	}
+	// Keyboard-reachable: not removed from the tab order, and not disabled.
+	if strings.Contains(attrs, `tabindex="-1"`) || strings.Contains(attrs, "disabled") {
+		t.Errorf("the Apply button must stay keyboard-reachable and enabled. Got: <button%s>", attrs)
+	}
+	// Accessible name. An aria-label is optional, but if present it must EXTEND the
+	// visible text rather than replace it.
+	if al := regexp.MustCompile(`aria-label="([^"]*)"`).FindStringSubmatch(attrs); al != nil {
+		if !strings.HasPrefix(al[1], text) {
+			t.Errorf("the Apply button's accessible name %q does not start with its visible label %q — "+
+				"WCAG 2.5.3 (Label in Name): speech input matches what is on screen", al[1], text)
+		}
+	}
+}
+
+// TestMaturityControlDoesNotSaveByClickingRadios is the ONE-SUBMISSION guard, and
+// it is deliberately narrow.
+//
+// Under the old change-trigger, any programmatic preset that set both ends by
+// clicking two radios fired TWO POSTs and TWO reloads. Under the submit-only form
+// the same preset commits NOTHING. Either way, a click on a radio must not be the
+// thing that saves — a preset has to reach the form and call requestSubmit() once.
+// This asserts the property structurally: nothing in the panel may carry an inline
+// handler that clicks a maturity radio.
+//
+// ⚠ HONEST LABEL: on this branch the panel contains no preset control at all, so
+// this is an INVARIANT guard, not regression coverage — it cannot be made to fail
+// by breaking shipped behaviour. It is here because the preset is in flight on
+// another branch (`feat/comfy-model-cache`'s "Safe mode", which does exactly the
+// forbidden `.click()`), and a clean merge of that branch would silently produce a
+// button that saves nothing.
+func TestMaturityControlDoesNotSaveByClickingRadios(t *testing.T) {
+	out := renderString(t, maturityControl(fullMaturityRange(), "csrf-tok"))
+	_, extent := matForm(t, out)
+
+	for _, m := range regexp.MustCompile(`on[a-z]+="([^"]*)"`).FindAllStringSubmatch(extent, -1) {
+		if strings.Contains(m[1], ".click()") {
+			t.Errorf("an inline handler in the maturity panel calls .click(): %q. Clicking a radio "+
+				"no longer saves anything (the form commits on submit only), and under the old "+
+				"change-trigger clicking two radios fired two POSTs and two page reloads. A preset "+
+				"must set both ends and then call document.getElementById(%q).requestSubmit() ONCE.",
+				m[1], maturityFormID)
+		}
 	}
 }
 

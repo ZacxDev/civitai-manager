@@ -179,10 +179,15 @@ func navbar(csrf string, mr maturityRange, rail railData) g.Node {
 // trigger's popovertarget and the panel's id are the ENTIRE wiring of this
 // control, so they come from ONE constant — a typo in either renders a button
 // that does nothing at all, silently, with no console error.
+// maturityFormID / maturityApplyID name the form and its commit button. The form
+// needs a stable id because it is now the ONLY thing that saves: any programmatic
+// preset has to reach it and call requestSubmit() rather than clicking radios.
 const (
 	maturityControlMinID = "cm-maturity-min"
 	maturityControlMaxID = "cm-maturity-max"
 	maturityMenuPanelID  = "cm-maturity-menu"
+	maturityFormID       = "cm-maturity-form"
+	maturityApplyID      = "cm-maturity-apply"
 )
 
 // maturityControl renders the app-wide PG..XXX maturity RANGE as an ICON BUTTON
@@ -226,9 +231,31 @@ const (
 // guard — the markup constraint only binds a browser. Both halves are tested
 // independently; never collapse them into one test.
 //
-// Changing any stop submits the WHOLE form (both ends + the CSRF token) to
+// 🔴 THE RADIOS STAGE; ONLY **APPLY** COMMITS. The form deliberately carries NO
+// `hx-trigger`, so htmx falls back to a <form>'s natural trigger — `submit`.
+// It used to carry `hx-trigger="change"`, and that made the control hostile to the
+// keyboard it was designed for: a radio group commits on EVERY arrow keypress, the
+// handler answers `HX-Refresh`, and the full page reload closes the popover and
+// dumps focus to <body>. Walking the ceiling from XXX down to PG — four presses —
+// meant four reloads, each one re-opening the panel by hand. Worse, every
+// intermediate band was PERSISTED, so an interrupted adjustment left the user on a
+// band they were only passing through.
+//
+// So the tracks now only stage a pending selection in the DOM, and the Apply
+// button submits the WHOLE form (both ends + the CSRF token) exactly once to
 // POST /settings/maturity, which persists and replies HX-Refresh so the current
-// page re-renders under the new band — so the one control works on every page.
+// page re-renders under the new band — the one control works on every page.
+//
+// Two consequences worth stating, because both are deliberate:
+//   - The trigger's aria-label and the panel's "current" line show the SAVED band,
+//     never the pending selection. Nothing is applied until Apply, so announcing the
+//     pending value as the current one would be a lie — and the page reload after
+//     Apply is what refreshes them.
+//   - Anything that sets the radios PROGRAMMATICALLY (a preset/"safe mode" shortcut,
+//     say) must set them and then call `form.requestSubmit()` ONCE. Under the old
+//     change-trigger a two-radio preset fired two POSTs and two reloads; under this
+//     one a `.click()`-based preset commits NOTHING at all. Clicking radios is no
+//     longer a way to save.
 //
 // STACKING: the panel is a `popover`, so it renders in the TOP LAYER and declares
 // NO z-index — see libraryMenu and the STACKING ORDER ledger in app.css. It
@@ -266,8 +293,11 @@ func maturityControl(mr maturityRange, csrf string) g.Node {
 			g.Attr("popover"),
 			h.Class("cm-maturity-panel"),
 			h.Form(
+				h.ID(maturityFormID),
 				hx("post", "/settings/maturity"),
-				hx("trigger", "change"),
+				// NO hx-trigger: a <form>'s natural htmx trigger is `submit`, which is
+				// exactly what is wanted. See the header — `hx-trigger="change"` made every
+				// arrow keypress persist a band and reload the page.
 				hx("swap", "none"),
 				// The CSRF token rides in the form, not in hx-vals, so the control is one
 				// self-contained POST body — hx-include is not needed and cannot go stale.
@@ -280,6 +310,20 @@ func maturityControl(mr maturityRange, csrf string) g.Node {
 					g.Text("Content outside this band is never fetched or shown. Your own generations are unrated and always render.")),
 				maturityTrack(maturityControlMinID, "min", "Maturity from", mr.Min, maturityPG, mr.Max),
 				maturityTrack(maturityControlMaxID, "max", "Maturity to", mr.Max, mr.Min, maturityXXX),
+				// The commit. A real type=submit, so Enter from anywhere in the form works
+				// and no JavaScript of our own is involved — the same "native elements carry
+				// the interaction story" rule the tracks follow.
+				//
+				// The visible label is "Apply"; the accessible name extends it rather than
+				// replacing it, so speech input still matches the word on screen (WCAG 2.5.3
+				// wants the visible text to be a prefix of the accessible name).
+				h.Div(h.Class("cm-maturity-actions"),
+					civButton("filled", "sm", []g.Node{
+						h.Type("submit"),
+						h.ID(maturityApplyID),
+						g.Attr("aria-label", "Apply maturity range"),
+					}, g.Text("Apply")),
+				),
 			),
 		),
 	)
