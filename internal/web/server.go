@@ -734,8 +734,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /workflows/{id}/run/queue", s.handleWorkflowRunQueue)
 	mux.HandleFunc("POST /workflows/run/stop", s.handleWorkflowRunStop)
 	mux.HandleFunc("GET /workflows/run/view", s.handleWorkflowRunView)
-	// Missing-model resolution fragment (read-only GET, loopback-gated, TTL-cached).
-	mux.HandleFunc("GET /workflows/run/resolve-model", s.handleWorkflowResolveModel)
+	// There is deliberately NO `GET /workflows/run/resolve-model` here. It existed
+	// from v0.1.6x and NOTHING ever linked to it: production renders the same
+	// missing-model fragment inline, through resolveModelFragmentWithReason on the
+	// download-and-run path. Its ~8 tests read as coverage of a feature while the
+	// surface they drove was unreachable. Removed along with its handler; the
+	// resolution machinery it called (resolveModels, resolveModelFragment,
+	// civitaiTypeParam) is live and stayed. TestEveryRegisteredRouteIsEmitted in
+	// route_reachability_web_test.go is what found it and what stops the next one.
+	//
 	// Gated custom-node-pack install + the explicit ComfyUI restart. Both DELEGATE
 	// to ComfyUI-Manager (we never write custom_nodes/), and both carry the same
 	// CSRF + loopback gating as every other endpoint that reaches the local ComfyUI.
