@@ -42,21 +42,41 @@ and OPEN THREADS only._
   `.pre-comfy-cache`) ≈ 68 MB. The first two are long superseded — delete when happy.
 - `go.mod`/`go.sum` **untouched across the entire v0.1.84 → v0.1.102 run**.
 
-## In flight — two dispatched agents; check `gh pr list` first
+## ✅ `feat/comfy-model-cache` is FULLY SUPERSEDED — retire it
 
-1. **Port of `feat/comfy-model-cache`.** 1 ahead / 62 behind; tip `46a10ed` is safe on
-   `origin` at the same sha. Its migration `0019` is **byte-identical** to main's and
-   `internal/store/comfy_cache.go` is already there — the store layer needs no porting.
-   Genuinely unmerged: the **three-state resource chips** (✓ library / ◎ ComfyUI / ✗
-   missing) with hover popovers, the `ChoicesContain` export, and three maturity tweaks.
-   `git merge-tree --write-tree origin/main 46a10ed` **exits 1** — real conflicts in
-   `app.css`, `layout.go`, `workflow_pages.go`, `workflow_handlers.go`,
-   `workflow_resources.go` and two test files, because `main` redesigned the maturity
-   control (Apply button) after the branch forked. The agent was told to treat the old
-   branch as a **specification, not a patch**, and that dropping the obsolete maturity
-   items is a legitimate outcome. **Do not delete `feat/comfy-model-cache` until that PR
-   merges.**
-2. **Make `coreNodeClasses` authoritative** from `/object_info` module paths
+Evaluated and closed (PR #54 is the evaluation record; no code). The branch was 1 ahead /
+62 behind, tip `46a10ed`. **Every one of its seven claims already landed on `main`
+independently on 2026-08-01**, and in each case where the two differ, main's version fixed
+a bug the branch still contains:
+
+| claim | superseded by |
+|---|---|
+| migration `0019` | identical blob |
+| three-state ✓/◎/✗ chips + popover | `70e4e04` |
+| `ChoicesContain` export | `9c22767` (solved differently) |
+| Safe mode | `3dac17e` |
+| explainer copy / track spacing | `main` keeps them deliberately |
+
+Verified independently of the agent: all three commits are ancestors of `main`,
+`.cm-res-chip*` is in `app.css`, `safeModeMin = maturityPG` is in `layout.go`.
+
+🔴 **Porting it would have shipped two live bugs.** Its popover reuses
+`.cm-updated`/`.cm-updated-pop`, which are *descendant* selectors — chips render inside a
+`workflowResourcesPopover` that is itself a `.cm-updated`, so hovering the outer trigger
+opens **every** chip's popover at once; main's child-combinator
+`.cm-res-chip-wrap > .cm-res-chip-pop` exists for exactly that. And its Safe mode clicks
+radios from an inline `javascript:` onclick that **fails OPEN** — from a saved `R..XXX`
+band, `max-pg13` is never emitted, so it POSTs `min=pg&max=xxx`, persisting the **full**
+range from a button labelled *Safe mode*. Main's is an htmx button outside the form with
+its own CSRF POST carrying the literal band.
+
+`merge-tree` exiting 1 was therefore conflict-with-nothing-to-gain, not unmerged value.
+**The branch can be deleted**; `46a10ed` is recorded here and in #54 if it is ever wanted
+(`git push origin 46a10ed:refs/heads/feat/comfy-model-cache` restores it).
+
+## In flight — check `gh pr list` first
+
+1. **Make `coreNodeClasses` authoritative** from `/object_info` module paths
    (`comfy_extras.*` / `nodes` vs `custom_nodes.*`). Measured bug: ComfyUI ships **790
    built-ins**, the hand-written table knows ~50, and **44 of 70 workflows (62%)** contain
    a real built-in it calls custom. Scope is the CivitAI **cloud** path only
