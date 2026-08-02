@@ -446,19 +446,40 @@ func maturityApplyGateScript() g.Node {
   var msg = document.getElementById('` + maturityInvalidID + `');
   var panel = document.getElementById('` + maturityMenuPanelID + `');
   if (!f || !btn || !msg) { return; }
+  function staged(name){
+    // Read the CHECKED radio directly rather than f.elements[name].value.
+    // f.elements[name] is a RadioNodeList only when the track rendered MORE THAN
+    // ONE input — and a track emits no input at all for an out-of-band stop, so at
+    // a saved band of pg:pg or xxx:xxx one track is a lone HTMLInputElement whose
+    // .value is its own value whether or not it is checked. Harmless today (a lone
+    // stop is always the checked one, and neither of those bands can be staged
+    // inverted), but the selector is shape-independent and cannot drift.
+    var el = f.querySelector('input[name=' + name + ']:checked');
+    return el ? el.value : '';
+  }
   function inverted(){
-    var lo = f.elements['min'], hi = f.elements['max'];
-    // A RadioNodeList's .value is the CHECKED radio's value, or '' when none is.
-    var a = ORDER[lo ? lo.value : ''];
-    var b = ORDER[hi ? hi.value : ''];
+    var a = ORDER[staged('min')];
+    var b = ORDER[staged('max')];
     // typeof, not the "in" operator: "in" walks the prototype chain, so
     // 'toString' would read as a known level.
+    //
+    // An unranked value therefore reads as NOT inverted — the gate fails OPEN.
+    // That is the correct direction and is deliberate: it is unreachable through
+    // the UI (tracks emit only lowercase slugs), and the server still rejects it
+    // (maturityFromSlug lowercases, then valid() refuses), so the worst case
+    // degrades to the silent 400 this gate exists to prevent — never to a WIDER
+    // band being persisted. The gate is an affordance; the server is enforcement.
     return typeof a === 'number' && typeof b === 'number' && a > b;
   }
   function sync(){
     var bad = inverted();
     btn.setAttribute('aria-disabled', bad ? 'true' : 'false');
-    msg.textContent = bad ? 'From is above To — move one end to apply.' : '';
+    var next = bad ? 'From is above To — move one end to apply.' : '';
+    // Only write on a real change. role="status" announces on CONTENT CHANGE, and
+    // reassigning the same string replaces the text node — a mutation a screen
+    // reader may re-announce on EVERY arrow keypress while the band stays
+    // inverted. The guard makes it announce once per transition.
+    if (msg.textContent !== next) { msg.textContent = next; }
   }
   f.addEventListener('change', sync);
   f.addEventListener('reset', function(){ setTimeout(sync, 0); });

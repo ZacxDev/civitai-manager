@@ -1270,8 +1270,11 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   display: flex;
   align-items: center;
   /* space-between, not flex-end: the inverted-band reason is the row's first item
-   * and sits left, Apply stays right. When the reason is empty it is a zero-width,
-   * zero-height flex item, so the row looks exactly as it did before. */
+   * and sits left, Apply stays right. When the reason is empty the row still looks
+   * exactly as it did before — but NOT because the item collapses to nothing: it
+   * carries `flex: 1 1 auto` below, so it GROWS to fill the free space. It is
+   * zero-HEIGHT (no text), which is why the row's height is unchanged, and it
+   * absorbs the slack, which is why Apply stays hard right. */
   justify-content: space-between;
   gap: 0.75rem;
   margin-top: 0.75rem;
@@ -1306,8 +1309,23 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  * styling has to come from the ARIA state, and the POST is cancelled in
  * htmx:beforeRequest instead. cursor stays legible on hover.
  */
+/*
+ * 🔴 0.6, NOT a lower value, and it must match civitai-components.css's
+ * `:disabled, [aria-busy='true']` rule — that is the design system's own dim
+ * value, and drifting below it is invisible to the gate that would normally catch
+ * it. contrast_web_test.go resolves TOKEN PAIRS and has no model of `opacity` on
+ * text, which is exactly the blind spot that let two AA failures ship (the
+ * `.cm-dest-tab-sub` / `.cm-vgroup-pill-count` double-dimming). Measured on dark,
+ * primary-fg #fefefe on primary #1971C2 over the #1A1B1E surface: 4.98:1 plain,
+ * 3.37:1 at 0.6, and 2.90:1 at 0.5.
+ *
+ * The usual "inactive component" exemption (WCAG 1.4.3) is WEAKER here than for a
+ * real disabled control: this button is deliberately NOT `disabled` — it stays
+ * focusable so aria-describedby can explain why it will not commit — so it is
+ * still a reachable, announced control. Keep the dim shallow.
+ */
 .cm-maturity-actions [data-civitai-ui='button'][aria-disabled='true'] {
-  opacity: 0.5;
+  opacity: 0.6;
   cursor: not-allowed;
 }
 
