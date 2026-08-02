@@ -180,8 +180,11 @@ func navbar(csrf string, mr maturityRange, rail railData) g.Node {
 // control, so they come from ONE constant — a typo in either renders a button
 // that does nothing at all, silently, with no console error.
 // maturityFormID / maturityApplyID name the form and its commit button. The form
-// needs a stable id because it is now the ONLY thing that saves: any programmatic
-// preset has to reach it and call requestSubmit() rather than clicking radios.
+// needs a stable id because it is now the ONLY thing that saves.
+// ⚠ This used to add "any programmatic preset has to reach it and call
+// requestSubmit() rather than clicking radios". That is WRONG — see the header on
+// maturityControl. The radios are an interlock keyed to the SAVED band, so driving
+// them and submitting can persist a WIDER band than the preset asked for.
 // maturityInvalidID names the live region that says WHY Apply will not commit; the
 // Apply button points at it with aria-describedby, so the id is part of the
 // accessibility wiring and not just a style hook.
@@ -255,11 +258,16 @@ const (
 //     never the pending selection. Nothing is applied until Apply, so announcing the
 //     pending value as the current one would be a lie — and the page reload after
 //     Apply is what refreshes them.
-//   - Anything that sets the radios PROGRAMMATICALLY (a preset/"safe mode" shortcut,
-//     say) must set them and then call `form.requestSubmit()` ONCE. Under the old
-//     change-trigger a two-radio preset fired two POSTs and two reloads; under this
-//     one a `.click()`-based preset commits NOTHING at all. Clicking radios is no
-//     longer a way to save.
+//   - 🔴 A PRESET ("safe mode") MUST NOT DRIVE THE RADIOS AT ALL. This comment used
+//     to say it should — "set them and then call `form.requestSubmit()` ONCE" — and
+//     that was WRONG in the fail-OPEN direction. A `.click()`-based preset commits
+//     nothing now, which is why submitting looked like the fix; but maturityTrack
+//     emits NO <input> for an out-of-band stop and the max track's low bound is the
+//     SAVED mr.Min, so from a saved band of R..XXX that approach POSTs
+//     min=pg&max=xxx and persists PG..XXX — a "Safe mode" control that reveals
+//     everything. The radios are an interlock keyed to the saved band. A preset
+//     needs its OWN CSRF-protected POST carrying the literal min/max, validated by
+//     handleSetMaturity's existing min > max rejection.
 //
 // STACKING: the panel is a `popover`, so it renders in the TOP LAYER and declares
 // NO z-index — see libraryMenu and the STACKING ORDER ledger in app.css. It

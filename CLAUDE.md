@@ -538,10 +538,24 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   reloads, the popover closes and focus is dumped to `<body>` — walking XXX→PG was
   four saves and four reloads, each intermediate band persisted. Consequences:
   the trigger's `aria-label` and the panel's "current" line show the **saved** band,
-  never the pending selection; and anything setting the radios **programmatically**
-  (a preset / "safe mode" shortcut) must set both ends and then call
-  `document.getElementById('cm-maturity-form').requestSubmit()` **once** —
-  `.click()`ing radios saved twice under the old trigger and saves **nothing** now.
+  never the pending selection.
+  🔴 **A PRESET ("safe mode") MUST NOT DRIVE THE RADIOS AT ALL — this line used to
+  say it should, and that advice was WRONG in the fail-OPEN direction.** It read:
+  "set both ends and then call `form.requestSubmit()` once". `.click()`ing radios
+  saves nothing now (the form commits on submit only), which is why that looked like
+  the fix — but `maturityTrack` emits **no `<input>`** for an out-of-band stop, and
+  the max track's low bound is the **saved** `mr.Min`. Measured:
+  ```
+  saved=PG..XXX   min-pg present=true   max-pg13 present=true
+  saved=R..XXX    min-pg present=true   max-pg13 present=FALSE   checked max=xxx
+  saved=X..XXX    min-pg present=true   max-pg13 present=FALSE   checked max=xxx
+  ```
+  So from a saved band of `R..XXX`, "set both radios then submit" POSTs
+  `min=pg&max=xxx` and persists **PG..XXX** — a control labelled *Safe mode* that
+  makes everything visible. The radios are an interlock keyed to the SAVED band;
+  anything that needs to set an arbitrary band must **bypass them**: its own
+  CSRF-protected POST carrying the literal `min`/`max`, validated by
+  `handleSetMaturity`'s existing `min > max` rejection.
   🔴 **Staging created a NEW fail-OPEN path, and the panel's `ontoggle` reset is what
   closes it — do not remove it.** A staged selection the user never applied survives
   in the DOM, so dismissing the panel (Escape / light-dismiss) and reopening it later
