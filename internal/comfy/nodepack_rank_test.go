@@ -265,3 +265,82 @@ func TestMergePacksKeepsTheKnownScope(t *testing.T) {
 		t.Errorf("merged ClaimedClasses = %d, want 4 — the measured surface was lost", merged[0].ClaimedClasses)
 	}
 }
+
+// TestScopeDecidesWhenAffinityFavoursTheWrongPack is the ground case the two
+// tests above CANNOT carry, and the reason this file needed a third.
+//
+// 🔴 In the real fixture the tightly-scoped winner (`comfyui_ultimatesdupscale`)
+// also wins on NAME AFFINITY, so its ordering is over-determined: an audit
+// measured that deleting `compareScope` from `sortPacks` entirely leaves both
+// ground-case tests GREEN. They assert the 4-vs-93 counts, but the counts are not
+// what the ordering rests on — affinity alone reproduces it. That is CLAUDE.md's
+// "true for an incidental reason" mode: the assertion is correct, and it is
+// correct for a reason the test does not name.
+//
+// Here the signals are deliberately OPPOSED. The broad pack is the one NAMED
+// after the class, and the tight pack is not — so only scope can produce the
+// right order, and removing scope flips it. This is what makes "scope is primary,
+// affinity is secondary" a tested property rather than a comment.
+//
+// It matters because affinity is the gameable signal: `ComfyUI-FooNode-And-92-
+// Other-Things` is a legal repository name, and the whole point of ranking is to
+// resist exactly that.
+func TestScopeDecidesWhenAffinityFavoursTheWrongPack(t *testing.T) {
+	const mappings = `{
+      "comfyui-foonode": [
+        ["FooNode","A1","A2","A3","A4","A5","A6","A7","A8","A9"],
+        {"title_aux":"ComfyUI-FooNode"}
+      ],
+      "tight-pack": [
+        ["FooNode","B1"],
+        {"title_aux":"tight-pack"}
+      ]
+    }`
+	// The getlist half is what populates Pack.ID/Title/Repository — without it the
+	// packs come back unidentified and the byID lookup below silently reads a zero
+	// value (which is how the first draft of this test "failed" its own precondition).
+	const getlist = `{"node_packs":{
+      "comfyui-foonode":{"id":"comfyui-foonode","title":"ComfyUI-FooNode",
+        "repository":"https://github.com/someone/ComfyUI-FooNode","cnr_latest":"1.0.0"},
+      "tight-pack":{"id":"tight-pack","title":"tight-pack",
+        "repository":"https://github.com/other/tight-pack","cnr_latest":"1.0.0"}
+    }}`
+	ix, err := BuildIndex(json.RawMessage(mappings), json.RawMessage(getlist))
+	if err != nil {
+		t.Fatalf("BuildIndex: %v", err)
+	}
+	packs, unattributed := ix.Attribute([]string{"FooNode"})
+	if len(unattributed) != 0 {
+		t.Fatalf("unattributed = %v, want none", unattributed)
+	}
+
+	// INTERMEDIATE STATE — without all three of these the ordering assertion below
+	// would not be testing what its name says.
+	if len(packs) != 2 {
+		t.Fatalf("want 2 claimants (the contest), got %d: %+v", len(packs), packs)
+	}
+	byID := map[string]Pack{}
+	for _, p := range packs {
+		byID[p.ID] = p
+	}
+	broad, tight := byID["comfyui-foonode"], byID["tight-pack"]
+	if broad.ClaimedClasses != 10 || tight.ClaimedClasses != 2 {
+		t.Fatalf("scope signal not measured: broad=%d tight=%d, want 10 and 2",
+			broad.ClaimedClasses, tight.ClaimedClasses)
+	}
+	// The affinity signal must genuinely point at the WRONG pack, or this test
+	// degenerates into the over-determined ones above.
+	if !hasNameAffinity(broad) {
+		t.Fatal("fixture precondition: the BROAD pack must be the name-matching one")
+	}
+	if hasNameAffinity(tight) {
+		t.Fatal("fixture precondition: the TIGHT pack must NOT match by name")
+	}
+
+	if packs[0].ID != "tight-pack" {
+		t.Errorf("scope must decide when affinity points the other way: got order [%s, %s]. "+
+			"Name affinity is the gameable signal — a pack can call itself anything — so it "+
+			"must never outrank how much of the pack is actually what you need.",
+			packs[0].ID, packs[1].ID)
+	}
+}

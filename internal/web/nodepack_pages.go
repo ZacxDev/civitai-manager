@@ -348,8 +348,20 @@ func contestLabel(rp rankedPack) string {
 // how much of what this pack installs is what the workflow actually asked for.
 // Empty when the pack's surface is unknown (see comfy.Pack.ClaimedClasses) — an
 // unmeasured pack must not be given a fabricated justification.
+// 🔴 It is SUPPRESSED, not clamped, when the matched count exceeds the claimed
+// total. That is reachable: a mapping entry can enumerate one class AND carry a
+// `nodename_pattern`, so the pattern rung matches classes the enumeration never
+// listed — measured, `Attribute(["FooA","FooB","FooC"])` yields
+// Classes=[FooA FooB FooC] with ClaimedClasses=1, which rendered
+// "provides 1 node type in total; 3 of them are what this workflow needs".
+// Clamping would have produced "1 of them" and quietly hidden that the pack's
+// surface is not actually known; saying nothing is the honest answer, and it is
+// the same rule as the ClaimedClasses<=0 case above — an unmeasured pack does
+// not get a fabricated justification. This line's ONLY job is to be the evidence
+// the user checks the ranking against, so a self-contradictory one is worse than
+// none: it teaches them to stop reading it.
 func packScopeLine(p comfy.Pack) string {
-	if p.ClaimedClasses <= 0 {
+	if p.ClaimedClasses <= 0 || len(p.Classes) > p.ClaimedClasses {
 		return ""
 	}
 	return "This pack provides " + strconv.Itoa(p.ClaimedClasses) + " node type" +

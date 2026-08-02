@@ -200,8 +200,19 @@ func TestRunUIWorkflowReportsMissingModelsInTheSameRound(t *testing.T) {
 // gate deliberately does not derive never-submit from report.OK.
 //
 // Case 1 is the one that matters: after the converter deletes the unknown node the
-// graph is VALID, so preflight answers OK. Mutating the gate to `if !report.OK`
-// submits it.
+// graph is VALID, so preflight would answer OK on its own.
+//
+// ⚠ An earlier version of this comment said "Mutating the gate to `if !report.OK`
+// submits it." **Measured: it does NOT** — that mutation alone leaves this guard
+// GREEN, because `report.OK = false` is also forced just above (see
+// run_handlers.go, the graphIncomplete assignment). There are TWO independent
+// covers and either one alone still refuses the submit; you have to delete both
+// before this test goes red with its own `SUBMITTED a graph with a hole in it`.
+//
+// That makes the invariant STRONGER than the old comment claimed — but the claim
+// mattered, because someone removing one cover would have read "the gate is what
+// stops this", seen the suite stay green, and concluded they had broken nothing.
+// Both covers are deliberate; do not collapse them into one.
 func TestRunNeverSubmitsAConversionBlockedGraph(t *testing.T) {
 	cases := map[string]struct {
 		graph string
