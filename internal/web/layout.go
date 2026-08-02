@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"strconv"
 
 	g "maragu.dev/gomponents"
@@ -188,6 +189,7 @@ func navbar(csrf string, mr maturityRange, rail railData) g.Node {
 // maturityInvalidID names the live region that says WHY Apply will not commit; the
 // Apply button points at it with aria-describedby, so the id is part of the
 // accessibility wiring and not just a style hook.
+// maturitySafeModeID names the one-click preset — see safeModeControl.
 const (
 	maturityControlMinID = "cm-maturity-min"
 	maturityControlMaxID = "cm-maturity-max"
@@ -195,7 +197,73 @@ const (
 	maturityFormID       = "cm-maturity-form"
 	maturityApplyID      = "cm-maturity-apply"
 	maturityInvalidID    = "cm-maturity-invalid"
+	maturitySafeModeID   = "cm-maturity-safe"
 )
+
+// safeModeMin / safeModeMax are the band "Safe mode" applies. They are named
+// constants because the button's payload, its visible copy, its accessible name
+// and the test that walks all 15 saved bands must all agree on one pair.
+const (
+	safeModeMin = maturityPG
+	safeModeMax = maturityPG13
+)
+
+// safeModeControl is the one-click "Safe mode" preset: it narrows the band to
+// PG..PG-13 from wherever the user currently is.
+//
+// 🔴 IT IS DELIBERATELY *OUTSIDE* THE FORM, AND IT DOES NOT TOUCH THE RADIOS.
+// Both halves are load-bearing and both were got wrong before:
+//
+//   - Driving the radios cannot work and fails OPEN. maturityTrack emits NO
+//     <input> for a stop outside the SAVED band, and the max track's low bound is
+//     the saved mr.Min — so from a saved band of R..XXX the "pg" min radio exists
+//     but the "pg13" max radio does not, and "set both then submit" POSTs
+//     min=pg&max=xxx, persisting the FULL range from a button labelled Safe mode.
+//     (Clicking them saves nothing at all now that the tracks stage, which is a
+//     second, independent reason.) Measured; see CLAUDE.md.
+//   - Living outside the <form> is what makes the payload DETERMINISTIC. htmx
+//     serialises the closest enclosing form for a POST from a button; inside the
+//     form, the staged radios would ride along and the outcome would depend on
+//     hx-vals' merge precedence. Outside it, closest('form') is null and the
+//     request body is exactly the three hx-vals keys and nothing else.
+//
+// So it is its own CSRF-protected POST to the SAME endpoint, carrying the LITERAL
+// band. No new route, no new handler: handleSetMaturity already validates the
+// slugs and already rejects min > max with 400. CSRF rides in hx-vals, the
+// established spelling for an htmx button outside a form (model/search pages do
+// the same).
+//
+// 🔴 NO INLINE JAVASCRIPT, and in particular no `javascript:` anywhere. The first
+// version of this control wrapped its onclick body in a literal
+// `javascript:void(function(){…})()` — a functional no-op label that tripped two
+// site-wide XSS canaries scanning the whole page. This control is in the nav, so
+// it is on every page, and the branch was red everywhere. An htmx button needs no
+// script at all.
+func safeModeControl(csrf string) g.Node {
+	label := safeModeMin.label() + " to " + safeModeMax.label()
+	return h.Div(h.Class("cm-maturity-preset"),
+		civButton("outline", "sm", []g.Node{
+			h.Type("button"),
+			h.ID(maturitySafeModeID),
+			hx("post", "/settings/maturity"),
+			// The literal band. json.Marshal on each value would be equivalent; the
+			// slugs are a closed enum of [a-z0-9]+ and the CSRF token is hex, and
+			// gomponents escapes the attribute regardless.
+			hx("vals", fmt.Sprintf(`{"min":%q,"max":%q,"csrf_token":%q}`,
+				safeModeMin.slug(), safeModeMax.slug(), csrf)),
+			// The handler answers 204 + HX-Refresh, so there is nothing to swap.
+			hx("swap", "none"),
+			// The visible text is a prefix of the accessible name (WCAG 2.5.3), and
+			// the name states the band it will apply — the button changes a
+			// content-gating setting, so "Safe mode" alone is not enough.
+			g.Attr("aria-label", "Safe mode — set the maturity range to "+label),
+		}, g.Text("Safe mode")),
+		// Unlike Apply, this commits immediately and skips the tracks entirely. Say
+		// so, or the two buttons in one panel read as doing the same thing.
+		h.P(h.Class("cm-maturity-preset-note"),
+			g.Text("Applies "+label+" right away.")),
+	)
+}
 
 // maturityControl renders the app-wide PG..XXX maturity RANGE as an ICON BUTTON
 // opening a POPOVER that holds a two-sided slider. It replaced the old 2-state
@@ -384,6 +452,9 @@ func maturityControl(mr maturityRange, csrf string) g.Node {
 					}, g.Text("Apply")),
 				),
 			),
+			// OUTSIDE the form — see safeModeControl for why that placement is the
+			// whole point rather than an accident of layout.
+			safeModeControl(csrf),
 		),
 		maturityApplyGateScript(),
 	)

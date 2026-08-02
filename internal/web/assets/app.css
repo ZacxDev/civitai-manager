@@ -1329,6 +1329,31 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   cursor: not-allowed;
 }
 
+/*
+ * .cm-maturity-preset — the one-click "Safe mode" row.
+ *
+ * It sits BELOW the form and outside it (see safeModeControl: that placement is
+ * what makes its POST body deterministic), so it gets its own separator rather
+ * than sharing the actions row's. Full-width button: it is a single decisive
+ * action, not one of a pair, and a narrow button beside nothing reads as unfinished.
+ * The Apply gate never touches it — Safe mode carries a literal, always-valid
+ * band, so it can never be the thing that is disabled.
+ */
+.cm-maturity-preset {
+  margin-top: 0.75rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--civitai-color-border);
+}
+.cm-maturity-preset [data-civitai-ui='button'] {
+  width: 100%;
+}
+.cm-maturity-preset-note {
+  margin-top: 0.35rem;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  color: var(--civitai-color-text-dimmed);
+}
+
 @media (min-width: 1024px) {
   /*
    * The desktop MATURITY panel anchors under its trigger instead of spanning the
