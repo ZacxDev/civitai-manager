@@ -164,6 +164,14 @@ func TestRunUIWorkflowReportsMissingModelsInTheSameRound(t *testing.T) {
 	if !strings.Contains(body, "1 model file and 1 custom node are missing") {
 		t.Errorf("headline does not name both categories:\n%s", body)
 	}
+	// 🔴 END-TO-END honesty check. The render-level guard
+	// (TestFailureCardStatesTheModelListIsALowerBound) proves the caveat renders for a
+	// snapshot that carries the flag; this proves the REAL run path actually SETS it —
+	// realRun → runResult → runJob → runSnapshot. Node 663 was deleted from the graph,
+	// so whatever models it referenced are unknowable and the list above is bounded.
+	if !strings.Contains(body, lowerBoundNotice190Marker) {
+		t.Errorf("a real run that dropped a node did not mark its model list as bounded:\n%s", body)
+	}
 }
 
 // TestRunNeverSubmitsAConversionBlockedGraph is the NEVER-SUBMIT INVARIANT GUARD.
