@@ -197,8 +197,20 @@ func TestCloudPanelDropsBuiltinsWhenTheObjectInfoCacheIsWarm(t *testing.T) {
 // once. The claim is unfixable in this function by design: cloudNodepackBlocker
 // receives only []ResolvedResource and cannot know which tier answered.
 //
-// The positive half is deliberately weak (the banner still hedges at all), because
-// the hedge's WORDING is expected to move and its EXISTENCE is not.
+// ⚠ THE POSITIVE HALF PINS THE HEDGE'S WORDING, AND THIS COMMENT USED TO DENY IT.
+// It read "deliberately weak … the hedge's WORDING is expected to move and its
+// EXISTENCE is not" — which contradicts the assertion two dozen lines below, a
+// literal substring match on "may not recognise every built-in". Rewording the
+// hedge breaks the build, so the stated intent was not what shipped.
+//
+// The pin is KEPT rather than loosened, and here is the honest trade: asserting
+// "some hedge exists" without naming its words needs a structural marker (an id or
+// data- attribute on that <p>), i.e. changing the served markup purely to make a
+// test less brittle — scope this round deliberately did not take. So: **if you
+// reword the hedge, update the string below in the same commit.** That is a cheap,
+// visible failure. What must NEVER be loosened is the negative half: the whole
+// point is that a caveat survives, and a guard that accepts a banner with no caveat
+// at all would let the tier-blind assertion come back.
 func TestNodepackBannerStatesNoDetectionMechanism(t *testing.T) {
 	body := renderString(t, cloudNodepackBlocker([]comfy.ResolvedResource{
 		{Filename: "ImpactWildcardProcessor", Status: comfy.ResolveCustomNode},
@@ -207,8 +219,13 @@ func TestNodepackBannerStatesNoDetectionMechanism(t *testing.T) {
 	if !strings.Contains(body, "CivitAI Cloud cannot run this workflow yet") {
 		t.Fatalf("fixture precondition: no banner rendered:\n%s", body)
 	}
+	// ONE banned string, not two. This list used to also carry the full sentence
+	// "short list of known built-in node types", which reads as an independent check
+	// and is not one: the shorter string is a SUBSTRING of it, so it can never match
+	// while this one does not. Keeping the shorter one alone is strictly the broader
+	// check — it also catches a reworded tail ("…known built-in nodes", "…built-in
+	// classes").
 	for _, banned := range []string{
-		"short list of known built-in node types",
 		"short list of known built-in",
 	} {
 		if strings.Contains(body, banned) {
@@ -219,7 +236,9 @@ func TestNodepackBannerStatesNoDetectionMechanism(t *testing.T) {
 		}
 	}
 	// It must still hedge — dropping the caveat entirely would turn a conditional
-	// warning into an assertion the detector cannot support in either tier.
+	// warning into an assertion the detector cannot support in either tier. This is
+	// the wording pin the header comment describes: reword the banner, update this
+	// line in the same commit.
 	if !strings.Contains(body, "may not recognise every built-in") {
 		t.Errorf("the banner no longer hedges about unrecognised built-ins. Some flagged "+
 			"types genuinely may be built-ins — a class absent from the payload still falls "+
