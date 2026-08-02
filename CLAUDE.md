@@ -642,6 +642,130 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
 - **Remote match defaults ON.** Scan matching (`match_remote`) is on by default and
   **sends file SHA256s to civitai.com**. Keep that opt-out honored and keep the
   data-egress behavior obvious to the user.
+- **A web scan's deadline can persist NOTHING — hashing is phase 1, `local_files` are
+  written in phase 3.** `--web-scan-timeout` / `web_scan_timeout` is a **runaway
+  backstop, not a patience setting**: a deadline that fires during the hash pass saves
+  **zero** rows, so a too-low value makes every scan of a large library a *total* loss
+  rather than a partial one, every time. Measured: a 150ms deadline against a 12×200MB
+  fixture saved nothing. `DefaultWebScanTimeout` is therefore **6h** — the value the
+  hard-coded `scanJobBudget` already enforced, so wiring the knob up changed no unset
+  install's behaviour. **Stop keeps what has already been written**; that is the control
+  to reach for when ending a scan early. ⚠ The sample config shipped
+  `web_scan_timeout: "2m"` for the whole time the setting was inert, and nothing writes
+  that key — so hand-copying the docs is the ONLY way to hold an explicit value, which
+  means the docs are what handed out the 2m now being enforced.
+
+## Reachability — this repo's real failure mode 🔴
+
+**The recurring defect here is not broken code, it is code that NEVER RUNS.** A green
+suite says nothing about reachability: every item below passed the full suite, and the
+first three shipped. Nothing on the standard gate — build, vet, test, `-race`, `gofmt`
+— can see any of them.
+
+**Three were found BY ACCIDENT in one session, nested so each hid the one below:**
+
+1. **The axe harness was dead for two releases.** The walk's hero selector was one
+   global const `"run"`; the v0.1.97 run-zone rework moved the app to
+   `/run-with-params`, so the selector matched NOTHING, the hero prep hung on
+   `WaitVisible` until the 90s capture context expired, and the walk died with a bare
+   `context deadline exceeded`. **`make ux-audit` is double-gated out of
+   `go test ./...`** (needs `UXAUDIT_WALK` **and** a resolvable Chromium) — *a harness
+   that never runs reports no failures.* Now `RunPostPathAPI`/`RunPostPathUI`
+   (`e2e/uxaudit/walk.go`), guarded by the **browserless** rot-guard
+   `walk_selectors_test.go`, which needs no browser and so runs in the ordinary nested-
+   module `go test` — that is the shape that fixes this, not a better selector.
+2. **The ComfyUI model cache shipped INERT.** `PutComfyObjectInfo` /
+   `InvalidateComfyModelCache` had **zero non-test callers**, so `Get` always returned
+   nil and the resource chip's third state (◎ "ComfyUI has it") could never render on
+   any page — while migration `0019`'s header documented **three** population triggers
+   that did not exist. Writers are now wired in `internal/web/comfy_model_cache.go`.
+   ⚠ Honest residue: there is still **no manual "Refresh" control**, so 0019's header
+   still names a trigger the code does not implement.
+3. **The node-pack install UI was unreachable.** `realRun` returned on
+   `len(warnings) > 0` **before** `comfy.Preflight`, leaving `Preflight == nil` — and
+   the entire actionable failure UI (custom-node attribution, missing-nodes panel,
+   one-click install) sits behind `if snap.Preflight != nil`. The abort now happens
+   **after** preflight, with the never-submit gate downstream of it.
+
+**A deliberate sweep then found 17 confirmed-dead items.** Exemplars, all verified:
+`--web-scan-timeout` was plumbed YAML → flag → `config.Config` → `web.Config` → Server
+and **read by nobody from v0.1.13 (29d48f8) through v0.1.101 — 89 releases** (the count
+is exact: `git tag --contains 29d48f8` = 89, first `v0.1.13`, last `v0.1.101`); **11
+functions with no production caller**, proved not by reading but by **deleting all
+eleven and showing `go build ./...` still exits 0**; an **orphan route**,
+`GET /workflows/run/resolve-model`, whose path appears in exactly one non-test place —
+its own `mux.HandleFunc` — with **~8 tests exercising a surface no user can reach**; and
+**3 dead `.cm-*` CSS rules**.
+
+**The instrument: `deadcode` under BOTH `GOOS`, INTERSECTED.**
+```sh
+DC='golang.org/x/tools/cmd/deadcode@latest'
+go run $DC ./... | sort > /tmp/dc-linux.txt
+GOOS=windows go run $DC ./... | sort > /tmp/dc-win.txt
+comm -12 /tmp/dc-linux.txt /tmp/dc-win.txt   # dead on BOTH — the real list
+```
+It runs in ~15s and would have caught all 11 functions **and** the inert flag the day
+they landed. Leave `-test` at its **default `false`**: that is what makes a function
+reachable *only from tests* count as dead, which is precisely the orphan-route and
+dead-helper case — turning it on would have hidden every one of them behind their own
+tests. 🔴 **The intersection is load-bearing, not tidiness:** `internal/diskusage`
+is deliberately split by build tag, and `fromBlocks` (called only from
+`usage_unix.go`, `//go:build unix`) and `fromByteCounts` (reached only via
+`diskFreeSpaceExOut.usage()` in `usage_windows.go`) are each **dead on one GOOS and live
+on the other**. A single-GOOS run reports whichever one as a false positive; only the
+intersection is trustworthy on a cross-compiled repo that ships 6 targets.
+
+**What `deadcode` would NOT have caught** — so do not treat it as the whole answer. It
+proves *unreachable from a root*, which misses: (a) a **reachable** function guarded by
+a condition the app never satisfies — instance 3, where `Preflight` was called from live
+code that simply never got there; (b) a **harness fixture that chooses the wrong
+branch** (below); and (c) a **registered route**, which is reachable by definition even
+when nothing in the UI links to it — the orphan route above.
+
+🔴 **`class_coverage_web_test.go` is ONE-DIRECTIONAL.**
+`TestEveryTemplateClassExistsInAStylesheet` walks `h.Class` call sites and fails on a
+token with no CSS rule. **It never walks the other way** — a CSS rule with no emitter is
+invisible to it, and that is exactly instance 1's shape (an artifact nothing references).
+`TestNoRevivedDeadClasses` is a hardcoded blocklist of named tokens, not a general
+reverse check. If you delete a template, the rule it styled will sit there forever.
+
+**The runtime signal that works where static analysis cannot: AN EMPTY TABLE ON A
+HEAVILY-USED INSTALL.** `nodepack_cache` and `comfy_model_cache` both held **0 rows
+across 71 workflows** on the operator's real database — that is positive evidence a
+"populated" path never populates, and no static tool can tell you it. When you ship a
+cache or a counter, go look at its row count on a dogfooded DB before believing the
+feature works.
+
+### A fixture that does not match production certifies the wrong branch
+
+Measured on the real database — `SELECT format, COUNT(*) FROM workflows GROUP BY format`
+→ **`ui|71`**. **All 71 real workflows are UI-format; ZERO are API-format.** The ux-audit
+lab seeded **only** an API-format hero. Two consequences, both traced in source:
+
+- The run zone's **count segment renders only when `canQueue`**, and `canQueue` is
+  `wf.Format == store.WorkflowFormatUI` — so the walk **never screenshotted or
+  axe-scanned the batching UI at all**. The headline "20 pages, 0 violations" was a
+  number about a surface the users do not have.
+- 🔴 `realRun`'s early return before `Preflight` fired **only for UI-format**; an
+  API graph always reached `Preflight`. So the walk's `run-missing-models` view
+  screenshotted, and certified, a failure panel that **a UI-format user could never
+  reach**. **That is why instance 3 above survived** — the harness was not silent about
+  that page, it was confidently wrong about it.
+
+Fixed by seeding a **second, UI-format hero beside the API one** (`e2e/uxaudit/boot.go`;
+`TestLabSeedsBothWorkflowFormats` pins that both formats stay seeded). New numbers:
+**24 pages, 8 axe violations**, up from 20/0 — **the increase IS the improvement**,
+because 0 was measuring the wrong surface. Never read a falling violation count as
+progress without checking the page count that produced it.
+
+⚠ **The subtle blocker, worth recording because it would have relocated the bug rather
+than fixing it:** without `input_order` on **every** entry of the fake `/object_info`,
+the converter emits `node <id> has no input_order; widget values not mapped` per node,
+and `realRun` bails on warnings before `Preflight`. A UI-format hero would then have
+screenshotted the **conversion-warnings** panel — still a real page, still green, still
+not the missing-models UI. `e2e/uxaudit/fakes.go` carries `input_order` on all 7 entries
+and says it is load-bearing; `TestUIHeroGraphReachesPreflight` fails if any warning
+appears. **A fixture can be wrong in a way that produces a plausible screenshot.**
 
 ## Working conventions that held up
 
@@ -665,12 +789,19 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   around it. `./e2e/` must be named explicitly because `e2e/uxaudit` is a **nested
   module** (`e2e/uxaudit/go.mod`) — a root-module `go test ./...` / `go vet ./...`
   does not reach it either.
-  🔴 **That exclusion is a CI blind spot, not just a formatting footnote: a PR touching
-  only `e2e/uxaudit` can be "green" while the root suite never COMPILED it.** Seen this
-  session — three open PRs, **two of them editing `e2e/uxaudit/walk.go`**. So `build`,
-  `vet` and `test` each need a second invocation inside that module, and an
-  integration-branch gate (below) must run it too or the merged tree is unproven for
-  exactly the files the batch changed.
+  🔴 **That exclusion USED TO BE a CI blind spot** — a PR touching only `e2e/uxaudit`
+  could be "green" while the root suite never COMPILED it (seen once with three open
+  PRs, **two of them editing `e2e/uxaudit/walk.go`**), and it is how the ux-audit walk
+  stayed broken for two releases. **CI now closes it**: `.github/workflows/ci.yml` has a
+  dedicated `uxaudit` job running `build`/`vet`/`test` with
+  `working-directory: e2e/uxaudit`. It is a SEPARATE job on purpose — the nested module
+  declares `go 1.26` against the root's `1.25.0`, and bumping the shared job's toolchain
+  would silently change the compiler every existing root-module check runs under.
+  **Locally the exclusion is still real**, so run the second invocation yourself, and an
+  integration-branch gate must include that module or the merged tree is unproven for
+  exactly the files the batch changed. (`gofmt` is deliberately NOT repeated in that job
+  — `gofmt -l .` walks the directory tree, not the module graph, so it already covers
+  these files.)
 - **Gate a multi-PR batch on the MERGED tree** (the general rule is in `RULES.md`; what
   is repo-specific is that the integration run must include the nested module above).
   Measured this session: three PRs, all individually green, all `MERGEABLE`/`CLEAN`,
@@ -748,7 +879,9 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   nothing.
 - 🔴 **Four procedural checks decide whether mutation-verification happened at all —
   skipping them produced ELEVEN green guard tests that proved nothing in ONE session,
-  and EIGHT more in a later one, each vacuous for a DIFFERENT reason.**
+  EIGHT more in a later one, and FIVE more after that, each vacuous for a DIFFERENT
+  reason.** Twenty-four and counting: assume your new guard is one of them until you
+  have watched it fail.
   - **Re-run the mutation YOURSELF.** An agent's "mutation-verified" claim is not
     evidence: TWO agents this session reported it for tests where the mutation had
     never been run at all.
@@ -821,6 +954,59 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   - **"One was present" is not "exactly one, correctly".** The collapsed-rail guard
     passed because one thumbnail existed — while that thumbnail rendered **35×862px
     inside a 28×28px box**, bleeding down the whole left edge.
+
+  **Five more from a later session.** Two reuse a name above with a genuinely different
+  mechanism — the name is the symptom, not the cause, so read the mechanism.
+  - 🔴 **Calibrated to its own SOURCE** (distinct from "its own constant" above — this
+    one shares a *derivation*, not a value). A hero-count assertion computed
+    `wantHeroes` from `Views(&App{})` — **the same source the captures were built
+    from** — so deleting a hero view shrank both sides equally and the assertion could
+    not fail. Verified: with the derived form, deleting the `run-missing-models-ui`
+    view left the test **GREEN**. Now `const wantHeroes = 2`, a literal. ⚠ **Its
+    comment claimed the opposite** — it asserted the test caught that deletion, while
+    the deletion was actually caught by a `minViews` ratchet in a different file. When
+    an expectation and the thing it measures share a source, no mutation can separate
+    them.
+  - 🔴 **True for an incidental reason — OVER-DETERMINED, not mismatched.** Two ranking
+    guards asserted a **4**-class pack outranks a **93**-class one, and **both passed
+    with the scope comparator entirely deleted**, because the winner also won on the
+    weaker name-affinity signal. The assertion was correct, the fixture was the
+    problem: when two signals agree, the outcome proves neither. Fixed by **adding**
+    tests whose signals are deliberately *opposed* (a broad-but-named pack vs a
+    tight-but-unnamed one) rather than editing the ground-case fixtures away — keep the
+    real measured case, add the discriminating one.
+  - 🔴 **The marker was a SUBSTRING OF THE FAILURE HEADLINE.** A non-vacuity check
+    asserted `Contains(body, "ComfyUI reachable")` — but the unreachable branch's
+    headline is `"No ComfyUI reachable at <url>"`, so the marker is **true on both
+    branches** and the guard against vacuity was itself vacuous. It now asserts
+    `data-state="ok"`. **The expensive part was the misdiagnosis**: it reported a
+    "stale selector" when the truth was a broken fixture, sending the investigation at
+    the wrong layer. Assert a state attribute, never prose that a failure message can
+    contain.
+  - **Asserted the call, not its target.** A guard asserted `reset()` appears in the
+    handler. `this.reset()` — where `this` is the panel `<div>`, which has no `reset()`,
+    so the handler throws and discards nothing — **passed the whole suite**. The
+    committed form asserts the *target* (`querySelector('form').reset()`). A method name
+    is not a behaviour.
+  - **The fixture never populated the signal — caught by the test's own preconditions.**
+    A ranking test's `byID` lookup silently read a **zero value** because the getlist
+    half of the fixture was missing, so `Pack.ID` was never populated. The lesson is the
+    remedy: these tests now `t.Fatal` on **explicit preconditions** (the claimant count,
+    each pack's measured `ClaimedClasses`, and that the two signals actually disagree)
+    *before* asserting the outcome — so a fixture that cannot express the contest fails
+    loudly instead of passing quietly.
+- 🔴 **Two measurement rules this repo keeps re-teaching** (the general form is in
+  `RULES.md` — here is where they bite). **(a) A counting harness needs a POSITIVE
+  CONTROL.** Four consecutive "0 submits" runs proved nothing about the never-submit
+  gate until one clean workflow pushed **exactly 1** through the same counter — a zero
+  is indistinguishable from a counter wired to nothing. Same for "0 axe violations"
+  (see the reachability section: it was 0 because the walk never loaded the page).
+  **(b) An empty result cannot distinguish two mechanisms.** An empty `settings` table
+  is produced *equally* by a click blocked client-side and by a server answering **400**
+  — the table cannot tell them apart. `performance.getEntriesByType("resource")`
+  showing **zero** requests to the endpoint is what proves the request never left the
+  page. Before concluding from an absence, name the rival mechanism and find the
+  upstream signal the two disagree about.
 - **A REAL BROWSER IS AVAILABLE — use it for anything visual.** (This bullet used
   to claim the opposite; that claim is dead. MCP Playwright is still broken on this
   NixOS host and there is still no `chromium` on PATH, but neither of those is the
@@ -986,13 +1172,40 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   `nodepacklayer` AIR (post-paid), so custom-node cloud runs are NOT yet supported
   (see COMFYUI-INTEGRATION-DESIGN.md).
   🔴 **The custom-node detector behind that is WEAK — keep its banner CONDITIONAL.**
-  `ResolveCustomNode` means only "absent from `coreNodeClasses`", a ~50-entry
-  hand-written table. Measured against a live ComfyUI (2462 node types) and the real
+  `ResolveCustomNode` means only "absent from `coreNodeClasses`", a hand-written table
+  of **exactly 50** entries (counted; no test pins the count, so it can drift silently).
+  Measured against a live ComfyUI (2462 node types) and the real
   70-workflow library: **ComfyUI ships 790 built-ins, the table knows 47, and 44 of 70
   workflows (62%) contain a real built-in it calls custom** (`WanImageToVideo` in 14,
   `CLIPVisionLoader` in 6). Do not restore a flat "this needs custom nodes" assertion
   before making the detector authoritative — `/object_info` distinguishes
-  `comfy_extras.*`/`nodes` from `custom_nodes.*`.
+  `comfy_extras.*`/`nodes` from `custom_nodes.*`, and **that is newly feasible now that
+  `/object_info` is cached in the DB** (migration `0019`), so the authoritative answer
+  no longer costs a live ComfyUI connection on a render path.
+  ⚠ **Scope, so you fix the right thing: this weak detector is on the CLOUD PATH ONLY.**
+  `ResolveCustomNode` is reached only via `ResolveResources` (`internal/comfy/resolve.go`)
+  → `internal/web/cloud_pages.go`, i.e. the cloud panel's resolved-resource table. **The
+  LOCAL run path never touches it**: it attributes from the preflight report's missing
+  classes through ComfyUI-**Manager** on loopback → the **static** extension-node-map →
+  the Comfy **Registry** (`internal/web/nodepack_attribute.go`). Do not "fix the
+  detector" and expect the local run surface to change, or vice versa.
+- **Node-pack attribution RANKS claimants; it never picks one.** When several packs
+  claim a missing node type, `sortPacks` (`internal/comfy/nodepack.go`) orders them by
+  **confidence rung** (`sourceRank`: map → registry → pattern) → **scope**
+  (`len(Classes)/ClaimedClasses`, i.e. how much of the pack is what you actually need)
+  → **name affinity** → a deterministic tie-break on title/id/repository.
+  🔴 **Scope is compared by CROSS-MULTIPLYING INTEGERS** (`len(a.Classes)*b.ClaimedClasses`
+  vs `len(b.Classes)*a.ClaimedClasses`) — exact arithmetic, and deliberately **no float
+  comparison anywhere near a sort predicate**. Do not "simplify" it to two ratios.
+  🔴 **`ClaimedClasses == 0` means UNKNOWN, never "claims nothing"** — a pack whose
+  surface could not be measured sorts **after** every pack whose surface could. Scoring
+  an absence of evidence as a perfect ratio would float the least-known pack to the top.
+  🔴 **Losing claimants are NEVER dropped.** This is a heuristic over a third-party
+  index, so a single silently-chosen answer is worse than an ordered list: the UI labels
+  the ambiguity, badges "Best match" / "Also claims it", and keeps every candidate
+  installable — the loser is *demoted* (outline button), not disabled. Measured live
+  against ComfyUI-Manager's index: `comfyui-promptchain` claims **93** classes,
+  `comfyui_ultimatesdupscale` claims **4**.
 - **Multi-mode template detection keys on `toggleRestriction`, not on bypass shape**
   (`internal/comfy/modes.go`). Template packs ship several pipelines in ONE graph
   with all but one bypassed. The mode set is derived from an **ACTIVE rgthree `Fast
