@@ -4,7 +4,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -496,8 +495,4 @@ func normalizeEmittedPath(raw string) []string {
 		}
 	}
 	return out
-}
-
-func nonTestGoFile(fi os.FileInfo) bool {
-	return strings.HasSuffix(fi.Name(), ".go") && !strings.HasSuffix(fi.Name(), "_test.go")
 }

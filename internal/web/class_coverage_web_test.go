@@ -169,6 +169,24 @@ func isClassNameByte(b byte) bool {
 		(b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
+// nonTestGoFile is the parser.ParseDir filter EVERY scanner in this package shares:
+// the reverse class-coverage guard and the route-reachability guard read "what the
+// shipped app emits", so a _test.go file naming a class or a path must never count
+// as an emitter of it.
+//
+// It lives here, beside opaqueMark / packageStringDecls / resolveClassExpr, because
+// this file is where the shared AST-scanning primitives live. It was open-coded as an
+// inline closure here and separately defined in route_reachability_web_test.go —
+// three copies of one predicate across two files. One rule, one place: a scanner that
+// starts reading test files would silently make every guard downstream vacuous, and
+// that is not a decision to re-make per call site.
+//
+// The `.go` check is belt-and-braces: parser.ParseDir already considers only names
+// ending in .go, so the filter's real content is the _test.go exclusion.
+func nonTestGoFile(fi os.FileInfo) bool {
+	return strings.HasSuffix(fi.Name(), ".go") && !strings.HasSuffix(fi.Name(), "_test.go")
+}
+
 // opaqueMark stands in for a part of a class expression the scan could not
 // resolve. It is a byte that cannot occur in a class name, so any token containing
 // it is a partial/dynamic token and is discarded — that is what keeps
@@ -188,9 +206,7 @@ type classScanResult struct {
 func scanClassCalls(t *testing.T) classScanResult {
 	t.Helper()
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
+	pkgs, err := parser.ParseDir(fset, ".", nonTestGoFile, 0)
 	if err != nil {
 		t.Fatalf("parse package: %v", err)
 	}
