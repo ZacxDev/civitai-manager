@@ -117,7 +117,53 @@ type apiMeta struct {
 	Title string `json:"title"`
 }
 
-// ConvertUIToAPI converts a ComfyUI UI-format ("Save") graph into the api-format
+// ConversionResult is everything one UI→API conversion learned. It exists so a
+// caller can act on the SET of node classes the converter had to REMOVE, which
+// until now only ever existed as formatted text inside Warnings.
+//
+// It is a struct rather than extra return values on purpose: ConvertUIToAPI's
+// three-value signature is still used by the CivitAI-cloud path
+// (internal/web/cloud_handlers.go), and adding a field here leaves it untouched.
+type ConversionResult struct {
+	// APIGraph is the compact api-format graph DetectFormat classifies as "api".
+	// Nil when the conversion produced nothing runnable (see ConversionEmptyError).
+	APIGraph json.RawMessage
+	// Warnings lists every dropped/unresolved condition in human-readable form —
+	// the superset. It is unchanged from what ConvertUIToAPI has always returned.
+	Warnings []string
+	// MissingNodeTypes are the DISTINCT, sorted class names of ACTIVE nodes that
+	// were REMOVED from the emitted graph because this ComfyUI does not have them
+	// installed. This is the set the custom-node attribution + install flow needs:
+	// once the node is gone from the graph, Preflight can no longer see the class
+	// at all (it validates the CONVERTED graph), so without this field a UI-format
+	// workflow could never report a missing node pack.
+	//
+	// 🔴 It is deliberately NARROWER than Warnings, and must stay so:
+	//   - a MUTED or BYPASSED node of an unknown type is NOT here. The user
+	//     disabled it, so it was never going to run and no pack is needed.
+	//   - a VIRTUAL / annotation type (Note, MarkdownNote, Label (rgthree), the
+	//     rgthree Fast Bypasser/Muter family, Reroute, Get/SetNode) is NOT here —
+	//     those have no backend class by design and are dropped silently.
+	//   - a warning about an unresolved LINK or an ambiguous bypass is not a
+	//     missing class and is not here.
+	// Widening it to "every class that produced a warning" would send the
+	// attribution rungs looking for node packs that are not missing at all.
+	MissingNodeTypes []string
+}
+
+// ConvertUIToAPI converts a UI-format graph to api format, returning the graph,
+// the warnings and an error. It is the ORIGINAL three-value entry point, kept
+// verbatim for callers that do not need the structured detail (the CivitAI-cloud
+// submit path and the converter's own tests).
+//
+// Prefer ConvertUIToAPIResult in any caller that must react to WHICH node classes
+// went missing — see ConversionResult.MissingNodeTypes.
+func ConvertUIToAPI(uiGraph json.RawMessage, info ObjectInfo) (apiGraph json.RawMessage, warnings []string, err error) {
+	res, err := ConvertUIToAPIResult(uiGraph, info)
+	return res.APIGraph, res.Warnings, err
+}
+
+// ConvertUIToAPIResult converts a ComfyUI UI-format ("Save") graph into the api-format
 // graph that /prompt accepts, mirroring the frontend's graphToPrompt:
 //
 //   - muted (mode 2) and bypassed (mode 4) nodes are dropped; a bypassed node's
@@ -129,14 +175,16 @@ type apiMeta struct {
 //   - a node type absent from info is OMITTED with a warning (the whole conversion
 //     does not fail for one unknown node); all such omissions are collected.
 //
-// The returned apiGraph is compact JSON that DetectFormat classifies as "api".
-// warnings lists every dropped/unresolved condition (an unknown node type, a
-// bypass that could not be spliced, a muted origin). err is non-nil only for a
-// malformed UI graph or when nothing runnable remains.
-func ConvertUIToAPI(uiGraph json.RawMessage, info ObjectInfo) (apiGraph json.RawMessage, warnings []string, err error) {
+// The returned APIGraph is compact JSON that DetectFormat classifies as "api".
+// Warnings lists every dropped/unresolved condition (an unknown node type, a
+// bypass that could not be spliced, a muted origin) and MissingNodeTypes carries
+// just the removed unknown ACTIVE classes. err is non-nil only for a malformed UI
+// graph or when nothing runnable remains — and Warnings/MissingNodeTypes are
+// still populated in the latter case, so a caller can explain WHY it was empty.
+func ConvertUIToAPIResult(uiGraph json.RawMessage, info ObjectInfo) (ConversionResult, error) {
 	var g uiConvGraph
 	if err := json.Unmarshal(uiGraph, &g); err != nil {
-		return nil, nil, fmt.Errorf("parse ui graph: %w", err)
+		return ConversionResult{}, fmt.Errorf("parse ui graph: %w", err)
 	}
 
 	// Index links by id.
@@ -159,7 +207,7 @@ func ConvertUIToAPI(uiGraph json.RawMessage, info ObjectInfo) (apiGraph json.Raw
 		var expandErr error
 		nodes, linkByID, sgRedirect, expandWarnings, expandErr = flattenSubgraphs(&g, linkByID)
 		if expandErr != nil {
-			return nil, nil, expandErr
+			return ConversionResult{}, expandErr
 		}
 	}
 
@@ -182,6 +230,10 @@ func ConvertUIToAPI(uiGraph json.RawMessage, info ObjectInfo) (apiGraph json.Raw
 	// with an actionable error (all-bypassed template vs. no installed node types)
 	// rather than the opaque "no runnable nodes". Only consulted when result is empty.
 	var suppressed, unknown int
+	// missingTypes collects the DISTINCT classes of the ACTIVE nodes we had to
+	// remove. It is filled at exactly ONE site — the availability check below —
+	// which is what keeps it narrower than the warnings (see ConversionResult).
+	missingTypes := map[string]bool{}
 
 	for i := range nodes {
 		n := &nodes[i]
@@ -208,6 +260,11 @@ func ConvertUIToAPI(uiGraph json.RawMessage, info ObjectInfo) (apiGraph json.Raw
 		sch, known := info[n.Type]
 		if !known {
 			unknown++
+			// This node is ACTIVE (the mode drop above already returned for muted /
+			// bypassed) and its class is not installed, so it is about to be cut out of
+			// the emitted graph — leaving a HOLE that Preflight can no longer see. Record
+			// the class here, at the one site that performs the removal.
+			missingTypes[n.Type] = true
 			r.warnf("node %s type %q not available", id, n.Type)
 			continue
 		}
@@ -222,14 +279,16 @@ func ConvertUIToAPI(uiGraph json.RawMessage, info ObjectInfo) (apiGraph json.Raw
 		result[id] = out
 	}
 
+	res := ConversionResult{Warnings: r.warnings, MissingNodeTypes: sortedKeys(missingTypes)}
 	if len(result) == 0 {
-		return nil, r.warnings, &ConversionEmptyError{Suppressed: suppressed, Unknown: unknown}
+		return res, &ConversionEmptyError{Suppressed: suppressed, Unknown: unknown}
 	}
 	out, err := json.Marshal(result)
 	if err != nil {
-		return nil, r.warnings, fmt.Errorf("marshal api graph: %w", err)
+		return res, fmt.Errorf("marshal api graph: %w", err)
 	}
-	return out, r.warnings, nil
+	res.APIGraph = out
+	return res, nil
 }
 
 // ConversionEmptyError is returned by ConvertUIToAPI when the conversion produced

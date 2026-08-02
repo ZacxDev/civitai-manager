@@ -527,6 +527,12 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mr m
 	if lead := failureLead(snap, nm, nn, batch.Available); lead != "" {
 		detail = append(detail, h.P(h.Class("text-sm text-slate-300"), g.Text(lead)))
 	}
+	// The honesty caveat goes ABOVE the panels and above the install-all CTA on
+	// purpose: the CTA is a promise ("install these and it should run") and the
+	// reader has to know it is bounded before acting on it.
+	if notice := lowerBoundNotice(snap); notice != nil {
+		detail = append(detail, notice)
+	}
 
 	if snap.Preflight != nil {
 		// THE primary recovery action for the whole failure: install every missing
@@ -564,6 +570,36 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mr m
 	}
 	// The glyph makes the failure state distinguishable by shape, not by tint alone.
 	return alertIcon("error", "⚠", failureTitle(snap, nm, nn), detail...)
+}
+
+// lowerBoundNoticeText is the honesty caveat rendered when the UI→API conversion
+// had to REMOVE nodes from the graph.
+//
+// 🔴 It must never read as "these are all the files you need", because it is
+// provably not: a removed node took its own model references out of the document
+// with it, and nothing downstream can enumerate what a node that is not installed
+// would have loaded. So the wording names the bound explicitly ("a lower bound,
+// not a complete list") rather than hedging with "may". A second round WILL be
+// needed after the node packs are installed, and saying so up front is cheaper
+// than the user discovering it.
+//
+// It deliberately states NO count. The number of dropped classes is recoverable
+// from Preflight.MissingNodes today, but only because the api-format path
+// contributes none of them — quoting a number here would encode that coupling
+// into user-facing copy, and it would be wrong the moment both sources
+// contribute.
+const lowerBoundNoticeText = "Heads up: this is a lower bound, not a complete list. " +
+	"The missing custom nodes below were dropped from the graph, so any model files that only they " +
+	"use are not listed here. Install the nodes first, then run again to see everything that is needed."
+
+// lowerBoundNotice renders lowerBoundNoticeText, or nil when the graph is whole
+// (an api-format workflow, or a UI conversion that removed nothing — then the
+// lists really are complete and the caveat would be noise).
+func lowerBoundNotice(snap runSnapshot) g.Node {
+	if !snap.GraphIncomplete {
+		return nil
+	}
+	return h.P(h.Class("text-xs text-amber-400"), g.Text(lowerBoundNoticeText))
 }
 
 // failureTitle is the failure alert's headline. It keeps the "Run failed" stem

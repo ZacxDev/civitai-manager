@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -98,6 +99,10 @@ type runJob struct {
 	// Computed ONCE at settle — never per poll — and read-only afterwards.
 	nodeAttr nodeAttribution
 	warnings []string
+	// graphIncomplete marks a failure whose missing-model list is a LOWER BOUND
+	// because the converter removed nodes (and therefore their model references)
+	// from the graph. See runResult.GraphIncomplete.
+	graphIncomplete bool
 	// aborted marks a run that never submitted because the UI→API conversion yielded
 	// zero runnable nodes (an all-disabled template / no installed node types). It
 	// gets a distinct "nothing to run" report rather than the generic failure alert.
@@ -164,7 +169,12 @@ type runResult struct {
 	// without any per-poll network call.
 	NodeAttr nodeAttribution
 	Warnings []string
-	PromptID string
+	// GraphIncomplete records that the UI→API conversion REMOVED one or more nodes
+	// from the graph because their class is not installed. It exists so the failure
+	// card can say the missing-model list is a LOWER BOUND: a removed node took its
+	// own model references with it, and nothing downstream can enumerate them.
+	GraphIncomplete bool
+	PromptID        string
 }
 
 // runOptions carries per-run overrides that must NOT be persisted to the stored
@@ -385,6 +395,10 @@ func (s *Server) applyItemOutcomeLocked(job *runJob, res *runResult, err error) 
 		job.phase, job.preflight, job.missingModels = runPhaseFailed, res.Preflight, res.MissingModels
 		job.missingResolved, job.libMeta = res.MissingResolved, res.LibMeta
 		job.nodeAttr = res.NodeAttr
+		// A synthesized report carries the converter's raw warnings too. This case
+		// wins over the warnings-only case below, so without this line the engine text
+		// would be silently dropped from the failure card's "Technical details".
+		job.warnings, job.graphIncomplete = res.Warnings, res.GraphIncomplete
 		job.message = preflightMessage(res.Preflight)
 	case res != nil && len(res.Warnings) > 0:
 		job.phase, job.warnings = runPhaseFailed, res.Warnings
@@ -476,6 +490,11 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater,
 	s.cacheComfyObjectInfo(rawInfo)
 
 	var apiGraph json.RawMessage
+	// conv carries the UI→API conversion's structured outcome. Both of its acted-on
+	// fields stay EMPTY for an api-format workflow — nothing was converted, so
+	// nothing was cut and there is nothing to warn about. That is what keeps the
+	// api-format path byte-identical to before.
+	var conv comfy.ConversionResult
 	if wf.Format == store.WorkflowFormatUI {
 		up.setPhase(runPhasePreparing, "Converting workflow to API format…", 0)
 		// Apply the "Parameters" panel edits to a COPY of the UI graph FIRST: the value
@@ -494,15 +513,23 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater,
 		if len(opts.UIWidgetOverrides) > 0 {
 			uiGraph = comfy.ApplyUIWidgetOverrides(uiGraph, opts.UIWidgetOverrides)
 		}
-		g, warnings, cerr := comfy.ConvertUIToAPI(uiGraph, info)
+		c, cerr := comfy.ConvertUIToAPIResult(uiGraph, info)
 		if cerr != nil {
 			return nil, fmt.Errorf("convert workflow: %w", cerr)
 		}
-		if len(warnings) > 0 {
-			// Unrunnable nodes / unresolved links — abort rather than submit a broken graph.
-			return &runResult{Warnings: warnings}, nil
-		}
-		apiGraph = g
+		// 🔴 The abort on conversion warnings USED TO LIVE HERE, returning before
+		// comfy.Preflight ever ran. That left Preflight nil, and the whole actionable
+		// failure UI in run_pages.go is behind `snap.Preflight != nil` — so the
+		// custom-node attribution, the missing-nodes panel and the ComfyUI-Manager
+		// one-click install were unreachable code for every UI-format workflow.
+		//
+		// The abort now happens AFTER preflight (see the never-submit gate below), which
+		// is deliberate on two counts: preflight observes the per-run substitutions and
+		// parameter overrides applied just below (so it reports what would actually run,
+		// not the stored graph), and the SAME round reports the missing model files
+		// instead of costing the user a second failed run to discover them.
+		conv = c
+		apiGraph = conv.APIGraph
 	} else {
 		apiGraph = json.RawMessage(wf.Graph)
 	}
@@ -543,35 +570,42 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater,
 		}
 	}
 
-	if !report.OK {
-		// Enrich the missing-models list with resolve queries + installed substitute
-		// candidates while /object_info is in hand, so the failure panel is actionable.
-		var missing []comfy.MissingModel
-		var resolved map[string]missingResolution
-		var libMeta map[string]store.LocalModelMeta
-		// Attribute the missing custom-node classes to the packs that provide them,
-		// HERE at settle (bounded), so the terminal panel can offer a gated install
-		// and the ~1s run-status poll never reaches ComfyUI-Manager or the Registry.
-		// Attribution runs on the CONVERTED api graph's missing classes (the
-		// preflight report), never on the raw UI graph — subgraph UUIDs and rgthree
-		// UI-only nodes have already been dropped by then.
-		var nodeAttr nodeAttribution
-		if len(report.MissingNodes) > 0 {
-			nodeAttr = s.attributeMissingNodes(ctx, report.MissingNodes)
-			nodeAttr.ComfyRoot = s.cfg.ComfyRoot
-			nodeAttr.RemoteLookup = s.cfg.ResolveNodePacks
+	// 🔴 NEVER-SUBMIT GATE. Two conditions veto the submit ON THEIR OWN, each
+	// independently of report.OK — and that independence is the invariant:
+	//
+	//   graphIncomplete — the converter had to CUT one or more ACTIVE nodes out of
+	//     the graph because their class is not installed. The class is then no
+	//     longer IN the document comfy.Preflight validates, so preflight sees a
+	//     perfectly well-formed graph and can legitimately answer OK. Submitting it
+	//     runs a workflow with a hole in it. The report below is therefore
+	//     SYNTHESIZED from the converter's own findings.
+	//   convWarned — any other conversion warning (an unresolved link, an ambiguous
+	//     bypass). Blunt, but fail-closed and correct: a graph whose links did not
+	//     resolve is not a graph the user asked to run.
+	//
+	// The disjunction is written out rather than collapsed into `!report.OK` on
+	// purpose: a future edit to the failure branch must not be able to make a holed
+	// graph submittable. Guarded by TestRunNeverSubmitsAConversionBlockedGraph.
+	convWarned := len(conv.Warnings) > 0
+	graphIncomplete := len(conv.MissingNodeTypes) > 0
+	if graphIncomplete {
+		report.MissingNodes = mergeMissingNodes(report.MissingNodes, conv.MissingNodeTypes)
+		report.OK = false
+	}
+	if convWarned || graphIncomplete || !report.OK {
+		if report.OK {
+			// Warnings with nothing structured behind them: the raw warning list IS the
+			// whole report, exactly as this path behaved before it learned to synthesize
+			// one. Still never submitted.
+			return &runResult{Warnings: conv.Warnings}, nil
 		}
-		if len(report.MissingModels) > 0 {
-			missing = comfy.AnalyzeMissingModels(apiGraph, info, report.MissingModels, wf.BaseModel)
-			// Resolve each missing model to CivitAI + enrich substitute candidates ONCE,
-			// HERE at settle (bounded), so the terminal Fix popover renders inline and the
-			// ~1-2s run-status poll never triggers a CivitAI search.
-			resolved, libMeta = s.resolveMissingModels(ctx, missing)
-		}
-		return &runResult{
-			Preflight: &report, MissingModels: missing,
-			MissingResolved: resolved, LibMeta: libMeta, NodeAttr: nodeAttr,
-		}, nil
+		res := s.preflightFailureResult(ctx, wf, apiGraph, info, &report)
+		// The raw converter text stays available in the failure card's subordinated
+		// "Technical details" — the structured panels are the primary surface now, but
+		// the engine's own words are what a bug report needs.
+		res.Warnings = conv.Warnings
+		res.GraphIncomplete = graphIncomplete
+		return res, nil
 	}
 
 	clientID := comfy.NewID()
@@ -618,6 +652,75 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater,
 		case <-time.After(runPollInterval):
 		}
 	}
+}
+
+// preflightFailureResult builds the terminal result for a run that will NOT be
+// submitted, enriching report with the bounded, AT-SETTLE lookups the failure panel
+// needs to be actionable: which node pack provides each missing class, and the
+// per-missing-model analysis + CivitAI resolution + substitute candidates.
+//
+// It runs ONCE per failed run, never on the ~1s status poll — the poll must not
+// reach ComfyUI-Manager, the Comfy Registry or CivitAI.
+//
+// 🔴 It is the SINGLE place this enrichment happens. It was inline in realRun's
+// `!report.OK` branch; the UI-format conversion abort now shares it rather than
+// growing a second copy — a duplicated copy is exactly how the two paths would
+// drift back apart into "the panel is actionable on one path only", which is the
+// bug this whole change exists to fix.
+func (s *Server) preflightFailureResult(ctx context.Context, wf *store.Workflow, apiGraph json.RawMessage, info comfy.ObjectInfo, report *comfy.PreflightReport) *runResult {
+	var missing []comfy.MissingModel
+	var resolved map[string]missingResolution
+	var libMeta map[string]store.LocalModelMeta
+	// Attribute the missing custom-node classes to the packs that provide them,
+	// HERE at settle (bounded), so the terminal panel can offer a gated install
+	// and the ~1s run-status poll never reaches ComfyUI-Manager or the Registry.
+	// Attribution runs on the CONVERTED api graph's missing classes (the
+	// preflight report), never on the raw UI graph — subgraph UUIDs and rgthree
+	// UI-only nodes have already been dropped by then.
+	var nodeAttr nodeAttribution
+	if len(report.MissingNodes) > 0 {
+		nodeAttr = s.attributeMissingNodes(ctx, report.MissingNodes)
+		nodeAttr.ComfyRoot = s.cfg.ComfyRoot
+		nodeAttr.RemoteLookup = s.cfg.ResolveNodePacks
+	}
+	if len(report.MissingModels) > 0 {
+		missing = comfy.AnalyzeMissingModels(apiGraph, info, report.MissingModels, wf.BaseModel)
+		// Resolve each missing model to CivitAI + enrich substitute candidates ONCE,
+		// HERE at settle (bounded), so the terminal Fix popover renders inline and the
+		// ~1-2s run-status poll never triggers a CivitAI search.
+		resolved, libMeta = s.resolveMissingModels(ctx, missing)
+	}
+	return &runResult{
+		Preflight: report, MissingModels: missing,
+		MissingResolved: resolved, LibMeta: libMeta, NodeAttr: nodeAttr,
+	}
+}
+
+// mergeMissingNodes unions the preflight's own missing class_types with the ones
+// the converter REMOVED, distinct and sorted.
+//
+// In practice one side is empty: a UI-format graph has the unknown class cut out
+// before preflight sees it, an api-format graph keeps it verbatim so preflight
+// finds it. The union is written anyway so the two sources can never
+// double-report the same class — the attribution rungs are one HTTP request per
+// class, and the panel would list it twice.
+func mergeMissingNodes(fromPreflight, fromConverter []string) []string {
+	if len(fromConverter) == 0 {
+		return fromPreflight
+	}
+	seen := make(map[string]bool, len(fromPreflight)+len(fromConverter))
+	out := make([]string, 0, len(fromPreflight)+len(fromConverter))
+	for _, list := range [][]string{fromPreflight, fromConverter} {
+		for _, c := range list {
+			if seen[c] {
+				continue
+			}
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // stopRun cancels the running run — the WHOLE remaining batch — and best-effort
@@ -686,9 +789,12 @@ type runSnapshot struct {
 	LibMeta          map[string]store.LocalModelMeta
 	NodeAttr         nodeAttribution
 	Warnings         []string
-	Aborted          bool
-	UIFormat         bool
-	Stopped          bool
+	// GraphIncomplete drives the failure card's honesty caveat: the converter
+	// removed nodes, so the missing-model list below is a LOWER BOUND.
+	GraphIncomplete bool
+	Aborted         bool
+	UIFormat        bool
+	Stopped         bool
 	// Batch progress. BatchTotal <= 1 is a single run and every batch-aware render
 	// falls back to today's markup exactly. All four are snapshotted under the SAME
 	// runMu hold as the rest of the view, so a poller can never observe a torn
@@ -720,7 +826,8 @@ func (s *Server) runJobState() runSnapshot {
 		PromptID: j.promptID, Phase: j.phase, Message: j.message, QueuePos: j.queuePos,
 		Images: imgs, Preflight: j.preflight, MissingModels: j.missingModels,
 		MissingResolved: j.missingResolved, LibMeta: j.libMeta, NodeAttr: j.nodeAttr,
-		Warnings: warns, Aborted: j.aborted, UIFormat: j.uiFormat, Stopped: j.stopped,
+		Warnings: warns, GraphIncomplete: j.graphIncomplete,
+		Aborted: j.aborted, UIFormat: j.uiFormat, Stopped: j.stopped,
 		BatchID: j.batchID, BatchIndex: j.batchIndex, BatchTotal: j.batchTotal,
 		BatchDone: j.batchDone, BatchSummary: j.batchSummary,
 	}

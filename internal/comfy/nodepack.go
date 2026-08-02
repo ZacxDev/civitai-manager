@@ -68,6 +68,17 @@ type Pack struct {
 	Reason string
 	// Classes are the missing class_types this pack provides, sorted.
 	Classes []string
+	// ClaimedClasses is how many class_types this pack claims IN TOTAL in the
+	// index entry it was attributed from — its whole surface, not just the
+	// requested ones. It is the SCOPE signal behind pack ranking (see sortPacks):
+	// a pack claiming 4 classes of which 1 is yours is a far better answer than
+	// one claiming 93 of which 1 is yours.
+	//
+	// 🔴 ZERO MEANS UNKNOWN, never "claims nothing". The Comfy Registry rung
+	// answers per-class and publishes no pack-wide class list, and a
+	// nodename_pattern entry usually enumerates none — so a 0 here is an absence
+	// of evidence and must never be scored as perfect scope.
+	ClaimedClasses int
 	// Source is the ladder rung that produced this attribution (SourceMap /
 	// SourceRegistry / SourcePattern).
 	Source string
@@ -87,6 +98,11 @@ type NodePackIndex struct {
 	patterns []patternEntry
 	// meta is per-mapping-key display metadata (title_aux and friends).
 	meta map[string]mappingMeta
+	// claimCount is how many DISTINCT class names each mapping key enumerates —
+	// the pack's whole claimed surface, which is what makes scope rankable. It is
+	// recorded per MAPPING KEY (not per resolved pack) because the enumerated list
+	// is a property of the getmappings entry.
+	claimCount map[string]int
 	// packs is getlist's node_packs, keyed by its map key (which is the pack id
 	// for most, but 3784 of 7358 entries carry no explicit `id` field at all).
 	packs map[string]nodePackEntry
@@ -151,10 +167,11 @@ var catchAllProbes = []string{
 // every pack, since only getlist carries `cnr_latest`).
 func BuildIndex(mappings, getlist json.RawMessage) (*NodePackIndex, error) {
 	ix := &NodePackIndex{
-		byClass: map[string][]string{},
-		meta:    map[string]mappingMeta{},
-		packs:   map[string]nodePackEntry{},
-		byRepo:  map[string]string{},
+		byClass:    map[string][]string{},
+		meta:       map[string]mappingMeta{},
+		claimCount: map[string]int{},
+		packs:      map[string]nodePackEntry{},
+		byRepo:     map[string]string{},
 	}
 
 	if err := ix.loadPacks(getlist); err != nil {
@@ -228,10 +245,17 @@ func (ix *NodePackIndex) loadMappings(mappings json.RawMessage) error {
 		}
 		ix.meta[key] = meta
 
+		// Count DISTINCT classes: a duplicated entry in a third-party list must not
+		// inflate a pack's apparent breadth (which would wrongly demote it).
+		claimed := map[string]bool{}
 		for _, cls := range classes {
 			if cls = strings.TrimSpace(cls); cls != "" {
 				ix.byClass[cls] = append(ix.byClass[cls], key)
+				claimed[cls] = true
 			}
+		}
+		if len(claimed) > 0 {
+			ix.claimCount[key] = len(claimed)
 		}
 		if pat := strings.TrimSpace(meta.Pattern); pat != "" {
 			if re := compileSafePattern(pat); re != nil {
@@ -363,7 +387,13 @@ func (ix *NodePackIndex) packFor(key string) Pack {
 		}
 	}
 
-	p := Pack{Title: firstNonEmpty(meta.TitleAux, meta.Title, key)}
+	p := Pack{
+		Title: firstNonEmpty(meta.TitleAux, meta.Title, key),
+		// The claimed-class count belongs to the MAPPING KEY, so it is available
+		// whether or not the getlist join resolves. A pattern-only entry enumerates
+		// no classes and correctly stays 0 (= unknown).
+		ClaimedClasses: ix.claimCount[key],
+	}
 	if !found {
 		if isHTTPURL(key) {
 			p.Repository = key
@@ -485,6 +515,14 @@ func mergePackInto(dst *Pack, src Pack) {
 	dst.Repository = firstNonEmpty(dst.Repository, src.Repository)
 	dst.Version = firstNonEmpty(dst.Version, src.Version)
 	dst.Title = firstNonEmpty(dst.Title, src.Title)
+	// Scope: keep the LARGER known count. 0 means unknown, so max() is what lets a
+	// rung that knows the surface (the map rung) inform an entry a rung that does
+	// not (the Registry) contributed to. When two mapping keys for one pack
+	// disagree, the broader claim is the conservative read — it can only DEMOTE the
+	// pack, never over-promote it.
+	if src.ClaimedClasses > dst.ClaimedClasses {
+		dst.ClaimedClasses = src.ClaimedClasses
+	}
 	// Installable is proven by ComfyUI-Manager's getlist; a rung that could not
 	// prove it (the Registry, or a Manager-less static index) must never downgrade
 	// a rung that did.
@@ -515,13 +553,45 @@ func packIdentityKeys(p Pack) []string {
 	return keys
 }
 
-// sortPacks orders packs by confidence rung, then title/id/repository, so the UI
-// renders the same order every time.
+// sortPacks RANKS packs — it is not merely a determinism tie-break any more, and
+// the order it produces is what the UI presents as "install this one".
+//
+// 🔴 WHY RANKING IS REQUIRED, measured. A class can be claimed by several packs
+// (16 live claim PreViewVideo), and Manager's index contains large grab-bag
+// entries. For the real `UltimateSDUpscale` failure the two claimants were:
+//
+//	comfyui-promptchain        claims 93 classes — one of them UltimateSDUpscale
+//	comfyui_ultimatesdupscale  claims  4 classes — all of them UltimateSDUpscale*
+//
+// Alphabetical title order put the 93-class grab-bag FIRST, next to an equally
+// prominent Install button that would have installed 93 unrelated nodes into the
+// user's ComfyUI. Ordering here is a real side effect, so it is ranked on evidence.
+//
+// The keys, strongest first:
+//
+//  1. CONFIDENCE RUNG (unchanged, and still first). A pattern guess must never
+//     outrank an exact class-list hit, however tightly scoped the guess looks.
+//  2. SCOPE — the share of the pack's own surface that is what you asked for
+//     (len(Classes) / ClaimedClasses, higher first). This is the primary new
+//     signal: it measures what the pack IS, not what it is called.
+//  3. NAME AFFINITY — the pack is named after the class. A secondary signal only:
+//     names are marketing, scope is structure. On the ground case both agree.
+//  4. Title, ID, Repository — the original deterministic tie-break, unchanged.
+//
+// 🔴 Ranking NEVER drops a pack. It is a heuristic over a third-party index, so a
+// wrong single answer is worse than an ordered list; the UI labels the ordering
+// and keeps every candidate visible and installable.
 func sortPacks(packs []Pack) {
 	sort.SliceStable(packs, func(i, j int) bool {
 		a, b := packs[i], packs[j]
 		if ra, rb := sourceRank[a.Source], sourceRank[b.Source]; ra != rb {
 			return ra < rb
+		}
+		if c := compareScope(a, b); c != 0 {
+			return c < 0
+		}
+		if aa, ab := hasNameAffinity(a), hasNameAffinity(b); aa != ab {
+			return aa // affinity first
 		}
 		if a.Title != b.Title {
 			return a.Title < b.Title
@@ -531,6 +601,81 @@ func sortPacks(packs []Pack) {
 		}
 		return a.Repository < b.Repository
 	})
+}
+
+// compareScope orders two packs by how tightly their claimed surface matches what
+// was asked for: -1 when a is better scoped, +1 when b is, 0 when they tie.
+//
+// The comparison is done by CROSS-MULTIPLICATION rather than by computing two
+// float ratios — exact integer arithmetic, no rounding, and no float equality
+// anywhere near a sort predicate.
+//
+// A pack with ClaimedClasses == 0 has an UNKNOWN surface (Registry rung,
+// pattern-only entry — see Pack.ClaimedClasses) and is ordered AFTER every pack
+// whose scope could actually be measured. Treating unknown as a ratio would score
+// an absence of evidence as perfect scope and float the least-known pack to the
+// top. In practice this rarely decides anything: unknown counts occur only on the
+// registry/pattern rungs, which key 1 has already ordered behind the map rung.
+func compareScope(a, b Pack) int {
+	aKnown, bKnown := a.ClaimedClasses > 0, b.ClaimedClasses > 0
+	switch {
+	case aKnown && !bKnown:
+		return -1
+	case !aKnown && bKnown:
+		return 1
+	case !aKnown && !bKnown:
+		return 0
+	}
+	// len(a.Classes)/a.ClaimedClasses  vs  len(b.Classes)/b.ClaimedClasses
+	left := len(a.Classes) * b.ClaimedClasses
+	right := len(b.Classes) * a.ClaimedClasses
+	switch {
+	case left > right:
+		return -1 // a covers a bigger share of its own surface => better scoped
+	case left < right:
+		return 1
+	}
+	return 0
+}
+
+// hasNameAffinity reports whether the pack is NAMED after one of the classes it
+// was matched on — e.g. class "UltimateSDUpscale" against the repository
+// "ComfyUI_UltimateSDUpscale".
+//
+// Comparison is on a folded form (lower-cased, non-alphanumerics stripped) so the
+// real-world spelling drift between a class name and a repo name — `_`, `-`, and
+// the near-universal `ComfyUI` prefix — does not defeat it.
+//
+// It is deliberately a BOOLEAN secondary signal, not a score: a pack name is the
+// author's choice of words, and letting it outweigh the structural scope measure
+// would re-open exactly the failure mode ranking exists to close.
+func hasNameAffinity(p Pack) bool {
+	names := []string{foldIdentifier(p.Title), foldIdentifier(p.ID), foldIdentifier(p.Repository)}
+	for _, cls := range p.Classes {
+		c := foldIdentifier(cls)
+		if c == "" {
+			continue
+		}
+		for _, n := range names {
+			if n != "" && strings.Contains(n, c) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// foldIdentifier lower-cases s and drops every non-alphanumeric byte, so
+// "ComfyUI_UltimateSDUpscale" and "UltimateSDUpscale" become comparable.
+func foldIdentifier(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // normalizeRepoURL canonicalizes a repo/file URL for the URL leg of the join:

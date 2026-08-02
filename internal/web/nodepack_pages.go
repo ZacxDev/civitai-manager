@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -69,7 +70,15 @@ func missingNodesPanel(attr nodeAttribution, missing []string, wfID int64, csrf,
 	}
 	body = append(body, nodePackEgressNotice(attr.RemoteLookup))
 
-	confident, likely := splitPacksByConfidence(attr.Packs)
+	// Rank BEFORE splitting: contest detection has to see every claimant of a class,
+	// and a class can legitimately be claimed by an exact-match pack and a
+	// pattern-match pack at once.
+	ranked := rankPacks(attr.Packs)
+	if note := ambiguityNotice(ranked); note != nil {
+		body = append(body, note)
+	}
+
+	confident, likely := splitRankedByConfidence(ranked)
 	if len(confident) > 0 {
 		body = append(body, nodepackGroup(
 			"Provided by",
@@ -118,12 +127,117 @@ func nodePackEgressNotice(remote bool) g.Node {
 			"(resolve_node_packs: false turns that off)."))
 }
 
-// splitPacksByConfidence separates the exact-match rungs (Manager's enumerated
+// rankedPack is one attributed pack plus its role in a CONTESTED class — i.e.
+// a class more than one pack claims.
+//
+// The role travels attached to the pack rather than being recomputed per render
+// site, because it is derived from the WHOLE candidate set: it cannot be decided
+// from one pack in isolation, and re-deriving it inside each group would silently
+// give a different answer once the set is split by confidence rung.
+type rankedPack struct {
+	Pack comfy.Pack
+	// Contested is true when at least one of this pack's classes is also claimed
+	// by another pack in the same attribution.
+	Contested bool
+	// Best is true when this pack is the TOP-RANKED claimant of at least one
+	// contested class. comfy.sortPacks has already ordered the slice, so "top" is
+	// simply "seen first".
+	Best bool
+}
+
+// rankPacks annotates the (already comfy-ranked) packs with their contest roles.
+//
+// 🔴 It preserves the incoming ORDER exactly and never removes an entry. The
+// ranking is a heuristic over a third-party index, so the user must be able to see
+// and choose every candidate; all this adds is a label saying which one the
+// evidence favours and why.
+func rankPacks(packs []comfy.Pack) []rankedPack {
+	claimants := map[string]int{}
+	for _, p := range packs {
+		for _, c := range p.Classes {
+			claimants[c]++
+		}
+	}
+
+	out := make([]rankedPack, 0, len(packs))
+	// taken records the contested classes already assigned a best claimant. Because
+	// packs arrives in ranked order, the FIRST pack to reach a contested class is
+	// the best-scoped one for it.
+	taken := map[string]bool{}
+	for _, p := range packs {
+		rp := rankedPack{Pack: p}
+		for _, c := range p.Classes {
+			if claimants[c] < 2 {
+				continue
+			}
+			rp.Contested = true
+			if !taken[c] {
+				taken[c] = true
+				rp.Best = true
+			}
+		}
+		out = append(out, rp)
+	}
+	return out
+}
+
+// contestedClasses lists every class claimed by more than one pack, sorted.
+func contestedClasses(ranked []rankedPack) []string {
+	claimants := map[string]int{}
+	for _, rp := range ranked {
+		for _, c := range rp.Pack.Classes {
+			claimants[c]++
+		}
+	}
+	var out []string
+	for c, n := range claimants {
+		if n > 1 {
+			out = append(out, c)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ambiguityNotice states, in plain words, that a node type has more than one
+// claiming pack — and that the list is ORDERED rather than authoritative.
+//
+// 🔴 Presenting several claimants as equals is what made this dangerous: installing
+// the wrong one writes an unrelated pack (93 node types, in the measured case) into
+// the user's ComfyUI. Saying "two packs claim this" costs one line and turns a
+// silent coin-flip into an informed choice. It returns nil when nothing is
+// contested, so the ordinary single-claimant panel is unchanged.
+func ambiguityNotice(ranked []rankedPack) g.Node {
+	contested := contestedClasses(ranked)
+	if len(contested) == 0 {
+		return nil
+	}
+	msg := "More than one pack claims " + joinAnd(contested) + ". " +
+		"They are listed best match first — ranked by how much of each pack is what you " +
+		"actually need — but this is a guess from ComfyUI-Manager's index, not a certainty. " +
+		"Check the repository before installing."
+	return h.P(g.Attr("role", "status"), h.Class("text-xs text-amber-400"), g.Text(msg))
+}
+
+// joinAnd renders a list as "a", "a and b", or "a, b and c".
+func joinAnd(items []string) string {
+	switch len(items) {
+	case 0:
+		return ""
+	case 1:
+		return items[0]
+	case 2:
+		return items[0] + " and " + items[1]
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
+}
+
+// splitRankedByConfidence separates the exact-match rungs (Manager's enumerated
 // class list, the Comfy Registry) from the nodename_pattern rung, which is the
 // weakest and must never read as certain.
-func splitPacksByConfidence(packs []comfy.Pack) (confident, likely []comfy.Pack) {
+func splitRankedByConfidence(packs []rankedPack) (confident, likely []rankedPack) {
 	for _, p := range packs {
-		if p.Source == comfy.SourcePattern {
+		if p.Pack.Source == comfy.SourcePattern {
 			likely = append(likely, p)
 			continue
 		}
@@ -152,7 +266,7 @@ func managerStateNote(attr nodeAttribution) g.Node {
 
 // nodepackGroup renders one confidence rung: a heading, an optional caveat, and
 // one card per pack.
-func nodepackGroup(title, caveat string, packs []comfy.Pack, managerPresent bool, wfID int64, csrf, comfyRoot string) g.Node {
+func nodepackGroup(title, caveat string, packs []rankedPack, managerPresent bool, wfID int64, csrf, comfyRoot string) g.Node {
 	body := []g.Node{
 		h.Div(h.Class("text-xs font-semibold text-slate-300"), g.Text(title)),
 	}
@@ -169,10 +283,14 @@ func nodepackGroup(title, caveat string, packs []comfy.Pack, managerPresent bool
 // text (a scheme-validated external link at most — never a bare untrusted href),
 // which missing classes it provides, either an Install button or the plain reason
 // it cannot be installed, and always the manual command.
-func nodepackCard(p comfy.Pack, managerPresent bool, wfID int64, csrf, comfyRoot string) g.Node {
+func nodepackCard(rp rankedPack, managerPresent bool, wfID int64, csrf, comfyRoot string) g.Node {
+	p := rp.Pack
 	head := []g.Node{h.Span(h.Class("font-semibold"), g.Text(packDisplayTitle(p)))}
 	if p.Version != "" {
 		head = append(head, g.Text(" · "), h.Span(h.Class("font-mono"), g.Text(p.Version)))
+	}
+	if label := contestLabel(rp); label != "" {
+		head = append(head, g.Text(" · "), h.Span(h.Class("font-semibold text-amber-400"), g.Text(label)))
 	}
 
 	body := []g.Node{
@@ -185,18 +303,70 @@ func nodepackCard(p comfy.Pack, managerPresent bool, wfID int64, csrf, comfyRoot
 				g.Text(strings.Join(p.Classes, ", "))),
 		),
 	}
+	// The scope line is the EVIDENCE for the ordering. Rendering the ranking without
+	// it leaves the user with an unexplained verdict; "1 of 4" versus "1 of 93" lets
+	// them check the reasoning and overrule it.
+	if line := packScopeLine(p); line != "" {
+		body = append(body, h.Div(h.Class("text-xs text-slate-500"), g.Text(line)))
+	}
 
 	switch {
 	case !managerPresent:
 		// No live Manager: no install affordance at all, by design. The manual
 		// command below is the whole answer.
 	case p.Installable:
-		body = append(body, h.Div(h.Class("pt-1"), nodepackInstallButton(p, wfID, csrf)))
+		// 🔴 A lower-ranked claimant of a contested class keeps a WORKING Install
+		// button, but not an equally loud one. Dropping it would make the ranking
+		// authoritative, which it is not; leaving it `filled` beside the best match is
+		// what shipped the coin-flip.
+		variant := "filled"
+		if rp.Contested && !rp.Best {
+			variant = "outline"
+		}
+		body = append(body, h.Div(h.Class("pt-1"), nodepackInstallButton(p, wfID, csrf, variant)))
 	default:
 		body = append(body, h.P(h.Class("text-xs text-amber-400"), g.Text(packBlockedReason(p))))
 	}
 	body = append(body, manualInstallBlock(p, comfyRoot))
 	return h.Div(body...)
+}
+
+// contestLabel is the short badge distinguishing the favoured claimant of a
+// contested class from the alternatives. Empty when nothing is contested, so an
+// uncontested pack renders exactly as before.
+func contestLabel(rp rankedPack) string {
+	switch {
+	case !rp.Contested:
+		return ""
+	case rp.Best:
+		return "Best match"
+	}
+	return "Also claims it"
+}
+
+// packScopeLine explains, in the pack's own numbers, why it ranked where it did:
+// how much of what this pack installs is what the workflow actually asked for.
+// Empty when the pack's surface is unknown (see comfy.Pack.ClaimedClasses) — an
+// unmeasured pack must not be given a fabricated justification.
+// 🔴 It is SUPPRESSED, not clamped, when the matched count exceeds the claimed
+// total. That is reachable: a mapping entry can enumerate one class AND carry a
+// `nodename_pattern`, so the pattern rung matches classes the enumeration never
+// listed — measured, `Attribute(["FooA","FooB","FooC"])` yields
+// Classes=[FooA FooB FooC] with ClaimedClasses=1, which rendered
+// "provides 1 node type in total; 3 of them are what this workflow needs".
+// Clamping would have produced "1 of them" and quietly hidden that the pack's
+// surface is not actually known; saying nothing is the honest answer, and it is
+// the same rule as the ClaimedClasses<=0 case above — an unmeasured pack does
+// not get a fabricated justification. This line's ONLY job is to be the evidence
+// the user checks the ranking against, so a self-contradictory one is worse than
+// none: it teaches them to stop reading it.
+func packScopeLine(p comfy.Pack) string {
+	if p.ClaimedClasses <= 0 || len(p.Classes) > p.ClaimedClasses {
+		return ""
+	}
+	return "This pack provides " + strconv.Itoa(p.ClaimedClasses) + " node type" +
+		plural(p.ClaimedClasses) + " in total; " + strconv.Itoa(len(p.Classes)) +
+		" of them " + isAre(len(p.Classes)) + " what this workflow needs."
 }
 
 // packDisplayTitle is the pack's human label, never empty.
@@ -318,8 +488,8 @@ func isShellSafeArg(v string) bool {
 // the server re-derives the pack from its own attribution snapshot and never
 // takes a repository URL from the request, so a forged POST cannot drive
 // ComfyUI-Manager at an arbitrary repository.
-func nodepackInstallButton(p comfy.Pack, wfID int64, csrf string) g.Node {
-	return civButton("filled", "sm", []g.Node{
+func nodepackInstallButton(p comfy.Pack, wfID int64, csrf, variant string) g.Node {
+	return civButton(variant, "sm", []g.Node{
 		h.Type("button"),
 		hx("post", "/workflows/"+strconv.FormatInt(wfID, 10)+"/nodepacks/install"),
 		hx("target", "#"+nodepackStatusContainerID),
