@@ -92,7 +92,7 @@ func generateSection(wf *store.Workflow, snap runSnapshot, csrf string, extraAll
 	// WHERE it runs is ONE decision: the zone and the cloud block are the two panels
 	// of a single destination control (runDestination), not two stacked apparatuses.
 	body = append(body, runDestination(
-		runZone(wf.ID, csrf, wf.Format == store.WorkflowFormatUI, editable),
+		runZone(wf.ID, csrf, canQueueWorkflow(wf), editable),
 		cloudGenerateBlock(wf.ID),
 	))
 	// Run job status container (unchanged): poller drives running → terminal.
@@ -118,8 +118,11 @@ type comfyStatusView struct {
 	comfyURL   string // configured comfy_url (escaped)
 	// canQueue is true for a UI-format workflow, i.e. one the batch endpoint
 	// accepts. It decides which endpoint the ONE primary control posts to, and it
-	// must agree with runZone's own canQueue — both read wf.Format, and the count
-	// segment only exists when this is true.
+	// must agree with runZone's own canQueue — the count segment only exists when
+	// this is true, so a disagreement renders a picker whose value the button then
+	// discards. Both are now derived from canQueueWorkflow (run_queue_handlers.go),
+	// which is also what the endpoint itself enforces;
+	// TestCanQueueAgreesAcrossPickerHintButtonAndHandler pins the agreement.
 	canQueue bool
 }
 

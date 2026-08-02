@@ -11,6 +11,33 @@ import (
 	h "maragu.dev/gomponents/html"
 )
 
+// canQueueWorkflow is THE predicate behind every "this can be queued as a batch of
+// N" decision. It is deliberately ONE function rather than the comparison written
+// out at each site, because the sites are not interchangeable and cannot see each
+// other:
+//
+//   - handleWorkflowRunQueue (below) — the server-side AUTHORITY. It 404s.
+//   - generateSection (run_pages.go) — whether the ×1/×2/… count picker is rendered
+//     at all, and which of the two runZoneHint sentences appears.
+//   - handleWorkflowRunComfyStatus (run_handlers.go) — which endpoint the ONE
+//     primary Generate button posts to. This one is resolved in a SEPARATE request
+//     from the page, so it re-reads the workflow and used to re-derive the rule.
+//
+// 🔴 The render sites drifting APART is a silent wrong result, not a refusal. The
+// picker and the button are rendered by two different handlers: if the picker says
+// "queueable" and the button does not, the user picks ×8, the button posts to the
+// single-run endpoint, and exactly ONE run happens with no error and no warning —
+// the count is discarded while the picker stays fully interactive. The authority
+// below still fails closed, so nothing unsafe happens; what is lost is the user's
+// instruction. TestCanQueueAgreesAcrossPickerHintButtonAndHandler pins all four
+// decisions to this one function.
+//
+// nil is not queueable: the comfy-status handler tolerates a workflow that has gone
+// missing since the page rendered and degrades to the non-batch endpoint.
+func canQueueWorkflow(wf *store.Workflow) bool {
+	return wf != nil && wf.Format == store.WorkflowFormatUI
+}
+
 // handleWorkflowRunQueue starts a batch of N sequential runs of the posted
 // parameters, each with a fresh random seed.
 //
@@ -58,7 +85,7 @@ func (s *Server) handleWorkflowRunQueue(w http.ResponseWriter, r *http.Request) 
 	// Queueing is UI-format only, exactly like the preset surface it is rendered
 	// inside: DetectRunInputs returns nothing for an api graph, so there is no seed
 	// to re-roll and no parameters to batch.
-	if wf.Format != store.WorkflowFormatUI {
+	if !canQueueWorkflow(wf) {
 		http.NotFound(w, r)
 		return
 	}

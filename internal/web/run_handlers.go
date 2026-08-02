@@ -888,8 +888,8 @@ func (s *Server) handleWorkflowRunComfyStatus(w http.ResponseWriter, r *http.Req
 	// than assumed. A workflow that has gone missing since the page rendered degrades
 	// to the non-batch endpoint rather than 404-ing a health probe.
 	canQueue := false
-	if wf, werr := s.store.GetWorkflow(r.Context(), id); werr == nil && wf != nil {
-		canQueue = wf.Format == store.WorkflowFormatUI
+	if wf, werr := s.store.GetWorkflow(r.Context(), id); werr == nil {
+		canQueue = canQueueWorkflow(wf)
 	}
 	client := s.comfy()
 	if client == nil {
