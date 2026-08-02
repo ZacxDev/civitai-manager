@@ -104,6 +104,53 @@ jobs:
         run: go test ./...
         working-directory: e2e/uxaudit
 
+  # 🔴 The REACHABILITY gate. CLAUDE.md's "Reachability" section records this
+  # repo's real recurring defect: not broken code, code that NEVER RUNS. A
+  # deliberate sweep found 17 confirmed-dead items — 11 functions, an orphan
+  # route, and a flag plumbed through five layers and read by nobody for 89
+  # releases. Every one of them passed build, vet, test, -race and gofmt. This is
+  # the only job that can see them.
+  #
+  # It runs `deadcode` under all three GOOS this repo ships and gates on the
+  # INTERSECTION. That is load-bearing, not tidiness: internal/diskusage is split
+  # by build tag, so fromBlocks (unix) and fromByteCounts (windows) are each dead
+  # on one target and live on the other. A single-GOOS run reports whichever one
+  # as a false positive.
+  #
+  # Its OWN job, following the `uxaudit` precedent above rather than bolting onto
+  # `test`: it needs Go 1.26 (one tool binary has to load the nested module too),
+  # and raising the shared job's toolchain would silently change the compiler
+  # every existing root-module check runs under. Adding a gate must not perturb a
+  # gate that already works.
+  #
+  # The tool is PINNED (see DEADCODE_VERSION in the script), never @latest — CI
+  # has to be reproducible, and an analysis that changes under you changes what
+  # this gate means.
+  deadcode:
+    name: deadcode (reachability, 3x GOOS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # 1.26, not 1.25: the script analyzes the root module AND the nested
+      # e2e/uxaudit module (go 1.26) with a single tool binary, so the toolchain
+      # must satisfy the higher directive. The script checks this itself and
+      # fails with both version numbers rather than emitting 200 lines of
+      # "package requires newer Go version".
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      # shellcheck ships on the runner. Linted here rather than in the `test`
+      # job's shellcheck step so this gate stays self-contained.
+      - name: shellcheck (.github/deadcode.sh)
+        run: shellcheck .github/deadcode.sh
+
+      - name: deadcode gate
+        run: .github/deadcode.sh
+
   # The flake's vendorHash is a fixed-output hash over the module set. Nothing
   # in the Go build path touches it, so a `go get` silently invalidates it and
   # `nix build github:ZacxDev/civitai-manager` starts failing for everyone with

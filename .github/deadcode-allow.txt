@@ -1,0 +1,38 @@
+# Tier B allowlist for .github/deadcode.sh — functions with NO PRODUCTION CALLER
+# on linux, windows AND darwin. Each one is reachable only from its own tests.
+#
+# ONE LINE PER FUNCTION, as `<import path>.<func>`. Keyed on the name, never on
+# file:line — a line number churns on every edit above it, which would make this
+# file go stale for reasons that have nothing to do with reachability.
+#
+# 🔴 THIS FILE IS A DEBT LEDGER, NOT AN EXEMPTION LIST. Same discipline as
+# contrast_web_test.go's 25 accepted light-theme debt entries: the set is
+# ASSERTED, so the gate fails when it GROWS (something new became
+# production-unreachable) and equally when it SHRINKS (an entry is no longer
+# dead — delete the line and take the win). Adding a line to turn a red build
+# green is a last resort, and the commit message has to say why it must stay.
+#
+# ⚠ HONEST SCOPE, so nobody reads this as an audit. These 15 were MEASURED, not
+# investigated. No entry has been checked for whether it ought to be deleted,
+# wired up, or is a deliberate test seam. The file exists so the set cannot GROW
+# silently; working the list down is separate work. Several look worth a look —
+# internal/web alone carries eight, and `Server.startRun` is shadowed in
+# production by `startRunWithMessage`, which every real call site uses.
+#
+# Regenerate with:  .github/deadcode.sh --print
+
+github.com/ZacxDev/civitai-manager/internal/civitai.DecodeImageSearch
+github.com/ZacxDev/civitai-manager/internal/comfy.IsWidget
+github.com/ZacxDev/civitai-manager/internal/comfy.RegistryClient.LookupClass
+github.com/ZacxDev/civitai-manager/internal/comfy.RegistryClient.LookupClasses
+github.com/ZacxDev/civitai-manager/internal/comfy.isJSONObjectNonEmpty
+github.com/ZacxDev/civitai-manager/internal/queue.Worker.ProcessOne
+github.com/ZacxDev/civitai-manager/internal/store.NodePackSourceRegistryClass
+github.com/ZacxDev/civitai-manager/internal/web.Server.startRun
+github.com/ZacxDev/civitai-manager/internal/web.galleryTile
+github.com/ZacxDev/civitai-manager/internal/web.implicitPresetView
+github.com/ZacxDev/civitai-manager/internal/web.parseWidgetOverrides
+github.com/ZacxDev/civitai-manager/internal/web.runModesPanel
+github.com/ZacxDev/civitai-manager/internal/web.runParamField
+github.com/ZacxDev/civitai-manager/internal/web.runParametersPanel
+github.com/ZacxDev/civitai-manager/internal/web.tileThumbWidth
