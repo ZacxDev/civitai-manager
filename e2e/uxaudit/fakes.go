@@ -160,14 +160,46 @@ func newFakeComfyUI() *httptest.Server {
 // an array first element is a combo whose entries are the choices.
 //
 // 🔴 `input_order` is LOAD-BEARING and must be present on every entry, even though
-// the API-format hero never reads it. comfy.ConvertUIToAPI walks input_order to
-// assign a UI node's widgets_values, and a schema that HAS inputs but no
-// input_order makes it emit `node N has no input_order; widget values not mapped`
-// for every such node. realRun returns EARLY on any conversion warning — before
+// the API-format hero never reads it — but NOT for the reason this comment used to
+// give. It claimed "realRun returns EARLY on any conversion warning — before
 // comfy.Preflight — so a UI-format hero would render the conversion-warnings panel
-// instead of the missing-models one, and the walk would never exercise preflight
-// on the format real users actually have. (Measured: all 71 workflows in the
-// operator's library are `ui`; zero are `api`.)
+// INSTEAD of the missing-models one". Both halves are dead. The early return was
+// replaced by the never-submit gate (`internal/web/run_handlers.go`, search
+// NEVER-SUBMIT GATE), which runs AFTER comfy.Preflight; and on a preflight failure
+// the conversion warnings render WITH the missing-models panel — subordinated into
+// its "Technical details" disclosure — never instead of it.
+//
+// The requirement survives by the OPPOSITE mechanism, measured rather than reasoned.
+// comfy.ConvertUIToAPI walks input_order to assign a UI node's widgets_values; an
+// entry that HAS inputs but no input_order makes it emit `node N has no input_order;
+// widget values not mapped` and map NOTHING for that node. On a LOADER that drops the
+// model filename out of the converted graph, so comfy.Preflight never sees a reference
+// to it and cannot report it missing. Strip both loaders and `report.OK` stays TRUE —
+// the gate then takes its `if report.OK` branch and returns warnings only, so the walk
+// never exercises preflight on the format real users actually have. (Measured: all 71
+// workflows in the operator's library are `ui`; zero are `api`.)
+//
+// 🔴 The OBVIOUS one-entry probe is UNDER-POWERED — do not re-derive this with it.
+// Stripping CheckpointLoaderSimple ALONE leaves the missing-models panel rendering,
+// because LoraLoader independently keeps preflight red. It reads as "input_order does
+// not matter here" and it is wrong. Measured against this fixture + heroWorkflowGraphUI:
+//
+//	stripped                warnings  report.OK  panel               walk
+//	none (as shipped)          0        false     missing-models (2)  PASS 24 caps / 0 viol
+//	CheckpointLoaderSimple     1        false     missing-models (1)  PASS 24 caps / 0 viol
+//	the 5 NON-loader entries   5        false     missing-models (2)  (not walked)
+//	BOTH loaders               2        TRUE      warnings-only       FAIL — 60s timeout
+//	all 7 entries              7        TRUE      warnings-only       (not walked)
+//
+// The walk's failure mode is loud, which is what makes the green rows mean something:
+// heroRunPrep waits on HeroMarker ("Missing model files") for 60s, so a warnings-only
+// panel times out `capture run-missing-models-ui` rather than quietly capturing the
+// wrong page. Only run-missing-models-ui fails — the API hero never converts at all.
+//
+// So the panel flip is driven by the LOADER entries. The other five still need theirs,
+// for the separate widget-alignment reason below and because
+// TestUIHeroGraphReachesPreflight requires ZERO conversion warnings. Keep it on every
+// entry; just do not justify it with the deleted early return.
 //
 // KSampler carries the full real widget set (seed / steps / cfg / sampler_name /
 // scheduler / denoise) rather than links only, for two reasons: the UI graph's
