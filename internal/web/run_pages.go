@@ -118,8 +118,11 @@ type comfyStatusView struct {
 	comfyURL   string // configured comfy_url (escaped)
 	// canQueue is true for a UI-format workflow, i.e. one the batch endpoint
 	// accepts. It decides which endpoint the ONE primary control posts to, and it
-	// must agree with runZone's own canQueue — both read wf.Format, and the count
-	// segment only exists when this is true.
+	// must agree with runZone's own canQueue — the count segment only exists when
+	// this is true, so a disagreement renders a picker whose value the button then
+	// discards. Both are now derived from canQueueWorkflow (run_queue_handlers.go),
+	// which is also what the endpoint itself enforces;
+	// TestCanQueueAgreesAcrossPickerHintButtonAndHandler pins the agreement.
 	canQueue bool
 }
 
