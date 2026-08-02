@@ -195,45 +195,59 @@ func resourceOpenControl(fileID int64, csrf, msg, state string) g.Node {
 //
 // A resolved local file additionally gets an "open containing folder" control
 // (loopback-gated, CSRF-protected, id-only) as a SIBLING of the chip.
+//
+// Orthogonally to the link, the MARK has three states: ✓ present in the local
+// library, ◎ absent from the library but resolvable by ComfyUI (from the
+// comfy_model_cache — see comfy_model_cache.go), ✗ neither. ◎ is checked only
+// when ✓ is false, so a local file is never described by what ComfyUI happens to
+// have.
 func workflowResourceChip(res string, resolver workflowResolver) g.Node {
 	// store.ResourceBasename is the SINGLE definition of "which part of a resource
 	// entry is the filename" — shared with the model page's "workflows that use
-	// this model" query, so a chip's ✓/✗ and that list can never disagree about
+	// this model" query, so a chip's ✓/◎/✗ and that list can never disagree about
 	// what a resource is called.
 	base := store.ResourceBasename(res)
 	have := resolver.have(base)
 	info, _ := resolver.resource(base)
 
 	mark, state, state1 := "✗", "no", "not in your library"
-	if have {
+	switch {
+	case have:
 		mark, state, state1 = "✓", "yes", "present in your library"
+	case resolver.comfyHas(base):
+		// The THIRD state. The wording names both halves on purpose: the file is
+		// usable by a run, and it is still not something this app indexes, tracks
+		// or can open a folder for. "In ComfyUI" alone reads as "you have it".
+		mark, state, state1 = "◎", "comfy", "in ComfyUI, not in your library"
 	}
 
-	// Hover reveals the ABSOLUTE on-disk path when we know it; otherwise the chip
-	// says plainly that it is not present rather than showing a bare filename with
-	// no explanation.
-	hover := res + " — " + state1
+	// The ABSOLUTE on-disk path when we know it; otherwise the plain statement that
+	// it is not present, rather than a bare filename with no explanation.
+	detail := res + " — " + state1
 	if info.Path != "" {
-		hover = info.Path
+		detail = info.Path
 	}
-	// A recorded provenance is stated IN FULL on hover, so the claim the link makes
-	// is legible without clicking it — and it is appended to the path rather than
-	// replacing it, because both are facts about the same file.
+	// A recorded provenance is stated IN FULL, so the claim the link makes is
+	// legible without clicking it — appended to the path rather than replacing it,
+	// because both are facts about the same file.
 	hfHref, hasHF := info.hfHref()
+	hfClaim := ""
 	if hasHF {
-		claim := "Downloaded from HuggingFace: " + info.HF.Repo + "/" + info.HF.Path +
+		hfClaim = "Downloaded from HuggingFace: " + info.HF.Repo + "/" + info.HF.Path +
 			" @ " + shortRevision(info.HF.Revision)
-		if info.Path != "" {
-			hover = info.Path + " — " + claim
-		} else {
-			hover = claim
-		}
 	}
 
+	// 🔴 NO title= HERE. The chip is wrapped in a hover popover (see
+	// resourceChipPopover), and a title= on the same hover unit makes the browser
+	// paint its NATIVE tooltip over that popover after the OS delay — the exact
+	// double-hover bug 297ccd2 fixed elsewhere and that workflowResourcesPopover's
+	// own comment forbids. Everything the title used to say now lives in the
+	// popover, which is why this is not a loss of information. The accessible name
+	// stays on the chip: aria-label is what a screen reader announces, and it is
+	// unaffected by the popover.
 	attrs := []g.Node{
 		h.Class("cm-res-chip"),
 		dataAttr("have", state),
-		h.Title(hover),
 		g.Attr("aria-label", res+" — "+state1),
 	}
 
@@ -265,15 +279,72 @@ func workflowResourceChip(res string, resolver workflowResolver) g.Node {
 		chip = h.Span(append(attrs, body...)...)
 	}
 
+	// The chip and its detail popover are ONE hover unit, wrapped together.
+	hoverUnit := h.Span(h.Class("cm-res-chip-wrap"),
+		chip,
+		resourceChipPopover(state1, detail, hfClaim),
+	)
+
 	// --- PR C2: the native "open containing folder" control --------------------
 	// Offered only when a CONCRETE contained file is known (never for an ambiguous
 	// basename, which resolves to no id and no path) and only on a loopback bind,
 	// because the server execs a file manager on its OWN machine.
+	//
+	// It is a SIBLING of the hover unit, not a child: hovering the folder button
+	// must not open the chip's popover over the thing you are about to click.
 	// ---------------------------------------------------------------------------
 	if resolver.openFolder && info.revealable() {
-		return h.Span(h.Class("cm-res-item"), chip, resourceOpenControl(info.FileID, resolver.csrf, "", ""))
+		return h.Span(h.Class("cm-res-item"), hoverUnit, resourceOpenControl(info.FileID, resolver.csrf, "", ""))
 	}
-	return chip
+	return hoverUnit
+}
+
+// resourceChipPopover renders the chip's detail panel: the state in words, the
+// absolute path (or the "not present" sentence), and any recorded HuggingFace
+// provenance claim.
+//
+// 🔴 IT EMITS NO LINKS, AND THAT IS THE POINT — twice over.
+//
+//	(1) The CHIP is the link. A "View model" row duplicating the chip's own href
+//	    made every linked chip carry the SAME href twice, which is what destroyed
+//	    the "exactly one href" guard in the provenance suite. One resource, one
+//	    destination.
+//	(2) The HuggingFace provenance stays TEXT. The chip deliberately prefers an
+//	    in-app CivitAI link over an off-site one, and putting an off-site HF <a>
+//	    in the popover would quietly reinstate exactly the off-site link that
+//	    rule suppresses. The claim is still stated in full — repo, path and
+//	    pinned short revision — so nothing is hidden; it simply is not clickable
+//	    from a chip whose link belongs to CivitAI.
+//
+// 🔴 IT DOES NOT USE .cm-updated/.cm-updated-pop. Those rules are DESCENDANT
+// selectors (`.cm-updated:hover .cm-updated-pop`), and these chips render INSIDE
+// workflowResourcesPopover — itself a `.cm-updated`. Reusing the shared classes
+// therefore opened EVERY chip's popover the moment the outer trigger opened,
+// stacking panels over chips 2..N. `.cm-res-chip-wrap` + `.cm-res-chip-pop` is a
+// separate, CHILD-combinator pair for that reason; see app.css.
+func resourceChipPopover(state, detail, hfClaim string) g.Node {
+	rows := []g.Node{
+		h.Div(h.Class("cm-res-detail-row"),
+			h.Span(h.Class("cm-res-detail-label"), g.Text("Status")),
+			h.Span(h.Class("cm-res-detail-value"), g.Text(state)),
+		),
+		h.Div(h.Class("cm-res-detail-row"),
+			h.Span(h.Class("cm-res-detail-label"), g.Text("File")),
+			h.Span(h.Class("cm-res-detail-value break-all"), g.Text(detail)),
+		),
+	}
+	if hfClaim != "" {
+		rows = append(rows, h.Div(h.Class("cm-res-detail-row"),
+			h.Span(h.Class("cm-res-detail-value break-all"), g.Text(hfClaim)),
+		))
+	}
+	return h.Span(
+		h.Class("cm-res-chip-pop"),
+		// Every other popover in the app declares it; a panel that describes the
+		// element it hangs off is a tooltip.
+		g.Attr("role", "tooltip"),
+		g.Group(rows),
+	)
 }
 
 // shortRevision abbreviates a commit sha for display. A full 40-hex sha in a

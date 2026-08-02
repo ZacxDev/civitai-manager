@@ -27,6 +27,18 @@ type workflowResolver struct {
 	// basename is unknown OR ambiguous — the chip then renders without a path and
 	// without a source link rather than guessing.
 	localResource func(basename string) (resourceInfo, bool)
+	// comfyResource reports whether ComfyUI itself can resolve a file with this
+	// basename — the chip's THIRD state, between "in your library" and "not found".
+	//
+	// It is answered from the comfy_model_cache (migration 0019), never a live
+	// fetch, so a page render stays offline. Nil (the zero resolver, and every
+	// render path built without a store) means "we know nothing about ComfyUI",
+	// which collapses the chip back to the two-state ✓/✗ rendering.
+	//
+	// 🔴 The production implementation MEMOISES PER REQUEST — see comfyModelIndex.
+	// A per-call implementation re-decodes a ~4.7 MB payload for every chip on the
+	// page. Do not inline a store read here.
+	comfyResource func(basename string) bool
 	// mr is the persisted PG..XXX maturity range threaded to the
 	// list-item showcase carousels so they honor it (carried on the resolver to
 	// avoid threading it through workflowList/Item/Card + the scan-terminal path).
@@ -101,6 +113,15 @@ func (r workflowResolver) have(basename string) bool {
 		return false
 	}
 	return r.haveFile(basename)
+}
+
+// comfyHas reports whether ComfyUI can resolve the basename (false for a resolver
+// with no ComfyUI knowledge — nothing is claimed present).
+func (r workflowResolver) comfyHas(basename string) bool {
+	if r.comfyResource == nil {
+		return false
+	}
+	return r.comfyResource(basename)
 }
 
 // libraryWorkflowsView bundles what the Workflows library tab renders: the stored

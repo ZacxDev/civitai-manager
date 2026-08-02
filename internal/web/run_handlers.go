@@ -30,7 +30,11 @@ const runPollInterval = 1 * time.Second
 // interface so tests can inject a fake; *comfy.Client satisfies it.
 type comfyClient interface {
 	SystemStats(ctx context.Context) (*comfy.SystemStats, error)
-	ObjectInfo(ctx context.Context) (comfy.ObjectInfo, error)
+	// ObjectInfoRaw returns the decoded schema AND the untouched response body.
+	// The raw body is what feeds the comfy_model_cache (migration 0019): a
+	// re-marshal of the decoded ObjectInfo is lossy, so the cache would end up
+	// holding a document ComfyUI never produced.
+	ObjectInfoRaw(ctx context.Context) (comfy.ObjectInfo, []byte, error)
 	Submit(ctx context.Context, apiGraph json.RawMessage, clientID, promptID string) (*comfy.SubmitResult, error)
 	QueueState(ctx context.Context, promptID string) (running bool, queuedPos int, found bool, err error)
 	History(ctx context.Context, promptID string) (*comfy.HistoryEntry, error)
@@ -461,10 +465,15 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater,
 
 	// Load the node schema once; it is needed for a UI conversion and for preflight.
 	up.setPhase(runPhasePreparing, "Loading node schema…", 0)
-	info, err := client.ObjectInfo(ctx)
+	info, rawInfo, err := client.ObjectInfoRaw(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("load object_info: %w", err)
 	}
+	// The payload is in hand and it is the freshest view of what ComfyUI has
+	// installed that this app ever gets — cache it so the workflow list's resource
+	// chips can render their "in ComfyUI" state offline. Best-effort; see
+	// comfy_model_cache.go.
+	s.cacheComfyObjectInfo(rawInfo)
 
 	var apiGraph json.RawMessage
 	if wf.Format == store.WorkflowFormatUI {

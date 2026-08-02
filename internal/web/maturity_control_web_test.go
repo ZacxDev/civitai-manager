@@ -708,8 +708,26 @@ func TestModelPageHasExactlyOneMaturityControl(t *testing.T) {
 	if strings.Contains(body, `"model_id"`) {
 		t.Error("model header must not render a model_id-scoped maturity control")
 	}
-	if n := strings.Count(body, `hx-post="/settings/maturity"`); n != 1 {
-		t.Errorf("expected exactly one maturity control (the navbar one), got %d", n)
+	// ONE control. Counting the panel id is the direct assertion — a second
+	// maturityControl anywhere on the page renders a second panel (and a duplicate
+	// id, itself a bug). This used to count `hx-post="/settings/maturity"` posters
+	// instead, which stopped meaning "one control" the moment the control grew a
+	// second poster; the property it was reaching for is pinned here directly.
+	if n := strings.Count(body, `id="`+maturityMenuPanelID+`"`); n != 1 {
+		t.Errorf("expected exactly one maturity control panel (the navbar one), got %d", n)
+	}
+	// EXACTLY TWO things POST /settings/maturity, and both belong to that one
+	// control: the Apply form (staged band) and the Safe-mode preset (literal band).
+	// A per-surface control would push this to 4.
+	if n := strings.Count(body, `hx-post="/settings/maturity"`); n != 2 {
+		t.Errorf("expected exactly 2 posters of /settings/maturity (the Apply form and "+
+			"the Safe-mode preset, both inside the single navbar control), got %d", n)
+	}
+	if n := strings.Count(body, `id="`+maturityFormID+`"`); n != 1 {
+		t.Errorf("expected exactly one maturity Apply form, got %d", n)
+	}
+	if n := strings.Count(body, `id="`+maturitySafeModeID+`"`); n != 1 {
+		t.Errorf("expected exactly one Safe-mode preset button, got %d", n)
 	}
 	if strings.Contains(body, `hx-post="/settings/nsfw"`) {
 		t.Error("the removed /settings/nsfw endpoint is still referenced")

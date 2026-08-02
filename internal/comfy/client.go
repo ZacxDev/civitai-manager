@@ -386,24 +386,37 @@ type ObjectInfo map[string]NodeSchema
 // ObjectInfo fetches GET /object_info (the installed-node schema) used by the
 // converter and preflight.
 func (c *Client) ObjectInfo(ctx context.Context) (ObjectInfo, error) {
+	oi, _, err := c.ObjectInfoRaw(ctx)
+	return oi, err
+}
+
+// ObjectInfoRaw is ObjectInfo plus the RESPONSE BODY exactly as ComfyUI sent it.
+//
+// 🔴 The raw bytes exist for one reason: a caller that CACHES the payload must
+// store what ComfyUI actually said, not a re-encoding of the decoded structs.
+// NodeSchema keeps only `input`/`input_order` and InputSpec deliberately drops a
+// non-string combo's option list (see its UnmarshalJSON), so `json.Marshal` of an
+// ObjectInfo is LOSSY — round-tripping through it would quietly write a smaller,
+// different document into a column named object_info_json.
+func (c *Client) ObjectInfoRaw(ctx context.Context) (ObjectInfo, []byte, error) {
 	resp, err := c.do(ctx, http.MethodGet, "/object_info", nil)
 	if err != nil {
-		return nil, fmt.Errorf("object_info: %w", err)
+		return nil, nil, fmt.Errorf("object_info: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		data, _ := readBounded(resp.Body, maxJSONBytes)
-		return nil, statusError("object_info", resp.StatusCode, data)
+		return nil, nil, statusError("object_info", resp.StatusCode, data)
 	}
 	data, err := readBounded(resp.Body, maxObjectInfoBytes)
 	if err != nil {
-		return nil, fmt.Errorf("read object_info: %w", err)
+		return nil, nil, fmt.Errorf("read object_info: %w", err)
 	}
 	var oi ObjectInfo
 	if err := json.Unmarshal(data, &oi); err != nil {
-		return nil, fmt.Errorf("parse object_info: %w", err)
+		return nil, nil, fmt.Errorf("parse object_info: %w", err)
 	}
-	return oi, nil
+	return oi, data, nil
 }
 
 // --- /history ---

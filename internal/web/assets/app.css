@@ -1329,6 +1329,31 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   cursor: not-allowed;
 }
 
+/*
+ * .cm-maturity-preset — the one-click "Safe mode" row.
+ *
+ * It sits BELOW the form and outside it (see safeModeControl: that placement is
+ * what makes its POST body deterministic), so it gets its own separator rather
+ * than sharing the actions row's. Full-width button: it is a single decisive
+ * action, not one of a pair, and a narrow button beside nothing reads as unfinished.
+ * The Apply gate never touches it — Safe mode carries a literal, always-valid
+ * band, so it can never be the thing that is disabled.
+ */
+.cm-maturity-preset {
+  margin-top: 0.75rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--civitai-color-border);
+}
+.cm-maturity-preset [data-civitai-ui='button'] {
+  width: 100%;
+}
+.cm-maturity-preset-note {
+  margin-top: 0.35rem;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  color: var(--civitai-color-text-dimmed);
+}
+
 @media (min-width: 1024px) {
   /*
    * The desktop MATURITY panel anchors under its trigger instead of spanning the
@@ -3166,6 +3191,16 @@ a.cm-res-chip:focus-visible {
 .cm-res-chip[data-have="yes"] .cm-res-mark {
   color: var(--civitai-color-success-text);
 }
+/*
+ * data-have="comfy" — the file is not in the local library but ComfyUI can
+ * resolve it. Warning (amber) rather than success: a run will work, yet the app
+ * cannot index, dedupe, quarantine or open a folder for it, so it is genuinely a
+ * middle state and must not read as "you have this". Never colour-only — the
+ * mark glyph and the chip's aria-label both carry the state in words.
+ */
+.cm-res-chip[data-have="comfy"] .cm-res-mark {
+  color: var(--civitai-color-warning-text);
+}
 .cm-res-chip[data-have="no"] .cm-res-mark {
   color: var(--civitai-color-error-text);
 }
@@ -3289,6 +3324,76 @@ a.cm-res-chip .cm-res-name {
 .cm-res-pop {
   min-width: 16rem;
   max-width: 26rem;
+}
+
+/*
+ * .cm-res-chip-wrap / .cm-res-chip-pop — the PER-CHIP detail popover.
+ *
+ * 🔴 IT IS A SEPARATE MECHANISM FROM .cm-updated ON PURPOSE. DO NOT "simplify"
+ * it back onto the shared classes. The shared rules are DESCENDANT selectors
+ *   .cm-updated:hover .cm-updated-pop { display: block }
+ * and these chips render INSIDE .cm-res-pop, which hangs off a .cm-updated
+ * trigger. Reusing the shared classes therefore made the outer trigger open
+ * EVERY nested chip popover at once. Browser-measured on a 3-resource fixture:
+ * all three panels at display:block, chips 2 and 3 fully covered by stacked
+ * detail panels — the affordance defeating itself.
+ *
+ * The rules below use the CHILD combinator (`>`), so a wrapper only ever opens
+ * ITS OWN panel. The child combinator alone would not have been enough while the
+ * classes were shared: the OUTER .cm-res-pop is also a direct child of its
+ * .cm-updated, so a hover on the outer trigger would still have matched. Distinct
+ * classes plus `>` is what makes each level independent.
+ *
+ * No .cm-pop-open rule: that class is applied by the shared hover controller in
+ * modelPageScript, whose delegation selector is `.cm-vstatus, .cm-updated`. This
+ * popover is deliberately outside that controller, so it is pure CSS — which also
+ * means it needs no JS to work at all.
+ *
+ * STACKING: .cm-res-pop is `position:absolute; z-index:50`, i.e. a stacking
+ * CONTEXT, so this panel's z-index is resolved INSIDE it and spends nothing from
+ * the global budget in the STACKING ORDER ledger. `1` is all it needs — enough to
+ * paint over sibling chips, and it cannot reach the app chrome.
+ */
+.cm-res-chip-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.cm-res-chip-pop {
+  display: none;
+  position: absolute;
+  z-index: 1;
+  top: 100%;
+  left: 0;
+  margin-top: 0.35rem;
+  min-width: 14rem;
+  max-width: 22rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--civitai-color-border);
+  background: var(--civitai-color-surface);
+  color: var(--civitai-color-text);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  white-space: normal;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+.cm-res-chip-wrap:hover > .cm-res-chip-pop,
+.cm-res-chip-wrap:focus-within > .cm-res-chip-pop {
+  display: block;
+}
+.cm-res-detail-row {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: space-between;
+  padding: 0.15rem 0;
+}
+.cm-res-detail-label {
+  flex: 0 0 auto;
+  color: var(--civitai-color-text-dimmed);
+}
+.cm-res-detail-value {
+  color: var(--civitai-color-text);
+  text-align: right;
 }
 
 /*

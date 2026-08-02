@@ -130,10 +130,12 @@ func (s *Server) cloudAPIGraph(ctx context.Context, wf *store.Workflow) (apiGrap
 	}
 	octx, cancel := context.WithTimeout(ctx, cloudObjectInfoTimeout)
 	defer cancel()
-	info, err := client.ObjectInfo(octx)
+	info, rawInfo, err := client.ObjectInfoRaw(octx)
 	if err != nil {
 		return nil, nil, s.cloudUnreachableNote(), false
 	}
+	// Same as the local run path: a fetched /object_info feeds the display cache.
+	s.cacheComfyObjectInfo(rawInfo)
 	g, warns, cerr := comfy.ConvertUIToAPI(json.RawMessage(wf.Graph), info)
 	if cerr != nil {
 		// An empty-conversion abort already carries a full, actionable sentence

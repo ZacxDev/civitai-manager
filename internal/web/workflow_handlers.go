@@ -312,6 +312,10 @@ func (s *Server) workflowResolver() workflowResolver {
 	if openFolder {
 		realRoots = resolveRoots(s.revealRoots())
 	}
+	// ONE index per resolver — i.e. one per request — decoded LAZILY on the first
+	// chip that actually needs it. See comfyModelIndex for the measurement that
+	// makes this mandatory rather than an optimisation.
+	comfyIdx := s.newComfyModelIndex()
 	return workflowResolver{
 		cachedModel: func(id int) (string, []byte, bool) {
 			ent, err := s.store.GetModelCache(id)
@@ -353,9 +357,12 @@ func (s *Server) workflowResolver() workflowResolver {
 			}
 			return info, true
 		},
-		mr:         s.maturity(),
-		csrf:       s.csrf,
-		openFolder: openFolder,
+		// The cached-ComfyUI lookup. The closure carries the shared index, so every
+		// chip on the page reuses one decode.
+		comfyResource: comfyIdx.has,
+		mr:            s.maturity(),
+		csrf:          s.csrf,
+		openFolder:    openFolder,
 	}
 }
 

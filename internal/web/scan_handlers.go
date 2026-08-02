@@ -146,6 +146,12 @@ func (s *Server) startScan(extra []string, noRemote bool) {
 		job.running = false
 		job.finishedAt = time.Now()
 		s.scanMu.Unlock()
+		// The local model files just changed, so the cached ComfyUI /object_info is
+		// the app's stalest claim about what is installed — drop it rather than keep
+		// asserting it. OUTSIDE scanMu: it is a database write, unrelated to the job
+		// snapshot, and holding the job mutex across it would block every /status
+		// poll. See comfy_model_cache.go for why a scan is the chosen trigger.
+		s.invalidateComfyModelCache()
 	}()
 }
 
