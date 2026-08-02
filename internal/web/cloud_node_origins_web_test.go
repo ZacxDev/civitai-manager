@@ -201,28 +201,29 @@ const freshNodeOriginInfo = `{
   "ImpactWildcardProcessor": {"python_module":"custom_nodes.comfyui-impact-pack","input":{"required":{}},"input_order":{"required":[]}}
 }`
 
-// staleNodeOriginInfo is the SAME app one ComfyUI upgrade ago: WanImageToVideo did
-// not exist yet, so the cached row cannot classify it and it falls through to
-// coreNodeClasses — which does not contain it either, so the stale tier flags a
-// real built-in. That disagreement is the whole point of the fixture.
-const staleNodeOriginInfo = `{
-  "ImpactWildcardProcessor": {"python_module":"custom_nodes.comfyui-impact-pack","input":{"required":{}},"input_order":{"required":[]}}
-}`
-
-// TestCloudPanelPrefersTheFreshlyFetchedObjectInfoOverTheCachedRow pins that the
-// handler classifies from the payload it JUST fetched rather than re-reading a
-// stale ~4.66 MB row back out of SQLite.
+// TestCloudPanelUsesTheFreshObjectInfoWhenTheCacheCannotAnswer pins that the
+// handler classifies from the payload it JUST fetched rather than re-reading it
+// back out of SQLite.
 //
-// The two sources are made to DISAGREE on purpose. If they agreed, the assertion
-// would be over-determined and would pass with the pass-through deleted.
-func TestCloudPanelPrefersTheFreshlyFetchedObjectInfoOverTheCachedRow(t *testing.T) {
-	// Fixture preconditions: the two payloads must genuinely disagree about
-	// WanImageToVideo, or this test cannot discriminate.
+// 🔴 THE FIXTURE MUST BREAK THE CACHE, and finding that out cost a vacuous first
+// draft. The obvious fixture — seed a STALE row that disagrees with the fresh
+// payload — CANNOT discriminate, because cloudAPIGraph calls cacheComfyObjectInfo
+// with the fresh body BEFORE anything resolves, so the stale row is overwritten
+// in-request and both code paths then read the same fresh bytes. That draft passed
+// with the pass-through reverted.
+//
+// So this reproduces the case where the write does NOT land, which is the real
+// production scenario the pass-through is about: PutComfyObjectInfo's error is
+// swallowed by design (cacheComfyObjectInfo must never fail a run over a display
+// cache) and a read-only database never writes at all. Dropping the table makes
+// both the write and the read fail deterministically, so the cache tier can
+// contribute nothing and only the in-frame payload can answer.
+func TestCloudPanelUsesTheFreshObjectInfoWhenTheCacheCannotAnswer(t *testing.T) {
+	// Fixture precondition: the fresh payload really does classify the built-in,
+	// and coreNodeClasses really does not (proved by the cold-cache control in the
+	// test above, which flags WanImageToVideo).
 	if o := comfy.OriginOf(comfy.NodeOrigins([]byte(freshNodeOriginInfo)), "WanImageToVideo"); o != comfy.NodeOriginBuiltin {
 		t.Fatalf("fixture precondition: the FRESH payload must call WanImageToVideo built-in, got %v", o)
-	}
-	if o := comfy.OriginOf(comfy.NodeOrigins([]byte(staleNodeOriginInfo)), "WanImageToVideo"); o != comfy.NodeOriginUnknown {
-		t.Fatalf("fixture precondition: the STALE payload must NOT know WanImageToVideo, got %v", o)
 	}
 
 	srv := newCloudTestServer(t, &fakeCloud{})
@@ -232,8 +233,13 @@ func TestCloudPanelPrefersTheFreshlyFetchedObjectInfoOverTheCachedRow(t *testing
 	}
 	srv.comfyClientFn = func() comfyClient { return fake }
 
-	if err := srv.store.PutComfyObjectInfo([]byte(staleNodeOriginInfo)); err != nil {
-		t.Fatalf("seed stale cache: %v", err)
+	if _, err := srv.store.DB().Exec(`DROP TABLE comfy_model_cache`); err != nil {
+		t.Fatalf("break the cache table: %v", err)
+	}
+	// Assert the intermediate state: the cache genuinely cannot answer. Without
+	// this the test could pass because the cache answered correctly all along.
+	if ent, err := srv.store.GetComfyObjectInfo(); err == nil {
+		t.Fatalf("fixture precondition: the cache must be unable to answer, got ent=%v err=nil", ent)
 	}
 	id := seedWorkflow(t, srv, store.WorkflowFormatUI, uiNodeOriginGraph)
 
@@ -256,9 +262,11 @@ func TestCloudPanelPrefersTheFreshlyFetchedObjectInfoOverTheCachedRow(t *testing
 	}
 	if hasName(names, "WanImageToVideo") {
 		t.Errorf("WanImageToVideo was flagged as unrecognised (banner listed %v). The handler "+
-			"holds a freshly fetched /object_info that classifies it as comfy_extras — it must "+
-			"use that rather than re-reading a stale cached row, which is both a wasted 4.66 MB "+
-			"read and a silent downgrade whenever the cache write did not land.", names)
+			"holds a freshly fetched /object_info that classifies it as comfy_extras, so it must "+
+			"classify from THAT rather than re-reading the cache — which here cannot answer at "+
+			"all, exactly as it cannot when the swallowed PutComfyObjectInfo error means the "+
+			"write never landed. Falling back leaves the user the 62%% false-positive banner "+
+			"while the authoritative payload sits in the same call frame.", names)
 	}
 	if !hasName(names, "ImpactWildcardProcessor") {
 		t.Errorf("the genuine custom node was not flagged (banner listed %v)", names)
