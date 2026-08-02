@@ -42,7 +42,19 @@ const (
 	// button walks/hashes host directories, so a deadline keeps a large (or
 	// adversarial) path from tying up the server indefinitely. The CLI scan is
 	// unbounded (the operator typed the path knowingly).
-	DefaultWebScanTimeout = 2 * time.Minute
+	//
+	// 🔴 It is a RUNAWAY BACKSTOP, not the normal termination path — hence 6h,
+	// not minutes. Hashing a multi-GB library on a slow/spun-down drive
+	// legitimately takes hours, and the scan is meant to run until it exhausts
+	// the tree, the USER stops it, or the server shuts down. The value is the
+	// web scan's long-standing EFFECTIVE bound: from v0.1.13 until this constant
+	// became live it was hard-coded in internal/web as `scanJobBudget = 6h`,
+	// while this (then 2m) constant was plumbed all the way to the web server
+	// and read by nobody. Wiring it up at the 2m it used to advertise would have
+	// started killing scans that succeed today, so the default moved to the
+	// truth instead. Lower it (`web_scan_timeout` / `--web-scan-timeout`) if you
+	// want a runaway "Scan now" capped sooner.
+	DefaultWebScanTimeout = 6 * time.Hour
 	// DefaultWebScanMaxFiles caps how many model-extension files a web-triggered
 	// scan will walk before aborting with "scan too large; narrow the path". It
 	// bounds the arbitrary-path walk primitive the web endpoint exposes.

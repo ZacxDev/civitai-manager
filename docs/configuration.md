@@ -63,7 +63,11 @@ max_preview_size: ""               # e.g. "2MB"; skip a preview larger than this
 # --- Web UI ---
 addr: "127.0.0.1:8787"             # loopback by default. Read the security notes
                                    # below before binding a LAN address.
-web_scan_timeout: "2m"             # deadline for a web "Scan now" walk/hash
+web_scan_timeout: "6h"             # deadline for a web "Scan now" walk/hash. A
+                                   # runaway backstop, not the normal stop: a
+                                   # large library legitimately hashes for hours
+                                   # and you can Stop a scan at any time. Lower
+                                   # it to cap a scan that hangs.
 web_scan_max_files: 50000          # model-file cap for a web scan; over → aborts
 
 # --- Library ---
@@ -220,9 +224,15 @@ Even on loopback, the web scan is confined and bounded:
 
 - It refuses `/`, system directories (`/etc`, `/proc`, `/usr`, …), and your
   `$HOME` root itself.
-- It is bounded by a deadline (`--web-scan-timeout`, default `2m`) and a
-  model-file cap (`web_scan_max_files`, default 50 000), so an over-broad path
-  aborts with a "narrow the path" message instead of tying up the server.
+- It is bounded by a deadline (`web_scan_timeout` / `--web-scan-timeout`,
+  default `6h`) and a model-file cap (`web_scan_max_files`, default 50 000), so
+  an over-broad path aborts with a "narrow the path" message instead of tying up
+  the server. The **cap** is the fast guard — it aborts an over-broad path
+  during the walk, long before any deadline. The deadline is a runaway backstop:
+  hashing a multi-GB library on a slow drive legitimately runs for hours, so the
+  default is deliberately generous and the **Stop** button (not the clock) is
+  the normal way to end a scan you did not mean to start. Lower it if you want a
+  hung scan capped sooner.
 - The interactive **directory browser** is additionally constrained to paths
   within `$HOME`, `model_root`, and configured `library_paths` — it will not
   enumerate unrelated locations such as `/root` or another user's home, and the

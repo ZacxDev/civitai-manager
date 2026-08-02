@@ -49,7 +49,7 @@ civitai-manager serve
 | `--addr <host:port>` | Listen address (default from config, `127.0.0.1:8787`); use a non-loopback host to expose the UI on your LAN |
 | `--comfy-model-path <dir>` | Local ComfyUI `models/` directory root; enables the "Download & run" action to write a missing model into the correct subfolder (must be an existing writable dir) |
 | `--comfy-root <dir>` | Local ComfyUI **install** root (the folder holding `custom_nodes/`); enables the "install the ComfyUI helper extension" action. Defaults to the parent of `--comfy-model-path` when that looks like a ComfyUI install |
-| `--web-scan-timeout <dur>` | Deadline for a web "Scan now" (e.g. `2m`; default from config). Bounds the web-triggered directory walk/hash |
+| `--web-scan-timeout <dur>` | Deadline for a web "Scan now" (e.g. `30m`; default from config, `6h`). Bounds the web-triggered directory walk/hash. It is a runaway backstop — a large library legitimately hashes for hours and the **Stop** button ends a scan at any time — so lower it only to cap a scan that hangs |
 
 The ComfyUI server URL itself is **config-only** (`comfy_url`, default
 `http://127.0.0.1:8188`) and is deliberately never a per-request parameter, so a

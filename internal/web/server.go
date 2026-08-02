@@ -533,7 +533,18 @@ func (s *Server) appsClient() appsLister {
 }
 
 // webScanTimeout returns the deadline for a web-triggered scan, falling back to
-// the config default when unset.
+// the config default when unset. Zero/negative means "the built-in default", NOT
+// "no bound" and NOT "instant" — config.Validate already normalises a
+// non-positive configured value, and this second fallback covers a Config built
+// in code (tests, e2e harnesses) that never went through it.
+//
+// Its ONE caller is startScan, which uses it as the scan job's context deadline.
+// Losing that caller is not a hypothetical: this function had ZERO callers from
+// v0.1.13 (commit 29d48f8 moved the scan to a background job and dropped the
+// only `context.WithTimeout(r.Context(), s.webScanTimeout())`) through v0.1.101,
+// while `web_scan_timeout` / `--web-scan-timeout` stayed documented and plumbed
+// end-to-end — so setting either changed nothing at all.
+// TestWebScanTimeoutBoundsTheScanJob fails if the call disappears again.
 func (s *Server) webScanTimeout() time.Duration {
 	if s.cfg.WebScanTimeout > 0 {
 		return s.cfg.WebScanTimeout
