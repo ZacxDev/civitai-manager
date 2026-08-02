@@ -1259,9 +1259,13 @@ appears. **A fixture can be wrong in a way that produces a plausible screenshot.
   over the whole document either way. Measured on the live 4,661,987-byte / 2462-type
   payload (12 iterations, two runs, `:memory:` **and** file-backed): the avoided
   `GetComfyObjectInfo` is **~2.8–5.1 ms**, the parse that stays is **~21.2–22.1 ms**.
-  So the win is single-digit ms per render, ~⅕ of the term it does not remove — do
-  not restate this as a ~21–34 ms saving, which was the parse. **The correctness half
-  is the load-bearing one and it is untouched by the smaller number.**
+  So the win is single-digit ms per render — do not restate this as a ~21–34 ms
+  saving, which was the parse, and **do not restate it as a fraction of the parse
+  either**: this line used to say "~⅕", but the two ranges bracket `2.8/22.1 ≈ 0.13`
+  to `5.1/21.2 ≈ 0.24`, so any single fraction is one arbitrary point in a spread
+  running from an eighth to a quarter. Quote the two measured ranges, not a third
+  number derived from them. **The correctness half is the load-bearing one and it is
+  untouched by the smaller number.**
   **Do not delete the cache fallback**: an API-format workflow returns from
   `cloudAPIGraph` before the fetch, so `rawInfo` is nil and the cached row is its only
   origin source.

@@ -205,10 +205,17 @@ func (s *Server) cloudUnreachableNote() string {
 //	GetComfyObjectInfo  (AVOIDED)     ~2.8–5.1 ms   :memory: and file-backed
 //	comfy.NodeOrigins   (STILL PAID)  ~21.2–22.1 ms  both
 //
-// So the saving is the read — single-digit milliseconds per panel render, roughly a
-// fifth of the parse it does not remove. Real, and much smaller than the ~21–34 ms
-// once claimed for it: that range was the PARSE, i.e. the term that stays. The
-// correctness half above is the reason this shape is right; the timing is a bonus.
+// So the saving is the read — single-digit milliseconds per panel render. Real, and
+// much smaller than the ~21–34 ms once claimed for it: that range was the PARSE,
+// i.e. the term that stays. The correctness half above is the reason this shape is
+// right; the timing is a bonus.
+//
+// ⚠ DO NOT RESTATE IT AS A FRACTION OF THE PARSE. This line used to end "roughly a
+// fifth of the parse it does not remove", and no single fraction is supported by the
+// table it sits under: the two ranges bracket 2.8/22.1 ≈ 0.13 at one end and
+// 5.1/21.2 ≈ 0.24 at the other, so "a fifth" is one arbitrary point inside a spread
+// that runs from an eighth to a quarter. The ranges ARE the measurement; a ratio is a
+// third number derived from them, and this is a 🔴 block a future reader will quote.
 //
 // 🔴 THE CACHE FALLBACK IS NOT DEAD CODE — DO NOT DELETE IT. An API-format workflow
 // never contacts ComfyUI (cloudAPIGraph returns before the fetch), so rawInfo is nil
