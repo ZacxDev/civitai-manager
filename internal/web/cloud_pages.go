@@ -213,9 +213,9 @@ func cloudConversionWarnings(warnings []string) g.Node {
 // path stays open and the alert says what we know, sourced, without claiming to have
 // re-measured it.
 //
-// 🔴 THE HEADLINE IS CONDITIONAL. ⚠ THIS COMMENT USED TO SAY THE DETECTOR "CANNOT
-// SUPPORT AN ASSERTION" — THAT IS NO LONGER TRUE, AND THE COPY HAS DELIBERATELY
-// NOT CAUGHT UP YET.
+// 🔴 THE HEADLINE IS CONDITIONAL, AND THE CAVEAT IS TIER-AGNOSTIC. ⚠ THIS COMMENT
+// USED TO SAY THE DETECTOR "CANNOT SUPPORT AN ASSERTION", AND THEN THAT THE COPY
+// HAD "DELIBERATELY NOT CAUGHT UP" — NEITHER IS TRUE ANY MORE.
 //
 // The history, because it is what the copy was calibrated against:
 // `ResolveCustomNode` used to mean only "this class_type is absent from
@@ -234,13 +234,24 @@ func cloudConversionWarnings(warnings []string) g.Node {
 // cache, or a frontend-only LiteGraph node like `PrimitiveNode`/`Note`/`Reroute`
 // that appears in no /object_info at all.
 //
-// 🔴 SO THE HEDGED COPY BELOW IS NOW WRONG IN THE WARM-CACHE CASE — it tells the
-// user these were "flagged by a short list of known built-in node types" when they
-// were in fact flagged by ComfyUI's own module attribution. Sharpening it is a
-// deliberate SEPARATE decision (it is a user-facing claim, and the right wording
-// depends on whether the cache was warm — state which tier answered rather than
-// asserting flatly). Left alone on purpose; do not read the mismatch as an
-// oversight. The nodepack limitation itself is real and stays stated in full.
+// 🔴 THE COPY NO LONGER STATES A MECHANISM, AND THAT IS THE POINT. It used to say
+// these were "flagged by a short list of known built-in node types" — false on a
+// warm cache, where they were flagged by ComfyUI's own module attribution. The
+// caveat now claims only that this app "may not recognise every built-in", which
+// is true in BOTH tiers and stays true whichever one answered:
+//
+//   - cold cache / a class absent from the payload → coreNodeClasses, 47 of the
+//     790 types ComfyUI ships;
+//   - warm cache → authoritative about the LOCAL install, but the banner is about
+//     CivitAI's REMOTE runner, so a core namespace newer than theirs still reads
+//     built-in here and cannot be warned about.
+//
+// ⚠ DO NOT "SHARPEN" IT INTO A TIER-AWARE SENTENCE FROM HERE. This function
+// receives only []ResolvedResource and has no way to know which tier answered;
+// stating a tier would mean plumbing that provenance down from the handler, which
+// is real scope and is deliberately not taken. A vaguer sentence that is TRUE
+// beats a specific one that is right half the time. The nodepack limitation itself
+// is real and stays stated in full.
 //
 // Every class_type here is untrusted graph text and goes through g.Text.
 func cloudNodepackBlocker(rows []comfy.ResolvedResource) g.Node {
@@ -269,10 +280,10 @@ func cloudNodepackBlocker(rows []comfy.ResolvedResource) g.Node {
 				"For a genuinely custom node, filling in the URN column below will not change "+
 				"that, so it is not worth the effort.")),
 		h.P(h.Class("text-sm"),
-			g.Text("These are flagged by a short list of known built-in node types, so some may "+
-				"be built-ins this app simply does not recognise — in which case the cloud run "+
-				"is fine. Estimate is free and is the authoritative check; running on your local "+
-				"ComfyUI above always works, since the nodes are installed (or can be).")),
+			g.Text("This app may not recognise every built-in node type, so some of these may "+
+				"be built-ins after all — in which case the cloud run is fine. Estimate is free "+
+				"and is the authoritative check; running on your local ComfyUI above always "+
+				"works, since the nodes are installed (or can be).")),
 		missingList("Node types this app did not recognise as built-in", names),
 	)
 }
