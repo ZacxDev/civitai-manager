@@ -63,12 +63,15 @@ func TestResourceChipHFProvenanceLink(t *testing.T) {
 			notSubstr:  []string{"huggingface.co", `data-src="hf"`, `target="_blank"`},
 		},
 		{
-			name:       "NO provenance: no link and no source affordance whatsoever",
-			info:       resourceInfo{Path: "/models/loras/mystery.safetensors", FileID: 5},
-			have:       true,
-			wantTag:    "span",
-			wantSubstr: []string{`data-have="yes"`, `title="/models/loras/mystery.safetensors"`},
-			notSubstr:  []string{"href=", "huggingface.co", "data-src", "↗", "Search"},
+			name:    "NO provenance: no link and no source affordance whatsoever",
+			info:    resourceInfo{Path: "/models/loras/mystery.safetensors", FileID: 5},
+			have:    true,
+			wantTag: "span",
+			// The path is stated in the chip's detail popover. It is NOT a title= —
+			// the chip owns a popover, and both on one hover unit double-paint.
+			wantSubstr: []string{`data-have="yes"`,
+				`<span class="cm-res-detail-value break-all">/models/loras/mystery.safetensors</span>`},
+			notSubstr: []string{"href=", "huggingface.co", "data-src", "↗", "Search"},
 		},
 		{
 			name:       "not in the library at all: no link, no provenance, no implication",
@@ -104,11 +107,23 @@ func TestResourceChipHFProvenanceLink(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := renderString(t, workflowResourceChip("face_yolov8n.pt", provenanceResolver(tc.info, tc.have)))
-			if !strings.HasPrefix(got, "<"+tc.wantTag+" ") {
-				t.Fatalf("expected a <%s> chip, got:\n%s", tc.wantTag, got)
+			// 🔴 Name the CHIP ELEMENT. The chip is wrapped together with its detail
+			// popover, so the old HasPrefix no longer identifies it — and relaxing this
+			// to strings.Contains(got, "<a ") is precisely the vacuity the audit caught:
+			// any <a> anywhere in the fragment satisfied it, so a chip that stopped
+			// being a link at all kept the suite green.
+			if tag := resChipTag(t, got); !strings.HasPrefix(tag, "<"+tc.wantTag+" ") {
+				t.Fatalf("expected a <%s> chip, its opening tag is:\n%s\nin:\n%s", tc.wantTag, tag, got)
 			}
+			// EXACTLY ONE href per chip, and it is the chip's own. This is the real
+			// invariant, restored rather than deleted: the detail popover deliberately
+			// emits no links, so a "View model" row duplicating the chip's destination
+			// (or an off-site HF link beside an in-app CivitAI one) fails here.
 			if n := strings.Count(got, "href="); tc.wantTag == "a" && n != 1 {
 				t.Fatalf("expected exactly one href, got %d:\n%s", n, got)
+			}
+			if n := strings.Count(got, "href="); tc.wantTag == "span" && n != 0 {
+				t.Fatalf("a non-linked chip must carry no href at all, got %d:\n%s", n, got)
 			}
 			for _, w := range tc.wantSubstr {
 				if !strings.Contains(got, w) {

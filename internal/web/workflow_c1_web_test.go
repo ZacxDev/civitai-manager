@@ -164,8 +164,14 @@ func TestWorkflowListResourcesArePopoverChips(t *testing.T) {
 	if !strings.Contains(body, `href="/models/42?modelVersionId=99"`) {
 		t.Errorf("a CivitAI-matched resource must link to its model+version:\n%s", body)
 	}
-	if !strings.Contains(body, `title="/mnt/models/loras/present.safetensors"`) {
-		t.Errorf("a matched resource must reveal its absolute path on hover:\n%s", body)
+	// The absolute path is revealed by the chip's OWN popover, not by a title=
+	// (which would paint the native tooltip over that popover). Assert the popover's
+	// value cell, not a bare substring — the path also appears in the "uses" link's
+	// title elsewhere on the card, so a loose Contains would pass for the wrong
+	// element.
+	if !strings.Contains(body,
+		`<span class="cm-res-detail-value break-all">/mnt/models/loras/present.safetensors</span>`) {
+		t.Errorf("a matched resource must reveal its absolute path in its detail popover:\n%s", body)
 	}
 	if !strings.Contains(body, `data-have="yes"`) || !strings.Contains(body, `data-have="no"`) {
 		t.Errorf("chips must mark have/missing:\n%s", body)
@@ -180,11 +186,27 @@ func TestWorkflowListResourcesArePopoverChips(t *testing.T) {
 	}
 }
 
+// resChipTag returns the OPENING TAG of the chip element itself — the one
+// carrying class="cm-res-chip".
+//
+// 🔴 IT EXISTS BECAUSE strings.HasPrefix AND strings.Contains ARE BOTH WRONG HERE.
+// The chip used to be the outermost element, so `HasPrefix(got, "<a ")` named it
+// by accident; it is now wrapped in .cm-res-chip-wrap together with its popover,
+// which breaks the prefix. Relaxing that to `Contains(got, "<a ")` is what the
+// audit caught: any <a> ANYWHERE in the fragment satisfies it, so a chip that
+// stopped being a link entirely still passed. Naming the element is stronger than
+// either.
+func resChipTag(t *testing.T, html string) string {
+	t.Helper()
+	return openTagOf(t, html, "cm-res-chip")
+}
+
 // TestWorkflowResourceChipRenderStates is the table-driven pin on the chip renderer
 // itself, covering every resolution state a resource can be in.
 func TestWorkflowResourceChipRenderStates(t *testing.T) {
 	res := workflowResolver{
-		haveFile: func(b string) bool { return b != "gone.safetensors" },
+		haveFile:      func(b string) bool { return b != "gone.safetensors" && b != "comfyonly.safetensors" },
+		comfyResource: func(b string) bool { return b == "comfyonly.safetensors" },
 		localResource: func(b string) (resourceInfo, bool) {
 			switch b {
 			case "linked.safetensors":
@@ -210,12 +232,13 @@ func TestWorkflowResourceChipRenderStates(t *testing.T) {
 		{
 			name: "matched + civitai-linked", resource: "linked.safetensors", wantLink: true,
 			wantSubstr: []string{`href="/models/7?modelVersionId=8"`, `data-have="yes"`,
-				`title="/lib/linked.safetensors"`, "✓"},
+				`<span class="cm-res-detail-value break-all">/lib/linked.safetensors</span>`, "✓"},
 		},
 		{
 			name: "matched, no civitai linkage (incl. HuggingFace)", resource: "unlinked.safetensors",
-			wantSubstr: []string{`data-have="yes"`, `title="/lib/unlinked.safetensors"`},
-			notSubstr:  []string{"href="},
+			wantSubstr: []string{`data-have="yes"`,
+				`<span class="cm-res-detail-value break-all">/lib/unlinked.safetensors</span>`},
+			notSubstr: []string{"href="},
 		},
 		{
 			name: "present but ambiguous basename", resource: "ambiguous.safetensors",
@@ -223,9 +246,17 @@ func TestWorkflowResourceChipRenderStates(t *testing.T) {
 			notSubstr:  []string{"href="},
 		},
 		{
+			// The THIRD state: not in the local library, but ComfyUI can resolve it.
+			name: "not in the library but ComfyUI has it", resource: "comfyonly.safetensors",
+			wantSubstr: []string{`data-have="comfy"`, "in ComfyUI, not in your library", "◎"},
+			notSubstr:  []string{"href=", `data-have="yes"`, `data-have="no"`, "✓", "✗"},
+		},
+		{
 			name: "not in the library", resource: "gone.safetensors",
 			wantSubstr: []string{`data-have="no"`, "not in your library", "✗"},
-			notSubstr:  []string{"href="},
+			// "◎" and data-have="comfy" must be absent: a resolver that says ComfyUI
+			// does NOT have the file must produce the plain missing chip.
+			notSubstr: []string{"href=", "◎", `data-have="comfy"`},
 		},
 		{
 			name: "subdirectory-qualified reference shows its basename", resource: "bbox/linked.safetensors",
@@ -235,11 +266,18 @@ func TestWorkflowResourceChipRenderStates(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := renderString(t, workflowResourceChip(tc.resource, res))
-			if tc.wantLink && !strings.HasPrefix(got, "<a ") {
-				t.Errorf("expected a linked chip, got:\n%s", got)
+			// Assert the CHIP ELEMENT's own tag, never a substring of the fragment.
+			tag := resChipTag(t, got)
+			if tc.wantLink && !strings.HasPrefix(tag, "<a ") {
+				t.Errorf("expected the chip itself to be a link, its opening tag is:\n%s\nin:\n%s", tag, got)
 			}
-			if !tc.wantLink && !strings.HasPrefix(got, "<span ") {
-				t.Errorf("expected a non-linked chip, got:\n%s", got)
+			if !tc.wantLink && !strings.HasPrefix(tag, "<span ") {
+				t.Errorf("expected the chip itself to be a plain span, its opening tag is:\n%s\nin:\n%s", tag, got)
+			}
+			// One hover unit, one hover affordance: the chip owns a popover, so it
+			// must not also carry title=.
+			if strings.Contains(tag, "title=") {
+				t.Errorf("the chip owns a .cm-res-chip-pop popover, so title= would double-hover:\n%s", tag)
 			}
 			for _, w := range tc.wantSubstr {
 				if !strings.Contains(got, w) {

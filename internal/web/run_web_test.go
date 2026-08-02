@@ -17,8 +17,12 @@ import (
 // fakeComfy is an injectable comfyClient for the web run tests. It records calls
 // and returns programmed responses.
 type fakeComfy struct {
-	statsErr  error
-	info      comfy.ObjectInfo
+	statsErr error
+	info     comfy.ObjectInfo
+	// infoRaw is the /object_info RESPONSE BODY the fake hands back. It is what
+	// the comfy_model_cache stores, and it is nil by default so no test that does
+	// not opt in ever writes the cache row.
+	infoRaw   []byte
 	infoErr   error
 	submitErr error
 	history   *comfy.HistoryEntry
@@ -62,9 +66,13 @@ func (f *fakeComfy) SystemStats(context.Context) (*comfy.SystemStats, error) {
 	}
 	return &comfy.SystemStats{ComfyUIVersion: "0.27.1"}, nil
 }
-func (f *fakeComfy) ObjectInfo(context.Context) (comfy.ObjectInfo, error) {
+
+// ObjectInfoRaw returns the decoded schema plus a raw body. infoRaw is nil unless
+// a test sets it, and a nil body writes nothing to the comfy_model_cache — so the
+// cache stays out of the way of every run test that does not care about it.
+func (f *fakeComfy) ObjectInfoRaw(context.Context) (comfy.ObjectInfo, []byte, error) {
 	f.objectInfoCalls++
-	return f.info, f.infoErr
+	return f.info, f.infoRaw, f.infoErr
 }
 func (f *fakeComfy) Submit(_ context.Context, g json.RawMessage, _, promptID string) (*comfy.SubmitResult, error) {
 	f.submitCalled = true
