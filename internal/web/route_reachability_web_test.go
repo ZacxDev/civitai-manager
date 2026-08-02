@@ -44,11 +44,11 @@ import (
 // filled with a single path-safe character, which is what lets the concatenation
 // above match the registered pattern `/workflows/{id}/run/comfy-status`.
 //
-// # The silent-failure mode, and what stops it
+// # The silent-failure mode, and what narrows it
 //
 // The dangerous direction is LOOSENESS: a matcher sloppy enough that every route
 // looks reachable reports a permanent, comfortable green and guards nothing. Three
-// choices keep it tight:
+// choices narrow that:
 //
 //   - A hole fills to `[^/]+`, never to `.*` — a hole cannot swallow a path
 //     separator, so `"/models/" + rest` can never satisfy `/models/{id}/download`.
@@ -57,17 +57,72 @@ import (
 //   - The mux pattern's own literal (`"GET /workflows/run/resolve-model"`) is
 //     excluded at the registration site, so a route can never prove itself alive.
 //
-// The negative control for all of this is that the guard was written first, run
-// against the tree that still contained the orphan route, and REPORTED it. A
-// reachability guard that has never named a real orphan is not evidence.
+// ⚠ THAT LIST IS NOT EXHAUSTIVE, AND THIS COMMENT USED TO READ AS IF IT WERE — it
+// said "three choices keep it TIGHT", which invites a maintainer to read a green as
+// "no orphan exists". It does not mean that. See the two channels below before
+// trusting one.
 //
-// # The honest limit: this is a PATH check, not a path+method check
+// The negative control is that the guard was written first, run against the tree
+// that still contained the orphan route, and REPORTED it — four real orphans in
+// total. A reachability guard that has never named a real orphan is not evidence.
 //
-// Emitters do not carry their verb anywhere this scan can read reliably (an `h.Href`
-// is a GET, an `h.Action` is a POST, an `hx("get", …)` hides the verb behind a helper
-// argument). So `GET /x` counts as reachable when only `POST /x` is emitted. That is
-// deliberately the conservative direction — it under-reports rather than crying wolf
-// — but it means this guard cannot catch a route that is dead only in one verb.
+// # The FOURTH looseness channel: "emitted" means path-SHAPED, not URL-shaped
+//
+// Nothing here distinguishes a string that is a URL from a string that merely looks
+// like one. Two mechanisms feed the emitted set with the latter:
+//
+//   - Pass 2 records EVERY SUB-EXPRESSION of a `+` chain, not just the whole. Go's
+//     `+` is left-associative, so `"/workflows/" + id + "/run" + "/queue"` also
+//     records `("/workflows/"+id)+"/run"` as an emitted path in its own right. This
+//     is observable in-tree without any mutation: `presetPost(base+"/"+id+"/save")`
+//     in run_preset_pages.go contributes `/workflows/1/run/presets/`,
+//     `/workflows/1/run/presets/1` AND `/workflows/1/run/presets/1/save`. The first
+//     two are fragments no browser ever requests.
+//   - Pass 1 (plus packageStringDecls) records any WHOLE string literal. A const
+//     like `probeBase = "/disks/probe"`, used only as `probeBase+"/"+v+"/deep"`,
+//     therefore makes a registered `GET /disks/probe` report reachable on the
+//     strength of a fragment that is never itself requested. Likewise a separator:
+//     the bare `"/"` in `strings.ReplaceAll(name, "\\", "/")` is an emitted path.
+//
+// Both were demonstrated against this tree with `go build ./...` still passing, and
+// the first one reaches a LEDGER ENTRY: appending that `+ "/queue"` expression to
+// non-test source makes the real orphan `POST /workflows/{id}/run` report reachable.
+//
+// MEASURED, so the size of the hole is on the record (2026-08-02): of 138 emitted
+// paths, 5 exist only because of `+`-chain sub-expressions, and **zero** registered
+// routes currently depend on one. The channel is real; nothing in the routing table
+// is presently standing on it.
+//
+// ⚠ `GET /{$}` is NOT an example of this, though it looks like one. An audit read
+// the failure message's recorded position — a `"/"` inside a `strings.ReplaceAll`
+// path-separator swap — and concluded the root route was only accidentally reachable.
+// It is genuinely reachable: `brandLink` in brand.go emits `h.Href("/")`, the nav
+// wordmark home link on every page. The recorded position is one ARBITRARY witness,
+// not the witness — `emitted` keeps whichever literal it saw first, and ParseDir's
+// file map iterates in random order, so that position changes between runs. Read it
+// as a starting point for a search, never as "the only thing that emits this".
+//
+// The hole is entirely in the UNDER-REPORTING direction: a fragment can make a dead
+// route look alive (a missed orphan, a comfortable green), and can never invent an
+// orphan that does not exist. Nothing here can force a wrong deletion. That is why
+// this is documented rather than fixed — but "conservative" is not "sound", and a
+// green from this guard is evidence, not proof.
+//
+// # The other limit: this is a PATH check, not a path+method check
+//
+// So `GET /x` counts as reachable when only `POST /x` is emitted, and a route that
+// is dead in one verb only cannot be caught.
+//
+// ⚠ This used to say emitters "do not carry their verb anywhere this scan can read
+// reliably". That is overstated: `hx("post", …)` / `hx("get", …)` take the verb as a
+// literal first argument, `h.Href` implies GET and `h.Action` implies POST, and a
+// witness dump showed nearly every POST-route witness comes from exactly an
+// `hx("post", …)` site. A verb-aware pass that FAILS OPEN on any shape it does not
+// recognise is therefore feasible, and is recorded as follow-up rather than as an
+// impossibility. It was left out of the change that added this guard deliberately:
+// it widens what the guard REPORTS, so it needs its own mutation verification and
+// its own review of every false positive it produces, and shipping it alongside the
+// guard would have made both harder to trust.
 
 // routeHole marks a chunk of a path expression this scan could not resolve — a
 // variable, a function result, a format verb. It is a byte that cannot occur in a

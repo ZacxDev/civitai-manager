@@ -853,10 +853,17 @@ func TestInstallOptionAndRunFallbackExplainsWhy(t *testing.T) {
 	}
 }
 
-// TestResolveModelGETCarriesNoReason: the FIRST display of the panel is not the
-// result of an action, so it must stay reason-free (an unconditional warning line
+// TestResolveModelFirstDisplayCarriesNoReason: the FIRST display of the panel is not
+// the result of an action, so it must stay reason-free (an unconditional warning line
 // would cry wolf on every open).
-func TestResolveModelGETCarriesNoReason(t *testing.T) {
+//
+// It was TestResolveModelGETCarriesNoReason until the orphan `GET
+// /workflows/run/resolve-model` was deleted. "GET" named the route this used to be
+// driven through; with the route gone the name was the ONLY thing left in the tree
+// implying such an endpoint exists, which is how a deleted surface gets resurrected
+// by someone reading the tests for the routing table. The property being asserted was
+// never about the verb — it is about the first render — so the name now says that.
+func TestResolveModelFirstDisplayCarriesNoReason(t *testing.T) {
 	srv := newModelServer(t, &recordingSearchReader{result: resolveResult("Juggernaut XL")})
 	body := resolvePanel(t, srv, jugFile, "Checkpoint")
 	for _, reason := range []string{resolveReasonNoMatch, resolveReasonNotEligible, resolveReasonChosenModel} {

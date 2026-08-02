@@ -419,14 +419,21 @@ func versionBreakdownSection(v matchedModelCardView, csrf string) g.Node {
 // instead of inline.
 //
 // COLOUR — 🔴 the split-token invariant. It used to be `.cm-fix-cta`, the WARNING
-// (amber) tint shared with the run-failure "Fix" CTA. Amber is the app's "something
-// is wrong" colour and an available update is not a fault; the card now paints
-// `.cm-upd-cta`, whose foreground is `--civitai-color-success-text` — the `-text`
-// half of the split pair, NEVER the bare `--civitai-color-success` fill token. The
-// base token is the tint under it; reaching for it to colour TEXT reintroduces
-// exactly the WCAG failures v0.1.79 fixed. The pair is pinned in
-// contrast_web_test.go's uiPairs() table, and TestUpdateCTAUsesTheTextToken parses
-// the shipped rule so a swap back to the fill token fails the build.
+// (amber) tint. Amber is the app's "something is wrong" colour and an available
+// update is not a fault; the card now paints `.cm-upd-cta`, whose foreground is
+// `--civitai-color-success-text` — the `-text` half of the split pair, NEVER the bare
+// `--civitai-color-success` fill token. The base token is the tint under it; reaching
+// for it to colour TEXT reintroduces exactly the WCAG failures v0.1.79 fixed. The
+// pair is pinned in contrast_web_test.go's uiPairs() table, and
+// TestUpdateCTAUsesTheTextToken parses the shipped rule so a swap back to the fill
+// token fails the build.
+//
+// ⚠ This line used to call the amber tint one "shared with the run-failure 'Fix'
+// CTA". That was the THIRD copy of a claim already corrected in app.css and in
+// class_coverage_web_test.go: there is no such CTA and never was one by that name —
+// nothing emitted `.cm-fix-cta` after `.cm-upd-cta` took over, which is how
+// TestEveryCMClassInAppCSSIsEmitted found its rules as dead CSS and deleted them.
+// Do not reach for `.cm-fix-cta`; it does not exist.
 //
 // STRUCTURE — the popover wrapper is a <div>, not the <a> itself. `.cm-updated` has
 // to be the positioned wrapper of `.cm-updated-pop`, and making the anchor the
