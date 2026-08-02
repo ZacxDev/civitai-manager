@@ -31,7 +31,7 @@ func (emptyLookup) ModelTypeBaseModel(int, int) (string, string, bool)    { retu
 
 func resolveForTest(t *testing.T, graph string) []comfy.ResolvedResource {
 	t.Helper()
-	rows, err := comfy.ResolveResources(json.RawMessage(graph), emptyLookup{})
+	rows, err := comfy.ResolveResources(json.RawMessage(graph), emptyLookup{}, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -64,11 +64,15 @@ func TestCloudNodepackBlockerRendersBeforeTheResourceTable(t *testing.T) {
 	}, "tok"))
 
 	// The headline is CONDITIONAL ("If any of these are custom nodes, CivitAI Cloud
-	// cannot run this workflow yet"), not an assertion, and that is load-bearing: the
-	// detector behind it is a ~50-entry built-in table that misclassifies real
-	// built-ins on 62% of a measured 70-workflow library. Match the invariant part —
-	// the consequence — not the conditional clause, so rewording the condition does
-	// not break this, but DROPPING the consequence does.
+	// cannot run this workflow yet"), not an assertion, and that is load-bearing.
+	// ⚠ The REASON changed: it used to be that the detector was a ~50-entry built-in
+	// table misclassifying real built-ins on 62% of a measured 70-workflow library.
+	// comfy.NodeOrigins retired that as the primary signal, but the headline stays
+	// conditional because two gaps remain — a class absent from /object_info still
+	// falls back to that table, and even an authoritative answer describes the LOCAL
+	// install while the banner is about CivitAI's REMOTE runner. Match the invariant
+	// part — the consequence — not the conditional clause, so rewording the condition
+	// does not break this, but DROPPING the consequence does.
 	blocker := strings.Index(body, "CivitAI Cloud cannot run this workflow yet")
 	table := strings.Index(body, "<table")
 	if blocker < 0 {

@@ -120,19 +120,43 @@ const cloudObjectInfoTimeout = 8 * time.Second
 //   - the conversion produced warnings (warnings carries the unrunnable/bypass/
 //     unknown-node list — same abort-rather-than-mis-submit rule as local run, since
 //     mis-submitting a broken graph wastes Buzz).
-func (s *Server) cloudAPIGraph(ctx context.Context, wf *store.Workflow) (apiGraph json.RawMessage, warnings []string, note string, ok bool) {
+//
+// 🔴 rawInfo IS RETURNED, NOT JUST CACHED. It is the /object_info body this call
+// just fetched, and it is the FRESHEST view of the local ComfyUI this app ever
+// holds. It was previously written to the display cache and dropped on the floor,
+// after which the caller read the same ~4.66 MB back out of SQLite and classified
+// THAT copy — a needless round-trip through the database on the DOMINANT path (all
+// 71 workflows on the operator's real database are UI-format).
+//
+// ⚠ ONLY THE READ IS AVOIDED, NOT THE PARSE. This comment used to say "a needless
+// read plus a full parse", which is wrong: resolveResources still runs
+// comfy.NodeOrigins over the whole document either way — the same decode, just over
+// bytes already in hand. Numbers are in resolveResources, where the parse lives.
+//
+// The BIGGER half of the justification is correctness, and it is unaffected: this
+// used to be a silent downgrade to STALE data whenever the cache write failed.
+// PutComfyObjectInfo's error is swallowed by design (cacheComfyObjectInfo is
+// best-effort so a run cannot fail over a display cache), and a read-only DB never
+// writes at all. The classifier would then answer from an old row — or from no row,
+// i.e. the pre-fix coreNodeClasses table — while the authoritative payload sat in
+// the same call frame.
+//
+// It is nil on the API-format path, which never contacts ComfyUI at all. That is
+// not a degenerate case to be tidied away: the cache is the ONLY origin source
+// those workflows have, so the caller MUST keep the cache-read fallback.
+func (s *Server) cloudAPIGraph(ctx context.Context, wf *store.Workflow) (apiGraph json.RawMessage, rawInfo []byte, warnings []string, note string, ok bool) {
 	if wf.Format == store.WorkflowFormatAPI {
-		return json.RawMessage(wf.Graph), nil, "", true
+		return json.RawMessage(wf.Graph), nil, nil, "", true
 	}
 	client := s.comfy()
 	if client == nil {
-		return nil, nil, s.cloudUnreachableNote(), false
+		return nil, nil, nil, s.cloudUnreachableNote(), false
 	}
 	octx, cancel := context.WithTimeout(ctx, cloudObjectInfoTimeout)
 	defer cancel()
 	info, rawInfo, err := client.ObjectInfoRaw(octx)
 	if err != nil {
-		return nil, nil, s.cloudUnreachableNote(), false
+		return nil, nil, nil, s.cloudUnreachableNote(), false
 	}
 	// Same as the local run path: a fetched /object_info feeds the display cache.
 	s.cacheComfyObjectInfo(rawInfo)
@@ -143,14 +167,14 @@ func (s *Server) cloudAPIGraph(ctx context.Context, wf *store.Workflow) (apiGrap
 		// instead of wrapping it in the generic "could not convert" prefix.
 		var ece *comfy.ConversionEmptyError
 		if errors.As(cerr, &ece) {
-			return nil, nil, ece.Error(), false
+			return nil, nil, nil, ece.Error(), false
 		}
-		return nil, nil, "Could not convert this UI-format workflow to API format: " + cerr.Error(), false
+		return nil, nil, nil, "Could not convert this UI-format workflow to API format: " + cerr.Error(), false
 	}
 	if len(warns) > 0 {
-		return nil, warns, "", false
+		return nil, nil, warns, "", false
 	}
-	return g, nil, "", true
+	return g, rawInfo, nil, "", true
 }
 
 // cloudUnreachableNote explains the UI-format fallback: cloud converts via the local
@@ -166,8 +190,63 @@ func (s *Server) cloudUnreachableNote() string {
 
 // resolveResources runs the resolution chain over an API-format graph, returning the
 // resolved-resource rows for the cloud panel's table.
-func (s *Server) resolveResources(apiGraph json.RawMessage) []comfy.ResolvedResource {
-	rows, _ := comfy.ResolveResources(apiGraph, storeResourceLookup{st: s.store})
+//
+// rawInfo is the /object_info body the CALLER already holds (see cloudAPIGraph); it
+// wins over the cache whenever it can classify anything, because it is strictly
+// fresher and needs no SQLite read.
+//
+// ⚠ IT DOES NOT AVOID A PARSE — this line used to claim "no second parse", and
+// there was never a second one to avoid. comfy.NodeOrigins below is the same full
+// decode the cache path would have run; only the round-trip through SQLite goes
+// away. Re-measured on this host against the LIVE payload (4,661,987 bytes, 2462
+// node types, mean of 12 iterations, two runs, at both DB backings so the claim is
+// not about one storage mode):
+//
+//	GetComfyObjectInfo  (AVOIDED)     ~2.8–5.1 ms   :memory: and file-backed
+//	comfy.NodeOrigins   (STILL PAID)  ~21.2–22.1 ms  both
+//
+// So the saving is the read — single-digit milliseconds per panel render. Real, and
+// much smaller than the ~21–34 ms once claimed for it: that range was the PARSE,
+// i.e. the term that stays. The correctness half above is the reason this shape is
+// right; the timing is a bonus.
+//
+// ⚠ DO NOT RESTATE IT AS A FRACTION OF THE PARSE. This line used to end "roughly a
+// fifth of the parse it does not remove", and no single fraction is supported by the
+// table it sits under: the two ranges bracket 2.8/22.1 ≈ 0.13 at one end and
+// 5.1/21.2 ≈ 0.24 at the other, so "a fifth" is one arbitrary point inside a spread
+// that runs from an eighth to a quarter. The ranges ARE the measurement; a ratio is a
+// third number derived from them, and this is a 🔴 block a future reader will quote.
+//
+// 🔴 THE CACHE FALLBACK IS NOT DEAD CODE — DO NOT DELETE IT. An API-format workflow
+// never contacts ComfyUI (cloudAPIGraph returns before the fetch), so rawInfo is nil
+// and the cached row is the only origin source those workflows have. The fallback
+// also covers a rawInfo that exists but yields nothing (truncated/corrupt body), for
+// which a stale row still beats no answer at all.
+//
+// 🔴 THE NODE-ORIGIN LOGGING LIVES HERE, NOT INSIDE comfyNodeOrigins, and that is
+// the whole point: this is the ONLY function that sees both tiers and knows which
+// one answered. Putting it in the fallback — where it started — routed the DOMINANT
+// path around it entirely, because comfyNodeOrigins is reached only when the fresh
+// body classified nothing, and every UI-format workflow (all 71 on the operator's
+// real DB) has a fresh body. The tier is therefore an explicit log field rather than
+// something inferred from which function emitted the line.
+func (s *Server) resolveResources(apiGraph json.RawMessage, rawInfo []byte) []comfy.ResolvedResource {
+	origins := comfy.NodeOrigins(rawInfo)
+	tier := "fresh"
+	if len(origins) == 0 {
+		if len(rawInfo) > 0 {
+			// A body WAS fetched and classified nothing: truncated or corrupt. This is
+			// the single case this observability was added for, and it is structurally
+			// invisible to comfyNodeOrigins, which never sees rawInfo. Silence here used
+			// to make a bad fresh payload indistinguishable from an API-format workflow
+			// that legitimately has none. Mirrors the cache-side decode Warn verbatim.
+			s.log.Warn("decode fetched comfy object_info", "bytes", len(rawInfo))
+		}
+		origins = s.comfyNodeOrigins()
+		tier = "cache"
+	}
+	s.logNodeOriginSplit(tier, origins)
+	rows, _ := comfy.ResolveResources(apiGraph, storeResourceLookup{st: s.store}, origins)
 	return rows
 }
 
@@ -202,11 +281,11 @@ func (s *Server) handleWorkflowCloud(w http.ResponseWriter, r *http.Request) {
 		snap:    s.cloudJobState(),
 	}
 	if enabled {
-		apiGraph, warnings, note, ok := s.cloudAPIGraph(r.Context(), wf)
+		apiGraph, rawInfo, warnings, note, ok := s.cloudAPIGraph(r.Context(), wf)
 		if ok {
 			view.runnable = true
 			view.willConvert = wf.Format != store.WorkflowFormatAPI
-			view.rows = s.resolveResources(apiGraph)
+			view.rows = s.resolveResources(apiGraph, rawInfo)
 		} else {
 			view.note = note
 			view.warnings = warnings
@@ -326,7 +405,9 @@ func (s *Server) cloudPrepare(w http.ResponseWriter, r *http.Request) (*store.Wo
 		s.render(w, http.StatusOK, errorNote("CivitAI cloud run is disabled. Turn it on above, or set comfy_cloud in your config."))
 		return nil, nil, nil, false
 	}
-	apiGraph, warnings, note, ok := s.cloudAPIGraph(r.Context(), wf)
+	// rawInfo is discarded here on purpose: cloudPrepare serves the whatif/run
+	// POSTs, which submit the graph and never resolve resource origins.
+	apiGraph, _, warnings, note, ok := s.cloudAPIGraph(r.Context(), wf)
 	if !ok {
 		if len(warnings) > 0 {
 			s.render(w, http.StatusOK, cloudConversionWarnings(warnings))

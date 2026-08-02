@@ -378,6 +378,11 @@ type NodeSchema struct {
 		Required []string `json:"required"`
 		Optional []string `json:"optional"`
 	} `json:"input_order"`
+	// NOTE: /object_info also carries `python_module` per node type — the field
+	// that makes built-in-vs-custom an observation rather than a guess. It is
+	// deliberately NOT decoded here: NodeOrigins reads it from the raw bytes with
+	// a minimal shape, because materialising this struct costs ~88 ms on the real
+	// payload and node-origin classification runs on a page render.
 }
 
 // ObjectInfo maps a node type name to its schema.

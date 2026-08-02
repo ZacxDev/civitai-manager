@@ -62,6 +62,93 @@ func (s *Server) invalidateComfyModelCache() {
 	}
 }
 
+// comfyNodeOrigins builds the built-in-vs-custom index for the cloud panel's
+// custom-node detection, from the SAME cached /object_info row as the model index
+// above. Nothing new is stored: the 0019 blob already carries `python_module` for
+// every node type, so reusing it costs one query and no schema change — and a
+// second cache of the same 4.66 MB document could go stale independently of this
+// one, which is the failure this avoids.
+//
+// Returns nil on an empty/corrupt cache; ResolveResources then falls back to
+// coreNodeClasses, which is the pre-existing behaviour.
+//
+// ⚠ HONEST FRESHNESS LIMIT, inherited from 0019 and not introduced here: the row
+// is written on a ComfyUI run and dropped on a library scan, so INSTALLING a
+// custom node does not invalidate it. Until the user's next run, a newly added
+// pack's node types are absent from the cached payload and read as Unknown — the
+// fallback tier, i.e. exactly today's answer. It degrades to the old behaviour,
+// never to a confident wrong one.
+// 🔴 EVERY FAILURE HERE IS LOGGED, because every one of them silently reinstates
+// the 62%-false-positive banner this classifier exists to fix. The sibling memo
+// twenty lines below (newComfyModelIndex) already logs the identical decode
+// failure; a silent twin is how "the banner is wrong again" becomes undiagnosable
+// from the outside. A missing row is NOT logged — a cold cache is the normal
+// fresh-install state, not a fault.
+//
+// ⚠ THE BUILTIN/CUSTOM SPLIT IS NOT LOGGED HERE — see logNodeOriginSplit below.
+// It used to be, and that put it on the one path the dominant traffic never takes:
+// this function runs only as resolveResources' FALLBACK, so on a UI-format workflow
+// with a reachable ComfyUI (all 71 workflows on the operator's real DB) it is never
+// called and the split was never recorded at all.
+func (s *Server) comfyNodeOrigins() map[string]comfy.NodeOrigin {
+	ent, err := s.store.GetComfyObjectInfo()
+	if err != nil {
+		s.log.Warn("read cached comfy object_info", "err", err)
+		return nil
+	}
+	if ent == nil {
+		return nil // cold cache: expected, not a fault
+	}
+	idx := comfy.NodeOrigins(ent.ObjectInfoJSON)
+	if len(idx) == 0 {
+		// NodeOrigins reports "could not classify anything" as a nil map rather than
+		// an error, so there is no err to attach — the byte count is what separates a
+		// truncated/corrupt row from a well-formed but empty one.
+		s.log.Warn("decode cached comfy object_info", "bytes", len(ent.ObjectInfoJSON))
+		return nil
+	}
+	return idx
+}
+
+// logNodeOriginSplit records the builtin/custom split of whichever tier answered.
+// tier is "fresh" (the /object_info the handler just fetched) or "cache" (the 0019
+// row) — the caller knows, and nothing downstream can work it out afterwards.
+//
+// ⚠ THE FAILURE THIS MAKES DIAGNOSABLE: if no installed pack registers under
+// `custom_nodes.*` (a repackaged install, a vendored fork), every class reads
+// Builtin, the banner vanishes entirely, and neither the code nor any test can tell
+// — the page just quietly stops warning. A 0-custom split is the signal.
+//
+// 🔴 IT IS Debug, AND IT IS DELIBERATELY NOT A Warn. ⚠ The comment this replaces
+// called it "the only externally visible signal", which overstated twice over: the
+// server logger is LevelInfo unless the operator runs `serve --verbose`
+// (cli/root.go), so this line is invisible by default. Promoting the 0-custom case
+// to Warn was considered and REJECTED — an install with no custom-node packs at all
+// is completely ordinary, and 0 custom is then the CORRECT answer, so a Warn would
+// fire on every cloud-panel render of a perfectly healthy install. A signal that
+// cries wolf on the common case is worse than one you have to opt into. The genuine
+// faults (unreadable row, undecodable body — either tier) are Warn and do reach the
+// default level.
+//
+// Empty is silent: it means a cold cache (the normal fresh-install state) or a
+// failure the caller has already logged with its own byte count.
+func (s *Server) logNodeOriginSplit(tier string, idx map[string]comfy.NodeOrigin) {
+	if len(idx) == 0 {
+		return
+	}
+	builtin, custom := 0, 0
+	for _, o := range idx {
+		switch o {
+		case comfy.NodeOriginBuiltin:
+			builtin++
+		case comfy.NodeOriginCustom:
+			custom++
+		}
+	}
+	s.log.Debug("classified comfy object_info",
+		"tier", tier, "types", len(idx), "builtin", builtin, "custom", custom)
+}
+
 // comfyModelIndex is the PER-REQUEST memo behind the resolver's comfyResource.
 //
 // 🔴 WHY THIS EXISTS AT ALL — the shape it replaces was O(chips) full decodes.

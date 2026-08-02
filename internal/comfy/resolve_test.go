@@ -57,7 +57,7 @@ func TestResolveResources_AllPaths(t *testing.T) {
 		},
 	}
 
-	rs, err := ResolveResources(graph, lk)
+	rs, err := ResolveResources(graph, lk, nil)
 	if err != nil {
 		t.Fatalf("ResolveResources: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestResolveResources_KnownEcosystemUnknownTypeIsGuessed(t *testing.T) {
 		byBasename: map[string]*LocalMatch{"weird.safetensors": {ModelID: 30, VersionID: 40}},
 		models:     map[[2]int][2]string{{30, 40}: {"Poses", "SDXL 1.0"}},
 	}
-	rs, err := ResolveResources(graph, lk)
+	rs, err := ResolveResources(graph, lk, nil)
 	if err != nil {
 		t.Fatalf("ResolveResources: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestResolveResources_AmbiguousIsUnresolved(t *testing.T) {
 	// it as unresolved. Simulate by having the lookup return nil for the basename.
 	graph := json.RawMessage(`{"1":{"class_type":"LoraLoader","inputs":{"lora_name":"ambig.safetensors"}}}`)
 	lk := &fakeLookup{byBasename: map[string]*LocalMatch{ /* ambig absent → nil */ }}
-	rs, _ := ResolveResources(graph, lk)
+	rs, _ := ResolveResources(graph, lk, nil)
 	if r, ok := findRes(rs, "ambig.safetensors"); !ok || r.Status != ResolveUnresolved {
 		t.Errorf("ambiguous should be unresolved: %+v ok=%v", r, ok)
 	}
@@ -129,7 +129,7 @@ func TestResolveResources_MatchWithoutLinkage(t *testing.T) {
 	// A local file matched but with ModelID/VersionID 0 (unlinked) → unresolved.
 	graph := json.RawMessage(`{"1":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"unlinked.ckpt"}}}`)
 	lk := &fakeLookup{byBasename: map[string]*LocalMatch{"unlinked.ckpt": {ModelID: 0, VersionID: 0}}}
-	rs, _ := ResolveResources(graph, lk)
+	rs, _ := ResolveResources(graph, lk, nil)
 	if r, _ := findRes(rs, "unlinked.ckpt"); r.Status != ResolveUnresolved {
 		t.Errorf("unlinked should be unresolved: %+v", r)
 	}
@@ -137,7 +137,7 @@ func TestResolveResources_MatchWithoutLinkage(t *testing.T) {
 
 func TestResolveResources_NilLookup(t *testing.T) {
 	graph := json.RawMessage(`{"1":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"x.safetensors"}}}`)
-	rs, err := ResolveResources(graph, nil)
+	rs, err := ResolveResources(graph, nil, nil)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestResolveResources_BasenameFromPath(t *testing.T) {
 		byBasename: map[string]*LocalMatch{"model.safetensors": {ModelID: 5, VersionID: 6}},
 		models:     map[[2]int][2]string{{5, 6}: {"Checkpoint", "SDXL 1.0"}},
 	}
-	rs, _ := ResolveResources(graph, lk)
+	rs, _ := ResolveResources(graph, lk, nil)
 	if r, _ := findRes(rs, "sdxl/model.safetensors"); r.Status != ResolveResolved ||
 		r.URN != "urn:air:sdxl:checkpoint:civitai:5@6" {
 		t.Errorf("basename resolution: %+v", r)
@@ -161,7 +161,7 @@ func TestResolveResources_BasenameFromPath(t *testing.T) {
 }
 
 func TestResolveResources_Unparseable(t *testing.T) {
-	rs, err := ResolveResources(json.RawMessage(`not json`), &fakeLookup{})
+	rs, err := ResolveResources(json.RawMessage(`not json`), &fakeLookup{}, nil)
 	if err != nil {
 		t.Fatalf("should not error on bad graph: %v", err)
 	}

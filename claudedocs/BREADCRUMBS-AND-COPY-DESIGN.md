@@ -490,8 +490,9 @@ requires arguing against that reason explicitly.
 - `model_card_pages.go:667‑705` — "What subscribing does" / "What this does", both arms
 - `subscribe_disclosure.go:165‑206` — "Nothing is downloaded now: the versions that already exist are marked as seen, not fetched." + `autoDownloadSentence`'s four variants (unknown size / over cap / known size)
 
-**Nodepack blocker (detector is deliberately weak):**
-- `cloud_pages.go:250‑267` — the conditional headline, the CustomComfy/snapshot explanation, and the "flagged by a short list of known built-in node types, so some may be built-ins this app simply does not recognise" caveat
+**Nodepack blocker (headline conditional, caveat tier-agnostic):**
+- ⚠ This entry used to read "detector is deliberately weak" and cited the "flagged by a short list of known built-in node types" caveat as design intent. **Both are stale.** `comfy.NodeOrigins` now classifies on the registering `python_module` from a cached/freshly-fetched `/object_info` and is authoritative whenever one exists; `coreNodeClasses` is only the fallback tier. The mechanism clause was deleted from the copy because it was false on a warm cache.
+- `cloud_pages.go` `cloudNodepackBlocker` — the conditional headline, the CustomComfy/snapshot explanation, and the tier-agnostic "this app may not recognise every built-in node type" caveat. It states NO mechanism on purpose: the function receives only `[]ResolvedResource` and cannot know which tier answered, and the caveat has to stay true in both (cold cache → a 47-of-790 table; warm cache → authoritative about the LOCAL install, while the banner is about CivitAI's REMOTE runner). A tier-aware rewrite means plumbing provenance down from the handler and was deliberately deferred.
 - `nodepack_pages.go:82‑83`, `:147‑148`, `:219`, `:356‑357`, `:478‑480`
 
 **Install-and-run substitution offer (must name BOTH files):**

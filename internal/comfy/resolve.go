@@ -56,11 +56,15 @@ type ResourceLookup interface {
 // graph. For each referenced model filename it walks the resolution chain
 // (filename → local file → cached model type + version baseModel → AIR URN); each
 // result is flagged resolved/guessed/unresolved. It then appends a custom-node row
-// (empty URN) for every referenced class_type outside the core-node set, so the
-// user can fill in the nodepack URN.
+// (empty URN) for every referenced class_type that is not a ComfyUI built-in, so
+// the user can fill in the nodepack URN.
+//
+// origins is a NodeOrigins index over a cached /object_info and is the
+// AUTHORITATIVE answer for built-in-vs-custom; pass nil when none is available
+// and detection falls back to coreNodeClasses. See customNodeClasses.
 //
 // It is permissive: an unparseable graph yields whatever could be recovered.
-func ResolveResources(apiGraph json.RawMessage, lookup ResourceLookup) ([]ResolvedResource, error) {
+func ResolveResources(apiGraph json.RawMessage, lookup ResourceLookup, origins map[string]NodeOrigin) ([]ResolvedResource, error) {
 	var out []ResolvedResource
 
 	// 1. Model-file resources (loader inputs), in first-seen order.
@@ -69,8 +73,8 @@ func ResolveResources(apiGraph json.RawMessage, lookup ResourceLookup) ([]Resolv
 		out = append(out, resolveModelRef(ref, lookup))
 	}
 
-	// 2. Custom nodes: class_types outside the core-node set.
-	for _, ct := range customNodeClasses(apiGraph) {
+	// 2. Custom nodes: class_types ComfyUI does not ship.
+	for _, ct := range customNodeClasses(apiGraph, origins) {
 		out = append(out, ResolvedResource{Filename: ct, URN: "", Status: ResolveCustomNode})
 	}
 
@@ -107,10 +111,34 @@ func resolveModelRef(ref string, lookup ResourceLookup) ResolvedResource {
 	return res
 }
 
-// customNodeClasses returns the sorted, de-duplicated set of graph class_types not
-// in coreNodeClasses (best-effort custom-node detection). An unparseable graph
-// yields nil.
-func customNodeClasses(apiGraph json.RawMessage) []string {
+// customNodeClasses returns the sorted, de-duplicated set of graph class_types
+// that are not ComfyUI built-ins. An unparseable graph yields nil.
+//
+// 🔴 TWO TIERS, AND THE ORDER IS THE WHOLE POINT.
+//
+//  1. OBSERVED (origins, from a cached /object_info): ComfyUI itself reported the
+//     registering python_module, so built-in-vs-custom is a fact. This tier
+//     answers for the 2462 node types a live ComfyUI knows about.
+//  2. UNKNOWN (class absent from the payload, or no payload at all): fall back to
+//     coreNodeClasses, i.e. EXACTLY the pre-existing behaviour.
+//
+// Tier 2 is why coreNodeClasses is kept rather than deleted, and it earns its
+// place twice over. It is not merely the cold-cache path: `PrimitiveNode`, `Note`
+// and `Reroute` are frontend-only LiteGraph nodes that a live ComfyUI reports in
+// NO /object_info (verified against the running instance), so tier 1 can never
+// classify them and only the table keeps them from being called custom.
+//
+// 🔴 THE FAILURE DIRECTIONS ARE NOT SYMMETRIC, WHICH IS WHY THE FALLBACK IS THE
+// OLD TABLE AND NOT "assume built-in". A false CUSTOM is the bug this fixes: the
+// banner tells the user their workflow probably cannot run on cloud, and they
+// stop — silently, with no way to discover they were wrong. A false BUILT-IN
+// merely omits the warning; the user runs a FREE whatif estimate, and CivitAI's
+// own CustomComfy step rejects a genuine nodepack at submit, loudly, from the
+// authority on the question. Cheap and recoverable beats silent and terminal.
+// But "assume built-in when we know nothing" would delete the signal entirely on
+// every install with a cold cache — a much larger behaviour change than this bug
+// warrants — so the unknown case holds the status quo instead.
+func customNodeClasses(apiGraph json.RawMessage, origins map[string]NodeOrigin) []string {
 	var nodes map[string]apiNode
 	if err := json.Unmarshal(apiGraph, &nodes); err != nil {
 		return nil
@@ -118,7 +146,18 @@ func customNodeClasses(apiGraph json.RawMessage) []string {
 	seen := map[string]bool{}
 	for _, n := range nodes {
 		ct := strings.TrimSpace(n.ClassType)
-		if ct == "" || coreNodeClasses[ct] || seen[ct] {
+		if ct == "" || seen[ct] {
+			continue
+		}
+		switch OriginOf(origins, ct) {
+		case NodeOriginBuiltin:
+			continue // observed: ComfyUI ships it
+		case NodeOriginCustom:
+			seen[ct] = true // observed: it came from custom_nodes/
+			continue
+		}
+		// Unknown: no observation for this class — hold the pre-existing behaviour.
+		if coreNodeClasses[ct] {
 			continue
 		}
 		seen[ct] = true
@@ -134,11 +173,20 @@ func customNodeClasses(apiGraph json.RawMessage) []string {
 	return out
 }
 
-// coreNodeClasses is a pragmatic set of built-in ComfyUI node class_types. A
-// class_type absent from this set is treated as a custom node whose nodepack URN
-// the user must supply (we deliberately do NOT try to auto-map class_types to
-// comfyregistry nodepacks — that is out of scope for C1). The set is intentionally
-// small + documented; false-positives are acceptable (the user reviews the list).
+// coreNodeClasses is the FALLBACK tier of custom-node detection, used only for a
+// class_type that a cached /object_info could not classify (see
+// customNodeClasses). It is no longer the primary signal, and it must not be
+// treated as an inventory of ComfyUI's built-ins: measured against the live
+// instance, these 50 entries cover 47 of the 790 node types ComfyUI actually
+// ships, and the other 743 are exactly why a table-only detector called a real
+// built-in custom in 44 of the operator's 70 workflows.
+//
+// 🔴 DO NOT DELETE IT, and do not "complete" it either. Deleting it would call
+// `PrimitiveNode`, `Note` and `Reroute` custom nodes — the 3 entries here that
+// appear in NO /object_info, because they are frontend-only LiteGraph nodes — and
+// would drop every install with a cold cache to zero detection. Completing it
+// would mean hand-maintaining 790 names that change every ComfyUI release, which
+// is the maintenance burden NodeOrigins exists to retire.
 var coreNodeClasses = map[string]bool{
 	"KSampler":                 true,
 	"KSamplerAdvanced":         true,
