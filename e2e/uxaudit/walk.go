@@ -28,18 +28,25 @@ type View struct {
 	Hero bool
 }
 
-// RunPostPath is the hx-post path suffix of the workflow detail page's PRIMARY run
-// control — the "Generate" button of the v0.1.97 one-run-zone rework. The walk's hero
-// selector is built from it, and TestWalkSelectorsMatchTheServedApp asserts the served
-// page still carries it.
+// RunPostPathAPI / RunPostPathUI are the hx-post path suffixes of the workflow detail
+// page's PRIMARY run control — the "Generate" button of the v0.1.97 one-run-zone
+// rework. There are TWO because the app picks the endpoint from the workflow's FORMAT
+// (runButtonEnabled in internal/web/run_pages.go): a UI-format workflow posts to the
+// batch endpoint, an API-format one to the plain params endpoint, which the batch
+// endpoint deliberately 404s. The walk's per-view selector is built from whichever
+// applies, and TestWalkSelectorsMatchTheServedApp asserts BOTH against the served app.
 //
-// 🔴 This used to be "run", and it went stale for two releases without anything
-// noticing: the app moved to /run-with-params, the selector matched NOTHING at either
-// viewport, the hero prep hung on WaitVisible until the 90s capture context expired,
-// and the whole walk died with a bare "context deadline exceeded". Nothing caught it
-// because `make ux-audit` is double-gated out of `go test ./...` — a harness that
-// never runs reports no failures. That is what the selector guard exists to prevent.
-const RunPostPath = "run-with-params"
+// 🔴 This used to be ONE global const, "run", and it went stale for two releases
+// without anything noticing: the app moved to /run-with-params, the selector matched
+// NOTHING at either viewport, the hero prep hung on WaitVisible until the 90s capture
+// context expired, and the whole walk died with a bare "context deadline exceeded".
+// Nothing caught it because `make ux-audit` is double-gated out of `go test ./...` — a
+// harness that never runs reports no failures. That is what the selector guard exists
+// to prevent, and it is why a rename of EITHER endpoint has to be caught browserlessly.
+const (
+	RunPostPathAPI = "run-with-params"
+	RunPostPathUI  = "run/queue"
+)
 
 // ImportTriggerTitlePrefix is the title= prefix of the paste-JSON import trigger on
 // the library Workflows tab. Guarded for the same reason as RunPostPath — it was an
@@ -53,9 +60,13 @@ const ImportTriggerTitlePrefix = "Add a workflow"
 // browser, as an opaque WaitVisible timeout. Guarded browserlessly instead.
 const ImportDialogID = "workflow-import-dialog"
 
-// RunButtonSelector is the hero's run-control selector for a given workflow id.
-func RunButtonSelector(workflowID int64) string {
-	return fmt.Sprintf(`button[hx-post="/workflows/%d/%s"]`, workflowID, RunPostPath)
+// RunButtonSelector is a run-control selector for a given workflow id and the post
+// path its FORMAT resolves to (RunPostPathUI / RunPostPathAPI). It takes the path
+// explicitly rather than reading a package-level constant so the two seeded heroes
+// cannot accidentally share one endpoint — an API-format view built with the UI path
+// would hang on WaitVisible forever, since that button is simply not rendered.
+func RunButtonSelector(workflowID int64, postPath string) string {
+	return fmt.Sprintf(`button[hx-post="/workflows/%d/%s"]`, workflowID, postPath)
 }
 
 // RunControlFragmentPath is the htmx fragment that DELIVERS the run control. The
@@ -72,12 +83,33 @@ func ImportTriggerSelector() string {
 	return fmt.Sprintf(`button[title^=%q]`, ImportTriggerTitlePrefix)
 }
 
-// Views is the ordered funnel the walk captures. workflow-detail is deliberately
-// captured BEFORE run-missing-models: triggering the run mutates the server's global
-// run-job state, so the clean detail view must be captured first.
+// RunCountGroupID is the id of the batch count segment's stable container — a second
+// copy of internal/web's runCountGroupID. It is rendered ONLY for a UI-format
+// workflow (runZone's canQueue), which is exactly why it is worth pinning: it is the
+// marker that proves the walk is auditing the batching UI at all.
+const RunCountGroupID = "cm-run-count"
+
+// CountSegmentSelector matches the batch count segment's container.
+func CountSegmentSelector() string { return "#" + RunCountGroupID }
+
+// Views is the ordered funnel the walk captures.
+//
+// ORDER IS LOAD-BEARING: the run job is a server-GLOBAL singleton and #run-status
+// bootstraps a fresh navigation with the PREVIOUS run's terminal panel, so BOTH clean
+// detail views (workflow-detail, workflow-detail-ui) are captured before EITHER run
+// view. Put a run view first and the next detail screenshot shows a stale failure
+// panel that has nothing to do with the workflow on screen.
+//
+// Both formats are walked because the app branches on wf.Format at the run control
+// (UI ⇒ the batch endpoint + the count segment; API ⇒ the params endpoint and no
+// count segment) and inside realRun (a UI conversion returns early on warnings,
+// BEFORE preflight — an API graph always reaches preflight). Auditing one format
+// leaves the other's branch unscanned.
 func Views(app *App) []View {
 	wfPath := fmt.Sprintf("/workflows/%d", app.WorkflowID)
-	runSel := RunButtonSelector(app.WorkflowID)
+	wfUIPath := fmt.Sprintf("/workflows/%d", app.WorkflowUIID)
+	runSel := RunButtonSelector(app.WorkflowID, RunPostPathAPI)
+	runUISel := RunButtonSelector(app.WorkflowUIID, RunPostPathUI)
 	return []View{
 		// The app's front door — "/" redirects here.
 		{Name: "search", Path: "/search"},
@@ -101,44 +133,89 @@ func Views(app *App) []View {
 				chromedp.Sleep(300 * time.Millisecond),
 			}
 		}},
-		// The seeded imported workflow's detail page.
+		// The seeded imported API-format workflow's detail page.
 		{Name: "workflow-detail", Path: wfPath},
-		// HERO: trigger a run; the fake ComfyUI + seeded un-installed models make
-		// preflight report both models missing, rendering the resolution panel.
-		{Name: "run-missing-models", Path: wfPath, Hero: true, Prep: func(*App) []chromedp.Action {
-			// preSeq holds the run-status container's data-run-seq BEFORE we trigger a new
-			// run — captured at action time (readRunSeq), then read by waitForNewRunPanel.
-			var preSeq int64
+		// The seeded imported UI-format workflow's detail page — the format the real
+		// library is entirely made of, and the ONLY one that renders the batch count
+		// segment. The prep waits for both the count segment and the run control so a
+		// missing batching UI fails LOUDLY here rather than silently producing a
+		// screenshot of a "Checking ComfyUI…" placeholder that nobody notices.
+		{Name: "workflow-detail-ui", Path: wfUIPath, Prep: func(*App) []chromedp.Action {
 			return []chromedp.Action{
-				// The primary run control ("Generate") arrives with the comfy-status htmx
-				// fragment, not with the initial page HTML — it is rendered only once the
-				// probe reports the (fake) ComfyUI reachable. Measured at both viewports:
-				// visible shortly after load, whole hero chain settling in ~1.5s.
-				chromedp.WaitVisible(runSel, chromedp.ByQuery),
-				// The run job is a server-global SINGLETON, so a fresh navigation can
-				// bootstrap #run-status with a PREVIOUS run's terminal panel. Each run is
-				// stamped server-side with a strictly-increasing data-run-seq; capture the
-				// currently-displayed seq (0 when idle / no prior run) so we can re-pin to
-				// the run THIS click starts — which will carry a strictly-greater seq.
-				readRunSeq("#run-status", &preSeq),
-				chromedp.Click(runSel, chromedp.ByQuery),
-				// Condition-based (not window-based) re-pin: wait until #run-status shows a
-				// run whose data-run-seq > preSeq (proves it is the run this click started,
-				// NEVER a stale prior panel) AND the terminal missing-models panel has
-				// rendered. This tolerates the run settling to its preflight-failure terminal
-				// BEFORE the transient in-flight "Stop" fragment is ever observed — which is
-				// exactly where the old Stop-appears → Stop-gone chain flaked (a fast
-				// preflight failure + the +1s self-poll could miss the ephemeral window and
-				// time out step 1). The seq gate keeps the re-pin guarantee the old chain
-				// gave: the asserted panel provably belongs to this run, not a leftover.
-				waitForNewRunPanel("#run-status", HeroMarker, &preSeq, 60*time.Second),
+				chromedp.WaitVisible(CountSegmentSelector(), chromedp.ByQuery),
+				chromedp.WaitVisible(runUISel, chromedp.ByQuery),
 				chromedp.Sleep(300 * time.Millisecond),
 			}
 		}},
+		// HERO: trigger a run; the fake ComfyUI + seeded un-installed models make
+		// preflight report both models missing, rendering the resolution panel.
+		{Name: "run-missing-models", Path: wfPath, Hero: true, Prep: heroRunPrep(runSel)},
+		// HERO: the SAME resolution panel reached the way a real user reaches it — a
+		// UI-format workflow, through the BATCH endpoint. This is not a duplicate of
+		// the view above: realRun converts UI→API and returns EARLY (before
+		// comfy.Preflight) if that conversion warns, so only this view proves the
+		// missing-models panel is reachable for the format 100% of real workflows use.
+		{Name: "run-missing-models-ui", Path: wfUIPath, Hero: true, Prep: heroRunPrep(runUISel)},
 		// Discover browse (workflows), served offline from the fake CivitAI reader.
 		{Name: "discover-workflows", Path: "/workflows/discover"},
 		// Library "Scan for model files" entry (the Sources tab lists the seeded dir).
 		{Name: "library-sources", Path: "/library?tab=sources"},
+	}
+}
+
+// heroRunPrep builds the interactive chain that drives a workflow detail page into
+// its terminal missing-models panel: wait for the run control, remember the run
+// currently on screen, click, then re-pin to the run THIS click started.
+//
+// It is parameterised by the run-control SELECTOR (not by a workflow id) because the
+// two seeded heroes post to different endpoints — see RunPostPathAPI/RunPostPathUI.
+// Everything else about the chain is format-independent: realRun's terminal panel and
+// the #run-status re-pin protocol are the same on both branches.
+func heroRunPrep(runSel string) func(*App) []chromedp.Action {
+	return func(*App) []chromedp.Action {
+		// preSeq holds the run-status container's data-run-seq BEFORE we trigger a new
+		// run — captured at action time (readRunSeq), then read by waitForNewRunPanel.
+		var preSeq int64
+		return []chromedp.Action{
+			// The primary run control ("Generate") arrives with the comfy-status htmx
+			// fragment, not with the initial page HTML — it is rendered only once the
+			// probe reports the (fake) ComfyUI reachable. Measured at both viewports:
+			// visible shortly after load, whole hero chain settling in ~1.5s.
+			chromedp.WaitVisible(runSel, chromedp.ByQuery),
+			// The run job is a server-global SINGLETON, so a fresh navigation can
+			// bootstrap #run-status with a PREVIOUS run's terminal panel. Each run is
+			// stamped server-side with a strictly-increasing data-run-seq; capture the
+			// currently-displayed seq (0 when idle / no prior run) so we can re-pin to
+			// the run THIS click starts — which will carry a strictly-greater seq.
+			//
+			// 🔴 What this actually protects is EACH VIEW'S SECOND VIEWPORT. A view is
+			// captured at mobile then desktop, and the second capture re-navigates to a
+			// page whose #run-status bootstraps with the terminal panel of the run the
+			// FIRST viewport just triggered — already containing HeroMarker. A text-only
+			// wait would match that instantly and screenshot the previous run; the seq
+			// gate cannot.
+			//
+			// ⚠ It does NOT protect against the other hero's run leaking in, and an
+			// earlier version of this comment claimed it did. Measured by instrumenting
+			// the walk: navigating to hero 2 reads preSeq=0 and an EMPTY #run-status,
+			// because run_pages.go returns an empty div when snap.WorkflowID != wfID —
+			// a run is scoped to its workflow. Adding the second hero therefore created
+			// no new need for the seq gate; the gate was already load-bearing on main
+			// with one hero, for the reason above.
+			readRunSeq("#run-status", &preSeq),
+			chromedp.Click(runSel, chromedp.ByQuery),
+			// Condition-based (not window-based) re-pin: wait until #run-status shows a
+			// run whose data-run-seq > preSeq (proves it is the run this click started,
+			// NEVER a stale prior panel) AND the terminal missing-models panel has
+			// rendered. This tolerates the run settling to its preflight-failure terminal
+			// BEFORE the transient in-flight "Stop" fragment is ever observed — which is
+			// exactly where the old Stop-appears → Stop-gone chain flaked (a fast
+			// preflight failure + the +1s self-poll could miss the ephemeral window and
+			// time out step 1). The seq gate keeps the re-pin guarantee the old chain
+			// gave: the asserted panel provably belongs to this run, not a leftover.
+			waitForNewRunPanel("#run-status", HeroMarker, &preSeq, 60*time.Second),
+			chromedp.Sleep(300 * time.Millisecond),
+		}
 	}
 }
 
