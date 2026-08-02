@@ -467,14 +467,3 @@ func UseCasesForTags(tags []string) []UseCase {
 func IsStopwordTag(tag string) bool {
 	return tagStopwords[strings.ToLower(strings.TrimSpace(tag))]
 }
-
-// StopwordTags returns the stopword list (sorted-stable via the table below is
-// unnecessary — callers only membership-test), exposed for tests and for the
-// "why is this tag not shown" explanation in the UI.
-func StopwordTags() []string {
-	out := make([]string, 0, len(tagStopwords))
-	for t := range tagStopwords {
-		out = append(out, t)
-	}
-	return out
-}

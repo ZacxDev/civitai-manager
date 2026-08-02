@@ -767,16 +767,6 @@ func pickFileFromSearchRaw(raw []byte, want string) (resolvedDownload, bool) {
 	return resolvedDownload{}, false
 }
 
-// pickFileFromModelRaw decodes a single model's detail body and delegates to
-// pickFileFromModel. Kept as the raw-bytes entry point for tests.
-func pickFileFromModelRaw(raw []byte, want string) (resolvedDownload, bool) {
-	var body modelDetailEnvelope
-	if err := json.Unmarshal(raw, &body); err != nil {
-		return resolvedDownload{}, false
-	}
-	return pickFileFromModel(body, want)
-}
-
 // pickFileFromModel finds, in a single model's detail body, the file whose basename
 // equals want; failing that it falls back to the primary file of the primary
 // (positional [0]) version — the version the detail page defaults to.

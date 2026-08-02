@@ -158,19 +158,6 @@ func (p *probeRecorder) paths() []string {
 	return slices.Clone(p.seen)
 }
 
-// count reports how many times path was probed.
-func (p *probeRecorder) count(path string) int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	n := 0
-	for _, s := range p.seen {
-		if s == path {
-			n++
-		}
-	}
-	return n
-}
-
 // TestDisksRowsAreNotEvenProbedOffLoopback proves the gate stops the SYSCALLS,
 // not just the markup: off-loopback handleDisks must issue ZERO filesystem
 // probes, because a version that probed and then hid the output would still stat
