@@ -92,7 +92,7 @@ func generateSection(wf *store.Workflow, snap runSnapshot, csrf string, extraAll
 	// WHERE it runs is ONE decision: the zone and the cloud block are the two panels
 	// of a single destination control (runDestination), not two stacked apparatuses.
 	body = append(body, runDestination(
-		runZone(wf.ID, csrf, wf.Format == store.WorkflowFormatUI, editable),
+		runZone(wf.ID, csrf, canQueueWorkflow(wf), editable),
 		cloudGenerateBlock(wf.ID),
 	))
 	// Run job status container (unchanged): poller drives running → terminal.
