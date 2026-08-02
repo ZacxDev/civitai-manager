@@ -193,11 +193,30 @@ func (s *Server) cloudUnreachableNote() string {
 // and the cached row is the only origin source those workflows have. The fallback
 // also covers a rawInfo that exists but yields nothing (truncated/corrupt body), for
 // which a stale row still beats no answer at all.
+//
+// 🔴 THE NODE-ORIGIN LOGGING LIVES HERE, NOT INSIDE comfyNodeOrigins, and that is
+// the whole point: this is the ONLY function that sees both tiers and knows which
+// one answered. Putting it in the fallback — where it started — routed the DOMINANT
+// path around it entirely, because comfyNodeOrigins is reached only when the fresh
+// body classified nothing, and every UI-format workflow (all 71 on the operator's
+// real DB) has a fresh body. The tier is therefore an explicit log field rather than
+// something inferred from which function emitted the line.
 func (s *Server) resolveResources(apiGraph json.RawMessage, rawInfo []byte) []comfy.ResolvedResource {
 	origins := comfy.NodeOrigins(rawInfo)
+	tier := "fresh"
 	if len(origins) == 0 {
+		if len(rawInfo) > 0 {
+			// A body WAS fetched and classified nothing: truncated or corrupt. This is
+			// the single case this observability was added for, and it is structurally
+			// invisible to comfyNodeOrigins, which never sees rawInfo. Silence here used
+			// to make a bad fresh payload indistinguishable from an API-format workflow
+			// that legitimately has none. Mirrors the cache-side decode Warn verbatim.
+			s.log.Warn("decode fetched comfy object_info", "bytes", len(rawInfo))
+		}
 		origins = s.comfyNodeOrigins()
+		tier = "cache"
 	}
+	s.logNodeOriginSplit(tier, origins)
 	rows, _ := comfy.ResolveResources(apiGraph, storeResourceLookup{st: s.store}, origins)
 	return rows
 }
