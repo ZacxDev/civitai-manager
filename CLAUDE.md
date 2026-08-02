@@ -627,18 +627,29 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   key; do not invalidate it gratuitously.
 - **Install-and-run must NEVER substitute a file silently.** CivitAI renames files
   across versions, so a workflow's expected filename routinely matches **zero**
-  files inside the model that bears its name — `pickFileFromModelRaw`
-  (`internal/comfy/download_target.go`) then falls back to the primary version's
-  primary file. That fallback must be **offered, not performed**: the first click
-  returns an offer naming BOTH files, and only a second click carrying
+  files inside the model that bears its name — **`pickFileFromModel`**
+  (`internal/web/run_download.go`) then falls back to the primary file of the
+  primary (positional `[0]`) version. That fallback must be **offered, not
+  performed**: the first click returns an offer naming BOTH files
+  (`renderSubstituteOffer`, same file), and only a second click carrying
   `confirm_substitute=1` **and** `confirm_file=<remote basename>` proceeds — the
   echoed basename means a primary-version promotion between the two clicks
   re-offers instead of installing something the user never approved. Once
   confirmed, every progress line must read `<remote> as <expected>`. An exact
   filename match stays ONE click. The model's type is cross-checked against the
-  **destination folder** via `TypeSubdir`, **not** the raw type string —
-  LORA/LoCon/LyCORIS all route to `loras/` and must stay equivalent (a stricter
-  raw-string check shipped once and refused legitimate LoCon installs).
+  **destination folder** via `TypeSubdir` (**this** is the part that lives in
+  `internal/comfy/download_target.go`, alongside `SafeModelDest` and
+  `WriteModelStream`), **not** the raw type string — LORA/LoCon/LyCORIS all route
+  to `loras/` and must stay equivalent (a stricter raw-string check shipped once
+  and refused legitimate LoCon installs).
+  ⚠ **This bullet used to name `pickFileFromModelRaw` in
+  `internal/comfy/download_target.go`, and BOTH halves were wrong** — the
+  function has only ever lived in `internal/web/run_download.go`, and that file
+  never contained it. `pickFileFromModelRaw` was a thin raw-bytes wrapper whose
+  own comment claimed "kept as the raw-bytes entry point for tests" while no test
+  called it; it was deleted as unreachable. Nothing about the invariant changed —
+  only the name and the package. The *pick* is in `internal/web`; the
+  *destination* helpers are in `internal/comfy`.
 - **Remote match defaults ON.** Scan matching (`match_remote`) is on by default and
   **sends file SHA256s to civitai.com**. Keep that opt-out honored and keep the
   data-egress behavior obvious to the user.
@@ -697,23 +708,60 @@ eleven and showing `go build ./...` still exits 0**; an **orphan route**,
 its own `mux.HandleFunc` — with **~8 tests exercising a surface no user can reach**; and
 **3 dead `.cm-*` CSS rules**.
 
-**The instrument: `deadcode` under BOTH `GOOS`, INTERSECTED.**
+**The instrument is now a CI GATE — `.github/deadcode.sh`, run by the `deadcode` job
+in `ci.yml` on every push and PR.** Run it locally the same way CI does; it takes no
+arguments.
 ```sh
-DC='golang.org/x/tools/cmd/deadcode@latest'
-go run $DC ./... | sort > /tmp/dc-linux.txt
-GOOS=windows go run $DC ./... | sort > /tmp/dc-win.txt
-comm -12 /tmp/dc-linux.txt /tmp/dc-win.txt   # dead on BOTH — the real list
+.github/deadcode.sh          # gate: exits non-zero on new dead code
+.github/deadcode.sh --print  # just print the two sets
 ```
-It runs in ~15s and would have caught all 11 functions **and** the inert flag the day
-they landed. Leave `-test` at its **default `false`**: that is what makes a function
-reachable *only from tests* count as dead, which is precisely the orphan-route and
-dead-helper case — turning it on would have hidden every one of them behind their own
-tests. 🔴 **The intersection is load-bearing, not tidiness:** `internal/diskusage`
+It runs `deadcode` under **all three `GOOS`** (`linux`, `windows`, `darwin`) and gates
+on the **intersection**, in two tiers: **tier A** (`-test`, expected EMPTY) and **tier
+B** (default, expected to equal `.github/deadcode-allow.txt`). Tier B is the one that
+matters — see below. Needs Go ≥ `e2e/uxaudit/go.mod`'s directive, because one tool
+binary analyzes both modules; the script checks that itself and says so.
+
+🔴 **NEVER write `GOOS=windows go run golang.org/x/tools/cmd/deadcode@latest ./...`** —
+which is what this block used to say. That **cross-compiles the TOOL**, which dies with
+`exec format error`; with stderr swallowed it reads as **"0 dead functions"**, a perfect
+false green. **Build the tool ONCE for the host, then set `GOOS` only for the analysis.**
+The script does that, checks every invocation's exit status, and shows the tool's stderr.
+The version is **pinned**, never `@latest`.
+
+🔴 **Leave `-test` at its default `false` for the real signal.** That is what makes a
+function reachable *only from tests* count as dead — precisely the orphan-route and
+dead-helper case; turning it on hides every one of them behind their own tests. The
+gate's tier A does run with `-test`, but treat a green tier A as a floor, not a
+measurement: measured with `-whylive`, RTA reaches `Worker.ProcessOne` through cobra's
+help templating into `reflect.Value.Call` and then **dynamically into an arbitrary test
+function**, so one reflect call drags the entire test corpus into the reachable set.
+Tier A can therefore only ever report a function that literally *nothing* references.
+Drop `-test` and that same `ProcessOne` is reported dead immediately.
+
+🔴 **The intersection is load-bearing, not tidiness:** `internal/diskusage`
 is deliberately split by build tag, and `fromBlocks` (called only from
 `usage_unix.go`, `//go:build unix`) and `fromByteCounts` (reached only via
 `diskFreeSpaceExOut.usage()` in `usage_windows.go`) are each **dead on one GOOS and live
 on the other**. A single-GOOS run reports whichever one as a false positive; only the
-intersection is trustworthy on a cross-compiled repo that ships 6 targets.
+intersection is trustworthy on a cross-compiled repo that ships 6 targets. (Confirmed
+live: all three drop out of the three-way intersection.)
+
+**`.github/deadcode-allow.txt` is a DEBT LEDGER, asserted — not an exemption list.**
+Same discipline as `contrast_web_test.go`'s 25 accepted light-theme entries: the gate
+fails when the set **grows** *and* when it **shrinks** (a stale entry means the function
+is live again — delete the line and take the win). Its 15 entries were **measured, not
+audited**: none has been checked for whether it should be deleted or wired up. Working
+the list down is open work; `internal/web` alone carries eight.
+That non-empty expectation is also the harness's **negative control** — a silently
+broken analysis reports all 15 as "no longer dead" and goes red, which is what makes
+tier A's zero mean anything. (Verified: a fake tool exiting **0** with empty output
+fails the gate.)
+
+**`e2e/uxaudit` is covered by tier A only, and that is structural, not an omission.**
+Measured: `deadcode ./...` inside that module prints **`deadcode: no main packages`** —
+RTA starts only from main packages and the module has none, so the default mode cannot
+analyze it at all. Tier A roots at its test binaries instead. That is how
+`MustResolveChromium` was found.
 
 **What `deadcode` would NOT have caught** — so do not treat it as the whole answer. It
 proves *unreachable from a root*, which misses: (a) a **reachable** function guarded by
