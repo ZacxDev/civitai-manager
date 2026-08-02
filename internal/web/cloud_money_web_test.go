@@ -31,7 +31,7 @@ func (emptyLookup) ModelTypeBaseModel(int, int) (string, string, bool)    { retu
 
 func resolveForTest(t *testing.T, graph string) []comfy.ResolvedResource {
 	t.Helper()
-	rows, err := comfy.ResolveResources(json.RawMessage(graph), emptyLookup{})
+	rows, err := comfy.ResolveResources(json.RawMessage(graph), emptyLookup{}, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

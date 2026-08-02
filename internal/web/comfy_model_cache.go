@@ -62,6 +62,30 @@ func (s *Server) invalidateComfyModelCache() {
 	}
 }
 
+// comfyNodeOrigins builds the built-in-vs-custom index for the cloud panel's
+// custom-node detection, from the SAME cached /object_info row as the model index
+// above. Nothing new is stored: the 0019 blob already carries `python_module` for
+// every node type, so reusing it costs one query and no schema change — and a
+// second cache of the same 4.66 MB document could go stale independently of this
+// one, which is the failure this avoids.
+//
+// Returns nil on an empty/corrupt cache; ResolveResources then falls back to
+// coreNodeClasses, which is the pre-existing behaviour.
+//
+// ⚠ HONEST FRESHNESS LIMIT, inherited from 0019 and not introduced here: the row
+// is written on a ComfyUI run and dropped on a library scan, so INSTALLING a
+// custom node does not invalidate it. Until the user's next run, a newly added
+// pack's node types are absent from the cached payload and read as Unknown — the
+// fallback tier, i.e. exactly today's answer. It degrades to the old behaviour,
+// never to a confident wrong one.
+func (s *Server) comfyNodeOrigins() map[string]comfy.NodeOrigin {
+	ent, err := s.store.GetComfyObjectInfo()
+	if err != nil || ent == nil {
+		return nil
+	}
+	return comfy.NodeOriginsFromJSON(ent.ObjectInfoJSON)
+}
+
 // comfyModelIndex is the PER-REQUEST memo behind the resolver's comfyResource.
 //
 // 🔴 WHY THIS EXISTS AT ALL — the shape it replaces was O(chips) full decodes.

@@ -167,7 +167,7 @@ func (s *Server) cloudUnreachableNote() string {
 // resolveResources runs the resolution chain over an API-format graph, returning the
 // resolved-resource rows for the cloud panel's table.
 func (s *Server) resolveResources(apiGraph json.RawMessage) []comfy.ResolvedResource {
-	rows, _ := comfy.ResolveResources(apiGraph, storeResourceLookup{st: s.store})
+	rows, _ := comfy.ResolveResources(apiGraph, storeResourceLookup{st: s.store}, s.comfyNodeOrigins())
 	return rows
 }
 
