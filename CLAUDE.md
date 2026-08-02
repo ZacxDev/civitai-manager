@@ -1219,9 +1219,9 @@ appears. **A fixture can be wrong in a way that produces a plausible screenshot.
   `comfy:nodepack` URN** at submit — it needs a `comfyNodepackSnapshot` step →
   `nodepacklayer` AIR (post-paid), so custom-node cloud runs are NOT yet supported
   (see COMFYUI-INTEGRATION-DESIGN.md).
-  🔴 **The custom-node detector is now AUTHORITATIVE when a cached `/object_info`
-  exists — the banner copy is still CONDITIONAL and has not caught up.** ⚠ This
-  bullet used to read "the detector is WEAK"; that was true through v0.1.102 and is
+  🔴 **The custom-node detector is now AUTHORITATIVE when an `/object_info` payload
+  is available; the banner stays CONDITIONAL and its caveat is now TIER-AGNOSTIC.**
+  ⚠ This bullet used to read "the detector is WEAK"; that was true through v0.1.102 and is
   the bug the classifier below fixed. The old signal was "absent from
   `coreNodeClasses`", a 50-entry hand-written table; measured against a live ComfyUI
   (2462 node types) and the real 70-workflow library, **ComfyUI ships 790 built-ins,
@@ -1245,11 +1245,52 @@ appears. **A fixture can be wrong in a way that produces a plausible screenshot.
   false *built-in* just omits a warning and CivitAI's own submit-time CustomComfy
   check rejects it loudly), but assuming built-in on a cold cache would delete the
   signal entirely on every fresh install.
-  **Restoring a flat "this needs custom nodes" assertion is still NOT done** — the
-  banner copy still says "flagged by a short list of known built-in node types",
-  which is now wrong in the warm-cache case. Sharpening it should state WHICH tier
-  answered rather than asserting flatly, since a cold cache is still the old signal.
-  ⚠ **Scope, so you fix the right thing: this weak detector is on the CLOUD PATH ONLY.**
+  🔴 **THE HANDLER PASSES ITS FRESHLY FETCHED `/object_info` STRAIGHT INTO THE
+  CLASSIFIER — the cache read is the FALLBACK, not the source.** `cloudAPIGraph`
+  returns `rawInfo` alongside the graph and `resolveResources` prefers it. It used to
+  cache the payload and then re-read the same ~4.66 MB back out of SQLite and
+  re-parse it — wasteful on the dominant path (**all 71 workflows on the operator's
+  real DB are UI-format**, i.e. every one of them fetches), and a silent downgrade to
+  stale/absent data whenever the write did not land (`cacheComfyObjectInfo` swallows
+  `PutComfyObjectInfo`'s error **by design** so a run cannot fail over a display
+  cache; a read-only DB never writes at all). **Do not delete the cache fallback**:
+  an API-format workflow returns from `cloudAPIGraph` before the fetch, so `rawInfo`
+  is nil and the cached row is its only origin source.
+  ⚠ **Testing that pass-through: the OBVIOUS fixture is VACUOUS.** Seeding a stale
+  cache row that disagrees with the fresh payload proves nothing, because
+  `cacheComfyObjectInfo` overwrites the row with the fresh body *before* anything
+  resolves — both code paths then read identical bytes and the test passes with the
+  pass-through reverted (measured while writing it). The discriminating fixture
+  **breaks the cache**: `srv.store.DB().Exec("DROP TABLE comfy_model_cache")` makes
+  the write and the read fail deterministically, which is the real production
+  scenario. See `TestCloudPanelUsesTheFreshObjectInfoWhenTheCacheCannotAnswer`.
+  **The banner copy no longer states a MECHANISM** — it said "flagged by a short list
+  of known built-in node types", false on a warm cache. It now claims only that this
+  app "may not recognise every built-in node type", which holds in BOTH tiers.
+  🔴 **Do not "sharpen" that into a tier-aware sentence without doing the plumbing**:
+  `cloudNodepackBlocker` receives only `[]comfy.ResolvedResource` and has no way to
+  know which tier answered, so naming a tier means threading provenance down from the
+  handler. A vaguer sentence that is TRUE beats a specific one that is right half the
+  time. Restoring a flat "this needs custom nodes" assertion is still NOT done, and
+  the two gaps below are why.
+  ⚠ **KNOWN STALENESS WINDOW: a library scan reverts the detector to the buggy
+  tier.** `scan_handlers.go`'s completion calls `invalidateComfyModelCache`, dropping
+  the row on **every** scan. For an **API-format** workflow the cache is the only
+  origin source, so scan → open the cloud panel → the 62%-false-positive banner is
+  back verbatim, self-healing only on the next local ComfyUI run. UI-format
+  workflows re-fetch in-request and are barely affected — which is most of them
+  today, hence "known and accepted" rather than fixed. **Do not redesign
+  invalidation as a drive-by**; the coupling reasoning is in
+  `comfy_model_cache.go`'s `invalidateComfyModelCache` comment.
+  ⚠ **THE CLASSIFIER ANSWERS ABOUT THE *LOCAL* INSTALL; THE BANNER IS ABOUT
+  CIVITAI'S *REMOTE* RUNNER.** A `comfy_extras.*` / `comfy_api_nodes.*` node newer
+  than CivitAI's ComfyUI now reads Builtin and the warning is **suppressed** where
+  the old table would have flagged it — a real class where the buggy behaviour warned
+  and the new one does not. Contained, not fixed: the free whatif estimate surfaces
+  the submit-time rejection first, and the failure directions stay asymmetric (a
+  false *custom* is silent and terminal; a false *built-in* is loud and recoverable).
+  Closing it properly needs the REMOTE node inventory, which this app does not have.
+  ⚠ **Scope, so you fix the right thing: this detector is on the CLOUD PATH ONLY.**
   `ResolveCustomNode` is reached only via `ResolveResources` (`internal/comfy/resolve.go`)
   → `internal/web/cloud_pages.go`, i.e. the cloud panel's resolved-resource table. **The
   LOCAL run path never touches it**: it attributes from the preflight report's missing
