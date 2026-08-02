@@ -124,15 +124,22 @@ const cloudObjectInfoTimeout = 8 * time.Second
 // 🔴 rawInfo IS RETURNED, NOT JUST CACHED. It is the /object_info body this call
 // just fetched, and it is the FRESHEST view of the local ComfyUI this app ever
 // holds. It was previously written to the display cache and dropped on the floor,
-// after which the caller read the same ~4.66 MB back out of SQLite and re-parsed
-// it — a needless read plus a full parse on the DOMINANT path (all 71 workflows on
-// the operator's real database are UI-format), and, worse, a silent downgrade to
-// STALE data whenever the cache write failed: PutComfyObjectInfo's error is
-// swallowed by design (cacheComfyObjectInfo is best-effort so a run cannot fail
-// over a display cache), and a read-only DB never writes at all. The classifier
-// would then answer from an old row — or from no row, i.e. the pre-fix
-// coreNodeClasses table — while the authoritative payload sat in the same call
-// frame.
+// after which the caller read the same ~4.66 MB back out of SQLite and classified
+// THAT copy — a needless round-trip through the database on the DOMINANT path (all
+// 71 workflows on the operator's real database are UI-format).
+//
+// ⚠ ONLY THE READ IS AVOIDED, NOT THE PARSE. This comment used to say "a needless
+// read plus a full parse", which is wrong: resolveResources still runs
+// comfy.NodeOrigins over the whole document either way — the same decode, just over
+// bytes already in hand. Numbers are in resolveResources, where the parse lives.
+//
+// The BIGGER half of the justification is correctness, and it is unaffected: this
+// used to be a silent downgrade to STALE data whenever the cache write failed.
+// PutComfyObjectInfo's error is swallowed by design (cacheComfyObjectInfo is
+// best-effort so a run cannot fail over a display cache), and a read-only DB never
+// writes at all. The classifier would then answer from an old row — or from no row,
+// i.e. the pre-fix coreNodeClasses table — while the authoritative payload sat in
+// the same call frame.
 //
 // It is nil on the API-format path, which never contacts ComfyUI at all. That is
 // not a degenerate case to be tidied away: the cache is the ONLY origin source
@@ -186,7 +193,22 @@ func (s *Server) cloudUnreachableNote() string {
 //
 // rawInfo is the /object_info body the CALLER already holds (see cloudAPIGraph); it
 // wins over the cache whenever it can classify anything, because it is strictly
-// fresher and needs no SQLite read and no second parse.
+// fresher and needs no SQLite read.
+//
+// ⚠ IT DOES NOT AVOID A PARSE — this line used to claim "no second parse", and
+// there was never a second one to avoid. comfy.NodeOrigins below is the same full
+// decode the cache path would have run; only the round-trip through SQLite goes
+// away. Re-measured on this host against the LIVE payload (4,661,987 bytes, 2462
+// node types, mean of 12 iterations, two runs, at both DB backings so the claim is
+// not about one storage mode):
+//
+//	GetComfyObjectInfo  (AVOIDED)     ~2.8–5.1 ms   :memory: and file-backed
+//	comfy.NodeOrigins   (STILL PAID)  ~21.2–22.1 ms  both
+//
+// So the saving is the read — single-digit milliseconds per panel render, roughly a
+// fifth of the parse it does not remove. Real, and much smaller than the ~21–34 ms
+// once claimed for it: that range was the PARSE, i.e. the term that stays. The
+// correctness half above is the reason this shape is right; the timing is a bonus.
 //
 // 🔴 THE CACHE FALLBACK IS NOT DEAD CODE — DO NOT DELETE IT. An API-format workflow
 // never contacts ComfyUI (cloudAPIGraph returns before the fetch), so rawInfo is nil

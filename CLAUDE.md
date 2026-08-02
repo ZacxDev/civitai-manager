@@ -1248,14 +1248,35 @@ appears. **A fixture can be wrong in a way that produces a plausible screenshot.
   🔴 **THE HANDLER PASSES ITS FRESHLY FETCHED `/object_info` STRAIGHT INTO THE
   CLASSIFIER — the cache read is the FALLBACK, not the source.** `cloudAPIGraph`
   returns `rawInfo` alongside the graph and `resolveResources` prefers it. It used to
-  cache the payload and then re-read the same ~4.66 MB back out of SQLite and
-  re-parse it — wasteful on the dominant path (**all 71 workflows on the operator's
-  real DB are UI-format**, i.e. every one of them fetches), and a silent downgrade to
-  stale/absent data whenever the write did not land (`cacheComfyObjectInfo` swallows
-  `PutComfyObjectInfo`'s error **by design** so a run cannot fail over a display
-  cache; a read-only DB never writes at all). **Do not delete the cache fallback**:
-  an API-format workflow returns from `cloudAPIGraph` before the fetch, so `rawInfo`
-  is nil and the cached row is its only origin source.
+  cache the payload and then re-read the same ~4.66 MB back out of SQLite to classify
+  that copy instead — a needless database round-trip on the dominant path (**all 71
+  workflows on the operator's real DB are UI-format**, i.e. every one of them
+  fetches), and a silent downgrade to stale/absent data whenever the write did not
+  land (`cacheComfyObjectInfo` swallows `PutComfyObjectInfo`'s error **by design** so
+  a run cannot fail over a display cache; a read-only DB never writes at all).
+  ⚠ **ONLY THE READ IS AVOIDED — NOT THE PARSE**, and this line used to say
+  "re-parse", implying a second decode that never existed. `comfy.NodeOrigins` runs
+  over the whole document either way. Measured on the live 4,661,987-byte / 2462-type
+  payload (12 iterations, two runs, `:memory:` **and** file-backed): the avoided
+  `GetComfyObjectInfo` is **~2.8–5.1 ms**, the parse that stays is **~21.2–22.1 ms**.
+  So the win is single-digit ms per render, ~⅕ of the term it does not remove — do
+  not restate this as a ~21–34 ms saving, which was the parse. **The correctness half
+  is the load-bearing one and it is untouched by the smaller number.**
+  **Do not delete the cache fallback**: an API-format workflow returns from
+  `cloudAPIGraph` before the fetch, so `rawInfo` is nil and the cached row is its only
+  origin source.
+  🔴 **The tier logging lives in `resolveResources`, NOT in `comfyNodeOrigins`.** It
+  started in the latter and was therefore **dead on the dominant path** — that
+  function runs only as the fallback, so a UI-format workflow with a reachable
+  ComfyUI never reached it and the builtin/custom split was never recorded at all.
+  `resolveResources` is the only place that sees both tiers, so it emits the split
+  with an explicit `tier=fresh|cache` field and Warns on a fetched body that
+  classifies nothing (truncated/corrupt) — the case the logging exists for and the
+  one `comfyNodeOrigins` structurally cannot see. **The split is `Debug` on purpose
+  and must not be promoted to `Warn`**: an install with no custom-node packs is
+  ordinary and 0 custom is then the *correct* answer, so a Warn would fire on every
+  render of a healthy install. A **cold cache stays silent** — designed state, not a
+  fault. All three are pinned by `TestNodeOriginTierIsObservable`, mutation-verified.
   ⚠ **Testing that pass-through: the OBVIOUS fixture is VACUOUS.** Seeding a stale
   cache row that disagrees with the fresh payload proves nothing, because
   `cacheComfyObjectInfo` overwrites the row with the fresh body *before* anything
