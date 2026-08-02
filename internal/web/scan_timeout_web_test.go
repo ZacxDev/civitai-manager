@@ -208,6 +208,18 @@ func TestScanStopStillWorksWithAConfiguredTimeout(t *testing.T) {
 	if rec := post(t, srv, "/library/scan/stop", url.Values{}, true); rec.Code != http.StatusOK {
 		t.Fatalf("stop POST = %d, want 200", rec.Code)
 	}
+	// Wait for the job to SETTLE with this test's own message, before handing off
+	// to the shared poll helper: a Stop that no longer cancels the job context
+	// would otherwise surface as pollScanUntilDone's generic "scan did not finish"
+	// and read like an unrelated flake.
+	settleBy := time.Now().Add(seamFallback)
+	for srv.scanJobState().Running {
+		if time.Now().After(settleBy) {
+			t.Fatalf("Stop did not cancel the scan job within %v: the seam is still blocked on ctx.Done(). "+
+				"stopScan must cancel the context.WithTimeout(…, s.webScanTimeout()) cancel func it was handed", seamFallback)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	body := pollScanUntilDone(t, srv)
 	snap := srv.scanJobState()
 
