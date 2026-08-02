@@ -383,6 +383,35 @@ func TestMaturityHandlerRejectsAnInvertedRange(t *testing.T) {
 			got.String())
 	}
 
+	// 🔴 THE REACHABLE ONE. The two POSTs above are hand-made; this pair is what a
+	// user can actually stage in the shipped panel, and it is why the client gate
+	// exists at all. From the SAVED FULL band both tracks render all five stops
+	// (nothing is out of range), so min=x can be staged and then max=r — and Apply
+	// POSTs exactly this. The server must keep refusing it: with hx-swap="none" and
+	// no htmx:responseError handler anywhere in the app, a 400 here is INVISIBLE,
+	// which is precisely the dead-Apply-button regression. The client gate stops the
+	// POST from being sent; this assertion is what stops the band from landing if the
+	// gate is ever bypassed, defeated, or simply switched off with JS.
+	if rec := post("min=pg&max=xxx&csrf_token=" + srv.csrf); rec.Code != http.StatusNoContent {
+		t.Fatalf("fixture: widening to the full band must persist, got %d", rec.Code)
+	}
+	if got := srv.maturity(); got.String() != "pg:xxx" {
+		t.Fatalf("fixture did not reach the FULL band (where every stop is selectable "+
+			"and the inverted pair below is reachable): stored range = %q", got.String())
+	}
+	if rec := post("min=x&max=r&csrf_token=" + srv.csrf); rec.Code != http.StatusBadRequest {
+		t.Errorf("the pair a user can actually stage from the full band (min=x, max=r) "+
+			"must be rejected with 400, got %d", rec.Code)
+	}
+	if got := srv.maturity(); got.String() != "pg:xxx" {
+		t.Errorf("staging min=x then max=r and pressing Apply changed the stored range to %q — "+
+			"it must persist NOTHING", got.String())
+	}
+	// Back to the narrow band the remaining assertions are written against.
+	if rec := post("min=pg13&max=r&csrf_token=" + srv.csrf); rec.Code != http.StatusNoContent {
+		t.Fatalf("fixture: restoring pg13:r must persist, got %d", rec.Code)
+	}
+
 	// An unknown level is likewise a 400 that persists nothing.
 	if rec := post("min=pg&max=banana&csrf_token=" + srv.csrf); rec.Code != http.StatusBadRequest {
 		t.Errorf("an unknown level must be rejected with 400, got %d", rec.Code)

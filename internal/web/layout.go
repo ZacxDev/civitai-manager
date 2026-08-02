@@ -180,14 +180,21 @@ func navbar(csrf string, mr maturityRange, rail railData) g.Node {
 // control, so they come from ONE constant — a typo in either renders a button
 // that does nothing at all, silently, with no console error.
 // maturityFormID / maturityApplyID name the form and its commit button. The form
-// needs a stable id because it is now the ONLY thing that saves: any programmatic
-// preset has to reach it and call requestSubmit() rather than clicking radios.
+// needs a stable id because it is now the ONLY thing that saves.
+// ⚠ This used to add "any programmatic preset has to reach it and call
+// requestSubmit() rather than clicking radios". That is WRONG — see the header on
+// maturityControl. The radios are an interlock keyed to the SAVED band, so driving
+// them and submitting can persist a WIDER band than the preset asked for.
+// maturityInvalidID names the live region that says WHY Apply will not commit; the
+// Apply button points at it with aria-describedby, so the id is part of the
+// accessibility wiring and not just a style hook.
 const (
 	maturityControlMinID = "cm-maturity-min"
 	maturityControlMaxID = "cm-maturity-max"
 	maturityMenuPanelID  = "cm-maturity-menu"
 	maturityFormID       = "cm-maturity-form"
 	maturityApplyID      = "cm-maturity-apply"
+	maturityInvalidID    = "cm-maturity-invalid"
 )
 
 // maturityControl renders the app-wide PG..XXX maturity RANGE as an ICON BUTTON
@@ -251,11 +258,16 @@ const (
 //     never the pending selection. Nothing is applied until Apply, so announcing the
 //     pending value as the current one would be a lie — and the page reload after
 //     Apply is what refreshes them.
-//   - Anything that sets the radios PROGRAMMATICALLY (a preset/"safe mode" shortcut,
-//     say) must set them and then call `form.requestSubmit()` ONCE. Under the old
-//     change-trigger a two-radio preset fired two POSTs and two reloads; under this
-//     one a `.click()`-based preset commits NOTHING at all. Clicking radios is no
-//     longer a way to save.
+//   - 🔴 A PRESET ("safe mode") MUST NOT DRIVE THE RADIOS AT ALL. This comment used
+//     to say it should — "set them and then call `form.requestSubmit()` ONCE" — and
+//     that was WRONG in the fail-OPEN direction. A `.click()`-based preset commits
+//     nothing now, which is why submitting looked like the fix; but maturityTrack
+//     emits NO <input> for an out-of-band stop and the max track's low bound is the
+//     SAVED mr.Min, so from a saved band of R..XXX that approach POSTs
+//     min=pg&max=xxx and persists PG..XXX — a "Safe mode" control that reveals
+//     everything. The radios are an interlock keyed to the saved band. A preset
+//     needs its OWN CSRF-protected POST carrying the literal min/max, validated by
+//     handleSetMaturity's existing min > max rejection.
 //
 // STACKING: the panel is a `popover`, so it renders in the TOP LAYER and declares
 // NO z-index — see libraryMenu and the STACKING ORDER ledger in app.css. It
@@ -349,15 +361,135 @@ func maturityControl(mr maturityRange, csrf string) g.Node {
 				// replacing it, so speech input still matches the word on screen (WCAG 2.5.3
 				// wants the visible text to be a prefix of the accessible name).
 				h.Div(h.Class("cm-maturity-actions"),
+					// The inverted-band reason. It is ALWAYS in the DOM and never
+					// `hidden` — a role="status" region has to exist and be rendered
+					// before its text changes for the change to be announced, and a
+					// region that is un-hidden and populated in the same tick is
+					// announced unreliably. Empty it is a zero-height box, so it costs
+					// no layout. Its text is written by maturityApplyGateScript; with
+					// JS off it stays empty, which is correct — nothing is gated then.
+					h.P(
+						h.ID(maturityInvalidID),
+						h.Class("cm-maturity-invalid"),
+						g.Attr("role", "status"),
+					),
 					civButton("filled", "sm", []g.Node{
 						h.Type("submit"),
 						h.ID(maturityApplyID),
 						g.Attr("aria-label", "Apply maturity range"),
+						// aria-describedby, not a bare visual message: a screen-reader
+						// user who tabs to Apply after the announcement has passed must
+						// still be told why it will not commit.
+						g.Attr("aria-describedby", maturityInvalidID),
 					}, g.Text("Apply")),
 				),
 			),
 		),
+		maturityApplyGateScript(),
 	)
+}
+
+// maturityApplyGateScript gates the COMMIT on a valid staged band.
+//
+// 🔴 THE BUG IT FIXES (shipped in v0.1.99). Once the tracks began STAGING instead
+// of committing on change, an inverted band became reachable: at a saved FULL band
+// both tracks render all five stops, so a user can stage min=X and then max=R.
+// Apply then POSTs `min=x&max=pg13`, handleSetMaturity correctly answers 400 and
+// persists nothing — but the form is hx-swap="none" and the app has no
+// htmx:responseError handler anywhere, so NOTHING happens. No reload, no message,
+// the panel stays open. A dead Apply button. Before staging this was impossible,
+// because committing on change re-rendered the other track's bounds every time.
+//
+// 🔴 WHY GATE THE COMMIT RATHER THAN RESHAPE THE RADIOS. The alternative — having
+// the client re-render the other track's bounds as the user stages, mirroring the
+// server's "emit no input for an out-of-range stop" rule — is closer in spirit,
+// and it was rejected. It means programmatically reshaping a radio group, which is
+// exactly where the v0.1.98 fail-OPEN bug lived: a native radio group WRAPS, so a
+// stop that becomes unreachable lands focus on the FAR END of the scale, and one
+// ArrowLeft in the *reducing* direction persisted a WIDER band. Gating the commit
+// can only fail CLOSED — its worst case is Apply refusing a band it should have
+// accepted, which is immediately visible on screen and persists nothing.
+//
+// 🔴 THIS IS A UX AFFORDANCE, NOT THE ENFORCEMENT. handleSetMaturity still rejects
+// min > max with 400 and persists nothing, and that stays the real guard: a
+// browser-only constraint binds only a browser. With JS off this script never
+// runs, Apply stays enabled, and an inverted POST is refused server-side exactly as
+// it is today — still failing closed, just without the explanation.
+//
+// Three listeners, and the second one is the subtle one:
+//   - `change` on the form covers ordinary staging (a radio group fires it on every
+//     click and every arrow keypress).
+//   - `reset` + `toggle` cover the panel's ontoggle form.reset(), which restores the
+//     SAVED (always valid) band and so must re-ENABLE Apply. form.reset() fires no
+//     `change` at all, so a change-only handler would leave Apply stale-disabled
+//     forever after one dismiss. The `reset` event fires BEFORE the control values
+//     are restored, hence the setTimeout(…, 0); the popover's own `toggle` event
+//     fires after the inline ontoggle handler has returned — i.e. after reset()
+//     completed — so it recomputes against the restored values directly. Either
+//     alone would do; both is cheap and neither depends on the other's ordering.
+//   - `htmx:beforeRequest` is what actually blocks the POST. aria-disabled is
+//     advisory — unlike a real `disabled` it does not stop a click or an implicit
+//     Enter submit — so the request has to be cancelled explicitly. Verified against
+//     the vendored htmx 2.0.4: its triggerEvent builds every event with
+//     `cancelable: true` and issueAjaxRequest bails on
+//     `if(!triggerEvent(elt,"htmx:beforeRequest",…)){…return}`.
+//
+// Inline, vendored, no external file and no CDN — the same rule as
+// railDrawerScript. It is scoped by id to this one control and is a no-op on any
+// page whose markup it does not find.
+func maturityApplyGateScript() g.Node {
+	return h.Script(g.Raw(`
+(function(){
+  var ORDER = {pg:0, pg13:1, r:2, x:3, xxx:4};
+  var f = document.getElementById('` + maturityFormID + `');
+  var btn = document.getElementById('` + maturityApplyID + `');
+  var msg = document.getElementById('` + maturityInvalidID + `');
+  var panel = document.getElementById('` + maturityMenuPanelID + `');
+  if (!f || !btn || !msg) { return; }
+  function staged(name){
+    // Read the CHECKED radio directly rather than f.elements[name].value.
+    // f.elements[name] is a RadioNodeList only when the track rendered MORE THAN
+    // ONE input — and a track emits no input at all for an out-of-band stop, so at
+    // a saved band of pg:pg or xxx:xxx one track is a lone HTMLInputElement whose
+    // .value is its own value whether or not it is checked. Harmless today (a lone
+    // stop is always the checked one, and neither of those bands can be staged
+    // inverted), but the selector is shape-independent and cannot drift.
+    var el = f.querySelector('input[name=' + name + ']:checked');
+    return el ? el.value : '';
+  }
+  function inverted(){
+    var a = ORDER[staged('min')];
+    var b = ORDER[staged('max')];
+    // typeof, not the "in" operator: "in" walks the prototype chain, so
+    // 'toString' would read as a known level.
+    //
+    // An unranked value therefore reads as NOT inverted — the gate fails OPEN.
+    // That is the correct direction and is deliberate: it is unreachable through
+    // the UI (tracks emit only lowercase slugs), and the server still rejects it
+    // (maturityFromSlug lowercases, then valid() refuses), so the worst case
+    // degrades to the silent 400 this gate exists to prevent — never to a WIDER
+    // band being persisted. The gate is an affordance; the server is enforcement.
+    return typeof a === 'number' && typeof b === 'number' && a > b;
+  }
+  function sync(){
+    var bad = inverted();
+    btn.setAttribute('aria-disabled', bad ? 'true' : 'false');
+    var next = bad ? 'From is above To — move one end to apply.' : '';
+    // Only write on a real change. role="status" announces on CONTENT CHANGE, and
+    // reassigning the same string replaces the text node — a mutation a screen
+    // reader may re-announce on EVERY arrow keypress while the band stays
+    // inverted. The guard makes it announce once per transition.
+    if (msg.textContent !== next) { msg.textContent = next; }
+  }
+  f.addEventListener('change', sync);
+  f.addEventListener('reset', function(){ setTimeout(sync, 0); });
+  if (panel) { panel.addEventListener('toggle', sync); }
+  f.addEventListener('htmx:beforeRequest', function(e){
+    if (inverted()) { e.preventDefault(); sync(); }
+  });
+  sync();
+})();
+`))
 }
 
 // maturityGlyph is the trigger's icon: a shield outline stroked in currentColor,

@@ -493,11 +493,37 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   **The nav control is an icon BUTTON opening a `popover` PANEL that holds one
   CSRF-protected form** (`maturityControl`), and each end of the band is a 5-stop
   segmented track built from native **radios** (`maturityTrack`) sharing one
-  5-column grid. Each end renders **only** the levels that keep the band valid, so
-  it cannot emit an inverted range; `handleSetMaturity` **rejects** `min > max`
+  5-column grid. Each end renders **only** the levels that keep the band valid *at
+  the moment the page was rendered*; `handleSetMaturity` **rejects** `min > max`
   with 400 rather than swapping (which would grant an unasked-for band) or clamping
   to empty (which reads as a fetch failure). Both halves are load-bearing — the
   markup constraint only binds a browser.
+  ⚠ **This bullet used to end "…so it cannot emit an inverted range". That claim is
+  FALSE under staging and shipped a dead button in v0.1.99.** The bounds are baked
+  in at RENDER time, so from the **saved full band** every stop on both tracks is a
+  real input (measured live: 5 min-track inputs, 5 max-track inputs) — stage
+  `min=X`, then `max=R`, and Apply POSTs an inverted pair. The server 400s it
+  correctly and persists nothing, but the form is `hx-swap="none"` and the app has
+  **no `htmx:responseError` handler anywhere**, so the click does *nothing at all*:
+  no reload, no message, panel stays open. Commit-on-change used to make this
+  unreachable by re-rendering the other track after every change.
+  🔴 **The fix (v0.1.100) GATES THE COMMIT; it does NOT reshape the radios**
+  (`maturityApplyGateScript` in `layout.go`). Re-rendering the other track's bounds
+  client-side as the user stages is closer to the "emit no input for an
+  out-of-range stop" rule below — and it means programmatically reshaping a radio
+  group, which is exactly where the v0.1.98 fail-OPEN bug lived. Gating the commit
+  can only fail **closed**: worst case Apply refuses a band it should accept, which
+  is visible on screen and persists nothing. The gate sets `aria-disabled` (**not**
+  `disabled` — that leaves the tab order and announces nothing), writes the reason
+  into a `role="status"` region the button names via `aria-describedby`, and
+  cancels the POST in `htmx:beforeRequest` (the vendored htmx 2.0.4 builds every
+  event `cancelable: true` and `issueAjaxRequest` bails on a cancelled one).
+  **It recomputes on `change`, on `reset`, AND on the panel's `toggle`** — the
+  panel's `ontoggle` `form.reset()` restores the saved (valid) band and fires **no
+  `change`**, so a change-only gate leaves Apply stale-DISABLED after one dismiss;
+  and the `reset` event fires *before* the values are restored, hence the deferred
+  recompute. With JS off the gate never runs, Apply stays live, and the server's
+  400 is the only guard — same as today, still failing closed.
   🔴 **A native radio group WRAPS, and a `disabled` stop is still a group member.**
   Arrow keys skip a `disabled` radio, and at a boundary "skipped" means focus lands
   on the **far end of the scale** — which shipped a content-gating control failing
@@ -512,10 +538,24 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   reloads, the popover closes and focus is dumped to `<body>` — walking XXX→PG was
   four saves and four reloads, each intermediate band persisted. Consequences:
   the trigger's `aria-label` and the panel's "current" line show the **saved** band,
-  never the pending selection; and anything setting the radios **programmatically**
-  (a preset / "safe mode" shortcut) must set both ends and then call
-  `document.getElementById('cm-maturity-form').requestSubmit()` **once** —
-  `.click()`ing radios saved twice under the old trigger and saves **nothing** now.
+  never the pending selection.
+  🔴 **A PRESET ("safe mode") MUST NOT DRIVE THE RADIOS AT ALL — this line used to
+  say it should, and that advice was WRONG in the fail-OPEN direction.** It read:
+  "set both ends and then call `form.requestSubmit()` once". `.click()`ing radios
+  saves nothing now (the form commits on submit only), which is why that looked like
+  the fix — but `maturityTrack` emits **no `<input>`** for an out-of-band stop, and
+  the max track's low bound is the **saved** `mr.Min`. Measured:
+  ```
+  saved=PG..XXX   min-pg present=true   max-pg13 present=true
+  saved=R..XXX    min-pg present=true   max-pg13 present=FALSE   checked max=xxx
+  saved=X..XXX    min-pg present=true   max-pg13 present=FALSE   checked max=xxx
+  ```
+  So from a saved band of `R..XXX`, "set both radios then submit" POSTs
+  `min=pg&max=xxx` and persists **PG..XXX** — a control labelled *Safe mode* that
+  makes everything visible. The radios are an interlock keyed to the SAVED band;
+  anything that needs to set an arbitrary band must **bypass them**: its own
+  CSRF-protected POST carrying the literal `min`/`max`, validated by
+  `handleSetMaturity`'s existing `min > max` rejection.
   🔴 **Staging created a NEW fail-OPEN path, and the panel's `ontoggle` reset is what
   closes it — do not remove it.** A staged selection the user never applied survives
   in the DOM, so dismissing the panel (Escape / light-dismiss) and reopening it later

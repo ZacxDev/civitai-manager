@@ -1268,10 +1268,65 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  */
 .cm-maturity-actions {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  /* space-between, not flex-end: the inverted-band reason is the row's first item
+   * and sits left, Apply stays right. When the reason is empty the row still looks
+   * exactly as it did before — but NOT because the item collapses to nothing: it
+   * carries `flex: 1 1 auto` below, so it GROWS to fill the free space. It is
+   * zero-HEIGHT (no text), which is why the row's height is unchanged, and it
+   * absorbs the slack, which is why Apply stays hard right. */
+  justify-content: space-between;
+  gap: 0.75rem;
   margin-top: 0.75rem;
   padding-top: 0.65rem;
   border-top: 1px solid var(--civitai-color-border);
+}
+/*
+ * WHY APPLY WILL NOT COMMIT. Written by maturityApplyGateScript when the staged
+ * band is inverted; empty otherwise. It is a role="status" live region, so it must
+ * stay rendered (never `hidden`, never display:none) for its text change to be
+ * announced — an empty block box has no line boxes and therefore no height, which
+ * is what keeps a permanently-present element free.
+ *
+ * warning-text on --civitai-color-surface (the panel's background) is an EXISTING
+ * pair in contrast_web_test.go's table ("broken pill (warning) on surface"), so
+ * this adds no new coloured pair. Warning rather than error on purpose: an
+ * inverted band is a state to correct, not a failure — see the -text/-fill split
+ * in the WCAG block, this is text so it takes the -text token.
+ */
+.cm-maturity-invalid {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 0.6875rem;
+  line-height: 1.35;
+  color: var(--civitai-color-warning-text);
+}
+/*
+ * aria-disabled, NOT the `disabled` attribute — a disabled button leaves the tab
+ * order and announces nothing, so a keyboard/screen-reader user would tab straight
+ * past the control with no way to learn why. Keeping it focusable means the
+ * styling has to come from the ARIA state, and the POST is cancelled in
+ * htmx:beforeRequest instead. cursor stays legible on hover.
+ */
+/*
+ * 🔴 0.6, NOT a lower value, and it must match civitai-components.css's
+ * `:disabled, [aria-busy='true']` rule — that is the design system's own dim
+ * value, and drifting below it is invisible to the gate that would normally catch
+ * it. contrast_web_test.go resolves TOKEN PAIRS and has no model of `opacity` on
+ * text, which is exactly the blind spot that let two AA failures ship (the
+ * `.cm-dest-tab-sub` / `.cm-vgroup-pill-count` double-dimming). Measured on dark,
+ * primary-fg #fefefe on primary #1971C2 over the #1A1B1E surface: 4.98:1 plain,
+ * 3.37:1 at 0.6, and 2.90:1 at 0.5.
+ *
+ * The usual "inactive component" exemption (WCAG 1.4.3) is WEAKER here than for a
+ * real disabled control: this button is deliberately NOT `disabled` — it stays
+ * focusable so aria-describedby can explain why it will not commit — so it is
+ * still a reachable, announced control. Keep the dim shallow.
+ */
+.cm-maturity-actions [data-civitai-ui='button'][aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 @media (min-width: 1024px) {
