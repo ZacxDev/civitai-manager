@@ -1,6 +1,7 @@
 package web
 
 import (
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -417,5 +418,80 @@ func TestMaturityApplyGateExplainsItselfToAssistiveTech(t *testing.T) {
 		t.Errorf("the Apply button is not described by the reason element. An announcement that "+
 			"has already passed is unrecoverable: a user who tabs to Apply afterwards would be "+
 			"told only \"Apply\", with no hint that it will refuse: %s", tag)
+	}
+}
+
+// TestMaturityApplyGateReadsTheCheckedRadioAndAnnouncesOnce pins the three things
+// the v0.1.100 audit round changed. All three were correct when written and
+// covered by NOTHING: the delta touched no test file, and a browser-side audit
+// showed that removing `:checked` produced 10 wrong gate verdicts while the entire
+// 2680-test suite stayed green. That is the shape this repo keeps getting caught
+// by, so the properties are pinned here even though these are string assertions
+// over the shipped script rather than execution of it.
+//
+// ⚠ Honest limit, same as the rest of this file: there is no JS engine in this
+// package, so these prove the script SAYS the right thing, not that it DOES it.
+// The behavioural proof is the browser matrix recorded in the PR.
+func TestMaturityApplyGateReadsTheCheckedRadioAndAnnouncesOnce(t *testing.T) {
+	out := renderString(t, maturityControl(fullMaturityRange(), "csrf-tok"))
+	script := matGateScript(t, out)
+
+	// 1. The staged value must come from the CHECKED radio, not from
+	//    f.elements[name].value. f.elements[name] is a RadioNodeList only when the
+	//    track rendered MORE THAN ONE input — and a track emits no input at all for
+	//    an out-of-band stop, so at a saved band of pg:pg or xxx:xxx one track is a
+	//    lone HTMLInputElement whose .value is its own value whether or not it is
+	//    checked. Harmless today (a lone stop is always the checked one), but the
+	//    lookup must not depend on the shape.
+	if !strings.Contains(script, ":checked") {
+		t.Errorf("the gate does not read the CHECKED radio — a lone-input track (saved pg:pg or "+
+			"xxx:xxx) would report its own value whether checked or not, so the gate's verdict "+
+			"would stop depending on what is actually staged:\n%s", script)
+	}
+	if strings.Contains(script, "elements['min']") || strings.Contains(script, `elements["min"]`) {
+		t.Errorf("the gate is back to f.elements[…] for the staged value; use a " +
+			"`:checked` selector, which is shape-independent")
+	}
+
+	// 2. aria-disabled must be set on EVERY sync, never inside the message guard
+	//    below — a short-circuit there would leave the button visually enabled while
+	//    the POST is blocked (or the reverse), which is worse than either state.
+	if !strings.Contains(script, "aria-disabled") {
+		t.Errorf("the gate never sets aria-disabled:\n%s", script)
+	}
+
+	// 3. The reason is written only on a real transition. role="status" announces on
+	//    CONTENT CHANGE, and reassigning the same string replaces the text node — a
+	//    mutation a screen reader may re-announce on EVERY arrow keypress while the
+	//    band stays inverted. Measured before the fix: 1 DOM write per change; after:
+	//    0 while the message is unchanged, still exactly 1 per real transition.
+	if !strings.Contains(script, "textContent !==") {
+		t.Errorf("the gate rewrites the live region unconditionally — while the band stays "+
+			"inverted, every arrow keypress replaces the same text and a screen reader may "+
+			"re-announce it each time:\n%s", script)
+	}
+}
+
+// TestMaturityApplyDimMatchesTheDesignSystem pins the disabled dim to the value
+// civitai-components.css already uses for :disabled / [aria-busy='true'].
+//
+// 🔴 contrast_web_test.go resolves TOKEN PAIRS and has NO model of an `opacity` on
+// text — grep it, there is not one. That blind spot is what let two AA failures
+// ship (.cm-dest-tab-sub at 0.85 and .cm-vgroup-pill-count at 0.75, both dimming an
+// already-dimmed token below 4.5:1). So a drift here is invisible to the gate that
+// would normally catch it, and has to be pinned by hand. Measured on the real dark
+// render: 4.98:1 plain, 3.41:1 at 0.6, 2.94:1 at 0.5.
+func TestMaturityApplyDimMatchesTheDesignSystem(t *testing.T) {
+	b, err := os.ReadFile("assets/app.css")
+	if err != nil {
+		t.Fatalf("read app.css: %v", err)
+	}
+	css := string(b)
+	rule := cssRuleIn(t, css, ".cm-maturity-actions [data-civitai-ui='button'][aria-disabled='true']")
+	if !strings.Contains(rule, "opacity: 0.6") {
+		t.Errorf("the aria-disabled Apply dim is not the design system's 0.6 "+
+			"(civitai-components.css uses it for :disabled and [aria-busy='true']). "+
+			"contrast_web_test.go cannot see an opacity on text, so a lower value fails AA "+
+			"silently:\n%s", rule)
 	}
 }
