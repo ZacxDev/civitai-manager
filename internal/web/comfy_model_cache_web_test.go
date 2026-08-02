@@ -297,3 +297,60 @@ func TestResourceChipPopoverCSSIsScopedByAChildCombinator(t *testing.T) {
 		}
 	}
 }
+
+// TestCloudPanelPopulatesTheComfyModelCache guards the SECOND cache writer.
+//
+// 🔴 It exists because an audit neutered the cloud-path write and the ENTIRE
+// internal/web suite stayed green — the run-path guard above covers only its own
+// call site. An inert cache with zero callers is precisely the regression this
+// whole change set exists to undo (the ◎ chip state could never render), so half
+// the wiring being removable with nothing going red is that same bug wearing a
+// different hat.
+//
+// The cloud panel fetches /object_info to convert a UI-format graph to API format;
+// the payload is already in hand at that moment, so it feeds the display cache for
+// the same reason the local run path does.
+func TestCloudPanelPopulatesTheComfyModelCache(t *testing.T) {
+	srv := newCloudTestServer(t, &fakeCloud{})
+
+	// Precondition: nothing cached, so a pass cannot ride on a row some other path
+	// left behind.
+	if ent, err := srv.store.GetComfyObjectInfo(); err != nil || ent != nil {
+		t.Fatalf("fixture precondition: cache must start empty, got ent=%v err=%v", ent, err)
+	}
+
+	fake := &fakeComfy{
+		info:    mustObjectInfo(t, objectInfoFixture),
+		infoRaw: []byte(objectInfoFixture),
+	}
+	srv.comfyClientFn = func() comfyClient { return fake }
+
+	// A UI-format graph is what forces the conversion, which is what fetches
+	// /object_info. An API-format one would skip the fetch entirely.
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, uiCheckpointGraph)
+
+	if rec := get(t, srv, "/workflows/"+id+"/cloud"); rec.Code != http.StatusOK {
+		t.Fatalf("cloud panel = %d", rec.Code)
+	}
+
+	// Fixture reached the interesting case: the panel actually fetched /object_info.
+	// Without this the assertion below could fail for the boring reason that the
+	// cloud path never ran at all (cloud disabled, no comfy client, API-format
+	// graph) — which would read as a missing writer.
+	if fake.objectInfoCalls == 0 {
+		t.Fatal("fixture did not reach the interesting case: the cloud panel never fetched /object_info")
+	}
+
+	ent, err := srv.store.GetComfyObjectInfo()
+	if err != nil {
+		t.Fatalf("read cache: %v", err)
+	}
+	if ent == nil {
+		t.Fatal("the cloud path fetched /object_info but cached NOTHING — that writer is inert, " +
+			"so the ◎ (in ComfyUI) chip state can never appear for anyone who only runs in the cloud")
+	}
+	if string(ent.ObjectInfoJSON) != objectInfoFixture {
+		t.Errorf("cached payload is not the bytes ComfyUI returned:\ngot  %q\nwant %q",
+			string(ent.ObjectInfoJSON), objectInfoFixture)
+	}
+}
