@@ -1,7 +1,6 @@
 package uxaudit
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 )
@@ -25,13 +24,4 @@ func ResolveChromium() string {
 		}
 	}
 	return ""
-}
-
-// MustResolveChromium is ResolveChromium but returns an error describing the
-// searched locations when nothing is found.
-func MustResolveChromium() (string, error) {
-	if p := ResolveChromium(); p != "" {
-		return p, nil
-	}
-	return "", fmt.Errorf("no chromium found: set AUDITLOOP_CHROMIUM or put chromium/chromium-browser/chrome on PATH (never `playwright install`)")
 }
