@@ -95,6 +95,10 @@ CSRF defends against a *cross-site* forgery from a page the attacker doesn't con
 
 Legend: **CSRF** = verifies token before side effect · **Gate** = loopback-gated arbitrary-path guard · **Egress** = makes outbound network calls · **FS-write** = writes/moves local files.
 
+> ⚠ **This table is a POINT-IN-TIME record of the routing table at `d38b671` (v0.1.64), and it is NOT maintained.** It is deliberately left as audited rather than edited in place: a dated audit whose evidence gets silently rewritten stops being evidence of what was reviewed, and the reader needs to be able to trust that the rows are what the auditor actually saw. Do not read it as the current routing table.
+>
+> Known drift since, recorded here rather than by editing the rows: **`/workflows/run/resolve-model` no longer exists** — it was deleted as an orphan route (registered, loopback-gated, making outbound egress, linked from nowhere), found by `TestEveryRegisteredRouteIsEmitted`. It appears in the `/workflows/{id}/{comfy-status,status}` row below. **`/settings/theme` is also gone** (the light theme was retired from the UI). For the live set, read `internal/web/server.go`; for what is registered-but-unreachable, read `routeReachabilityAllow`.
+
 | Route | Method | CSRF | Gate | Egress | FS-write | Notes |
 |---|---|---|---|---|---|---|
 | `/{$}`, `/search`, `/models/{id}`, `/creators/{username}` | GET | — | — | ✓(read) | — | Read-only outbound proxy GETs (search/detail). |

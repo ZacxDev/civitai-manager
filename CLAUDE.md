@@ -704,9 +704,17 @@ and **read by nobody from v0.1.13 (29d48f8) through v0.1.101 — 89 releases** (
 is exact: `git tag --contains 29d48f8` = 89, first `v0.1.13`, last `v0.1.101`); **11
 functions with no production caller**, proved not by reading but by **deleting all
 eleven and showing `go build ./...` still exits 0**; an **orphan route**,
-`GET /workflows/run/resolve-model`, whose path appears in exactly one non-test place —
-its own `mux.HandleFunc` — with **~8 tests exercising a surface no user can reach**; and
-**3 dead `.cm-*` CSS rules**.
+`GET /workflows/run/resolve-model`, whose path appeared in exactly one non-test
+place — its own `mux.HandleFunc` — with **~8 tests exercising a surface no user could
+reach**; and **3 dead `.cm-*` CSS rules**.
+
+⚠ **Past tense on that route is deliberate — it is DELETED**, along with the 4 dead
+`.cm-*` rules, by the change that added the two guards below. This line described it
+in the present tense for one PR after it stopped existing, which is the same failure
+the release-version and migration-number warnings above exist to prevent. The
+`resolveModels` / `resolveModelFragment` logic underneath it SURVIVES (production
+reaches it through the download-and-run path), so its tests were repointed at those
+functions rather than deleted with the route.
 
 **The instrument is now a CI GATE — `.github/deadcode.sh`, run by the `deadcode` job
 in `ci.yml` on every push and PR.** Run it locally the same way CI does; it takes no
@@ -768,14 +776,63 @@ proves *unreachable from a root*, which misses: (a) a **reachable** function gua
 a condition the app never satisfies — instance 3, where `Preflight` was called from live
 code that simply never got there; (b) a **harness fixture that chooses the wrong
 branch** (below); and (c) a **registered route**, which is reachable by definition even
-when nothing in the UI links to it — the orphan route above.
+when nothing in the UI links to it — the orphan route above. **(c) is now covered by a
+guard of its own** (next section); (a) and (b) still are not, and no static tool will
+cover them.
 
-🔴 **`class_coverage_web_test.go` is ONE-DIRECTIONAL.**
-`TestEveryTemplateClassExistsInAStylesheet` walks `h.Class` call sites and fails on a
-token with no CSS rule. **It never walks the other way** — a CSS rule with no emitter is
-invisible to it, and that is exactly instance 1's shape (an artifact nothing references).
-`TestNoRevivedDeadClasses` is a hardcoded blocklist of named tokens, not a general
-reverse check. If you delete a template, the rule it styled will sit there forever.
+### The two reachability guards, and exactly what each one proves
+
+Both live in `internal/web` and both run in the ordinary `go test ./...` — no browser,
+no network, no build tag. Each carries an **asserted debt ledger** (same discipline as
+`.github/deadcode-allow.txt`): the test fails when the set GROWS *and* when it SHRINKS,
+and **shrinking has two shapes** — the subject became reachable again, **or the subject
+was deleted outright**, leaving an entry with nothing to describe. Both shapes are
+asserted; the second is the one an entry is most likely to hit, because deleting the
+route/rule is the normal way these get resolved.
+
+- **`TestEveryRegisteredRouteIsEmitted`** (`route_reachability_web_test.go`) diffs every
+  `mux.Handle*` pattern against every path-shaped string the package's non-test source
+  produces, and fails on a registered route nothing can reach. This is the gap
+  `deadcode` structurally cannot see — a registered handler is reachable *by
+  definition*. Ledger: `routeReachabilityAllow`.
+  🔴 **Read its green as evidence, not proof, and read its header comment before
+  trusting one.** Two honest limits:
+  - **"Emitted" means path-SHAPED, not URL-shaped.** Every sub-expression of a
+    left-associative `+` chain is recorded, and so is any whole literal — so a
+    *fragment* of a longer path, or a bare `"/"` used as a separator in a
+    `strings.ReplaceAll`, counts as an emitter. Measured 2026-08-02: **5 of 138**
+    emitted paths exist only via `+`-chain fragments, and **zero** registered routes
+    currently stand on one. The error is entirely in the **under-reporting** direction
+    — it can hide an orphan, never invent one — so it can never force a wrong deletion.
+  - **It is a PATH check, not path+method**: `GET /x` reads as reachable when only
+    `POST /x` is emitted. A verb-aware pass failing open on unrecognised shapes is
+    feasible (`hx("post", …)` carries the verb literally) and is open follow-up.
+  ⚠ **The file:line in a failure is ONE ARBITRARY witness, not "the" emitter** —
+  `ParseDir`'s file map iterates randomly, so it changes between runs. Treat it as a
+  place to start searching. An audit misread exactly this and reported `GET /{$}` as
+  only accidentally reachable; it is genuinely reachable — `brandLink` emits
+  `h.Href("/")` as the nav wordmark on every page.
+- **`TestEveryCMClassInAppCSSIsEmitted`** (`class_coverage_reverse_web_test.go`) is the
+  **missing half** of `class_coverage_web_test.go`. Ledger: `cssRuleReachabilityAllow`
+  (currently empty, which is the correct state).
+  ⚠ **This section used to say `class_coverage_web_test.go` is ONE-DIRECTIONAL and that
+  "if you delete a template, the rule it styled will sit there forever." That is no
+  longer true** — the reverse walk now exists and found `.cm-crumb-name`,
+  `.cm-vstatus-date`, `.cm-gen-sep` and `.cm-fix-cta` as dead rules. What remains true
+  is the forward guard's own one-directionality and that `TestNoRevivedDeadClasses` is
+  a hardcoded blocklist, not a general check.
+  Its scope is deliberate and narrow: **`app.css` only, `cm-` namespace only.**
+  `output.css` is a purged Tailwind build (an unemitted rule is not a state it can be
+  in) and the two `civitai-*.css` files are vendored. Its known hole is pinned rather
+  than hidden: a class composed as `"cm-pill-" + variant` never appears whole in
+  source, so `expectedDynamicClassPrefixes` + `TestDynamicClassPrefixesAreBounded` pin
+  that set EXACTLY — the hole stays visible and cannot grow silently.
+
+Both scanners share one `nonTestGoFile` filter and the `class_coverage_web_test.go`
+resolver primitives (`opaqueMark`, `packageStringDecls`, `resolveClassExpr`). 🔴 **The
+route guard `t.Fatal`s if `opaqueMark != routeHole`** — the two must stay the same
+byte, or an unresolved chunk arrives as literal text and silently makes orphans look
+reachable.
 
 **The runtime signal that works where static analysis cannot: AN EMPTY TABLE ON A
 HEAVILY-USED INSTALL.** `nodepack_cache` and `comfy_model_cache` both held **0 rows
