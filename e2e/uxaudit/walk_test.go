@@ -56,7 +56,11 @@ func TestUXAuditWalk(t *testing.T) {
 		wantViews[v.Name] = true
 	}
 	gotView := map[string]int{}
-	var heroCap *CapturedView
+	// EVERY Hero view is asserted, not just one. This used to be a single
+	// `heroCap *CapturedView` that each Hero desktop capture OVERWROTE, so with more
+	// than one hero only the last survived and the others were audited but never
+	// content-checked — a silent hole the moment a second hero was added.
+	var heroCaps []*CapturedView
 	for i := range res.Captures {
 		cv := &res.Captures[i]
 		gotView[cv.View.Name]++
@@ -87,7 +91,7 @@ func TestUXAuditWalk(t *testing.T) {
 			t.Errorf("%s/%s: nil network capture", cv.View.Name, cv.Viewport.Name)
 		}
 		if cv.View.Hero && cv.Viewport.Name == "desktop" {
-			heroCap = cv
+			heroCaps = append(heroCaps, cv)
 		}
 	}
 	for name := range wantViews {
@@ -105,15 +109,31 @@ func TestUXAuditWalk(t *testing.T) {
 	// data-run-seq strictly greater than the pre-click value AND the marker text, so a
 	// stale panel can never satisfy it and the walk fails loudly if this run's panel
 	// never appears.
-	if heroCap == nil {
-		t.Fatal("no hero (run-missing-models) capture found")
+	// The hero count is a LITERAL on purpose. It used to be derived from
+	// `Views(&App{})` — the same source `heroCaps` is built from — so deleting a Hero
+	// view shrank both sides equally and the assertion could not fail. Verified: with
+	// the derived form, deleting the run-missing-models-ui view left this test GREEN.
+	// (That deletion is caught, but by the browserless `minViews` ratchet in
+	// walk_selectors_test.go — not here, which is what the old comment claimed.)
+	//
+	// Both formats are heroes: the API branch and the UI branch of realRun reach the
+	// missing-models panel differently, and only a UI-format graph exercises the
+	// early-return-before-Preflight path. Raise this when a hero is added.
+	const wantHeroes = 2
+	if len(heroCaps) != wantHeroes {
+		t.Fatalf("captured %d hero desktop views, want %d — a hero view was not captured", len(heroCaps), wantHeroes)
 	}
-	body := heroCap.Capture.BodyText
-	if !strings.Contains(body, HeroMarker) {
-		t.Errorf("hero body missing %q panel; got:\n%s", HeroMarker, truncate(body, 800))
+	if wantHeroes == 0 {
+		t.Fatal("no hero views declared — the missing-models centrepiece is not being audited at all")
 	}
-	if !strings.Contains(body, "MISSING") {
-		t.Errorf("hero body does not name a missing model file; got:\n%s", truncate(body, 800))
+	for _, hc := range heroCaps {
+		body := hc.Capture.BodyText
+		if !strings.Contains(body, HeroMarker) {
+			t.Errorf("hero %q body missing %q panel; got:\n%s", hc.View.Name, HeroMarker, truncate(body, 800))
+		}
+		if !strings.Contains(body, "MISSING") {
+			t.Errorf("hero %q body does not name a missing model file; got:\n%s", hc.View.Name, truncate(body, 800))
+		}
 	}
 
 	// The generated metadata must be schema-valid against the file set.

@@ -63,7 +63,15 @@ max_preview_size: ""               # e.g. "2MB"; skip a preview larger than this
 # --- Web UI ---
 addr: "127.0.0.1:8787"             # loopback by default. Read the security notes
                                    # below before binding a LAN address.
-web_scan_timeout: "2m"             # deadline for a web "Scan now" walk/hash
+web_scan_timeout: "6h"             # deadline for a web "Scan now" walk/hash. A
+                                   # runaway backstop, not the normal stop: a
+                                   # large library legitimately hashes for hours
+                                   # and you can Stop a scan at any time.
+                                   # ⚠ UPGRADING: this sample used to read "2m",
+                                   # and the setting was IGNORED — if you copied
+                                   # it, that 2m is now enforced. Raise it or
+                                   # delete the line. See the note below on why
+                                   # a too-low value loses the whole scan.
 web_scan_max_files: 50000          # model-file cap for a web scan; over → aborts
 
 # --- Library ---
@@ -220,9 +228,30 @@ Even on loopback, the web scan is confined and bounded:
 
 - It refuses `/`, system directories (`/etc`, `/proc`, `/usr`, …), and your
   `$HOME` root itself.
-- It is bounded by a deadline (`--web-scan-timeout`, default `2m`) and a
-  model-file cap (`web_scan_max_files`, default 50 000), so an over-broad path
-  aborts with a "narrow the path" message instead of tying up the server.
+- It is bounded by a deadline (`web_scan_timeout` / `--web-scan-timeout`,
+  default `6h`) and a model-file cap (`web_scan_max_files`, default 50 000), so
+  an over-broad path aborts with a "narrow the path" message instead of tying up
+  the server. The **cap** is the fast guard — it aborts an over-broad path
+  during the walk, long before any deadline. The deadline is a runaway backstop:
+  hashing a multi-GB library on a slow drive legitimately runs for hours, so the
+  default is deliberately generous and the **Stop** button (not the clock) is
+  the normal way to end a scan you did not mean to start. Lower it if you want a
+  hung scan capped sooner.
+
+  🔴 **A scan killed by the deadline saves NOTHING — it is not a partial scan.**
+  Hashing happens in one phase and rows are persisted in a later one, so a
+  deadline that fires while hashing is still running discards everything found
+  so far. Measured: a 150 ms deadline against a 12-file, 200 MB-per-file library
+  persisted **zero** rows. So do not set this to "how long I am willing to wait"
+  — set it above however long a full hash of your library takes, and use **Stop**
+  when you want to end a scan early. Stop keeps what has already been written.
+
+  ⚠ **If you are upgrading:** this setting did nothing from **v0.1.13 until
+  v0.1.101** — 89 releases. The sample config above shipped `"2m"` during that
+  whole period, so if you copied it, you have an explicit `2m` that is now
+  enforced and (per the paragraph above) will make every scan of a large library
+  a total loss. Raise it, or delete the line to take the 6h default. Leaving the
+  key absent has always behaved, and still behaves, as 6h.
 - The interactive **directory browser** is additionally constrained to paths
   within `$HOME`, `model_root`, and configured `library_paths` — it will not
   enumerate unrelated locations such as `/root` or another user's home, and the

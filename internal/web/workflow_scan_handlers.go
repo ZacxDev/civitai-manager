@@ -9,7 +9,10 @@ import (
 )
 
 // workflowScanJobBudget is a RUNAWAY BACKSTOP for a streaming workflow scan (not
-// the normal termination path), mirroring scanJobBudget. Discovering ComfyUI
+// the normal termination path), mirroring the model scan's budget. Unlike that
+// one it is NOT operator-settable: `--web-scan-timeout` names the model-file
+// "Scan now" walk/hash, and widening it to a second surface would change what
+// the documented knob means. Discovering ComfyUI
 // installs across all disks plus parsing every workflow graph can take a while on
 // a large/slow tree; the budget only bounds a genuinely stuck job so it cannot
 // leak a goroutine forever.

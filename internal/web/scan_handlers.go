@@ -9,13 +9,20 @@ import (
 	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
-// scanJobBudget is a RUNAWAY BACKSTOP for a streaming model-file scan, not the
-// normal termination path (mirrors discoveryJobBudget). Hashing a multi-GB
-// library on a slow/spun-down drive can take a long time, so the scan is meant
-// to keep going until it exhausts the tree, the USER stops it, or the server
-// shuts down. The budget only bounds a genuinely stuck/forgotten job so it
-// cannot leak a goroutine forever; it is deliberately huge.
-const scanJobBudget = 6 * time.Hour
+// The scan's budget is a RUNAWAY BACKSTOP, not the normal termination path
+// (mirrors discoveryJobBudget). Hashing a multi-GB library on a slow/spun-down
+// drive can take a long time, so the scan is meant to keep going until it
+// exhausts the tree, the USER stops it, or the server shuts down. The budget
+// only bounds a genuinely stuck/forgotten job so it cannot leak a goroutine
+// forever; it is deliberately huge.
+//
+// 🔴 It comes from s.webScanTimeout() — the operator-settable `web_scan_timeout`
+// / `--web-scan-timeout`, defaulting to config.DefaultWebScanTimeout (6h, the
+// value the hard-coded `scanJobBudget` const used to carry). Do NOT reintroduce
+// a local const here: that const is exactly how the documented knob became inert
+// from v0.1.13 to v0.1.101, plumbed end-to-end and read by nobody. startScan is the ONE
+// caller of webScanTimeout(); TestWebScanTimeoutBoundsTheScanJob is the guard
+// that fails if it loses that caller again.
 
 // matchRemoteSettingKey persists the "Match against CivitAI" opt-in (Tab B
 // toggle). It is the single source of truth for whether a web-triggered scan
@@ -59,7 +66,7 @@ func (s *Server) handleSetMatchRemote(w http.ResponseWriter, r *http.Request) {
 // startScan launches a background streaming model-file scan unless one is already
 // running (idempotent — a re-click while a scan is in flight starts no second
 // goroutine). The scan derives its context from the server base context (so
-// shutdown cancels it) with the runaway-backstop scanJobBudget timeout, and
+// shutdown cancels it) with the runaway-backstop s.webScanTimeout() deadline, and
 // STREAMS each scanned file into the job (appended under scanMu) so a
 // /library/scan/status poll shows the growing list. On settle it records the
 // final state. extra are the resolved scan dirs (model_root is added by the
@@ -75,7 +82,7 @@ func (s *Server) startScan(extra []string, noRemote bool) {
 	if base == nil {
 		base = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(base, scanJobBudget)
+	ctx, cancel := context.WithTimeout(base, s.webScanTimeout())
 	job := &scanJob{running: true, startedAt: time.Now(), cancel: cancel, noRemote: noRemote}
 	s.scanJob = job
 

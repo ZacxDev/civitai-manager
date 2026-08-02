@@ -1,12 +1,18 @@
 package uxaudit
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ZacxDev/civitai-manager/internal/comfy"
+	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
 // This file is the BROWSERLESS rot-guard for the walk's coupling to the app.
@@ -14,7 +20,7 @@ import (
 // The browser walk (TestUXAuditWalk) is double-gated out of `go test ./...` — it needs
 // UXAUDIT_WALK plus a resolvable Chromium — so when a selector goes stale nothing
 // reports it until someone runs `make ux-audit` by hand. That is exactly how the hero
-// run-control selector sat broken for two releases (see RunPostPath's comment).
+// run-control selector sat broken for two releases (see RunPostPathAPI's comment).
 //
 // These tests boot the real lab App and fetch the real served HTML over HTTP. No
 // browser is involved, so they run in the ordinary `go test ./...` for this module and
@@ -163,43 +169,115 @@ func bootLabApp(t *testing.T) *App {
 func TestWalkSelectorsMatchTheServedApp(t *testing.T) {
 	app := bootLabApp(t)
 
-	t.Run("hero run control", func(t *testing.T) {
-		// The run control is NOT in the page's initial HTML — it is delivered by the
-		// comfy-status htmx fragment once the ComfyUI probe succeeds, so that is what
-		// the guard must fetch.
-		path := RunControlFragmentPath(app.WorkflowID)
-		body, status := fetchPage(t, app, path)
+	// BOTH run controls are pinned, because the app picks the endpoint from the
+	// workflow's FORMAT (runButtonEnabled) and the walk now audits both branches. One
+	// global constant covered only whichever format happened to be seeded — which is
+	// how the entire batching surface went unaudited: the lab seeded API-format only,
+	// so /run/queue and the count segment were never exercised by anything.
+	//
+	// Each case also asserts the OTHER format's endpoint is ABSENT from the same
+	// fragment. Without that, a regression that made runButtonEnabled ignore wf.Format
+	// and always emit one endpoint would still satisfy one of these cases, and the walk
+	// view built on the other selector would hang in a browser.
+	for _, tc := range []struct {
+		name       string
+		workflowID func(*App) int64
+		want       string
+		notWant    string
+	}{
+		{"hero run control (api format)", func(a *App) int64 { return a.WorkflowID }, RunPostPathAPI, RunPostPathUI},
+		{"hero run control (ui format)", func(a *App) int64 { return a.WorkflowUIID }, RunPostPathUI, RunPostPathAPI},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			wfID := tc.workflowID(app)
+			if wfID == 0 {
+				t.Fatalf("the lab seeded no workflow for %q — broken FIXTURE, not a stale selector", tc.name)
+			}
+			// The run control is NOT in the page's initial HTML — it is delivered by the
+			// comfy-status htmx fragment once the ComfyUI probe succeeds, so that is what
+			// the guard must fetch.
+			path := RunControlFragmentPath(wfID)
+			body, status := fetchPage(t, app, path)
+			if status != http.StatusOK {
+				t.Fatalf("GET %s: status %d, want 200", path, status)
+			}
+			// Fixture reached the interesting case: the probe against the lab's fake
+			// ComfyUI succeeded, so this is the ENABLED branch that carries a run button.
+			// Without this the unreachable branch (no button at all) would render a 200 and
+			// the selector assertion below would report a stale selector instead of a
+			// broken fixture.
+			//
+			// 🔴 Assert data-state="ok", NOT the headline text. The reachable headline is
+			// "ComfyUI reachable" and the UNREACHABLE one is "No ComfyUI reachable at <url>"
+			// (internal/web/run_pages.go comfyStatusLines) — so a Contains check for
+			// "ComfyUI reachable" is TRUE ON BOTH BRANCHES and this non-vacuity guard was
+			// itself vacuous. Proven by pointing the lab's ComfyURL at a dead port: the
+			// marker check passed and the test then reported "stale selector" when the truth
+			// was "broken fixture" — the exact confusion this check exists to prevent.
+			// data-state is emitted only by the reachable arm.
+			if !strings.Contains(body, `data-state="ok"`) {
+				t.Fatalf("GET %s did not render the REACHABLE branch (no data-state=\"ok\") — the lab's "+
+					"fake ComfyUI is not being probed successfully, so this test cannot see the run "+
+					"button at all. This is a broken FIXTURE, not a stale selector.\nbody:\n%s",
+					path, truncate(body, 600))
+			}
+			// The exact attribute the walk's RunButtonSelector matches on — asserted on a
+			// BUTTON, because that is what the selector matches.
+			want := fmt.Sprintf(`hx-post="/workflows/%d/%s"`, wfID, tc.want)
+			if !hasButtonWith(body, want) {
+				t.Errorf("no <button> in the run-control fragment carries the walk's run control %s\n"+
+					"the hero prep would hang on WaitVisible until the capture context expires "+
+					"(a bare \"context deadline exceeded\"); update RunPostPathAPI/RunPostPathUI to "+
+					"the app's current run controls", want)
+			}
+			// The OTHER format's endpoint must NOT be here. The two hero views are built
+			// from different selectors, so a fragment serving both would mean
+			// runButtonEnabled has stopped branching on wf.Format — and one of the two walk
+			// views would then be auditing an endpoint that workflow cannot use.
+			notWant := fmt.Sprintf(`hx-post="/workflows/%d/%s"`, wfID, tc.notWant)
+			if hasButtonWith(body, notWant) {
+				t.Errorf("the run-control fragment for workflow %d carries BOTH endpoints "+
+					"(%s must not be there) — runButtonEnabled has stopped branching on wf.Format",
+					wfID, notWant)
+			}
+		})
+	}
+
+	// The batch COUNT SEGMENT is the surface the API-only fixture hid entirely: it is
+	// emitted only when canQueue is true (runZone), i.e. only for a UI-format
+	// workflow. BOTH halves of that asymmetry are pinned — present for UI, absent for
+	// API — because "present somewhere" would also be satisfied by a regression that
+	// rendered it unconditionally, and the API-format page would then offer a count
+	// control whose endpoint 404s for it.
+	t.Run("count segment is UI-format only", func(t *testing.T) {
+		uiPath := fmt.Sprintf("/workflows/%d", app.WorkflowUIID)
+		uiBody, status := fetchPage(t, app, uiPath)
 		if status != http.StatusOK {
-			t.Fatalf("GET %s: status %d, want 200", path, status)
+			t.Fatalf("GET %s: status %d, want 200", uiPath, status)
 		}
-		// Fixture reached the interesting case: the probe against the lab's fake
-		// ComfyUI succeeded, so this is the ENABLED branch that carries a run button.
-		// Without this the unreachable branch (no button at all) would render a 200 and
-		// the selector assertion below would report a stale selector instead of a
-		// broken fixture.
-		//
-		// 🔴 Assert data-state="ok", NOT the headline text. The reachable headline is
-		// "ComfyUI reachable" and the UNREACHABLE one is "No ComfyUI reachable at <url>"
-		// (internal/web/run_pages.go comfyStatusLines) — so a Contains check for
-		// "ComfyUI reachable" is TRUE ON BOTH BRANCHES and this non-vacuity guard was
-		// itself vacuous. Proven by pointing the lab's ComfyURL at a dead port: the
-		// marker check passed and the test then reported "stale selector" when the truth
-		// was "broken fixture" — the exact confusion this check exists to prevent.
-		// data-state is emitted only by the reachable arm.
-		if !strings.Contains(body, `data-state="ok"`) {
-			t.Fatalf("GET %s did not render the REACHABLE branch (no data-state=\"ok\") — the lab's "+
-				"fake ComfyUI is not being probed successfully, so this test cannot see the run "+
-				"button at all. This is a broken FIXTURE, not a stale selector.\nbody:\n%s",
-				path, truncate(body, 600))
+		// Fixture reached the interesting case: this really is the seeded UI workflow,
+		// not an error page and not the API one.
+		if !strings.Contains(uiBody, "SDXL Portrait UI") {
+			t.Fatalf("GET %s did not render the seeded UI-format workflow; got %d bytes", uiPath, len(uiBody))
 		}
-		// The exact attribute the walk's RunButtonSelector matches on — asserted on a
-		// BUTTON, because that is what the selector matches.
-		want := fmt.Sprintf(`hx-post="/workflows/%d/%s"`, app.WorkflowID, RunPostPath)
-		if !hasButtonWith(body, want) {
-			t.Errorf("no <button> in the run-control fragment carries the walk's run control %s\n"+
-				"the hero prep would hang on WaitVisible until the capture context expires "+
-				"(a bare \"context deadline exceeded\"); update RunPostPath to the app's current run control",
-				want)
+		if !strings.Contains(uiBody, `id="`+RunCountGroupID+`"`) {
+			t.Errorf("the UI-format workflow page has no id=%q count segment — the workflow-detail-ui "+
+				"view's prep would hang on WaitVisible, and the batching UI (the ×1/×2/×4/×8/Custom "+
+				"pills plus the custom number input) is not being audited at all", RunCountGroupID)
+		}
+
+		apiPath := fmt.Sprintf("/workflows/%d", app.WorkflowID)
+		apiBody, status := fetchPage(t, app, apiPath)
+		if status != http.StatusOK {
+			t.Fatalf("GET %s: status %d, want 200", apiPath, status)
+		}
+		if !strings.Contains(apiBody, "SDXL Portrait (missing models demo)") {
+			t.Fatalf("GET %s did not render the seeded API-format workflow; got %d bytes", apiPath, len(apiBody))
+		}
+		if strings.Contains(apiBody, `id="`+RunCountGroupID+`"`) {
+			t.Errorf("the API-format workflow page renders an id=%q count segment — /run/queue 404s "+
+				"for an API graph, so that control cannot work there", RunCountGroupID)
 		}
 	})
 
@@ -260,7 +338,11 @@ func TestWalkViewPathsAreServable(t *testing.T) {
 	// silently and every remaining assertion still passes — the walk would report a
 	// clean run over a fraction of the app. Raise this when views are added; it is a
 	// ratchet, not an exact count.
-	const minViews = 10
+	//
+	// 10 → 12 when the UI-format workflow-detail-ui + run-missing-models-ui views were
+	// added. The floor is what stops the UI-format coverage from being quietly deleted
+	// again the way it was never added in the first place.
+	const minViews = 12
 	if n := len(Views(app)); n < minViews {
 		t.Errorf("Views() returned %d views, want at least %d — the walk's coverage shrank; "+
 			"if a view was deliberately removed, lower this floor in the same commit", n, minViews)
@@ -299,16 +381,140 @@ func TestWalkViewPathsAreServable(t *testing.T) {
 // be satisfied — the same opaque timeout, from a different cause.
 func TestHeroRunStatusContainerExists(t *testing.T) {
 	app := bootLabApp(t)
-	path := fmt.Sprintf("/workflows/%d", app.WorkflowID)
-	body, status := fetchPage(t, app, path)
-	if status != http.StatusOK {
-		t.Fatalf("GET %s: status %d, want 200", path, status)
+	for _, wfID := range []int64{app.WorkflowID, app.WorkflowUIID} {
+		path := fmt.Sprintf("/workflows/%d", wfID)
+		body, status := fetchPage(t, app, path)
+		if status != http.StatusOK {
+			t.Fatalf("GET %s: status %d, want 200", path, status)
+		}
+		if !strings.Contains(body, "SDXL Portrait") {
+			t.Fatalf("GET %s did not render the seeded hero workflow", path)
+		}
+		if !strings.Contains(body, `id="run-status"`) {
+			t.Errorf(`workflow detail page %s has no id="run-status" container — `+
+				`readRunSeq/waitForNewRunPanel would never see a run and the hero capture would time out`, path)
+		}
 	}
-	if !strings.Contains(body, "SDXL Portrait") {
-		t.Fatalf("GET %s did not render the seeded hero workflow", path)
+}
+
+// TestLabSeedsBothWorkflowFormats pins the FIXTURE the whole defect lived in.
+//
+// The lab seeded a single API-format hero. Measured against the operator's real DB —
+// `SELECT format, COUNT(*) FROM workflows GROUP BY format` → `ui|71` — that is a
+// format NO real workflow has. Every format-branching surface (the run endpoint, the
+// batch count segment, realRun's early conversion-warning return) was therefore
+// audited on the branch nobody reaches and skipped on the branch everybody does.
+//
+// This is an INVARIANT guard on the fixture, not a regression test for app code: it
+// asserts the lab keeps seeding one of each format. Deleting either seed reddens it.
+func TestLabSeedsBothWorkflowFormats(t *testing.T) {
+	app := bootLabApp(t)
+
+	if app.WorkflowID == 0 {
+		t.Fatal("App.WorkflowID is 0 — the lab seeded no API-format workflow")
 	}
-	if !strings.Contains(body, `id="run-status"`) {
-		t.Error(`workflow detail page has no id="run-status" container — ` +
-			`readRunSeq/waitForNewRunPanel would never see a run and the hero capture would time out`)
+	if app.WorkflowUIID == 0 {
+		t.Fatal("App.WorkflowUIID is 0 — the lab seeded no UI-format workflow, so the walk cannot " +
+			"audit the batch count segment or /run/queue at all (100% of the real library is UI-format)")
+	}
+	if app.WorkflowID == app.WorkflowUIID {
+		t.Fatalf("both hero ids are %d — one workflow cannot cover both format branches", app.WorkflowID)
+	}
+
+	ctx := context.Background()
+	got := map[string]string{}
+	for label, id := range map[string]int64{"api": app.WorkflowID, "ui": app.WorkflowUIID} {
+		wf, err := app.store.GetWorkflow(ctx, id)
+		if err != nil {
+			t.Fatalf("load the %s hero workflow (id %d): %v", label, id, err)
+		}
+		got[label] = wf.Format
+	}
+	if got["api"] != store.WorkflowFormatAPI {
+		t.Errorf("App.WorkflowID names a %q workflow, want %q", got["api"], store.WorkflowFormatAPI)
+	}
+	if got["ui"] != store.WorkflowFormatUI {
+		t.Errorf("App.WorkflowUIID names a %q workflow, want %q — the walk would audit the API "+
+			"branch twice and the batching UI never", got["ui"], store.WorkflowFormatUI)
+	}
+}
+
+// TestUIHeroGraphReachesPreflight is the guard against the INVERSION the API-only
+// fixture hid.
+//
+// realRun returns EARLY — with a conversion-warnings panel, BEFORE comfy.Preflight —
+// for any UI graph whose ConvertUIToAPI produced a warning. An API graph skips that
+// branch entirely and always reaches preflight. So the walk's missing-models hero was
+// certifying a panel a UI-format user cannot reach, while the panel they DO reach went
+// unaudited.
+//
+// Adding a UI-format view is not enough on its own: if heroWorkflowGraphUI warned on
+// conversion, the new view would screenshot the WARNINGS panel and the walk would
+// still never exercise preflight on the real branch — the same hole, relocated. This
+// test pins that the fixture actually reaches preflight, and reaches it with exactly
+// the missing MODELS the hero is about (not missing nodes, not bad combo options).
+//
+// It runs the real comfy code against the real fake /object_info, so it also catches
+// the specific way the fixture can silently rot: fakeObjectInfoJSON losing an
+// input_order entry, which makes the converter emit "node N has no input_order;
+// widget values not mapped" per node.
+func TestUIHeroGraphReachesPreflight(t *testing.T) {
+	var info comfy.ObjectInfo
+	if err := json.Unmarshal([]byte(fakeObjectInfoJSON), &info); err != nil {
+		t.Fatalf("fakeObjectInfoJSON does not parse as an ObjectInfo: %v", err)
+	}
+
+	apiGraph, warnings, err := comfy.ConvertUIToAPI(json.RawMessage(heroWorkflowGraphUI), info)
+	if err != nil {
+		t.Fatalf("heroWorkflowGraphUI does not convert: %v", err)
+	}
+	if len(warnings) > 0 {
+		t.Fatalf("heroWorkflowGraphUI converts WITH warnings %v — realRun returns early on any "+
+			"conversion warning, BEFORE comfy.Preflight, so the run-missing-models-ui view would "+
+			"screenshot the conversion-warnings panel and preflight would still never be audited "+
+			"on the UI branch", warnings)
+	}
+
+	// Fixture reached the interesting case: the graph really did convert into something
+	// runnable, and its widget values are ALIGNED. The seed assertion is the alignment
+	// probe — KSampler's seed is followed in widgets_values by the control_after_generate
+	// slot ("fixed"), so an off-by-one would land "fixed" in `steps` (or 20 in `seed`)
+	// while everything above still passes.
+	var nodes map[string]struct {
+		ClassType string                     `json:"class_type"`
+		Inputs    map[string]json.RawMessage `json:"inputs"`
+	}
+	if err := json.Unmarshal(apiGraph, &nodes); err != nil {
+		t.Fatalf("converted graph does not parse: %v", err)
+	}
+	ks, ok := nodes["6"]
+	if !ok || ks.ClassType != "KSampler" {
+		t.Fatalf("converted graph has no KSampler at node 6 (got %+v) — the fixture no longer "+
+			"reaches the widget-alignment case this test probes", ks)
+	}
+	for input, want := range map[string]string{"seed": "123456789", "steps": "20", "sampler_name": `"euler"`} {
+		if got := string(ks.Inputs[input]); got != want {
+			t.Errorf("KSampler input %q = %s, want %s — widgets_values is misaligned "+
+				"(the control_after_generate slot after `seed` is what shifts it)", input, got, want)
+		}
+	}
+
+	report := comfy.Preflight(apiGraph, info, nil)
+	if report.OK {
+		t.Fatal("preflight says the UI hero graph is fine — it must report the seeded " +
+			"un-installed models as missing, or the missing-models hero panel never renders")
+	}
+	if len(report.MissingNodes) != 0 {
+		t.Errorf("preflight reports missing NODES %v — the hero is about missing MODELS; a missing "+
+			"node type means fakeObjectInfoJSON no longer covers the fixture's classes", report.MissingNodes)
+	}
+	if len(report.BadOptions) != 0 {
+		t.Errorf("preflight reports bad combo options %+v — the fixture's sampler_name/scheduler "+
+			"values must stay inside fakeObjectInfoJSON's choices so the panel is about models only",
+			report.BadOptions)
+	}
+	want := []string{"detailer-MISSING.safetensors", "dreamshaperXL-MISSING.safetensors"}
+	if !slices.Equal(report.MissingModels, want) {
+		t.Errorf("preflight missing models = %v, want %v", report.MissingModels, want)
 	}
 }
