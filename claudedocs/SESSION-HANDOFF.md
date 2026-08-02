@@ -1,229 +1,179 @@
-# civitai-manager — session handoff (2026-08-02, post-v0.1.102)
+# civitai-manager — session handoff
 
-_Point-in-time snapshot. Verify against `git log` / live state before acting. Durable
-conventions and lessons live in the repo `CLAUDE.md` — read it first; this doc is STATE
-and OPEN THREADS only._
+_Durable conventions and lessons live in the repo `CLAUDE.md` — **read it first**. This
+doc is OPEN THREADS and the commands that tell you where things stand._
+
+🔴 **This file has been rewritten three times in one session because it kept enumerating
+facts that expire.** The rule for editing it: **if a line will be false next week, delete
+it or turn it into a command the reader runs.** A PR number, a commit sha, a "currently in
+flight" list and a release version are all facts that expire — `gh pr list` and `git log`
+do not. Prefer being *less* specific and *still true*.
 
 ## ⏭️ Kickoff (paste to start next session)
 
 > Continuing civitai-manager (Go single-binary CivitAI/ComfyUI library manager). Read
-> `claudedocs/SESSION-HANDOFF.md`, repo `CLAUDE.md`, and my auto-memory first.
-> Orientation: latest release **v0.1.102** (tagged, verified, dogfooded), `main` @
-> `19372da`, **zero unreleased commits**, migrations at **0019** on main and on my real
-> DB. Two PRs may be in flight — `gh pr list` is the authority. **GOPRIVATE is NOT
-> needed.** The shared checkout is now on **`main`** and clean; all other sessions are
-> closed, so the shared-checkout hazard that shaped every brief last session no longer
-> applies. Standing OK to push+tag+release without asking — run the real gate (`go build
-> ./... && go vet ./... && go test ./... && gofmt -l ./internal/ ./e2e/ ./*.go`; **`gofmt`
-> is NOT covered by `go vet`**, **`./cmd/` does not exist**, and **`e2e/uxaudit` is a
-> NESTED module** a root `go test ./...` never compiles — it has its own CI job), plus
-> `/audit-pr` scaled to blast radius and **a delta re-audit after EVERY fix round**; then
-> **push `main` BEFORE tagging**, verify the tarball, refresh the `:8972` dogfood (kill by
-> `pgrep -x cm` + `/proc/<pid>/exe`, wait until NO cm process remains — **a free port is
-> not a released binary** — then verify the served build by pid + `--version`). If
-> `go.mod` changes at all, re-run `nix build .` for `vendorHash`. **You CAN drive a real
-> browser** — it has found a real bug in every visual branch across seven sessions. Loop:
-> feedback → recon → clarifying Qs + recommend → worktree-isolated subagent(s) → real gate
-> → audit → delta re-audit → ship → verify tarball → refresh dogfood.
+> `claudedocs/SESSION-HANDOFF.md`, repo `CLAUDE.md`, and my auto-memory first, then run the
+> orientation block in the handoff to see where things actually stand — do not trust
+> numbers written in the doc. **GOPRIVATE is NOT needed.** Standing OK to push+tag+release
+> without asking — run the real gate (`go build ./... && go vet ./... && go test ./... &&
+> gofmt -l ./internal/ ./e2e/ ./*.go`, **plus `build`/`vet`/`test` again inside the NESTED
+> `e2e/uxaudit` module**, which a root `go test ./...` never compiles), plus `/audit-pr`
+> scaled to blast radius and **a delta re-audit after EVERY fix round**; then **push `main`
+> BEFORE tagging**, verify the tarball, refresh the `:8972` dogfood (kill by `pgrep -x cm` +
+> `/proc/<pid>/exe`, wait until NO cm process remains — **a free port is not a released
+> binary** — then verify the served build by pid + `--version`). If `go.mod` changes at all,
+> re-run `nix build .` for `vendorHash`. **You CAN drive a real browser** — it has found a
+> real bug in every visual branch across seven sessions. Loop: feedback → recon → clarifying
+> Qs + recommend → worktree-isolated subagent(s) → real gate → audit → delta re-audit → ship
+> → verify tarball → refresh dogfood.
 
-## Current state
+## Orientation — run these, don't read a number
 
-- **Latest release: v0.1.102**, tag `19372da`, 11 assets. Verified end-to-end rather than
-  "the job was green": checksum **OK**, binary reports `0.1.102 (commit 19372da…)`,
-  attestation `rc=0` **with a negative control** (one appended byte → `rc=1` / 404, so the
-  quiet pass is real).
-- **`main` @ `19372da` — nothing unreleased.**
-- **Base clone is on `main`**, `--ff-only` clean.
-- **Dogfood on `:8972`** serves v0.1.102, pid confirmed via `/proc/<pid>/exe`.
-  ⚠ It runs from `…/766dd9a1-…/scratchpad/dogfood/cm`, which **dies with that session's
-  temp dir**. Re-download the release tarball rather than trusting the path.
-- Real DB at **schema 19**.
-- ⚠ **Three 23 MB backups** in `~/.config/civitai-manager/` (`.pre-0017`, `.pre-0018`,
-  `.pre-comfy-cache`) ≈ 68 MB. The first two are long superseded — delete when happy.
-- `go.mod`/`go.sum` **untouched across the entire v0.1.84 → v0.1.102 run**.
+```sh
+gh pr list                                          # what is open RIGHT NOW
+git fetch origin && git log --oneline "$(git describe --tags --abbrev=0 origin/main)"..origin/main
+                                                    # unreleased commits (empty = queue clear)
+git describe --tags --abbrev=0 origin/main          # latest release
+grep -n 'version = ' flake.nix                      # what the NEXT nix build will report
+ls internal/store/migrations/ | tail -1             # latest migration (check in-flight branches too)
+git worktree list                                   # stale agent worktrees under .claude/worktrees/
+grep -vc '^\s*#\|^\s*$' .github/deadcode-allow.txt  # size of the tier-B debt ledger
+```
 
-## ✅ `feat/comfy-model-cache` is FULLY SUPERSEDED — retire it
+⚠ **Agents are often in flight while you read this.** `gh pr list` can be empty and work can
+still be happening in a worktree — cross-check `git worktree list` for non-stale entries.
 
-Evaluated and closed (PR #54 is the evaluation record; no code). The branch was 1 ahead /
-62 behind, tip `46a10ed`. **Every one of its seven claims already landed on `main`
-independently on 2026-08-01**, and in each case where the two differ, main's version fixed
-a bug the branch still contains:
-
-| claim | superseded by |
-|---|---|
-| migration `0019` | identical blob |
-| three-state ✓/◎/✗ chips + popover | `70e4e04` |
-| `ChoicesContain` export | `9c22767` (solved differently) |
-| Safe mode | `3dac17e` |
-| explainer copy / track spacing | `main` keeps them deliberately |
-
-Verified independently of the agent: all three commits are ancestors of `main`,
-`.cm-res-chip*` is in `app.css`, `safeModeMin = maturityPG` is in `layout.go`.
-
-🔴 **Porting it would have shipped two live bugs.** Its popover reuses
-`.cm-updated`/`.cm-updated-pop`, which are *descendant* selectors — chips render inside a
-`workflowResourcesPopover` that is itself a `.cm-updated`, so hovering the outer trigger
-opens **every** chip's popover at once; main's child-combinator
-`.cm-res-chip-wrap > .cm-res-chip-pop` exists for exactly that. And its Safe mode clicks
-radios from an inline `javascript:` onclick that **fails OPEN** — from a saved `R..XXX`
-band, `max-pg13` is never emitted, so it POSTs `min=pg&max=xxx`, persisting the **full**
-range from a button labelled *Safe mode*. Main's is an htmx button outside the form with
-its own CSRF POST carrying the literal band.
-
-`merge-tree` exiting 1 was therefore conflict-with-nothing-to-gain, not unmerged value.
-**The branch can be deleted**; `46a10ed` is recorded here and in #54 if it is ever wanted
-(`git push origin 46a10ed:refs/heads/feat/comfy-model-cache` restores it).
-
-## In flight — check `gh pr list` first
-
-1. **Make `coreNodeClasses` authoritative** from `/object_info` module paths
-   (`comfy_extras.*` / `nodes` vs `custom_nodes.*`). Measured bug: ComfyUI ships **790
-   built-ins**, the hand-written table knows ~50, and **44 of 70 workflows (62%)** contain
-   a real built-in it calls custom. Scope is the CivitAI **cloud** path only
-   (`resolve.go`, `cloud_pages.go`) — the local-run attribution path goes Manager → static
-   index → Registry and never touches the table. Restoring a confident banner is
-   explicitly **out of scope**.
-
-## What shipped this session (v0.1.101 → v0.1.102, 27 commits)
-
-| PR | what |
-|---|---|
-| **#49** | pinned the `canQueue` agreement; consolidated three copies into one predicate |
-| **#50** | **8 axe violations → 0** — Fork out of the run-preset tablist, graph SVG named |
-| **#51** | deleted 5 unreachable functions; **`deadcode` reachability gate in CI, 3× GOOS** |
-| #47, #48 | handoff + `CLAUDE.md`/skills documentation pass |
-| #52 | the 0.1.102 version bump |
-
-User-visible: the run-preset strip is screen-reader navigable and the workflow graph
-announces itself; the nodepack install path is reachable for UI-format workflows;
-`--web-scan-timeout` finally does something after 89 inert releases.
-
-## 🔴 The new CI gate, and how not to fight it
-
-`.github/deadcode.sh` + `.github/deadcode-allow.txt`, every PR, three GOOS.
-
-**Two tiers, and the second is the one that matters.** Tier A is `-test` mode and is
-nearly blind: one `reflect.Value.Call` in cobra's help templating drags the **entire test
-corpus** into the reachable set, so `-test` can only catch functions literally nothing
-references — it would have caught **none** of the 17 items the manual sweeps found. Tier B
-(default mode) is the real signal: functions with **no production caller**.
-
-**The allowlist is a debt ledger, not an exemption list** — the set is *asserted*, so the
-gate fails when it GROWS *and* when it SHRINKS. If an entry stops being dead, delete the
-line and take the win. Adding a line to turn a red build green is a last resort.
-
-⚠ **The 15 entries were MEASURED, not investigated.** Five were spot-checked: they are
-**superseded wrappers, not dropped features** — `runModesPanel` is a 2-line delegate to
-`runModesPanelWith` while production calls `runModesPanelSelected`, and the live page
-renders both panels. Cleanup debt, **not** a user-visible regression.
-
-🔴 **The harness trap that produced a false green:** `GOOS=windows go run
-golang.org/x/tools/cmd/deadcode@latest ...` **cross-compiles the TOOL** and dies with
-`exec format error`. With stderr suppressed that reads as "0 dead functions", and an
-intersection got built on top of it before it was caught. **Build the tool once for the
-host, then set `GOOS` for the analysis only.** The CI script does this and carries its own
-negative control: a fake tool exiting `0` with empty output still fails, because tier B's
-expected set is non-empty.
+**Housekeeping that is safe whenever you see it:** stale merged worktrees under
+`.claude/worktrees/` accumulate (about a dozen at the time of writing) — prune them.
+`~/.config/civitai-manager/` holds several ~23 MB `.pre-*` DB backups; the pre-0017 and
+pre-0018 ones are long superseded.
 
 ## Open threads (ranked)
 
 1. **Proposal C — preflight on the workflow page, before the Run click.** "Needs 1 node
    pack + 3 models" shown *before* the user commits to a run. A and B already shipped
-   (#46 — `preflightFailureResult` reports missing nodes AND models in one pass). C was
-   blocked on a caching policy so the **4.66 MB** `/object_info` is not refetched per
-   render — exactly what `0019` + `comfy_cache.go` exist for, both on `main` and currently
-   unused. **Hold until the port PR lands**; they touch the same workflow page.
-2. **`e2e/uxaudit/fakes.go:166-167` states a mechanism #46 deleted.** It claims `realRun`
-   "returns EARLY on any conversion warning — before `comfy.Preflight`". Both halves are
-   now false: the never-submit disjunction at `run_handlers.go:589-607` runs **after**
-   preflight, and on the failure that fixture produces, warnings render **with** the
-   missing-models panel, not instead of it. The `input_order` requirement it justifies
-   probably still holds for the **opposite** reason (unmapped widgets → preflight sees no
-   model refs → `report.OK` stays true → warnings-only branch). **Probe before rewriting:**
-   delete `"input_order"` from the `CheckpointLoaderSimple` entry of `fakeObjectInfoJSON`,
-   run the walk, record which panel renders. If missing-models still appears, the whole 🔴
-   block goes rather than gets corrected.
-3. **Orphan route `GET /workflows/run/resolve-model`** — registered, loopback-gated, makes
-   outbound egress, and **nothing links to it**. ~8 tests exercise it, reading as coverage
-   of the missing-model resolve feature; production renders
+   (`preflightFailureResult` reports missing nodes AND models in one pass). C was blocked on
+   a caching policy so the **4.66 MB** `/object_info` is not refetched per render — which is
+   what migration `0019` + `internal/web/comfy_model_cache.go` exist for. **The
+   node-origin work has now landed, so C is unblocked**; it touches the same workflow page,
+   so check nothing else is editing it first.
+2. **Orphan route `GET /workflows/run/resolve-model`** — registered in `server.go`,
+   loopback-gated, makes outbound egress, and **nothing links to it**. ~8 tests exercise it,
+   reading as coverage of the missing-model resolve feature; production renders
    `resolveModelFragmentWithReason` instead. Delete it, or document it as a debug endpoint.
-4. **Two systematic guards** that would have caught most of this class mechanically:
-   a **route-emitter check** (diff registered `mux.Handle*` paths against emitted
-   `hx-*`/`href` literals, with an allowlist; ~60 lines) and a **reverse class-coverage
-   test** (~30 lines) for CSS rules nothing emits. The `deadcode` gate covers Go functions
-   only — these are the routing and CSS equivalents.
-5. **Work the tier B ledger down** — 15 superseded wrappers. Do this **after** the two
-   in-flight PRs, or the list goes stale the way the last one did.
-6. **3 dead `.cm-*` CSS rules**: `.cm-crumb-name`, `.cm-vstatus-date`, `.cm-gen-sep`.
+   🚧 **In progress** — a sibling agent was working this at the time of writing. Confirm
+   against `gh pr list` / `git log` before starting; its fate depends on that PR.
+3. **3 dead `.cm-*` CSS rules**: `.cm-crumb-name`, `.cm-vstatus-date`, `.cm-gen-sep`. Plus
    **`Server.attributeFn`** — a test seam nothing sets, in production or in any test.
-7. **The "why is this tag not shown" affordance was never built.** `StopwordTags`' comment
-   described it as existing; it does not. `internal/web/workflow_facets.go:125` drops
-   stopword tags silently with no on-screen explanation. (That function is now deleted;
-   the gap it described is not.)
-8. **11 stale agent worktrees** under `.claude/worktrees/`. All merged; safe to prune.
+   🚧 **In progress** — same sibling agent as (2), same caveat.
+4. **Two systematic guards** that would have caught most of this class mechanically: a
+   **route-emitter check** (diff registered `mux.Handle*` paths against emitted `hx-*`/`href`
+   literals, with an allowlist; ~60 lines) and a **reverse class-coverage test** (~30 lines)
+   for CSS rules nothing emits. The `deadcode` CI gate covers Go functions only — these are
+   the routing and CSS equivalents, and `class_coverage_web_test.go` is explicitly
+   one-directional (see `CLAUDE.md`).
+5. **Work the tier-B `deadcode` ledger down.** The entries were **measured, not
+   investigated** — none has been checked for whether it should be deleted or wired up.
+   Spot-checks found **superseded wrappers, not dropped features** (e.g. `runModesPanel` is
+   a 2-line delegate while production calls `runModesPanelSelected`, and the live page
+   renders both panels) — cleanup debt, *not* a user-visible regression. `internal/web`
+   carries about half the list. The ledger is **asserted**: the gate fails when it grows
+   *and* when it shrinks, so a stale entry is a win to take, not a line to keep.
+6. **The "why is this tag not shown" affordance was never built.** `StopwordTags`' comment
+   described it as existing; it does not. `internal/web/workflow_facets.go` drops stopword
+   tags silently with no on-screen explanation. (The function that carried the false comment
+   is now deleted; the gap it described is not.)
 
-## Open investigations — live diagnosis state
+## Live diagnosis state (durable findings, not status)
 
-### The ComfyUI model cache repopulates on use; empty is a designed state
-`cacheComfyObjectInfo` is wired in `run_handlers.go` (realRun) and `cloud_handlers.go`,
-with invalidation after a library scan. **Proven end-to-end on the real DB**: a
-**4,661,987-byte** row with an RFC3339 `updated_at` (i.e. `nowRFC3339()`, so the app wrote
-it) appeared during dogfooding. Until it populates, the ◎ ("in ComfyUI") chip state cannot
-render and chips correctly fall back to ✓/✗.
-⚠ **Scan invalidation is a heuristic**, not a guarantee — a scan means *our* file set
-changed, not ComfyUI's. So after a scan, ◎ chips revert to ✗ until the next run.
+### The custom-node detector is authoritative — with two known staleness windows
+`comfy.NodeOrigins` (`internal/comfy/node_origin.go`) classifies on the registering
+`python_module` from `/object_info`, as a **deny-list on `custom_nodes.*`** — measured to
+yield exactly **790** built-ins, where the obvious allow-list (`comfy_extras.*` + `nodes`)
+yields 566 and silently reclassifies all 224 bundled `comfy_api_nodes` types as custom. It
+replaced a ~50-entry hand-written table that called a real built-in custom in **44 of 70**
+workflows. Full reasoning, including why `coreNodeClasses` is **kept** as the cold-cache
+fallback (`PrimitiveNode`/`Note`/`Reroute` are frontend-only LiteGraph nodes absent from
+every `/object_info`, so deleting it would call them custom), is in `CLAUDE.md`.
 
-### `web_scan_timeout`: live since v0.1.102's line, with an upgrade hazard
-Inert from **v0.1.13 to v0.1.101 — 89 releases**. Now enforced, default **6h** (the value
-`scanJobBudget` already imposed, so unset behaviour is unchanged).
-🔴 **`docs/configuration.md` shipped `web_scan_timeout: "2m"` inside the annotated sample
-config** for that whole period, and no code path writes the key — so hand-copying the docs
-was the ONLY way to hold an explicit value. Anyone who copied it now has an enforced 2m.
-**And a deadline firing during the HASH phase persists ZERO rows** — hashing is phase 1,
+Two staleness windows, **both accepted, neither a bug**:
+- Installing a custom node does not invalidate the `0019` cache until the next local run.
+- A library **scan deletes the cache row** (`internal/web/scan_handlers.go`), so for
+  **API-format** workflows — where the cache is the only origin source — the old table's
+  false positives return until the next local run. UI-format workflows re-fetch in-request
+  and are barely affected, which is why this is accepted rather than fixed. **Do not
+  redesign invalidation as a drive-by**; the coupling reasoning is in
+  `comfy_model_cache.go`'s `invalidateComfyModelCache` comment.
+
+⚠ **Caution about that PR's performance claim — it was revised three times by successively
+better measurement** (~21–34 ms → ~6–8 ms on a scaled synthetic → **~3–5 ms** against the
+real 4.66 MB payload), because each earlier figure measured something adjacent to the thing
+that changed. Only the SQLite **read** is avoided; the parse is still paid either way. The
+correctness half is the load-bearing one and is untouched by the smaller number. **Quote
+the measured ranges from `CLAUDE.md`, never a figure derived from them.**
+
+### `web_scan_timeout`: live, with an upgrade hazard
+Inert for **89 releases** (v0.1.13 → v0.1.101). Now enforced, default **6h** — the value
+`scanJobBudget` already imposed, so unset behaviour is unchanged.
+🔴 **`docs/configuration.md` shipped `web_scan_timeout: "2m"` in its annotated sample config
+for that whole period**, and no code path writes the key — so hand-copying the docs was the
+ONLY way to hold an explicit value. Anyone who copied it now has an enforced 2m. **And a
+deadline firing during the HASH phase persists ZERO rows** — hashing is phase 1,
 `local_files` are written in phase 3; measured, a 150 ms deadline against a 12 × 200 MB
 fixture saved nothing. For a large library that is a total loss, every time.
-`docs/configuration.md` now carries the upgrade warning; **a release note would be kind.**
+`docs/configuration.md` carries the upgrade warning; **a release note would be kind.**
 
-## How to verify the current release
+### The ComfyUI model cache repopulates on use; empty is a designed state
+`cacheComfyObjectInfo` is wired in `run_handlers.go` and `cloud_handlers.go`, with
+invalidation after a library scan. Proven end-to-end on the real DB: a **4,661,987-byte**
+row with an RFC3339 `updated_at` appeared during dogfooding. Until it populates, the ◎
+("in ComfyUI") chip state cannot render and chips correctly fall back to ✓/✗.
+
+### `feat/comfy-model-cache` is retired — do not re-evaluate it
+All seven of its claims landed on `main` independently, and where the two differ main's
+version fixed a bug the branch still contains (a descendant-selector popover that opens
+*every* chip at once, and a Safe-mode button that **fails OPEN** to the full maturity
+range). Its tip `46a10ed` is recoverable via
+`git push origin 46a10ed:refs/heads/feat/comfy-model-cache` if ever wanted.
+
+## How to verify a release
 
 ```sh
-gh release download v0.1.102 -R ZacxDev/civitai-manager \
-  -p 'civitai-manager_0.1.102_linux_amd64.tar.gz' -p 'checksums.txt'
-sha256sum -c --ignore-missing checksums.txt      # must print OK
-tar xzf civitai-manager_0.1.102_linux_amd64.tar.gz && ./civitai-manager --version
-gh attestation verify civitai-manager_0.1.102_linux_amd64.tar.gz -R ZacxDev/civitai-manager
+V=$(git describe --tags --abbrev=0 origin/main); V=${V#v}
+gh release download "v$V" -R ZacxDev/civitai-manager \
+  -p "civitai-manager_${V}_linux_amd64.tar.gz" -p checksums.txt
+sha256sum -c --ignore-missing checksums.txt          # must print OK
+tar xzf "civitai-manager_${V}_linux_amd64.tar.gz" && ./civitai-manager --version
+gh attestation verify "civitai-manager_${V}_linux_amd64.tar.gz" -R ZacxDev/civitai-manager
 AUDITLOOP_CHROMIUM=/run/current-system/sw/bin/brave make ux-audit
 ```
 
 🔴 **The axe walk must report 24 captures / 0 violations.** A different **capture count**
-means the walk changed shape; **0 captures** means it regressed to the API-format fixture
-no real workflow uses — the failure that let it certify a dead surface for four releases.
-Zero *violations* is now the correct number, so the earlier "8 is correct" note is retired.
+means the walk changed shape; **0 captures** means it regressed to the API-format fixture no
+real workflow uses — the failure that let it certify a dead surface for four releases. Count
+the PNGs (`ls e2e/uxaudit/artifacts/*.png | wc -l`) rather than trusting the exit code.
 
-`gh attestation verify` is **silent on success** in some shells. Do not read a quiet
-`rc=0` as proof without a negative control — append one byte to a copy and confirm `rc=1`.
+`gh attestation verify` is **silent on success** in some shells. Do not read a quiet `rc=0`
+as proof without a negative control — append one byte to a copy and confirm `rc=1`.
 
-## Corrections made this session, so they are not re-derived
+## Corrections, so they are not re-derived
 
-- **`git tag --contains` in a worktree returns the same count as the base clone** (89, not
-  2). Worktrees share the ref store; the earlier claim was wrong.
-- **The CI blind-spot bullet in `CLAUDE.md` had already gone false** — a dedicated
-  `uxaudit` job now compiles the nested module. Only the *local* root-module exclusion
-  still bites.
+- **`git tag --contains` in a worktree returns the same count as the base clone.** Worktrees
+  share the ref store; an earlier claim that it differs was wrong.
+- **The `e2e/uxaudit` CI blind spot is closed** — a dedicated `uxaudit` job compiles the
+  nested module. Only the *local* root-module exclusion still bites, so run that second
+  invocation yourself.
 - **`pickFileFromModelRaw` never lived in `internal/comfy/download_target.go`.** The
   offer-don't-perform behaviour is `pickFileFromModel` + `renderSubstituteOffer` in
   `internal/web/run_download.go`; `TypeSubdir` is the part that really is in
-  `download_target.go`. Corrected in `CLAUDE.md` with a tombstone.
+  `download_target.go`.
 - **"Nothing tests the `canQueue` agreement" was wrong.** Three of four drift directions
-  were already caught; only the button-falls-back-to-single-run direction survived, because
-  one test seeds an API-format workflow (so the UI branch never runs) and another
-  hand-builds the view struct (pinning the renderer, not the handler's derivation).
-- **The allowlist "dead UI" scare was wrong** — superseded wrappers, not dropped features.
-
-## Cleanup / side effects
-
-- Every state-mutating verification used a **throwaway DB** on a scratch port. The real DB
-  was written to only by intended migrations.
-- ComfyUI's queue was confirmed empty before and after every run-path check — **nothing
-  was ever submitted**, and no Install button was ever clicked.
-- Browser verification drove the operator's **live Brave** in its own tab, closed each time.
+  were already caught; only the button-falls-back-to-single-run direction survived.
+- **The `deadcode` allowlist "dead UI" scare was wrong** — superseded wrappers, not dropped
+  features.
+- **`e2e/uxaudit/fakes.go` no longer claims `realRun` returns early on conversion
+  warnings.** That mechanism was deleted when the never-submit gate moved *after*
+  `comfy.Preflight`; the `input_order` requirement it justified still holds, but for the
+  opposite reason — measured, not reasoned. See the comment itself for the numbers, and
+  note that the obvious single-entry probe is **under-powered** and would have argued for
+  deleting a requirement that is real.

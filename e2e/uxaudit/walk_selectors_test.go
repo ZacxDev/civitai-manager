@@ -442,11 +442,20 @@ func TestLabSeedsBothWorkflowFormats(t *testing.T) {
 // TestUIHeroGraphReachesPreflight is the guard against the INVERSION the API-only
 // fixture hid.
 //
-// realRun returns EARLY — with a conversion-warnings panel, BEFORE comfy.Preflight —
-// for any UI graph whose ConvertUIToAPI produced a warning. An API graph skips that
-// branch entirely and always reaches preflight. So the walk's missing-models hero was
-// certifying a panel a UI-format user cannot reach, while the panel they DO reach went
-// unaudited.
+// A UI graph whose ConvertUIToAPI produced warnings can end the run in a
+// conversion-warnings panel instead of the missing-models one; an API graph skips
+// conversion entirely and always reaches preflight. So the walk's missing-models hero
+// was certifying a panel a UI-format user cannot reach, while the panel they DO reach
+// went unaudited.
+//
+// ⚠ The MECHANISM moved and this comment used to state the dead one ("realRun returns
+// EARLY, BEFORE comfy.Preflight"). The abort now happens AFTER preflight, in the
+// never-submit gate — so warnings alone no longer bypass preflight, and a warned run
+// lands on the warnings-only panel only when preflight ALSO comes back OK. For this
+// fixture that happens exactly when the LOADER entries lose their input_order — their
+// model filenames then never reach the converted graph, so preflight has nothing to
+// report missing. Pinning a clean conversion is still the right guard; only the reason
+// changed. See fakeObjectInfoJSON's comment for the measured table.
 //
 // Adding a UI-format view is not enough on its own: if heroWorkflowGraphUI warned on
 // conversion, the new view would screenshot the WARNINGS panel and the walk would
@@ -469,10 +478,11 @@ func TestUIHeroGraphReachesPreflight(t *testing.T) {
 		t.Fatalf("heroWorkflowGraphUI does not convert: %v", err)
 	}
 	if len(warnings) > 0 {
-		t.Fatalf("heroWorkflowGraphUI converts WITH warnings %v — realRun returns early on any "+
-			"conversion warning, BEFORE comfy.Preflight, so the run-missing-models-ui view would "+
-			"screenshot the conversion-warnings panel and preflight would still never be audited "+
-			"on the UI branch", warnings)
+		t.Fatalf("heroWorkflowGraphUI converts WITH warnings %v — a warned conversion can end the "+
+			"run on the conversion-warnings panel instead of the missing-models one (measured: "+
+			"stripping input_order from both loader entries flips it), so the run-missing-models-ui "+
+			"view would screenshot the wrong panel and preflight would go unaudited on the UI "+
+			"branch", warnings)
 	}
 
 	// Fixture reached the interesting case: the graph really did convert into something
