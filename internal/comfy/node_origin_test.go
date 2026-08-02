@@ -1,12 +1,20 @@
 package comfy
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 )
 
 // objectInfoJSON builds a minimal /object_info body mapping class_type →
 // python_module, in the shape ComfyUI actually serves.
+//
+// ⚠ IT ALWAYS EMITS THE KEY, even for "". An empty string and an ABSENT
+// python_module are different inputs to the decoder — Go's zero value makes them
+// land on the same branch, but only one of them is what a real payload from an
+// older/odd ComfyUI would carry, and a fixture that cannot express the absent case
+// cannot test it. objectInfoJSONMissingModule below is the other one; use it
+// rather than reading `""` as covering both.
 func objectInfoJSON(t *testing.T, modules map[string]string) []byte {
 	t.Helper()
 	doc := map[string]map[string]any{}
@@ -16,6 +24,21 @@ func objectInfoJSON(t *testing.T, modules map[string]string) []byte {
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatalf("marshal fixture: %v", err)
+	}
+	return raw
+}
+
+// objectInfoJSONMissingModule builds an entry with NO python_module key at all.
+func objectInfoJSONMissingModule(t *testing.T, class string) []byte {
+	t.Helper()
+	raw, err := json.Marshal(map[string]map[string]any{
+		class: {"input": map[string]any{}},
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	if bytes.Contains(raw, []byte("python_module")) {
+		t.Fatalf("fixture broken: it must NOT emit python_module at all: %s", raw)
 	}
 	return raw
 }
@@ -56,16 +79,26 @@ func TestNodeOriginsIsADenyListOnCustomNodes(t *testing.T) {
 // TestNodeOriginsMatchesTheFirstDotSegment pins that classification splits on a
 // dot boundary rather than doing a string-prefix compare, which would also match
 // a module merely STARTING with the word.
+//
+// 🔴 `Impostor` ALONE CANNOT DISCRIMINATE — `BareCustomNodes` is what does.
+// `custom_nodesomething.pack` is classified identically by first-dot-segment
+// matching and by strings.HasPrefix(m, "custom_nodes.")  (both say built-in: the
+// first segment is `custom_nodesomething`, and the prefix WITH its trailing dot
+// does not match). The case that separates them is a BARE `custom_nodes` with no
+// dot: first-segment matching calls it custom, the HasPrefix spelling calls it
+// built-in. Impostor is kept because it rules out the OTHER wrong spelling,
+// HasPrefix without the dot — the two fixtures pin different mistakes.
 func TestNodeOriginsMatchesTheFirstDotSegment(t *testing.T) {
 	raw := objectInfoJSON(t, map[string]string{
-		"Impostor":  "custom_nodesomething.pack", // NOT custom_nodes/
-		"Genuine":   "custom_nodes.pack",
-		"BareNodes": "nodes",
-		"NoModule":  "",
+		"Impostor":        "custom_nodesomething.pack", // NOT custom_nodes/
+		"Genuine":         "custom_nodes.pack",
+		"BareCustomNodes": "custom_nodes", // no dot at all
+		"BareNodes":       "nodes",
+		"NoModule":        "",
 	})
 	idx := NodeOrigins(raw)
-	if len(idx) != 4 {
-		t.Fatalf("fixture did not decode: got %d entries, want 4", len(idx))
+	if len(idx) != 5 {
+		t.Fatalf("fixture did not decode: got %d entries, want 5", len(idx))
 	}
 
 	if got := OriginOf(idx, "Impostor"); got != NodeOriginBuiltin {
@@ -75,12 +108,40 @@ func TestNodeOriginsMatchesTheFirstDotSegment(t *testing.T) {
 	if got := OriginOf(idx, "Genuine"); got != NodeOriginCustom {
 		t.Errorf("OriginOf(Genuine) = %v, want NodeOriginCustom", got)
 	}
+	if got := OriginOf(idx, "BareCustomNodes"); got != NodeOriginCustom {
+		t.Errorf("OriginOf(BareCustomNodes) = %v, want NodeOriginCustom — a dot-free "+
+			"`custom_nodes` is the module ROOT itself. This is the fixture that "+
+			"separates first-dot-segment matching from "+
+			"strings.HasPrefix(m, \"custom_nodes.\"), which would call it built-in", got)
+	}
 	if got := OriginOf(idx, "BareNodes"); got != NodeOriginBuiltin {
 		t.Errorf("OriginOf(BareNodes) = %v, want NodeOriginBuiltin", got)
 	}
-	// An absent python_module is an absence of evidence, not evidence of core.
+	// An EMPTY python_module is an absence of evidence, not evidence of core.
+	// ⚠ This covers `"python_module": ""`, NOT a missing key — see
+	// TestNodeOriginsTreatsAMissingPythonModuleAsUnknown for that one.
 	if got := OriginOf(idx, "NoModule"); got != NodeOriginUnknown {
 		t.Errorf("OriginOf(NoModule) = %v, want NodeOriginUnknown", got)
+	}
+}
+
+// TestNodeOriginsTreatsAMissingPythonModuleAsUnknown covers the input the fixture
+// above structurally cannot produce: an entry with NO python_module key.
+//
+// Go decodes both an absent key and `""` to the zero value, so this and the `""`
+// case do land on the same branch today — but that is a property of the current
+// decode shape, not a guarantee. Pinning both means a future decoder that
+// distinguishes them (a *string, a json.RawMessage, a presence flag) cannot
+// silently start answering Builtin for a payload that stated nothing.
+func TestNodeOriginsTreatsAMissingPythonModuleAsUnknown(t *testing.T) {
+	idx := NodeOrigins(objectInfoJSONMissingModule(t, "NoModuleKey"))
+	if len(idx) != 1 {
+		t.Fatalf("fixture did not decode: got %d entries, want 1", len(idx))
+	}
+	if got := OriginOf(idx, "NoModuleKey"); got != NodeOriginUnknown {
+		t.Errorf("OriginOf(NoModuleKey) = %v, want NodeOriginUnknown — a payload that "+
+			"reported no module at all tells us nothing, and answering built-in there "+
+			"would assert on absent evidence", got)
 	}
 }
 
