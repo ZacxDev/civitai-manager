@@ -83,7 +83,7 @@ func (s *Server) comfyNodeOrigins() map[string]comfy.NodeOrigin {
 	if err != nil || ent == nil {
 		return nil
 	}
-	return comfy.NodeOriginsFromJSON(ent.ObjectInfoJSON)
+	return comfy.NodeOrigins(ent.ObjectInfoJSON)
 }
 
 // comfyModelIndex is the PER-REQUEST memo behind the resolver's comfyResource.

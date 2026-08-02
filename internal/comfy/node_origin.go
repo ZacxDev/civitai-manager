@@ -58,31 +58,21 @@ const customNodesModuleRoot = "custom_nodes"
 //
 // A nil/empty payload yields a nil index, which reports NodeOriginUnknown for
 // everything — the correct answer when we have no observation.
-func NodeOrigins(info ObjectInfo) map[string]NodeOrigin {
-	if len(info) == 0 {
-		return nil
-	}
-	out := make(map[string]NodeOrigin, len(info))
-	for classType, sch := range info {
-		out[classType] = originOfModule(sch.PythonModule)
-	}
-	return out
-}
-
-// NodeOriginsFromJSON builds the index straight from a raw /object_info body,
-// decoding ONLY `python_module` per node type.
 //
-// 🔴 THIS IS NOT A CONVENIENCE WRAPPER — it exists to avoid a full ObjectInfo
-// decode on a page render. Decoding into ObjectInfo materialises every node's
-// required/optional InputSpec maps, each through InputSpec's custom
-// UnmarshalJSON; comfy_model_cache.go records that as ~88 ms against the real
-// 4,661,988-byte payload. This shape allocates one string per node type instead.
-// Callers that already hold a decoded ObjectInfo should use NodeOrigins.
+// 🔴 IT DECODES ONLY `python_module`, AND THAT IS DELIBERATE — the obvious
+// spelling, taking an already-decoded ObjectInfo, is what this replaced.
+// Unmarshalling into ObjectInfo materialises every node's required/optional
+// InputSpec maps through InputSpec's custom UnmarshalJSON; comfy_model_cache.go
+// records that as ~88 ms against the real 4,661,988-byte payload, and this runs
+// on a page render. The shape below allocates one string per node type instead
+// (measured: ~30 ms for the same live payload). NodeSchema therefore does NOT
+// carry a PythonModule field — adding one back would strand this function's
+// reason to exist and the deadcode gate would catch the orphan.
 //
 // A decode failure yields a nil index, so every class reads NodeOriginUnknown and
 // detection falls back to coreNodeClasses — a corrupt cache row degrades to the
 // pre-existing behaviour rather than breaking the page.
-func NodeOriginsFromJSON(raw []byte) map[string]NodeOrigin {
+func NodeOrigins(raw []byte) map[string]NodeOrigin {
 	if len(raw) == 0 {
 		return nil
 	}

@@ -24,7 +24,7 @@ func TestLiveObjectInfoClassification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read live payload: %v", err)
 	}
-	idx := NodeOriginsFromJSON(raw)
+	idx := NodeOrigins(raw)
 	if len(idx) == 0 {
 		t.Fatalf("live payload decoded to an EMPTY index — the probe is broken, not the code")
 	}

@@ -37,7 +37,7 @@ func TestNodeOriginsIsADenyListOnCustomNodes(t *testing.T) {
 		"FutureCoreNS":   "comfy_brand_new_namespace.things",
 		"RealCustomNode": "custom_nodes.comfyui-frame-interpolation",
 	})
-	idx := NodeOriginsFromJSON(raw)
+	idx := NodeOrigins(raw)
 	if len(idx) != 5 {
 		t.Fatalf("fixture did not decode: got %d entries, want 5", len(idx))
 	}
@@ -63,7 +63,7 @@ func TestNodeOriginsMatchesTheFirstDotSegment(t *testing.T) {
 		"BareNodes": "nodes",
 		"NoModule":  "",
 	})
-	idx := NodeOriginsFromJSON(raw)
+	idx := NodeOrigins(raw)
 	if len(idx) != 4 {
 		t.Fatalf("fixture did not decode: got %d entries, want 4", len(idx))
 	}
@@ -87,7 +87,7 @@ func TestNodeOriginsMatchesTheFirstDotSegment(t *testing.T) {
 // TestNodeOriginsUnknownForAbsentAndUndecodable pins the two ways we end up with
 // no observation. Both must read Unknown so the caller falls back to the table.
 func TestNodeOriginsUnknownForAbsentAndUndecodable(t *testing.T) {
-	idx := NodeOriginsFromJSON(objectInfoJSON(t, map[string]string{"Known": "nodes"}))
+	idx := NodeOrigins(objectInfoJSON(t, map[string]string{"Known": "nodes"}))
 	if got := OriginOf(idx, "NeverHeardOfIt"); got != NodeOriginUnknown {
 		t.Errorf("absent class = %v, want NodeOriginUnknown", got)
 	}
@@ -99,7 +99,7 @@ func TestNodeOriginsUnknownForAbsentAndUndecodable(t *testing.T) {
 		"empty":   nil,
 		"noNodes": []byte(`{}`),
 	} {
-		if idx := NodeOriginsFromJSON(raw); idx != nil {
+		if idx := NodeOrigins(raw); idx != nil {
 			t.Errorf("%s payload yielded a non-nil index (%d entries); a caller must "+
 				"fall back to coreNodeClasses, not treat everything as unknown-but-present",
 				name, len(idx))
@@ -150,7 +150,7 @@ func TestResolveResourcesPrefersObjectInfoOverTheTable(t *testing.T) {
 		t.Fatal("fixture broken: PrimitiveNode must be in coreNodeClasses")
 	}
 
-	idx := NodeOriginsFromJSON(objectInfoJSON(t, map[string]string{
+	idx := NodeOrigins(objectInfoJSON(t, map[string]string{
 		"WanImageToVideo": "comfy_extras.nodes_wan", // built-in the table misses
 		"KSampler":        "custom_nodes.impostor",  // table says core, payload says custom
 		// PrimitiveNode + TotallyUnheardOfNode deliberately absent → Unknown → table.

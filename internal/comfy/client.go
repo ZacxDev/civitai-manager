@@ -378,12 +378,11 @@ type NodeSchema struct {
 		Required []string `json:"required"`
 		Optional []string `json:"optional"`
 	} `json:"input_order"`
-	// PythonModule is the Python module this node type was registered from. It is
-	// what makes built-in-vs-custom an OBSERVATION rather than a guess: ComfyUI
-	// reports `nodes` / `comfy_extras.*` / `comfy_api_nodes.*` for the node types
-	// it ships and `custom_nodes.<pack>` for everything installed into
-	// custom_nodes/. See NodeOrigins for the classification and its measurements.
-	PythonModule string `json:"python_module"`
+	// NOTE: /object_info also carries `python_module` per node type — the field
+	// that makes built-in-vs-custom an observation rather than a guess. It is
+	// deliberately NOT decoded here: NodeOrigins reads it from the raw bytes with
+	// a minimal shape, because materialising this struct costs ~88 ms on the real
+	// payload and node-origin classification runs on a page render.
 }
 
 // ObjectInfo maps a node type name to its schema.
