@@ -1,8 +1,12 @@
 package web
 
 import (
+	"context"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
@@ -311,4 +315,199 @@ func TestCloudPanelUsesTheFreshObjectInfoWhenTheCacheCannotAnswer(t *testing.T) 
 	if !hasName(names, "ImpactWildcardProcessor") {
 		t.Errorf("the genuine custom node was not flagged (banner listed %v)", names)
 	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE TIER OBSERVABILITY — proving it runs where the TRAFFIC is.
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 THIS EXISTS BECAUSE THE FIRST VERSION LOGGED ON THE PATH NOBODY TAKES. The
+// split accounting lived inside comfyNodeOrigins, which resolveResources reaches
+// ONLY as a fallback — so on a UI-format workflow with a reachable ComfyUI (all 71
+// workflows on the operator's real DB) it never executed at all, while its own
+// comment claimed a 0-custom split was "the only externally visible signal". Same
+// shape as this repo's recurring defect: not broken code, code that never runs. A
+// test that only asserts "some line was logged" would have passed the broken
+// version, so every case below pins the TIER.
+
+// capturedRecord is one slog record flattened to what these assertions need.
+type capturedRecord struct {
+	level slog.Level
+	msg   string
+	attrs map[string]string
+}
+
+// logCapture is a slog.Handler that keeps every record. Enabled always returns
+// true: the server's real handler is LevelInfo, which would DROP the Debug split
+// line and make these tests vacuous in the most convincing way possible.
+type logCapture struct {
+	mu   sync.Mutex
+	recs []capturedRecord
+}
+
+func (c *logCapture) Enabled(context.Context, slog.Level) bool { return true }
+
+func (c *logCapture) Handle(_ context.Context, r slog.Record) error {
+	rec := capturedRecord{level: r.Level, msg: r.Message, attrs: map[string]string{}}
+	r.Attrs(func(a slog.Attr) bool {
+		rec.attrs[a.Key] = a.Value.String()
+		return true
+	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.recs = append(c.recs, rec)
+	return nil
+}
+
+func (c *logCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *logCapture) WithGroup(string) slog.Handler      { return c }
+
+func (c *logCapture) withMessage(msg string) []capturedRecord {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []capturedRecord
+	for _, r := range c.recs {
+		if r.msg == msg {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func (c *logCapture) messages() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, 0, len(c.recs))
+	for _, r := range c.recs {
+		out = append(out, r.level.String()+" "+r.msg)
+	}
+	return out
+}
+
+const (
+	nodeOriginSplitMsg = "classified comfy object_info"
+	freshDecodeFailMsg = "decode fetched comfy object_info"
+)
+
+// captureLogs swaps in a capturing logger. It must be called before the request:
+// Server.log is read per record, so a later swap would miss everything.
+func captureLogs(srv *Server) *logCapture {
+	logs := &logCapture{}
+	srv.log = slog.New(logs)
+	return logs
+}
+
+func TestNodeOriginTierIsObservable(t *testing.T) {
+	// ── the DOMINANT path: UI-format workflow, reachable ComfyUI ───────────────
+	// This is the case the broken version could not see. Asserting tier=fresh is
+	// what makes it discriminating — moving the call back inside the fallback
+	// leaves this subtest with zero records.
+	t.Run("fresh tier logs the split", func(t *testing.T) {
+		srv := newCloudTestServer(t, &fakeCloud{})
+		fake := &fakeComfy{
+			info:    mustObjectInfo(t, freshNodeOriginInfo),
+			infoRaw: []byte(freshNodeOriginInfo),
+		}
+		srv.comfyClientFn = func() comfyClient { return fake }
+		logs := captureLogs(srv)
+
+		id := seedWorkflow(t, srv, store.WorkflowFormatUI, uiNodeOriginGraph)
+		if rec := get(t, srv, "/workflows/"+id+"/cloud"); rec.Code != http.StatusOK {
+			t.Fatalf("cloud panel = %d", rec.Code)
+		}
+		// Fixture reached the interesting case: the panel really did fetch, which is
+		// what produces a fresh rawInfo at all. A conversion that aborted early would
+		// leave no records and read as a different failure.
+		if fake.objectInfoCalls == 0 {
+			t.Fatalf("fixture did not reach the interesting case: never fetched /object_info")
+		}
+		got := logs.withMessage(nodeOriginSplitMsg)
+		if len(got) != 1 {
+			t.Fatalf("want exactly 1 %q record on the fresh path, got %d (all records: %v). "+
+				"Zero means the split is logged somewhere the dominant path does not go — "+
+				"the exact regression this guards.", nodeOriginSplitMsg, len(got), logs.messages())
+		}
+		if tier := got[0].attrs["tier"]; tier != "fresh" {
+			t.Errorf("tier = %q, want \"fresh\": the freshly fetched payload answered, so a "+
+				"\"cache\" tier here means the pass-through is not being used", tier)
+		}
+		// The counts, not just their presence: freshNodeOriginInfo is deliberately one
+		// comfy_extras built-in and one custom_nodes custom, so a classifier that
+		// collapsed the two would show up here.
+		for key, want := range map[string]string{"types": "2", "builtin": "1", "custom": "1"} {
+			if got := got[0].attrs[key]; got != want {
+				t.Errorf("%s = %q, want %q (attrs=%v)", key, got, want, logs.withMessage(nodeOriginSplitMsg)[0].attrs)
+			}
+		}
+	})
+
+	// ── a fetched body that classifies NOTHING ────────────────────────────────
+	// The one case this observability was added for, and the one comfyNodeOrigins
+	// structurally cannot report: it never sees rawInfo. Before the fix this fell
+	// through to the cache silently, so a corrupt fresh payload was indistinguishable
+	// from an API-format workflow that legitimately has none.
+	t.Run("a corrupt fresh payload is warned about", func(t *testing.T) {
+		// Truncated mid-object: non-empty (so it is NOT the nil/API-format case) and
+		// undecodable (so NodeOrigins yields nothing).
+		truncated := []byte(`{"WanImageToVideo": {"python_mo`)
+		if idx := comfy.NodeOrigins(truncated); len(idx) != 0 {
+			t.Fatalf("fixture precondition: the truncated body must classify nothing, got %v", idx)
+		}
+
+		srv := newCloudTestServer(t, &fakeCloud{})
+		// info decodes (the conversion needs it) while infoRaw does not — the fake
+		// carries them independently, which is exactly the production shape of a
+		// truncated response body.
+		fake := &fakeComfy{
+			info:    mustObjectInfo(t, freshNodeOriginInfo),
+			infoRaw: truncated,
+		}
+		srv.comfyClientFn = func() comfyClient { return fake }
+		logs := captureLogs(srv)
+
+		id := seedWorkflow(t, srv, store.WorkflowFormatUI, uiNodeOriginGraph)
+		if rec := get(t, srv, "/workflows/"+id+"/cloud"); rec.Code != http.StatusOK {
+			t.Fatalf("cloud panel = %d", rec.Code)
+		}
+		if fake.objectInfoCalls == 0 {
+			t.Fatalf("fixture did not reach the interesting case: never fetched /object_info")
+		}
+		got := logs.withMessage(freshDecodeFailMsg)
+		if len(got) != 1 {
+			t.Fatalf("want exactly 1 %q record, got %d (all records: %v). A fetched body that "+
+				"classifies nothing must not fall through to the cache silently.",
+				freshDecodeFailMsg, len(got), logs.messages())
+		}
+		if got[0].level != slog.LevelWarn {
+			t.Errorf("level = %v, want WARN: this is a real fault and must reach the default "+
+				"log level, unlike the Debug split", got[0].level)
+		}
+		if b, want := got[0].attrs["bytes"], strconv.Itoa(len(truncated)); b != want {
+			t.Errorf("bytes = %q, want %q — the byte count is what separates a truncated body "+
+				"from a well-formed empty one", b, want)
+		}
+	})
+
+	// ── a cold cache stays SILENT ─────────────────────────────────────────────
+	// An empty cache is a designed state, not a fault: an API-format workflow never
+	// contacts ComfyUI, so rawInfo is nil and there is genuinely nothing to report.
+	// Pinned so nobody "improves" the logging into per-render noise on a fresh
+	// install, which is the pressure a missing-signal audit creates.
+	t.Run("a cold cache logs nothing", func(t *testing.T) {
+		srv := newCloudTestServer(t, &fakeCloud{})
+		logs := captureLogs(srv)
+		if ent, err := srv.store.GetComfyObjectInfo(); err != nil || ent != nil {
+			t.Fatalf("fixture precondition: the cache must start empty, got ent=%v err=%v", ent, err)
+		}
+		id := seedWorkflow(t, srv, store.WorkflowFormatAPI, nodeOriginAPIGraph)
+		if rec := get(t, srv, "/workflows/"+id+"/cloud"); rec.Code != http.StatusOK {
+			t.Fatalf("cloud panel = %d", rec.Code)
+		}
+		for _, msg := range []string{nodeOriginSplitMsg, freshDecodeFailMsg} {
+			if got := logs.withMessage(msg); len(got) != 0 {
+				t.Errorf("a cold cache logged %q %d time(s) (all records: %v). An empty cache is "+
+					"the normal fresh-install state; reporting it on every render trains the "+
+					"operator to ignore the line that does mean something.", msg, len(got), logs.messages())
+			}
+		}
+	})
 }
