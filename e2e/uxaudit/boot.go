@@ -34,14 +34,111 @@ const heroWorkflowGraph = `{
   "8": {"class_type": "SaveImage", "inputs": {"images": ["7", 0], "filename_prefix": "uxaudit"}}
 }`
 
+// heroWorkflowGraphUI is the SECOND seeded hero graph: the same pipeline as
+// heroWorkflowGraph, expressed in the editor's UI ("Save") format.
+//
+// 🔴 Why a second fixture rather than a replacement. Measured against the
+// operator's real library: `SELECT format, COUNT(*) FROM workflows GROUP BY
+// format` → `ui|71`. ALL of it is UI-format; NONE is API-format. Seeding only the
+// API graph made the walk audit a surface real users cannot reach and skip the one
+// they can:
+//
+//   - The batch count segment (runCountSegment — the ×1/×2/×4/×8/Custom pills plus
+//     the custom number input) is emitted ONLY when canQueue is true, i.e. only for
+//     a UI-format workflow. With an API-only fixture the walk never screenshot it,
+//     never axe-scanned it, and never posted to /run/queue.
+//   - Worse, an INVERSION: realRun returns early with a warnings panel, BEFORE
+//     comfy.Preflight, only for a UI conversion that produced warnings. An
+//     API-format graph always reaches preflight — so `run-missing-models` was
+//     auditing a failure panel reachable only by the format nobody has.
+//
+// Both formats stay seeded because the two take genuinely different branches
+// through realRun and both are worth auditing.
+//
+// The graph is written to convert CLEANLY (no ConvertUIToAPI warnings) against
+// fakeObjectInfoJSON, so the run reaches preflight and renders the SAME missing-
+// models hero panel — the one a real UI-format user actually hits. Its KSampler
+// widgets_values follows the real ComfyUI serialization, including the
+// control_after_generate slot ("fixed") that immediately follows `seed`; drop it
+// and every later widget value shifts by one. sampler_name/scheduler values are
+// deliberately IN fakeObjectInfoJSON's combo choices so preflight reports missing
+// MODELS only, never a BadOption.
+const heroWorkflowGraphUI = `{
+  "last_node_id": 8,
+  "last_link_id": 11,
+  "nodes": [
+    {"id": 1, "type": "CheckpointLoaderSimple", "mode": 0, "pos": [40, 80], "size": [340, 100],
+     "inputs": [],
+     "outputs": [{"name": "MODEL", "type": "MODEL", "links": [1]},
+                 {"name": "CLIP", "type": "CLIP", "links": [2]},
+                 {"name": "VAE", "type": "VAE", "links": [9]}],
+     "widgets_values": ["dreamshaperXL-MISSING.safetensors"]},
+    {"id": 2, "type": "LoraLoader", "mode": 0, "pos": [430, 80], "size": [340, 140],
+     "inputs": [{"name": "model", "type": "MODEL", "link": 1},
+                {"name": "clip", "type": "CLIP", "link": 2}],
+     "outputs": [{"name": "MODEL", "type": "MODEL", "links": [3]},
+                 {"name": "CLIP", "type": "CLIP", "links": [4, 5]}],
+     "widgets_values": ["detailer-MISSING.safetensors", 0.8, 1.0]},
+    {"id": 3, "type": "CLIPTextEncode", "mode": 0, "pos": [820, 40], "size": [400, 120],
+     "inputs": [{"name": "clip", "type": "CLIP", "link": 4}],
+     "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [6]}],
+     "widgets_values": ["a portrait of a cat, studio light"]},
+    {"id": 4, "type": "CLIPTextEncode", "mode": 0, "pos": [820, 210], "size": [400, 120],
+     "inputs": [{"name": "clip", "type": "CLIP", "link": 5}],
+     "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [7]}],
+     "widgets_values": ["blurry, low quality"]},
+    {"id": 5, "type": "EmptyLatentImage", "mode": 0, "pos": [820, 380], "size": [340, 110],
+     "inputs": [],
+     "outputs": [{"name": "LATENT", "type": "LATENT", "links": [8]}],
+     "widgets_values": [1024, 1024, 1]},
+    {"id": 6, "type": "KSampler", "mode": 0, "pos": [1270, 80], "size": [340, 280],
+     "inputs": [{"name": "model", "type": "MODEL", "link": 3},
+                {"name": "positive", "type": "CONDITIONING", "link": 6},
+                {"name": "negative", "type": "CONDITIONING", "link": 7},
+                {"name": "latent_image", "type": "LATENT", "link": 8}],
+     "outputs": [{"name": "LATENT", "type": "LATENT", "links": [10]}],
+     "widgets_values": [123456789, "fixed", 20, 8, "euler", "normal", 1]},
+    {"id": 7, "type": "VAEDecode", "mode": 0, "pos": [1660, 80], "size": [260, 60],
+     "inputs": [{"name": "samples", "type": "LATENT", "link": 10},
+                {"name": "vae", "type": "VAE", "link": 9}],
+     "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [11]}]},
+    {"id": 8, "type": "SaveImage", "mode": 0, "pos": [1960, 80], "size": [340, 270],
+     "inputs": [{"name": "images", "type": "IMAGE", "link": 11}],
+     "widgets_values": ["uxaudit-ui"]}
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "MODEL"],
+    [2, 1, 1, 2, 1, "CLIP"],
+    [3, 2, 0, 6, 0, "MODEL"],
+    [4, 2, 1, 3, 0, "CLIP"],
+    [5, 2, 1, 4, 0, "CLIP"],
+    [6, 3, 0, 6, 1, "CONDITIONING"],
+    [7, 4, 0, 6, 2, "CONDITIONING"],
+    [8, 5, 0, 6, 3, "LATENT"],
+    [9, 1, 2, 7, 1, "VAE"],
+    [10, 6, 0, 7, 0, "LATENT"],
+    [11, 7, 0, 8, 0, "IMAGE"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}`
+
 // App is a booted, hermetic civitai-manager instance for the walk: an in-process
 // web server (httptest) backed by a temp SQLite store seeded with deterministic
 // fixtures, plus a fake ComfyUI the server-side run path talks to. The browser
 // only ever talks to URL — no external network is used.
 type App struct {
-	URL        string // base URL of the in-process civitai-manager web server
-	WorkflowID int64  // the seeded hero workflow (references missing models)
-	ScanDir    string // a seeded install dir the library scanner can walk offline
+	URL string // base URL of the in-process civitai-manager web server
+	// WorkflowID is the seeded API-format hero workflow (references missing models).
+	// Its run control posts to RunPostPathAPI and it renders NO count segment.
+	WorkflowID int64
+	// WorkflowUIID is the seeded UI-format hero workflow — the format 100% of the
+	// operator's real library is in. Its run control posts to RunPostPathUI (the
+	// batch endpoint) and it DOES render the count segment.
+	WorkflowUIID int64
+	ScanDir      string // a seeded install dir the library scanner can walk offline
 
 	ts     *httptest.Server
 	comfy  *httptest.Server
@@ -67,10 +164,12 @@ func (a *App) Close() {
 }
 
 // Boot builds a hermetic civitai-manager instance under workDir (fixtures + a
-// SQLite file live there). It seeds: a hero workflow that references missing
-// models, an install dir with a couple of model files for the library scanner,
-// and a subscription for a non-empty dashboard. It stands up a fake ComfyUI and
-// wires cfg.ComfyURL at it so the run/missing-models path works offline.
+// SQLite file live there). It seeds: TWO hero workflows that reference missing
+// models — one API-format, one UI-format, because the app's run surface branches on
+// wf.Format and only the UI branch is what real libraries contain — an install dir
+// with a couple of model files for the library scanner, and a subscription for a
+// non-empty dashboard. It stands up a fake ComfyUI and wires cfg.ComfyURL at it so
+// the run/missing-models path works offline.
 func Boot(workDir string) (*App, error) {
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return nil, err
@@ -95,6 +194,23 @@ func Boot(workDir string) (*App, error) {
 	if err != nil {
 		_ = st.Close()
 		return nil, fmt.Errorf("seed workflow: %w", err)
+	}
+
+	// Seed the SECOND hero workflow in UI format — the format the operator's entire
+	// real library is in, and the only one that renders the batch count segment or
+	// posts to the batch endpoint. See heroWorkflowGraphUI's comment.
+	uiResources, _ := comfy.ExtractResourcesAny(comfy.FormatUI, []byte(heroWorkflowGraphUI))
+	wfUIID, err := st.InsertWorkflow(context.Background(), &store.Workflow{
+		Name:      "SDXL Portrait UI (missing models demo)",
+		Format:    store.WorkflowFormatUI,
+		Graph:     heroWorkflowGraphUI,
+		Source:    store.WorkflowSourceImported,
+		BaseModel: "SDXL 1.0",
+		Resources: uiResources,
+	})
+	if err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("seed ui workflow: %w", err)
 	}
 
 	// Seed an install dir with a couple of model files, plus a cross-dir duplicate,
@@ -168,12 +284,13 @@ func Boot(workDir string) (*App, error) {
 	ts := httptest.NewServer(srv.Handler())
 
 	return &App{
-		URL:        ts.URL,
-		WorkflowID: wfID,
-		ScanDir:    scanDir,
-		ts:         ts,
-		comfy:      comfySrv,
-		store:      st,
-		cancel:     cancel,
+		URL:          ts.URL,
+		WorkflowID:   wfID,
+		WorkflowUIID: wfUIID,
+		ScanDir:      scanDir,
+		ts:           ts,
+		comfy:        comfySrv,
+		store:        st,
+		cancel:       cancel,
 	}, nil
 }

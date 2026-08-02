@@ -152,26 +152,60 @@ func newFakeComfyUI() *httptest.Server {
 }
 
 // fakeObjectInfoJSON is the ComfyUI /object_info payload. Its loader combos list
-// only INSTALLED files, none of which match the seeded workflow's references, so
+// only INSTALLED files, none of which match the seeded workflows' references, so
 // preflight reports every referenced model as missing. Every class_type the
-// seeded graph uses is present here so none is flagged as a missing NODE (we want
+// seeded graphs use is present here so none is flagged as a missing NODE (we want
 // missing MODELS, the hero). The raw shape mirrors ComfyUI: each input is
 // [choicesOrType, opts]; a string first element (e.g. "MODEL") is a typed slot,
 // an array first element is a combo whose entries are the choices.
+//
+// 🔴 `input_order` is LOAD-BEARING and must be present on every entry, even though
+// the API-format hero never reads it. comfy.ConvertUIToAPI walks input_order to
+// assign a UI node's widgets_values, and a schema that HAS inputs but no
+// input_order makes it emit `node N has no input_order; widget values not mapped`
+// for every such node. realRun returns EARLY on any conversion warning — before
+// comfy.Preflight — so a UI-format hero would render the conversion-warnings panel
+// instead of the missing-models one, and the walk would never exercise preflight
+// on the format real users actually have. (Measured: all 71 workflows in the
+// operator's library are `ui`; zero are `api`.)
+//
+// KSampler carries the full real widget set (seed / steps / cfg / sampler_name /
+// scheduler / denoise) rather than links only, for two reasons: the UI graph's
+// widgets_values has to line up with a REAL KSampler serialization — including the
+// control_after_generate slot that follows `seed` — and DetectRunInputs needs a
+// seed to expose for the Parameters panel the UI-format run surface is audited
+// with. The API-format hero graph simply omits those inputs; preflight does not
+// require an input to be present, so it is unaffected.
 const fakeObjectInfoJSON = `{
   "CheckpointLoaderSimple": {"input": {"required": {
     "ckpt_name": [["installed-sdxl-base.safetensors"], {}]
-  }}},
+  }}, "input_order": {"required": ["ckpt_name"]}},
   "LoraLoader": {"input": {"required": {
     "lora_name": [["installed-detail-lora.safetensors"], {}],
     "model": ["MODEL", {}], "clip": ["CLIP", {}],
     "strength_model": ["FLOAT", {}], "strength_clip": ["FLOAT", {}]
-  }}},
-  "CLIPTextEncode": {"input": {"required": {"text": ["STRING", {}], "clip": ["CLIP", {}]}}},
-  "EmptyLatentImage": {"input": {"required": {"width": ["INT", {}], "height": ["INT", {}], "batch_size": ["INT", {}]}}},
-  "KSampler": {"input": {"required": {"model": ["MODEL", {}], "positive": ["CONDITIONING", {}], "negative": ["CONDITIONING", {}], "latent_image": ["LATENT", {}]}}},
-  "VAEDecode": {"input": {"required": {"samples": ["LATENT", {}], "vae": ["VAE", {}]}}},
-  "SaveImage": {"input": {"required": {"images": ["IMAGE", {}], "filename_prefix": ["STRING", {}]}}}
+  }}, "input_order": {"required": ["model", "clip", "lora_name", "strength_model", "strength_clip"]}},
+  "CLIPTextEncode": {"input": {"required": {"text": ["STRING", {"multiline": true}], "clip": ["CLIP", {}]}},
+    "input_order": {"required": ["text", "clip"]}},
+  "EmptyLatentImage": {"input": {"required": {"width": ["INT", {}], "height": ["INT", {}], "batch_size": ["INT", {}]}},
+    "input_order": {"required": ["width", "height", "batch_size"]}},
+  "KSampler": {"input": {"required": {
+    "model": ["MODEL", {}],
+    "seed": ["INT", {"default": 0, "control_after_generate": true}],
+    "steps": ["INT", {"default": 20}],
+    "cfg": ["FLOAT", {"default": 8.0}],
+    "sampler_name": [["euler", "dpmpp_2m", "ddim"], {}],
+    "scheduler": [["normal", "karras", "simple"], {}],
+    "positive": ["CONDITIONING", {}], "negative": ["CONDITIONING", {}],
+    "latent_image": ["LATENT", {}],
+    "denoise": ["FLOAT", {"default": 1.0}]
+  }}, "input_order": {"required": [
+    "model", "seed", "steps", "cfg", "sampler_name", "scheduler",
+    "positive", "negative", "latent_image", "denoise"]}},
+  "VAEDecode": {"input": {"required": {"samples": ["LATENT", {}], "vae": ["VAE", {}]}},
+    "input_order": {"required": ["samples", "vae"]}},
+  "SaveImage": {"input": {"required": {"images": ["IMAGE", {}], "filename_prefix": ["STRING", {}]}},
+    "input_order": {"required": ["images", "filename_prefix"]}}
 }`
 
 // sameOrigin reports whether two URLs share scheme+host+port. Used to classify
