@@ -327,6 +327,26 @@ func buildWorkflowGraphSVG(graph []byte) (g.Node, graphRenderStats, bool) {
 		g.Attr("height", f(vbH)),
 		h.Style("width:100%;height:auto;max-width:100%;min-width:" + f(minW) + "px;display:block"),
 		g.Attr("role", "img"),
+		// 🔴 role="img" WITHOUT A NAME IS A BLACK HOLE, and it was one: the role
+		// collapses the whole SVG into a single atomic image and hides its innards
+		// from AT, so an unnamed one announces nothing at all (axe svg-img-alt,
+		// measured on /workflows/<ui-id>). The role is still right — a linear reading
+		// of a few hundred <text> node titles is noise, not content — so the fix is to
+		// NAME it, not to drop the role.
+		//
+		// The name states what the picture DEPICTS, using the counts the renderer
+		// actually drew (so a capped or partly-unplaceable graph never overstates
+		// itself; graphRenderNotice carries the "why" in visible text). That is
+		// deliberately COMPLEMENTARY to, not a repeat of, the scroll container's
+		// aria-label below, which describes how to OPERATE the region. Neither
+		// duplicates the other's words.
+		//
+		// aria-label rather than an SVG <title> child: <title> would satisfy axe just
+		// as well, but browsers render it as a native TOOLTIP on hover, which would
+		// pop up over the graph during click-to-drag panning. This repo has already
+		// removed one title= for tooltip-racing reasons (versionStatusFragment).
+		g.Attr("aria-label", fmt.Sprintf("Node graph: %d node%s, %d connection%s",
+			st.DrawnNodes, plural(st.DrawnNodes), st.DrawnLinks, plural(st.DrawnLinks))),
 		g.Attr("preserveAspectRatio", "xMidYMid meet"),
 	}
 	children = append(children, groupEls...)
