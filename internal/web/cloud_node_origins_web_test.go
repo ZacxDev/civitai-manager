@@ -260,8 +260,23 @@ const uiNodeOriginGraph = `{"nodes":[
   {"id":2,"type":"ImpactWildcardProcessor","widgets_values":[]}
 ],"links":[]}`
 
+// 🔴 THE THIRD ENTRY EXISTS SO THE SPLIT COUNTS ARE PAIRWISE DISTINCT, and it is
+// the whole reason this fixture can discriminate. With the original two entries the
+// split was types=2, builtin=1, custom=1 — so SWAPPING the builtin/custom arguments
+// at logNodeOriginSplit's Debug call produced byte-identical attributes and survived
+// the entire package. A fixture whose fields collide cannot tell a counter from its
+// neighbour, whatever the assertion says. 2 built-in / 1 custom separates them.
+//
+// CLIPVisionLoader is deliberately NOT in uiNodeOriginGraph: the split is counted
+// over everything the PAYLOAD registers, not over the nodes the graph happens to
+// reference, so an entry outside the graph is enough to move the counter while
+// leaving every banner assertion in this file measuring exactly what it did before.
+// It is the same real built-in nodeOriginObjectInfo uses for the dot-free `nodes`
+// root (6 of the operator's 70 workflows), and no fixture name here is a substring
+// of another.
 const freshNodeOriginInfo = `{
   "WanImageToVideo":         {"python_module":"comfy_extras.nodes_wan","input":{"required":{}},"input_order":{"required":[]}},
+  "CLIPVisionLoader":        {"python_module":"nodes","input":{"required":{}},"input_order":{"required":[]}},
   "ImpactWildcardProcessor": {"python_module":"custom_nodes.comfyui-impact-pack","input":{"required":{}},"input_order":{"required":[]}}
 }`
 
@@ -462,10 +477,83 @@ func TestNodeOriginTierIsObservable(t *testing.T) {
 			t.Errorf("tier = %q, want \"fresh\": the freshly fetched payload answered, so a "+
 				"\"cache\" tier here means the pass-through is not being used", tier)
 		}
-		// The counts, not just their presence: freshNodeOriginInfo is deliberately one
-		// comfy_extras built-in and one custom_nodes custom, so a classifier that
-		// collapsed the two would show up here.
-		for key, want := range map[string]string{"types": "2", "builtin": "1", "custom": "1"} {
+		// The counts, not just their presence. freshNodeOriginInfo is deliberately
+		// TWO built-ins (comfy_extras.* and the dot-free `nodes`) against ONE
+		// custom_nodes.* custom, so all three numbers differ: this pins that the two
+		// counters are the right way round, not merely that they did not collapse.
+		// The earlier 1-and-1 fixture pinned only the collapse — swapping the
+		// builtin/custom arguments passed the whole package.
+		for key, want := range map[string]string{"types": "3", "builtin": "2", "custom": "1"} {
+			if got := got[0].attrs[key]; got != want {
+				t.Errorf("%s = %q, want %q (attrs=%v)", key, got, want, logs.withMessage(nodeOriginSplitMsg)[0].attrs)
+			}
+		}
+	})
+
+	// ── the FALLBACK path: API-format workflow, warm cache ────────────────────
+	// 🔴 THE FALLBACK'S OWN LABEL WAS UNASSERTED. Only tier="fresh" was pinned, so
+	// mutating the fallback branch's tier = "cache" to "fresh" survived the entire
+	// internal/web suite. The field exists for exactly one purpose — telling an
+	// operator WHICH tier answered — so a cache tier that reports itself as fresh
+	// sends them to debug the half that did not run.
+	//
+	// An API-format workflow is the deterministic way in: cloudAPIGraph returns
+	// before the fetch, so rawInfo is nil, the fresh tier classifies nothing, and the
+	// cached row is the only origin source there is.
+	t.Run("cache tier logs the split", func(t *testing.T) {
+		srv := newCloudTestServer(t, &fakeCloud{})
+		// Injected purely so "ComfyUI was never contacted" is a MEASURED precondition
+		// rather than an argument about cloudAPIGraph's control flow. Its payload is
+		// never used; if it ever were, objectInfoCalls below would say so.
+		fake := &fakeComfy{
+			info:    mustObjectInfo(t, freshNodeOriginInfo),
+			infoRaw: []byte(freshNodeOriginInfo),
+		}
+		srv.comfyClientFn = func() comfyClient { return fake }
+		logs := captureLogs(srv)
+
+		if err := srv.store.PutComfyObjectInfo([]byte(nodeOriginObjectInfo)); err != nil {
+			t.Fatalf("seed object_info cache: %v", err)
+		}
+		// Assert the intermediate state: the row reads back and really does classify
+		// two built-ins against one custom. A row that failed to decode would leave
+		// the cache tier silent and this subtest asserting nothing.
+		ent, err := srv.store.GetComfyObjectInfo()
+		if err != nil || ent == nil {
+			t.Fatalf("fixture precondition: the seeded row must read back, got ent=%v err=%v", ent, err)
+		}
+		idx := comfy.NodeOrigins(ent.ObjectInfoJSON)
+		if comfy.OriginOf(idx, "WanImageToVideo") != comfy.NodeOriginBuiltin ||
+			comfy.OriginOf(idx, "CLIPVisionLoader") != comfy.NodeOriginBuiltin ||
+			comfy.OriginOf(idx, "ImpactWildcardProcessor") != comfy.NodeOriginCustom {
+			t.Fatalf("fixture precondition: the seeded row does not classify 2 builtin + 1 custom (idx=%v)", idx)
+		}
+
+		id := seedWorkflow(t, srv, store.WorkflowFormatAPI, nodeOriginAPIGraph)
+		if rec := get(t, srv, "/workflows/"+id+"/cloud"); rec.Code != http.StatusOK {
+			t.Fatalf("cloud panel = %d", rec.Code)
+		}
+		// Fixture reached the interesting case: nothing fresh could possibly have
+		// answered, so whatever tier the record names, the CACHE is what classified.
+		if fake.objectInfoCalls != 0 {
+			t.Fatalf("fixture did not reach the interesting case: the API-format panel fetched "+
+				"/object_info %d time(s), so a fresh payload could have answered and the tier "+
+				"assertion below would not be about the fallback at all", fake.objectInfoCalls)
+		}
+		got := logs.withMessage(nodeOriginSplitMsg)
+		if len(got) != 1 {
+			t.Fatalf("want exactly 1 %q record on the cache path, got %d (all records: %v)",
+				nodeOriginSplitMsg, len(got), logs.messages())
+		}
+		if tier := got[0].attrs["tier"]; tier != "cache" {
+			t.Errorf("tier = %q, want \"cache\": this request never contacted ComfyUI (0 "+
+				"/object_info fetches), so the cached 0019 row is the only thing that could "+
+				"have classified anything. A \"fresh\" label here is a lie that costs an "+
+				"operator their whole debugging session.", tier)
+		}
+		// nodeOriginObjectInfo is 2 built-ins against 1 custom — pairwise distinct for
+		// the same reason the fresh fixture is.
+		for key, want := range map[string]string{"types": "3", "builtin": "2", "custom": "1"} {
 			if got := got[0].attrs[key]; got != want {
 				t.Errorf("%s = %q, want %q (attrs=%v)", key, got, want, logs.withMessage(nodeOriginSplitMsg)[0].attrs)
 			}
