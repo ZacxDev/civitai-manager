@@ -188,10 +188,20 @@ func heroRunPrep(runSel string) func(*App) []chromedp.Action {
 			// currently-displayed seq (0 when idle / no prior run) so we can re-pin to
 			// the run THIS click starts — which will carry a strictly-greater seq.
 			//
-			// 🔴 This is what makes TWO hero views safe: the second one navigates to a
-			// page whose #run-status is bootstrapped with the FIRST hero's terminal
-			// panel, which already contains HeroMarker. A text-only wait would match it
-			// instantly and screenshot the wrong run; the seq gate cannot.
+			// 🔴 What this actually protects is EACH VIEW'S SECOND VIEWPORT. A view is
+			// captured at mobile then desktop, and the second capture re-navigates to a
+			// page whose #run-status bootstraps with the terminal panel of the run the
+			// FIRST viewport just triggered — already containing HeroMarker. A text-only
+			// wait would match that instantly and screenshot the previous run; the seq
+			// gate cannot.
+			//
+			// ⚠ It does NOT protect against the other hero's run leaking in, and an
+			// earlier version of this comment claimed it did. Measured by instrumenting
+			// the walk: navigating to hero 2 reads preSeq=0 and an EMPTY #run-status,
+			// because run_pages.go returns an empty div when snap.WorkflowID != wfID —
+			// a run is scoped to its workflow. Adding the second hero therefore created
+			// no new need for the seq gate; the gate was already load-bearing on main
+			// with one hero, for the reason above.
 			readRunSeq("#run-status", &preSeq),
 			chromedp.Click(runSel, chromedp.ByQuery),
 			// Condition-based (not window-based) re-pin: wait until #run-status shows a

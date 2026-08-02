@@ -109,15 +109,17 @@ func TestUXAuditWalk(t *testing.T) {
 	// data-run-seq strictly greater than the pre-click value AND the marker text, so a
 	// stale panel can never satisfy it and the walk fails loudly if this run's panel
 	// never appears.
-	// The count of heroes is pinned so DELETING a Hero view (rather than renaming it)
-	// cannot quietly shrink this assertion to the surviving one. Both formats are
-	// heroes: the API branch and the UI branch of realRun reach the panel differently.
-	wantHeroes := 0
-	for _, v := range Views(&App{}) {
-		if v.Hero {
-			wantHeroes++
-		}
-	}
+	// The hero count is a LITERAL on purpose. It used to be derived from
+	// `Views(&App{})` — the same source `heroCaps` is built from — so deleting a Hero
+	// view shrank both sides equally and the assertion could not fail. Verified: with
+	// the derived form, deleting the run-missing-models-ui view left this test GREEN.
+	// (That deletion is caught, but by the browserless `minViews` ratchet in
+	// walk_selectors_test.go — not here, which is what the old comment claimed.)
+	//
+	// Both formats are heroes: the API branch and the UI branch of realRun reach the
+	// missing-models panel differently, and only a UI-format graph exercises the
+	// early-return-before-Preflight path. Raise this when a hero is added.
+	const wantHeroes = 2
 	if len(heroCaps) != wantHeroes {
 		t.Fatalf("captured %d hero desktop views, want %d — a hero view was not captured", len(heroCaps), wantHeroes)
 	}
