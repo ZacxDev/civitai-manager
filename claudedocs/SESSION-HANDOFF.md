@@ -193,3 +193,33 @@ again.
   closed each time.
 - **8 stale agent worktrees** remain under `.claude/worktrees/`; every branch except the
   shared checkout's own is merged. Safe to prune.
+
+## A comment that lies, found after the sweep closed
+
+`e2e/uxaudit/fakes.go:166-167` still asserts, present tense:
+
+> `realRun` returns EARLY on any conversion warning — before `comfy.Preflight` — so a
+> UI-format hero would render the conversion-warnings panel instead of the missing-models
+> one
+
+**Both halves are now false.** PR #46 replaced that early return with the never-submit
+disjunction at `run_handlers.go:589-607`, which runs **after** `comfy.Preflight`. And when
+`report.OK` is false — exactly what `fakeObjectInfoJSON` is engineered to produce — the
+run takes `preflightFailureResult` and renders the missing-models panel **with** the
+conversion warnings attached, not "instead of" it.
+
+**The `input_order` requirement it justifies probably still holds — for a DIFFERENT
+reason, and that reason is UNVERIFIED.** Hypothesis: without `input_order`,
+`ConvertUIToAPI` never maps `widgets_values`, so `ckpt_name`/`lora_name` never reach the
+API graph, preflight finds no model references, `report.OK` stays **true**, and the run
+falls into the `report.OK` branch at `:596` — the warnings-only panel. Same observable
+outcome as the old comment predicted, arrived at through the opposite mechanism.
+
+**Next probe** (do this before rewriting the comment — do not reason it out):
+delete `"input_order"` from the `CheckpointLoaderSimple` entry of `fakeObjectInfoJSON`,
+run the uxaudit walk, and record which panel the UI-format hero actually renders. If the
+missing-models panel still appears, `input_order` is no longer load-bearing at all and the
+whole 🔴 block goes rather than gets corrected.
+
+Left unfixed deliberately: the docs pass that found it was scoped to documentation, and
+this is a Go source file that needs the gate. It is a ~5-line change plus one measurement.
