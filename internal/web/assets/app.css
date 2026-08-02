@@ -760,6 +760,47 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 }
 
 /*
+ * RUN-PRESET tab row (.cm-preset-tabrow / .cm-preset-tablist) — see
+ * runPresetTabStrip in run_preset_pages.go.
+ *
+ * WHY THIS EXISTS INSTEAD OF REUSING .cm-version-tabs. The preset strip used to BE
+ * the tablist: one .cm-version-tabs div carrying role="tablist" with the tabs AND
+ * the "+ Fork" button inside it. A tablist may only contain role="tab" children, so
+ * that was a CRITICAL axe aria-required-children violation, and Fork genuinely is
+ * not a tab (it creates a preset, it selects nothing). Fork therefore had to become
+ * a SIBLING of the tablist — which means the row and the tablist are now two
+ * different boxes, and the row is what owns the layout.
+ *
+ * So: the ROW carries the flex/gap/border-bottom that .cm-version-tabs used to
+ * (same declarations, same --civitai-color-border token, so no new coloured pair
+ * enters contrast_web_test.go), and the tablist is an inner flex box holding only
+ * tabs. The underline consequently runs the full width of the row, under Fork too,
+ * exactly as it did when they shared one element.
+ *
+ * `display: contents` on the tablist was rejected: it removes the box, which is
+ * tidier CSS but has a history of dropping the element (and therefore its role and
+ * aria-label) out of the accessibility tree — the last thing an a11y fix should
+ * risk. An ordinary nested flex box costs one div and cannot do that.
+ *
+ * align-items: flex-end keeps Fork sitting on the same baseline as the tabs, whose
+ * -1px bottom margin laps the row's border.
+ */
+.cm-preset-tabrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--civitai-color-border);
+  padding-bottom: 0.125rem;
+}
+.cm-preset-tablist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+/*
  * "N older" version disclosure (.cm-vmore*) — see versionTabsOlder /
  * splitVersionTabs in model_pages.go. Only the newest versionTabVisibleN versions
  * (plus the SELECTED one, always) render as plain tabs; everything else folds in

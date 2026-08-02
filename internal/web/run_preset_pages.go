@@ -39,8 +39,36 @@ func runPresetPanel(wf *store.Workflow, csrf string, v presetTabView) g.Node {
 		h.Class("mt-4"),
 		h.Div(h.Class("text-sm font-semibold text-slate-200"), g.Text("Parameters")),
 		runPresetTabStrip(id, csrf, v),
-		runPresetForm(id, csrf, v),
+		runPresetTabPanel(id, csrf, v),
 		runParamsScript(),
+	)
+}
+
+// runPresetTabPanel is the PANEL half of the tab strip above: the active tab's
+// preset form, wrapped in the element that carries the tabpanel role.
+//
+// 🔴 THE ROLE MUST NOT GO ON THE <form> ITSELF — that was the first attempt and axe
+// rejected it (aria-allowed-role on #run-preset-form). Per ARIA in HTML a <form>
+// maps to the form role and the only permitted overrides are search / none /
+// presentation; tabpanel is not among them. Hence this wrapper.
+//
+// The form KEEPS runPresetFormID: runPresetInclude is "#run-preset-form, #run-modes",
+// so moving that id onto the wrapper would silently stop every preset control (tabs,
+// Fork, Save, Delete, and the run zone) from posting the values the user typed.
+//
+// Only the ACTIVE tab's panel is ever in the DOM — activating a tab re-renders the
+// whole of #run-params — so one panel labelled by the selected tab is the complete
+// association, and aria-labelledby can never dangle (see runPresetTabID).
+//
+// No tabindex="0", unlike matchedFilesCard's panels: the APG only asks for a
+// focusable panel when it holds nothing focusable, and this one wraps a form full of
+// inputs. Adding it would buy a redundant tab stop in front of them.
+func runPresetTabPanel(wfID, csrf string, v presetTabView) g.Node {
+	return h.Div(
+		h.ID(runPresetPanelID),
+		g.Attr("role", "tabpanel"),
+		g.Attr("aria-labelledby", runPresetTabID(v.ActiveID())),
+		runPresetForm(wfID, csrf, v),
 	)
 }
 
@@ -78,14 +106,51 @@ func runParamFieldSplit(fields []comfy.PresetField) (prompt, advanced []int) {
 	return prompt, advanced
 }
 
+// runPresetTabID is the stable DOM id of the tab for a given preset id. 0 is the
+// IMPLICIT tab. It exists so the tab↔panel wiring (aria-controls / aria-labelledby)
+// is generated from one place rather than spelled out at each site.
+//
+// buildPresetView guarantees this can never dangle: with no presets the implicit
+// tab (id 0) is rendered and ActiveID() is 0, and with presets it falls back to
+// `&presets[0]`, so ActiveID() always names a tab that is actually on the page.
+func runPresetTabID(presetID int64) string {
+	return "cm-preset-tab-" + strconv.FormatInt(presetID, 10)
+}
+
 // runPresetTabStrip renders the tab row + Fork. Each tab is a POST (activate),
 // because switching must PERSIST the outgoing tab's typed values in the same round
 // trip — a GET switch would silently discard an unrun draft.
 //
-// It reuses the model page's .cm-version-tab* CSS: those rules are written against
-// --civitai-* theme tokens, so both data-theme paths are covered by construction
-// and no new Tailwind utility (which would be unstyled until output.css is
-// regenerated) is introduced.
+// 🔴 FORK IS NOT A TAB, AND IT IS NOT INSIDE THE TABLIST. A `role="tablist"` may
+// only contain `role="tab"` children — Fork sitting in it was a CRITICAL
+// aria-required-children violation (axe, measured on /workflows/<ui-id>), and the
+// naive fix of giving Fork `role="tab"` would be a lie: it SELECTS nothing, it
+// CREATES a preset. As a tab it would be announced as "tab 4 of 4", i.e. as one of
+// the user's presets, and at the cap it renders `disabled`, which as a tab reads as
+// "a preset you are not allowed to open". So it is a plain button, a SIBLING of the
+// tablist, sharing the row through .cm-preset-tabrow.
+//
+// Tabs keep their tab semantics because that is what they genuinely are — a
+// single-select over alternatives that swaps one panel — and the selected one is
+// otherwise distinguished by COLOUR ALONE (.cm-version-tab-active). aria-controls /
+// role="tabpanel" / aria-labelledby complete the association the same way
+// matchedFilesCard (library_pages.go) already does it, so this is the repo's one
+// tab pattern rather than a fourth spelling of it.
+//
+// ⚠ Deliberately NO roving tabindex and no arrow-key handler. Every tab stays an
+// ordinary tab stop, which keeps all of them keyboard-reachable; adding a roving
+// tabindex WITHOUT arrow keys would make every inactive tab unreachable, and adding
+// arrow keys with the APG's automatic activation would fire a persisting POST per
+// keypress — the exact shape of the maturity radio-group bug (a save + a full page
+// reload on every arrow press). Manual-activation tabs are a documented APG variant;
+// the missing arrow keys are a SHOULD, and their absence leaves the strip fully
+// operable.
+//
+// The buttons reuse the model page's .cm-version-tab CSS: those rules are written
+// against --civitai-* theme tokens, so both data-theme paths are covered by
+// construction and no new coloured pair enters contrast_web_test.go. Only the ROW
+// container is new (.cm-preset-tabrow / .cm-preset-tablist in app.css) because the
+// row now holds two children — the tablist and Fork — instead of being the tablist.
 func runPresetTabStrip(wfID, csrf string, v presetTabView) g.Node {
 	activeID := v.ActiveID()
 	tabs := make([]g.Node, 0, len(v.Presets)+1)
@@ -93,31 +158,40 @@ func runPresetTabStrip(wfID, csrf string, v presetTabView) g.Node {
 	if len(v.Presets) == 0 {
 		// The IMPLICIT tab: a workflow with nothing saved still reads as a tab, and a
 		// page render never has to write to the database to make that true.
-		tabs = append(tabs, runPresetTabButton("", "", "Preset 1", true, true))
+		tabs = append(tabs, runPresetTabButton(runPresetTabID(0), "", "", "Preset 1", true, true))
 	}
 	for i, p := range v.Presets {
 		pid := strconv.FormatInt(p.ID, 10)
 		tabs = append(tabs, runPresetTabButton(
+			runPresetTabID(p.ID),
 			"/workflows/"+wfID+"/run/presets/"+pid+"/activate", csrf,
 			presetLabel(p, i), p.ID == activeID, false))
 	}
-	tabs = append(tabs, runPresetForkButton(wfID, csrf, v))
 
 	return h.Div(
-		g.Attr("role", "tablist"),
-		g.Attr("aria-label", "Run presets"),
-		h.Class("cm-version-tabs mt-3"),
-		g.Group(tabs),
+		h.Class("cm-preset-tabrow mt-3"),
+		h.Div(
+			g.Attr("role", "tablist"),
+			g.Attr("aria-label", "Run presets"),
+			h.Class("cm-preset-tablist"),
+			g.Group(tabs),
+		),
+		runPresetForkButton(wfID, csrf, v),
 	)
 }
 
 // runPresetTabButton renders one tab. The implicit tab has no endpoint (there is
 // nothing to activate), so it is a plain inert button rather than a link that
 // would 404.
-func runPresetTabButton(postURL, csrf, label string, active, inert bool) g.Node {
+//
+// Every tab — the inert one included — points aria-controls at the tabpanel
+// WRAPPING the preset form (runPresetPanelID), not at the form itself.
+func runPresetTabButton(tabID, postURL, csrf, label string, active, inert bool) g.Node {
 	attrs := []g.Node{
+		h.ID(tabID),
 		h.Type("button"),
 		g.Attr("role", "tab"),
+		g.Attr("aria-controls", runPresetPanelID),
 	}
 	if active {
 		attrs = append(attrs, h.Class("cm-version-tab cm-version-tab-active"),
@@ -185,6 +259,9 @@ func runPresetForm(wfID, csrf string, v presetTabView) g.Node {
 
 	body := []g.Node{
 		h.ID(runPresetFormID),
+		// The tabpanel role lives on the WRAPPER (runPresetTabPanel), not here — a
+		// <form> may not be given it. Do not move it onto this element.
+		//
 		// The form itself still submits the RUN, exactly as before: same endpoint,
 		// same target, same hx-include. Presets changed what fills the fields, not how
 		// a run is started.
