@@ -295,11 +295,21 @@ func maturityControl(mr maturityRange, csrf string) g.Node {
 			// 🔴 DISCARD A STAGED-BUT-UNAPPLIED BAND WHEN THE PANEL CLOSES.
 			// Staging (above) means the radios can hold a selection the user never
 			// applied. Without this, Escape/light-dismiss leaves that selection sitting
-			// in the DOM: reopen later to change the OTHER end, press Apply, and the
-			// stale end commits too. Measured shape — saved "PG to PG-13", stage max=XXX,
-			// Escape, reopen and lower the min, Apply → persists "R to XXX". That is this
-			// control failing OPEN (a WIDER band than asked for), the same class as the
-			// v0.1.98 arrow-key wrap, so it is fixed rather than documented.
+			// in the DOM: reopen later, press Apply, and the abandoned selection commits.
+			// MEASURED end-to-end on two builds against a throwaway DB — saved `pg:pg13`,
+			// stage max=XXX, Escape, reopen, Apply → the pre-fix binary persisted `pg:xxx`
+			// (the FULL range, from an Apply the user meant as a no-op); the fixed binary
+			// persisted `pg:pg13`. That is this control failing OPEN (a WIDER band than
+			// asked for), the same class as the v0.1.98 arrow-key wrap, so it is fixed
+			// rather than documented.
+			//
+			// ⚠ An earlier version of this comment described that measurement as "reopen
+			// and LOWER THE MIN, Apply → R to XXX". That is unreachable and was never what
+			// was run: at saved `pg:pg13` the FROM track emits inputs for `pg`/`pg13` only
+			// — `r`/`x`/`xxx` are inert `cm-mat-stop-out` spans — so `min=R` cannot be
+			// selected in that panel session, and min is already PG so it cannot be
+			// lowered. The general hazard IS reachable from a wider saved band (e.g.
+			// `r:x` → `pg:xxx`); the example was simply wrong.
 			//
 			// form.reset() restores every radio to its server-rendered `checked`
 			// ATTRIBUTE — i.e. exactly the saved band the panel's "Saved" line shows — so

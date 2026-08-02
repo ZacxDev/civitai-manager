@@ -711,11 +711,19 @@ func matPanelOpenTag(t *testing.T, out string) string {
 // staging change introduced.
 //
 // Because the tracks now stage instead of committing, a selection the user never
-// applied survives in the DOM. If the panel is dismissed (Escape / light-dismiss)
-// and later reopened to change the OTHER end, pressing Apply commits the stale end
-// too — persisting a band nobody chose, and in the measured shape a WIDER one:
-// saved "PG to PG-13" → stage max=XXX → Escape → reopen, lower the min → Apply →
-// "R to XXX". Same class as the v0.1.98 arrow-key wrap, so it must not regress.
+// applied survives in the DOM. Dismiss the panel (Escape / light-dismiss), reopen
+// it later, press Apply — and the abandoned selection commits, persisting a band
+// nobody chose, and a WIDER one.
+//
+// MEASURED end-to-end on two builds against a throwaway DB: saved `pg:pg13` →
+// stage max=XXX → Escape → reopen → Apply → the pre-fix binary persisted `pg:xxx`
+// (the FULL range), the fixed binary persisted `pg:pg13`. Same class as the
+// v0.1.98 arrow-key wrap, so it must not regress.
+//
+// ⚠ An earlier version of this comment ended that sequence with "reopen, lower the
+// min → R to XXX". That is unreachable and was never run: at saved `pg:pg13` the
+// FROM track emits inputs for `pg`/`pg13` only, so `min=R` cannot be selected in
+// that session. The hazard is real from a wider saved band; the example was wrong.
 //
 // The panel resets its form when the popover closes; form.reset() restores each
 // radio to its server-rendered `checked` ATTRIBUTE, i.e. the saved band.
@@ -740,6 +748,15 @@ func TestMaturityPanelDiscardsAStagedBandOnClose(t *testing.T) {
 	if !strings.Contains(panel, "reset()") {
 		t.Errorf("the panel's ontoggle does not call reset(); only form.reset() restores the "+
 			"server-rendered checked attributes (the SAVED band).\npanel tag: %s", panel)
+	}
+	// …and it must reset the FORM, not `this`. `this` is the panel <div>, which has no
+	// reset(): the handler would throw, discard nothing, and leave the staged band in
+	// place — the exact bug, with a green test. Asserting only the string "reset()"
+	// missed that mutation (it passed the whole suite), so the target is asserted too.
+	if !strings.Contains(panel, "querySelector('form')") &&
+		!strings.Contains(panel, "querySelector(&#39;form&#39;)") {
+		t.Errorf("the panel's ontoggle does not reset the FORM — `this` is the panel <div>, "+
+			"which has no reset(), so the handler would throw and discard nothing.\npanel tag: %s", panel)
 	}
 	if strings.Contains(panel, "submit") || strings.Contains(panel, ".click(") {
 		t.Errorf("the panel's ontoggle must not submit or click — closing the panel must never "+
