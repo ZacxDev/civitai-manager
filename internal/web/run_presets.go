@@ -45,6 +45,16 @@ import (
 // this id, so every request carries the current field values.
 const runPresetFormID = "run-preset-form"
 
+// runPresetPanelID is the STABLE id of the element wrapping that form — the tab
+// strip's `tabpanel` (see runPresetTabPanel). It is what the tabs' aria-controls
+// points at.
+//
+// 🔴 It is deliberately a SEPARATE id from runPresetFormID rather than the role
+// being moved onto the form: a <form> may not carry role="tabpanel" (axe
+// aria-allowed-role), and runPresetInclude names the FORM's id, so collapsing the
+// two would stop every preset control from posting the user's typed values.
+const runPresetPanelID = "run-preset-panel"
+
 // runPresetInclude is the hx-include selector every preset control uses: the
 // form's fields AND the page-level mode picker (runModesInclude), the same pattern
 // every existing run control follows.

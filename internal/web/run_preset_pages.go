@@ -39,8 +39,36 @@ func runPresetPanel(wf *store.Workflow, csrf string, v presetTabView) g.Node {
 		h.Class("mt-4"),
 		h.Div(h.Class("text-sm font-semibold text-slate-200"), g.Text("Parameters")),
 		runPresetTabStrip(id, csrf, v),
-		runPresetForm(id, csrf, v),
+		runPresetTabPanel(id, csrf, v),
 		runParamsScript(),
+	)
+}
+
+// runPresetTabPanel is the PANEL half of the tab strip above: the active tab's
+// preset form, wrapped in the element that carries the tabpanel role.
+//
+// 🔴 THE ROLE MUST NOT GO ON THE <form> ITSELF — that was the first attempt and axe
+// rejected it (aria-allowed-role on #run-preset-form). Per ARIA in HTML a <form>
+// maps to the form role and the only permitted overrides are search / none /
+// presentation; tabpanel is not among them. Hence this wrapper.
+//
+// The form KEEPS runPresetFormID: runPresetInclude is "#run-preset-form, #run-modes",
+// so moving that id onto the wrapper would silently stop every preset control (tabs,
+// Fork, Save, Delete, and the run zone) from posting the values the user typed.
+//
+// Only the ACTIVE tab's panel is ever in the DOM — activating a tab re-renders the
+// whole of #run-params — so one panel labelled by the selected tab is the complete
+// association, and aria-labelledby can never dangle (see runPresetTabID).
+//
+// No tabindex="0", unlike matchedFilesCard's panels: the APG only asks for a
+// focusable panel when it holds nothing focusable, and this one wraps a form full of
+// inputs. Adding it would buy a redundant tab stop in front of them.
+func runPresetTabPanel(wfID, csrf string, v presetTabView) g.Node {
+	return h.Div(
+		h.ID(runPresetPanelID),
+		g.Attr("role", "tabpanel"),
+		g.Attr("aria-labelledby", runPresetTabID(v.ActiveID())),
+		runPresetForm(wfID, csrf, v),
 	)
 }
 
@@ -156,14 +184,14 @@ func runPresetTabStrip(wfID, csrf string, v presetTabView) g.Node {
 // nothing to activate), so it is a plain inert button rather than a link that
 // would 404.
 //
-// Every tab — the inert one included — points aria-controls at the preset form,
-// which is the panel it selects.
+// Every tab — the inert one included — points aria-controls at the tabpanel
+// WRAPPING the preset form (runPresetPanelID), not at the form itself.
 func runPresetTabButton(tabID, postURL, csrf, label string, active, inert bool) g.Node {
 	attrs := []g.Node{
 		h.ID(tabID),
 		h.Type("button"),
 		g.Attr("role", "tab"),
-		g.Attr("aria-controls", runPresetFormID),
+		g.Attr("aria-controls", runPresetPanelID),
 	}
 	if active {
 		attrs = append(attrs, h.Class("cm-version-tab cm-version-tab-active"),
@@ -231,16 +259,9 @@ func runPresetForm(wfID, csrf string, v presetTabView) g.Node {
 
 	body := []g.Node{
 		h.ID(runPresetFormID),
-		// THE PANEL HALF of the tab strip above (runPresetTabStrip). Only the ACTIVE
-		// tab's panel is ever in the DOM — activating a tab re-renders the whole of
-		// #run-params — so one panel labelled by the selected tab is the complete and
-		// correct association, and aria-labelledby can never dangle (see runPresetTabID).
+		// The tabpanel role lives on the WRAPPER (runPresetTabPanel), not here — a
+		// <form> may not be given it. Do not move it onto this element.
 		//
-		// No tabindex="0" here, unlike matchedFilesCard's panels: the APG only asks for
-		// a focusable panel when it holds nothing focusable, and this one is a form full
-		// of inputs. Adding it would buy a redundant tab stop in front of them.
-		g.Attr("role", "tabpanel"),
-		g.Attr("aria-labelledby", runPresetTabID(activeID)),
 		// The form itself still submits the RUN, exactly as before: same endpoint,
 		// same target, same hx-include. Presets changed what fills the fields, not how
 		// a run is started.
