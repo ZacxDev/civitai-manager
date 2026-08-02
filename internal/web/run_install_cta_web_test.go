@@ -746,11 +746,11 @@ func TestResolveFallbackExplainsWhyAndDiffersFromPanel(t *testing.T) {
 	}
 	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI, jugGraph)
 
-	// The pre-click panel: the same fragment renderer, no action taken.
-	pre := get(t, srv, "/workflows/run/resolve-model?filename="+url.QueryEscape(jugFile)+"&type=Checkpoint")
-	if pre.Code != http.StatusOK {
-		t.Fatalf("resolve-model = %d", pre.Code)
-	}
+	// The pre-click panel: the same fragment renderer, no action taken. Rendered
+	// directly rather than fetched — the GET route that used to serve it was an
+	// orphan nothing linked to and has been removed. What this test needs is the
+	// reason-free fragment to compare against, which is exactly resolveModelFragment.
+	pre := resolvePanel(t, srv, jugFile, "Checkpoint")
 
 	// The click: no model_id (the HuggingFace-fallback / bad-option CTA shape), and
 	// nothing resolves by filename alone.
@@ -764,7 +764,7 @@ func TestResolveFallbackExplainsWhyAndDiffersFromPanel(t *testing.T) {
 	if !strings.Contains(body, resolveReasonNoMatch) {
 		t.Errorf("fallback must explain why nothing installed; want %q in:\n%s", resolveReasonNoMatch, body)
 	}
-	if body == pre.Body.String() {
+	if body == pre {
 		t.Error("the click answered with a byte-identical panel — indistinguishable from a dead button")
 	}
 	// Still a real fallback: the cards and the search link survive.
@@ -853,17 +853,21 @@ func TestInstallOptionAndRunFallbackExplainsWhy(t *testing.T) {
 	}
 }
 
-// TestResolveModelGETCarriesNoReason: the FIRST display of the panel is not the
-// result of an action, so it must stay reason-free (an unconditional warning line
+// TestResolveModelFirstDisplayCarriesNoReason: the FIRST display of the panel is not
+// the result of an action, so it must stay reason-free (an unconditional warning line
 // would cry wolf on every open).
-func TestResolveModelGETCarriesNoReason(t *testing.T) {
+//
+// It was TestResolveModelGETCarriesNoReason until the orphan `GET
+// /workflows/run/resolve-model` was deleted. "GET" named the route this used to be
+// driven through; with the route gone the name was the ONLY thing left in the tree
+// implying such an endpoint exists, which is how a deleted surface gets resurrected
+// by someone reading the tests for the routing table. The property being asserted was
+// never about the verb — it is about the first render — so the name now says that.
+func TestResolveModelFirstDisplayCarriesNoReason(t *testing.T) {
 	srv := newModelServer(t, &recordingSearchReader{result: resolveResult("Juggernaut XL")})
-	rec := get(t, srv, "/workflows/run/resolve-model?filename="+url.QueryEscape(jugFile)+"&type=Checkpoint")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("resolve-model = %d", rec.Code)
-	}
+	body := resolvePanel(t, srv, jugFile, "Checkpoint")
 	for _, reason := range []string{resolveReasonNoMatch, resolveReasonNotEligible, resolveReasonChosenModel} {
-		if strings.Contains(rec.Body.String(), reason) {
+		if strings.Contains(body, reason) {
 			t.Errorf("first display must not carry an action reason (%q)", reason)
 		}
 	}

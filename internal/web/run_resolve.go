@@ -43,30 +43,6 @@ func civitaiTypeParam(v string) string {
 	return ""
 }
 
-// handleWorkflowResolveModel returns the "resolve this missing model to CivitAI"
-// fragment for one missing filename: up to a handful of heuristic model-match
-// cards plus an always-present "Search CivitAI for …" fallback link. GET (no
-// state change, no CSRF); loopback-gated like the other comfy-adjacent controls.
-// The search query is derived SERVER-SIDE from the filename (the `type` param is
-// whitelist-validated), and the result is TTL-cached so re-opening a panel does
-// not re-hit civitai.com.
-func (s *Server) handleWorkflowResolveModel(w http.ResponseWriter, r *http.Request) {
-	if !s.gate(w) {
-		return
-	}
-	filename := strings.TrimSpace(r.URL.Query().Get("filename"))
-	typ := civitaiTypeParam(r.URL.Query().Get("type"))
-	query := comfy.CleanModelQuery(filename)
-	if query == "" {
-		// Nothing searchable — still offer the (empty) fallback link so the panel is
-		// never a dead end.
-		s.render(w, http.StatusOK, resolveModelFragment("", nil, s.maturity()))
-		return
-	}
-	res := s.resolveModels(r.Context(), query, typ)
-	s.render(w, http.StatusOK, resolveModelFragment(query, res, s.maturity()))
-}
-
 // resolveModels runs (or serves from a TTL cache) a bounded CivitAI model search
 // for a resolution query + optional type filter. Keyed by (query, type, nsfw
 // flag). On any error it returns nil so the fragment degrades to the fallback

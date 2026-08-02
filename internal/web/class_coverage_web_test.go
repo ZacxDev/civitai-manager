@@ -27,9 +27,12 @@ var classCoverageExempt = map[string]bool{
 //	text-green-500        → text-emerald-400 (the config REPLACES theme.colors,
 //	                        so no `green` scale is ever generated)
 //	bg-amber-950/30 and
-//	hover:bg-amber-950/50 → .cm-fix-cta (amber-950 is a color-mix() tint and
-//	                        Tailwind cannot fold <alpha-value> into a color-mix(),
-//	                        so neither utility was ever emitted)
+//	hover:bg-amber-950/50 → a hand-written .cm-* rule resolving the fill from
+//	                        --civitai-color-warning (amber-950 is a color-mix()
+//	                        tint and Tailwind cannot fold <alpha-value> into a
+//	                        color-mix(), so neither utility was ever emitted).
+//	                        This used to say "→ .cm-fix-cta"; that rule has since
+//	                        been deleted as dead CSS, so do not reach for it.
 //	prose-invert          → deleted (@tailwindcss/typography is not installed)
 //	cm-reveal, cm-run-params → deleted (no rule, no selector, no JS hook)
 //	cm-chip               → given a real rule in app.css
@@ -41,8 +44,8 @@ func TestNoRevivedDeadClasses(t *testing.T) {
 	scan := scanClassCalls(t)
 	for tok, why := range map[string]string{
 		"text-green-500":        "the palette has no `green` scale — use text-emerald-400",
-		"bg-amber-950/30":       "amber-950 is a color-mix() tint; /opacity is never emitted — use .cm-fix-cta",
-		"hover:bg-amber-950/50": "amber-950 is a color-mix() tint; /opacity is never emitted — use .cm-fix-cta",
+		"bg-amber-950/30":       "amber-950 is a color-mix() tint; /opacity is never emitted — write a hand-written .cm-* rule in app.css",
+		"hover:bg-amber-950/50": "amber-950 is a color-mix() tint; /opacity is never emitted — write a hand-written .cm-* rule in app.css",
 		"prose-invert":          "@tailwindcss/typography is not installed — this class does nothing",
 		"cm-reveal":             "no rule and no selector anywhere — a pure no-op marker",
 		"cm-run-params":         "no rule and no selector anywhere — a pure no-op marker",
@@ -62,6 +65,11 @@ func TestNoRevivedDeadClasses(t *testing.T) {
 // It parses every non-test .go file in this package, collects the class tokens
 // handed to h.Class, and asserts each has a rule in the built output.css or in the
 // hand-written app.css.
+//
+// This test walks ONE WAY. The other direction — a CSS rule that nothing emits —
+// is TestEveryCMClassInAppCSSIsEmitted in class_coverage_reverse_web_test.go.
+// (TestNoRevivedDeadClasses above is not that check: it is a hardcoded blocklist of
+// six named tokens.) The two are complementary and neither subsumes the other.
 //
 // The argument is resolved through package-level string consts/vars AND through
 // local string variables built by literal assignment/append (`bodyClass := "…"` /
@@ -161,6 +169,24 @@ func isClassNameByte(b byte) bool {
 		(b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
+// nonTestGoFile is the parser.ParseDir filter EVERY scanner in this package shares:
+// the reverse class-coverage guard and the route-reachability guard read "what the
+// shipped app emits", so a _test.go file naming a class or a path must never count
+// as an emitter of it.
+//
+// It lives here, beside opaqueMark / packageStringDecls / resolveClassExpr, because
+// this file is where the shared AST-scanning primitives live. It was open-coded as an
+// inline closure here and separately defined in route_reachability_web_test.go —
+// three copies of one predicate across two files. One rule, one place: a scanner that
+// starts reading test files would silently make every guard downstream vacuous, and
+// that is not a decision to re-make per call site.
+//
+// The `.go` check is belt-and-braces: parser.ParseDir already considers only names
+// ending in .go, so the filter's real content is the _test.go exclusion.
+func nonTestGoFile(fi os.FileInfo) bool {
+	return strings.HasSuffix(fi.Name(), ".go") && !strings.HasSuffix(fi.Name(), "_test.go")
+}
+
 // opaqueMark stands in for a part of a class expression the scan could not
 // resolve. It is a byte that cannot occur in a class name, so any token containing
 // it is a partial/dynamic token and is discarded — that is what keeps
@@ -180,9 +206,7 @@ type classScanResult struct {
 func scanClassCalls(t *testing.T) classScanResult {
 	t.Helper()
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
+	pkgs, err := parser.ParseDir(fset, ".", nonTestGoFile, 0)
 	if err != nil {
 		t.Fatalf("parse package: %v", err)
 	}

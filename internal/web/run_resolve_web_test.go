@@ -34,16 +34,39 @@ func lastQuery(t *testing.T, r *recordingSearchReader) url.Values {
 	return r.calls[len(r.calls)-1]
 }
 
-// TestResolveModelQueryParams asserts the resolve endpoint cleans the filename
-// into a query, sends the type as `types` (PLURAL), and renders the fallback link.
+// resolvePanel reproduces what the missing-model panel renders for one filename:
+// clean the filename to a query, whitelist-validate the type, search, render the
+// reason-free fragment.
+//
+// These four tests used to drive `GET /workflows/run/resolve-model`. That route was
+// an ORPHAN — registered, loopback-gated, making outbound egress, and linked from
+// nowhere (found by TestEveryRegisteredRouteIsEmitted). The route is gone; the logic
+// underneath it is NOT, because production reaches the very same resolveModels +
+// resolveModelFragment through the download-and-run path. So the tests were kept and
+// repointed at the surviving functions rather than deleted with the route — deleting
+// them would have dropped real coverage of the `types` PLURAL gotcha, the card cap
+// and the escaping.
+//
+// What did NOT survive is the old TestResolveModelLoopbackGated: it asserted the
+// loopback gate on that handler specifically, and there is no longer a handler to
+// gate. The live endpoints that render this fragment carry their own gate tests.
+func resolvePanel(t *testing.T, srv *Server, filename, typ string) string {
+	t.Helper()
+	query := comfy.CleanModelQuery(filename)
+	var res *civitai.ModelSearchResult
+	if query != "" {
+		res = srv.resolveModels(context.Background(), query, civitaiTypeParam(typ))
+	}
+	return renderString(t, resolveModelFragment(query, res, srv.maturity()))
+}
+
+// TestResolveModelQueryParams asserts the panel cleans the filename into a query,
+// sends the type as `types` (PLURAL), and renders the fallback link.
 func TestResolveModelQueryParams(t *testing.T) {
 	reader := &recordingSearchReader{result: resolveResult("Fabricated XL")}
 	srv := newModelServer(t, reader)
 
-	rec := get(t, srv, "/workflows/run/resolve-model?filename=fabricatedXL_v70.safetensors&type=Checkpoint")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("resolve = %d", rec.Code)
-	}
+	body := resolvePanel(t, srv, "fabricatedXL_v70.safetensors", "Checkpoint")
 	q := lastQuery(t, reader)
 	if q.Get("query") != "fabricated XL" {
 		t.Errorf("query = %q, want %q", q.Get("query"), "fabricated XL")
@@ -55,7 +78,6 @@ func TestResolveModelQueryParams(t *testing.T) {
 	if q.Get("type") != "" {
 		t.Errorf("singular type= must not be sent, got %q", q.Get("type"))
 	}
-	body := rec.Body.String()
 	if !strings.Contains(body, `Search CivitAI for &#34;fabricated XL&#34;`) &&
 		!strings.Contains(body, `Search CivitAI for "fabricated XL"`) {
 		t.Errorf("missing fallback search link text:\n%s", body)
@@ -71,7 +93,7 @@ func TestResolveModelZeroOneMany(t *testing.T) {
 	t.Run("zero", func(t *testing.T) {
 		reader := &recordingSearchReader{result: resolveResult()}
 		srv := newModelServer(t, reader)
-		body := get(t, srv, "/workflows/run/resolve-model?filename=absent.safetensors&type=LORA").Body.String()
+		body := resolvePanel(t, srv, "absent.safetensors", "LORA")
 		if strings.Contains(body, `href="/models/`) {
 			t.Errorf("zero matches should render no cards:\n%s", body)
 		}
@@ -85,7 +107,7 @@ func TestResolveModelZeroOneMany(t *testing.T) {
 	t.Run("one", func(t *testing.T) {
 		reader := &recordingSearchReader{result: resolveResult("Only Match")}
 		srv := newModelServer(t, reader)
-		body := get(t, srv, "/workflows/run/resolve-model?filename=only.safetensors").Body.String()
+		body := resolvePanel(t, srv, "only.safetensors", "")
 		if n := strings.Count(body, `href="/models/`); n != 1 {
 			t.Errorf("one match → %d cards, want 1", n)
 		}
@@ -96,7 +118,7 @@ func TestResolveModelZeroOneMany(t *testing.T) {
 	t.Run("many-capped", func(t *testing.T) {
 		reader := &recordingSearchReader{result: resolveResult("m1", "m2", "m3", "m4", "m5", "m6", "m7")}
 		srv := newModelServer(t, reader)
-		body := get(t, srv, "/workflows/run/resolve-model?filename=x.safetensors").Body.String()
+		body := resolvePanel(t, srv, "x.safetensors", "")
 		if n := strings.Count(body, `href="/models/`); n != resolveMaxCards {
 			t.Errorf("N matches → %d cards, want capped at %d", n, resolveMaxCards)
 		}
@@ -107,32 +129,12 @@ func TestResolveModelZeroOneMany(t *testing.T) {
 func TestResolveModelEscapesUntrustedName(t *testing.T) {
 	reader := &recordingSearchReader{result: resolveResult(`<script>alert(1)</script>`)}
 	srv := newModelServer(t, reader)
-	body := get(t, srv, "/workflows/run/resolve-model?filename=evil.safetensors").Body.String()
+	body := resolvePanel(t, srv, "evil.safetensors", "")
 	if strings.Contains(body, "<script>alert(1)</script>") {
 		t.Errorf("untrusted model name was not escaped:\n%s", body)
 	}
 	if !strings.Contains(body, "&lt;script&gt;") {
 		t.Errorf("expected escaped model name in output:\n%s", body)
-	}
-}
-
-// TestResolveModelLoopbackGated asserts the resolve endpoint is gated off a
-// non-loopback bind.
-func TestResolveModelLoopbackGated(t *testing.T) {
-	st, err := store.Open(":memory:")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	srv := NewServer(st, &recordingSearchReader{result: resolveResult("x")}, stubSubscriber{}, Config{
-		BaseURL: "https://civitai.com", DefaultPollInterval: time.Hour, Addr: "0.0.0.0:8787",
-	}, nil)
-	rec := get(t, srv, "/workflows/run/resolve-model?filename=x.safetensors")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("gated resolve = %d", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "non-loopback") {
-		t.Errorf("expected the gating note, got:\n%s", rec.Body.String())
 	}
 }
 
