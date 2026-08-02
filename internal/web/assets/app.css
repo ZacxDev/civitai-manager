@@ -288,13 +288,6 @@ input[type="radio"] {
   flex: 1 1 auto;
   min-width: 0;
 }
-.cm-crumb-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  display: block;
-  min-width: 0;
-}
 @media (max-width: 640px) {
   .cm-crumbs li:not(:nth-last-child(-n+2)) {
     display: none;
@@ -1702,12 +1695,16 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  *
  * It replaced `.cm-fix-cta`, the amber/WARNING tint it used to borrow from the run
  * failure "Fix" CTA. Amber is this app's "something is wrong" colour and an
- * available update is not a fault — it is good news, so it is green. (.cm-fix-cta
- * itself stays; the run surface still uses it.)
+ * available update is not a fault — it is good news, so it is green.
  *
- * Hand-written for the same reason .cm-fix-cta is: tailwind.config.js defines the
- * *-950 tints as color-mix() strings, and Tailwind cannot fold an /<alpha-value>
- * into a color-mix(), so `bg-emerald-950/30` would silently never be emitted.
+ * ⚠ This comment used to end "(.cm-fix-cta itself stays; the run surface still uses
+ * it.)" — that claim was FALSE. Nothing emitted .cm-fix-cta after this rule took
+ * over, and it sat here as dead CSS until TestEveryCMClassInAppCSSIsEmitted found
+ * it. Its rules are gone; see the tombstone further down.
+ *
+ * Hand-written because tailwind.config.js defines the *-950 tints as color-mix()
+ * strings, and Tailwind cannot fold an /<alpha-value> into a color-mix(), so
+ * `bg-emerald-950/30` would silently never be emitted.
  */
 .cm-upd-cta {
   color: var(--civitai-color-success-text);
@@ -1734,27 +1731,19 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
 }
 
 /*
- * .cm-fix-cta — the "Update available: <version> →" banner on a matched library
- * card (versionBreakdownSection, model_card_pages.go).
+ * A `.cm-fix-cta` rule pair (the amber/WARNING tint) used to sit here. It styled the
+ * "Update available" banner until that moved to .cm-upd-cta above, and NOTHING has
+ * emitted it since — no h.Class argument and no string literal anywhere in
+ * internal/web. Removed; found by TestEveryCMClassInAppCSSIsEmitted.
  *
- * WHY IT IS HAND-WRITTEN: it used to be `bg-amber-950/30 hover:bg-amber-950/50`.
- * tailwind.config.js defines amber.950 as tint("warning", 14) — a color-mix()
- * string — and Tailwind cannot substitute <alpha-value> into a color-mix(), so
- * NEITHER utility was ever emitted into the purged build. The CTA rendered
- * completely transparent, with no hover feedback. Both fills resolve from
- * --civitai-color-warning here, so light and dark are both styled.
+ * The reason it was hand-written outlives the rule and still binds anything amber
+ * written here later: tailwind.config.js defines amber.950 as tint("warning", 14) —
+ * a color-mix() string — and Tailwind cannot substitute <alpha-value> into a
+ * color-mix(), so `bg-amber-950/30` and `hover:bg-amber-950/50` are NEVER emitted
+ * into the purged build. A CTA using them renders completely transparent with no
+ * hover feedback. Resolve the fill from --civitai-color-warning in this file
+ * instead. TestNoRevivedDeadClasses pins both utilities as forbidden.
  */
-.cm-fix-cta {
-  border: 1px solid color-mix(in srgb, var(--civitai-color-warning) 60%, transparent);
-  background: color-mix(in srgb, var(--civitai-color-warning) 14%, transparent);
-  text-decoration: none;
-  transition: background 120ms ease, border-color 120ms ease;
-}
-.cm-fix-cta:hover,
-.cm-fix-cta:focus-visible {
-  background: color-mix(in srgb, var(--civitai-color-warning) 28%, transparent);
-  border-color: var(--civitai-color-warning);
-}
 
 /*
  * .cm-chip — the click-to-copy trigger-word chip (triggerWordChips,
@@ -1890,10 +1879,6 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
   font-weight: 600;
   color: var(--civitai-color-primary-text);
   margin-bottom: 0.15rem;
-}
-.cm-vstatus-date {
-  color: var(--civitai-color-text-dimmed);
-  margin-top: 0.15rem;
 }
 
 /*
@@ -3470,20 +3455,19 @@ a.cm-res-chip .cm-res-name {
 }
 
 /*
- * .cm-gen-row / .cm-gen-sep — the Generate section's action row: the ComfyUI
- * reachability icon, the primary "Generate" CTA, the secondary "Open in ComfyUI"
- * form, and (when unreachable) the recheck icon button, all on one wrapping row.
+ * .cm-gen-row — the Generate section's action row: the ComfyUI reachability icon,
+ * the primary "Generate" CTA, the secondary "Open in ComfyUI" form, and (when
+ * unreachable) the recheck icon button, all on one wrapping row.
+ *
+ * A `.cm-gen-sep` rule used to sit here. Nothing emitted it — no h.Class argument
+ * and no string literal anywhere in internal/web — so it styled markup that does
+ * not exist. Removed; found by TestEveryCMClassInAppCSSIsEmitted.
  */
 .cm-gen-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.6rem;
-}
-.cm-gen-sep {
-  border-top: 1px solid var(--civitai-color-border);
-  margin-top: 1rem;
-  padding-top: 0.75rem;
 }
 
 /*
