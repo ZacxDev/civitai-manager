@@ -354,3 +354,102 @@ func TestCloudPanelPopulatesTheComfyModelCache(t *testing.T) {
 			string(ent.ObjectInfoJSON), objectInfoFixture)
 	}
 }
+
+// TestComfyChipMarkIsStyledInShippedCSS pins the ◎ state's own CSS rule.
+//
+// 🔴 class_coverage_web_test.go CANNOT cover this one. It sweeps `h.Class(...)`
+// literals against the stylesheets, and the ◎ colour hangs off an ATTRIBUTE
+// selector (`.cm-res-chip[data-have="comfy"]`) emitted by dataAttr, not off a
+// class literal — so the rule could be deleted and every other test in the repo
+// would stay green while the amber mark silently rendered in the inherited chip
+// colour, visually indistinguishable from ✗.
+//
+// The renderer half (that `data-have="comfy"` is emitted at all) is pinned by
+// TestWorkflowResourceChipRenderStates; this is the stylesheet half.
+func TestComfyChipMarkIsStyledInShippedCSS(t *testing.T) {
+	css := readAppCSS(t)
+
+	const rule = `.cm-res-chip[data-have="comfy"] .cm-res-mark`
+	if !strings.Contains(css, rule) {
+		t.Fatalf("app.css has no %s rule — the ◎ mark would inherit the chip's colour and "+
+			"become visually indistinguishable from the ✗ state, with nothing else in the "+
+			"suite able to notice (class coverage only sweeps h.Class literals)", rule)
+	}
+	// …and it must actually set a colour. A rule that exists but declares nothing
+	// satisfies the substring above while leaving the mark unstyled.
+	body := cssRuleIn(t, css, rule)
+	if !strings.Contains(body, "color:") {
+		t.Errorf("%s exists but sets no color — the ◎ mark is unstyled:\n%s", rule, body)
+	}
+}
+
+// TestComfyModelIndexSurvivesACorruptCachedRow exercises the decode-error branch
+// in newComfyModelIndex, which had no coverage.
+//
+// A corrupt row must degrade to "ComfyUI has nothing" — i.e. the pre-feature ✓/✗
+// chips — and must NOT break the page. The failure it guards against is the
+// tempting alternative: letting the error escape and 500-ing a workflow page
+// because of a bad cache row, which is a page-level outage caused by a display
+// nicety.
+func TestComfyModelIndexSurvivesACorruptCachedRow(t *testing.T) {
+	srv := newFileBackedServer(t)
+
+	// Not JSON at all. The row exists and is non-empty, so the earlier
+	// nil/empty guards do NOT short-circuit — this reaches json.Unmarshal, which
+	// is the branch under test.
+	if err := srv.store.PutComfyObjectInfo([]byte("{ this is not json")); err != nil {
+		t.Fatalf("seed corrupt cache: %v", err)
+	}
+	ent, err := srv.store.GetComfyObjectInfo()
+	if err != nil || ent == nil {
+		t.Fatalf("fixture precondition: the corrupt row must be readable back, got ent=%v err=%v", ent, err)
+	}
+
+	idx := srv.newComfyModelIndex()
+	if idx == nil {
+		t.Fatal("newComfyModelIndex returned nil")
+	}
+	// The whole point: a lookup returns false rather than panicking or erroring.
+	if idx.has("anything.safetensors") {
+		t.Error("a corrupt cache reported that ComfyUI has a file — a garbage row must " +
+			"degrade to \"ComfyUI has nothing\", never to a false positive on a " +
+			"content-resolution chip")
+	}
+}
+
+// TestLibraryPresenceBeatsComfyPresence pins the precedence between the two
+// resolvers when BOTH say yes.
+//
+// TestWorkflowResourceChipRenderStates sets haveFile false exactly where
+// comfyResource is true, so the two never overlap there and the ordering is never
+// exercised. The renderer is a `switch { case have: …; case comfyHas: … }`, so
+// reordering those arms is a one-line change that nothing else would catch — and
+// it matters: a file you HAVE is actionable (open the folder, it is linked), while
+// ◎ says "not in your library", which would be a lie about a file sitting on disk.
+func TestLibraryPresenceBeatsComfyPresence(t *testing.T) {
+	res := workflowResolver{
+		// BOTH true for the same basename — the overlap the table never creates.
+		haveFile:      func(string) bool { return true },
+		comfyResource: func(string) bool { return true },
+		localResource: func(b string) (resourceInfo, bool) {
+			return resourceInfo{Path: "/lib/" + b}, true
+		},
+	}
+	got := renderString(t, workflowResourceChip("both.safetensors", res))
+
+	// Fixture reached the interesting case: this really is the overlap, not a
+	// comfy-only or library-only render.
+	if !res.haveFile("both.safetensors") || !res.comfyResource("both.safetensors") {
+		t.Fatal("fixture precondition: both resolvers must report true")
+	}
+
+	tag := resChipTag(t, got)
+	if !strings.Contains(tag, `data-have="yes"`) {
+		t.Errorf("library presence did not win: %s\nA file that is IN THE LIBRARY must render "+
+			"✓, not ◎ — ◎ says \"not in your library\", which is false here and costs the "+
+			"user the folder/link affordances.", tag)
+	}
+	if strings.Contains(tag, `data-have="comfy"`) {
+		t.Errorf("the chip claims the ComfyUI-only state for a file the library HAS: %s", tag)
+	}
+}
