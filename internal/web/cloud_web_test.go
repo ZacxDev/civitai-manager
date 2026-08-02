@@ -53,7 +53,16 @@ func boolp(b bool) *bool { return &b }
 // cloud client injected.
 func newCloudTestServer(t *testing.T, fake *fakeCloud) *Server {
 	t.Helper()
-	srv := newLibraryTestServer(t, t.TempDir())
+	return newCloudTestServerDB(t, fake, ":memory:")
+}
+
+// newCloudTestServerDB is newCloudTestServer over an explicit database path. Reach
+// for it when the test runs DDL — see newLibraryTestServerDB for why the default
+// ":memory:" is shared across the whole process and why a DROP against it is a
+// landmine for whichever server happens to be alive alongside.
+func newCloudTestServerDB(t *testing.T, fake *fakeCloud, dbPath string) *Server {
+	t.Helper()
+	srv := newLibraryTestServerDB(t, t.TempDir(), dbPath)
 	srv.cfg.ComfyCloud = boolp(true)
 	srv.cfg.Token = "test-token"
 	if fake != nil {

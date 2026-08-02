@@ -17,7 +17,27 @@ import (
 
 func newLibraryTestServer(t *testing.T, root string) *Server {
 	t.Helper()
-	st, err := store.Open(":memory:")
+	return newLibraryTestServerDB(t, root, ":memory:")
+}
+
+// newLibraryTestServerDB is newLibraryTestServer over an explicit database path.
+//
+// 🔴 ":memory:" IS PROCESS-GLOBAL HERE, NOT PER-SERVER. store.Open maps it to
+// "file::memory:?cache=shared" (internal/store/store.go), i.e. ONE logical database
+// shared by every store open at the same moment — this package has already been
+// bitten by assuming otherwise, with 15 test servers silently sharing a single DB.
+// Row-level writes are fine, because each test seeds what it reads. **DDL is not**:
+// a DROP or ALTER mutates the schema every concurrently-live server sees, and
+// migrate() will NOT put it back, because schema_version has already been recorded
+// — so the neighbour just loses the table. Today nothing in internal/web calls
+// t.Parallel(), which is the only reason that is survivable.
+//
+// A test that needs DDL — breaking a table to force a read/write failure is the real
+// case — passes a t.TempDir() file here and gets a genuinely private database, so
+// the blast radius is its own tempdir instead of the process.
+func newLibraryTestServerDB(t *testing.T, root, dbPath string) *Server {
+	t.Helper()
+	st, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}

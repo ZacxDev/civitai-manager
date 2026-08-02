@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -262,6 +263,18 @@ const freshNodeOriginInfo = `{
 // cache) and a read-only database never writes at all. Dropping the table makes
 // both the write and the read fail deterministically, so the cache tier can
 // contribute nothing and only the in-frame payload can answer.
+//
+// 🔴 THE PRIVATE ON-DISK DB IS LOAD-BEARING — do NOT switch this back to the default
+// newCloudTestServer. That helper's ":memory:" is "file::memory:?cache=shared", ONE
+// logical database per process, so this DROP TABLE would delete comfy_model_cache
+// out from under any server alive at the same moment — and migrate() does not
+// restore it, because schema_version already says 0019 ran. Probed: a second server
+// opened while the dropping store is alive sees sqlite_master count 0 for that
+// table. It happens to be survivable today only because internal/web has no
+// t.Parallel() anywhere and this test opens one server; the first person to add
+// either would get a silent, baffling failure in an unrelated test. A t.TempDir()
+// file costs nothing and confines the DDL to this test. Every OTHER raw-DB write in
+// this package is a row-level UPDATE, which is why none of them needs this.
 func TestCloudPanelUsesTheFreshObjectInfoWhenTheCacheCannotAnswer(t *testing.T) {
 	// Fixture precondition: the fresh payload really does classify the built-in,
 	// and coreNodeClasses really does not (proved by the cold-cache control in the
@@ -270,7 +283,7 @@ func TestCloudPanelUsesTheFreshObjectInfoWhenTheCacheCannotAnswer(t *testing.T) 
 		t.Fatalf("fixture precondition: the FRESH payload must call WanImageToVideo built-in, got %v", o)
 	}
 
-	srv := newCloudTestServer(t, &fakeCloud{})
+	srv := newCloudTestServerDB(t, &fakeCloud{}, filepath.Join(t.TempDir(), "origins.db"))
 	fake := &fakeComfy{
 		info:    mustObjectInfo(t, freshNodeOriginInfo),
 		infoRaw: []byte(freshNodeOriginInfo),
