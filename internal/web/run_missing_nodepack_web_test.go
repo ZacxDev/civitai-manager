@@ -71,6 +71,25 @@ func (r *recordingAttribution) snapshot() (int, []string) {
 	return r.calls, append([]string(nil), r.classes...)
 }
 
+// nodepackFakeComfy is the fake ComfyUI these tests drive.
+//
+// 🔴 The programmed `history` is LOAD-BEARING for the never-submit guards, and it
+// is not there to model a passing run. Without it a wrongly-submitted graph polls
+// /history forever, the test dies on pollRunUntilDone's 30 s deadline, and the
+// failure reads "run did not finish" — a red for the wrong reason that hides WHICH
+// invariant broke. With it, a submitted graph settles immediately and the guard's
+// own "SUBMITTED a graph with a hole in it" is the message you get. Measured: the
+// gate mutation produced a 30 s timeout before this was added.
+func nodepackFakeComfy(t *testing.T) *fakeComfy {
+	t.Helper()
+	return &fakeComfy{
+		info: mustObjectInfo(t, missingPackInfo),
+		history: &comfy.HistoryEntry{
+			Status: comfy.HistoryStatus{Completed: true, StatusStr: "success"},
+		},
+	}
+}
+
 // ultimatePack is the real attribution for UltimateSDUpscale (ssitu), as
 // ComfyUI-Manager V3.41 resolves it.
 func ultimatePack() nodeAttribution {
@@ -94,7 +113,7 @@ func ultimatePack() nodeAttribution {
 // rendered — all three assertions below fail.
 func TestRunUIWorkflowReachesTheMissingNodesPanel(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
-	fake := &fakeComfy{info: mustObjectInfo(t, missingPackInfo)}
+	fake := nodepackFakeComfy(t)
 	srv.comfyClientFn = func() comfyClient { return fake }
 	rec := &recordingAttribution{}
 	srv.attributeFn = rec.fn(ultimatePack())
@@ -141,7 +160,7 @@ func TestRunUIWorkflowReachesTheMissingNodesPanel(t *testing.T) {
 // alongside the node pack instead of costing the user a second failed run.
 func TestRunUIWorkflowReportsMissingModelsInTheSameRound(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
-	fake := &fakeComfy{info: mustObjectInfo(t, missingPackInfo)}
+	fake := nodepackFakeComfy(t)
 	srv.comfyClientFn = func() comfyClient { return fake }
 	srv.attributeFn = (&recordingAttribution{}).fn(ultimatePack())
 
@@ -201,7 +220,7 @@ func TestRunNeverSubmitsAConversionBlockedGraph(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			srv := newLibraryTestServer(t, t.TempDir())
-			fake := &fakeComfy{info: mustObjectInfo(t, missingPackInfo)}
+			fake := nodepackFakeComfy(t)
 			srv.comfyClientFn = func() comfyClient { return fake }
 			srv.attributeFn = (&recordingAttribution{}).fn(ultimatePack())
 
@@ -224,7 +243,7 @@ func TestRunNeverSubmitsAConversionBlockedGraph(t *testing.T) {
 // a batch that halts on item 1 must have submitted nothing at all.
 func TestRunBatchNeverSubmitsAConversionBlockedGraph(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
-	fake := &fakeComfy{info: mustObjectInfo(t, missingPackInfo)}
+	fake := nodepackFakeComfy(t)
 	srv.comfyClientFn = func() comfyClient { return fake }
 	srv.attributeFn = (&recordingAttribution{}).fn(ultimatePack())
 
@@ -268,7 +287,7 @@ func TestRunBatchNeverSubmitsAConversionBlockedGraph(t *testing.T) {
 // direction.
 func TestRunAPIFormatMissingNodesUnchanged(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
-	fake := &fakeComfy{info: mustObjectInfo(t, missingPackInfo)}
+	fake := nodepackFakeComfy(t)
 	srv.comfyClientFn = func() comfyClient { return fake }
 	rec := &recordingAttribution{}
 	srv.attributeFn = rec.fn(ultimatePack())
