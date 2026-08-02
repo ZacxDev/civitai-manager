@@ -1268,10 +1268,47 @@ th[data-sortable][aria-sort="descending"] .cm-sort-ind::after {
  */
 .cm-maturity-actions {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  /* space-between, not flex-end: the inverted-band reason is the row's first item
+   * and sits left, Apply stays right. When the reason is empty it is a zero-width,
+   * zero-height flex item, so the row looks exactly as it did before. */
+  justify-content: space-between;
+  gap: 0.75rem;
   margin-top: 0.75rem;
   padding-top: 0.65rem;
   border-top: 1px solid var(--civitai-color-border);
+}
+/*
+ * WHY APPLY WILL NOT COMMIT. Written by maturityApplyGateScript when the staged
+ * band is inverted; empty otherwise. It is a role="status" live region, so it must
+ * stay rendered (never `hidden`, never display:none) for its text change to be
+ * announced — an empty block box has no line boxes and therefore no height, which
+ * is what keeps a permanently-present element free.
+ *
+ * warning-text on --civitai-color-surface (the panel's background) is an EXISTING
+ * pair in contrast_web_test.go's table ("broken pill (warning) on surface"), so
+ * this adds no new coloured pair. Warning rather than error on purpose: an
+ * inverted band is a state to correct, not a failure — see the -text/-fill split
+ * in the WCAG block, this is text so it takes the -text token.
+ */
+.cm-maturity-invalid {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 0.6875rem;
+  line-height: 1.35;
+  color: var(--civitai-color-warning-text);
+}
+/*
+ * aria-disabled, NOT the `disabled` attribute — a disabled button leaves the tab
+ * order and announces nothing, so a keyboard/screen-reader user would tab straight
+ * past the control with no way to learn why. Keeping it focusable means the
+ * styling has to come from the ARIA state, and the POST is cancelled in
+ * htmx:beforeRequest instead. cursor stays legible on hover.
+ */
+.cm-maturity-actions [data-civitai-ui='button'][aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 @media (min-width: 1024px) {
