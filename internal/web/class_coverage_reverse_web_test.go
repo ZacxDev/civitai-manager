@@ -56,8 +56,16 @@ import (
 // cssRuleReachabilityAllow is an ASSERTED DEBT LEDGER, not an exemption list — the
 // same discipline as .github/deadcode-allow.txt and contrast_web_test.go's accepted
 // pairs. TestEveryCMClassInAppCSSIsEmitted fails when this set GROWS (a new unemitted
-// rule) and equally when it SHRINKS (the class is emitted again, so the line is
-// stale: delete it and take the win).
+// rule) and equally when it SHRINKS. SHRINKING has TWO shapes and the test asserts
+// both, because iterating the styled classes alone only ever sees the first:
+//
+//   - the rule is still in app.css and the class is EMITTED again, so the reason no
+//     longer holds; and
+//   - the RULE HAS BEEN DELETED — the entry has no subject left, so the reason
+//     describes CSS that is not in the file.
+//
+// Deleting the rule is the ordinary way one of these gets resolved, which makes the
+// second shape the common one rather than the exotic one.
 //
 // Empty is the correct state.
 var cssRuleReachabilityAllow = map[string]string{}
@@ -80,6 +88,11 @@ func TestEveryCMClassInAppCSSIsEmitted(t *testing.T) {
 	scan := scanClassCalls(t)
 	prefixes := dynamicClassPrefixes(t)
 
+	styled := map[string]bool{}
+	for _, c := range classes {
+		styled[c] = true
+	}
+
 	var dead []string
 	for _, c := range classes {
 		if classEmitted(c, emitted, scan, prefixes) {
@@ -95,6 +108,29 @@ func TestEveryCMClassInAppCSSIsEmitted(t *testing.T) {
 		}
 		dead = append(dead, c)
 	}
+	// The SECOND shrink direction — the twin of the sweep in
+	// route_reachability_web_test.go, and it is missing for the same reason. The loop
+	// above iterates the SUBJECTS (classes app.css styles), so it can only notice an
+	// entry whose rule still exists and has become emitted again. An entry naming a
+	// class whose RULE HAS BEEN DELETED has no subject to iterate and was silently
+	// ignored, leaving a reason text describing CSS that is not in the file.
+	//
+	// Deleting the rule is the ordinary way one of these entries gets resolved, so
+	// without this the ledger cannot see its own most likely resolution.
+	var stale []string
+	for c := range cssRuleReachabilityAllow {
+		if !styled[c] {
+			stale = append(stale, c)
+		}
+	}
+	sort.Strings(stale)
+	for _, c := range stale {
+		t.Errorf("allowlist entry %q names a class app.css no longer STYLES — no "+
+			"selector in the file mentions .%s, so the entry has no subject and "+
+			"documents a rule that does not exist. The reason given was %q. Delete the "+
+			"line from cssRuleReachabilityAllow.", c, c, cssRuleReachabilityAllow[c])
+	}
+
 	sort.Strings(dead)
 	for _, c := range dead {
 		t.Errorf("app.css styles .%s but NOTHING emits that class — no h.Class "+

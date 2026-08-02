@@ -90,8 +90,16 @@ type registeredRoute struct {
 // routeReachabilityAllow is an ASSERTED DEBT LEDGER, not an exemption list — the
 // same discipline as .github/deadcode-allow.txt and contrast_web_test.go's accepted
 // pairs. TestEveryRegisteredRouteIsEmitted fails when this set GROWS (a new orphan
-// route) and equally when it SHRINKS (an entry became reachable, so the line is
-// stale: delete it and take the win).
+// route) and equally when it SHRINKS. SHRINKING has TWO shapes and the test asserts
+// both, because iterating the registered routes alone only ever sees the first:
+//
+//   - the route is still registered and has become REACHABLE — an emitter now
+//     exists, so the reason no longer holds; and
+//   - the route is no longer REGISTERED AT ALL — the entry has no subject left, so
+//     the reason describes something that does not exist.
+//
+// The second is the one an entry here is most likely to hit: POST /workflows/{id}/run
+// will be resolved by deleting the route, not by gaining an emitter.
 //
 // Empty is the correct state. An entry here is a route the app registers and cannot
 // reach, kept only with a written reason.
@@ -171,6 +179,34 @@ func TestEveryRegisteredRouteIsEmitted(t *testing.T) {
 		}
 		orphans = append(orphans, r.pattern+"  ("+r.pos+")")
 	}
+	// The SECOND shrink direction. The loop above iterates the SUBJECTS (registered
+	// routes), so it can only ever notice an entry whose route still exists and has
+	// become reachable. An entry naming a route that is no longer REGISTERED AT ALL
+	// has no subject to iterate, so it was silently ignored — the ledger asserted one
+	// of the two directions it claims.
+	//
+	// That is not a theoretical gap here: the entry most likely to be resolved is
+	// POST /workflows/{id}/run, and it will be resolved by DELETING the route once its
+	// ~15 test call sites move to /run-with-params. Without this sweep the ledger
+	// cannot notice the very event it was written to track, and the reason text would
+	// outlive its subject as a permanent lie about a route that does not exist.
+	//
+	// Same discipline as .github/deadcode.sh, which compares tier B as a SET and so
+	// catches this by construction.
+	var stale []string
+	for pattern := range routeReachabilityAllow {
+		if !seen[pattern] {
+			stale = append(stale, pattern)
+		}
+	}
+	sort.Strings(stale)
+	for _, pattern := range stale {
+		t.Errorf("allowlist entry %q names a route this package no longer REGISTERS — "+
+			"no mux.Handle/HandleFunc emits that pattern, so the entry has no subject "+
+			"and documents a route that does not exist. The reason given was %q. Delete "+
+			"the line from routeReachabilityAllow.", pattern, routeReachabilityAllow[pattern])
+	}
+
 	sort.Strings(orphans)
 	for _, o := range orphans {
 		t.Errorf("orphan route %s is registered but NO path this package emits can "+
