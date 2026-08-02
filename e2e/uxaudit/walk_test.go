@@ -56,7 +56,11 @@ func TestUXAuditWalk(t *testing.T) {
 		wantViews[v.Name] = true
 	}
 	gotView := map[string]int{}
-	var heroCap *CapturedView
+	// EVERY Hero view is asserted, not just one. This used to be a single
+	// `heroCap *CapturedView` that each Hero desktop capture OVERWROTE, so with more
+	// than one hero only the last survived and the others were audited but never
+	// content-checked — a silent hole the moment a second hero was added.
+	var heroCaps []*CapturedView
 	for i := range res.Captures {
 		cv := &res.Captures[i]
 		gotView[cv.View.Name]++
@@ -87,7 +91,7 @@ func TestUXAuditWalk(t *testing.T) {
 			t.Errorf("%s/%s: nil network capture", cv.View.Name, cv.Viewport.Name)
 		}
 		if cv.View.Hero && cv.Viewport.Name == "desktop" {
-			heroCap = cv
+			heroCaps = append(heroCaps, cv)
 		}
 	}
 	for name := range wantViews {
@@ -105,15 +109,29 @@ func TestUXAuditWalk(t *testing.T) {
 	// data-run-seq strictly greater than the pre-click value AND the marker text, so a
 	// stale panel can never satisfy it and the walk fails loudly if this run's panel
 	// never appears.
-	if heroCap == nil {
-		t.Fatal("no hero (run-missing-models) capture found")
+	// The count of heroes is pinned so DELETING a Hero view (rather than renaming it)
+	// cannot quietly shrink this assertion to the surviving one. Both formats are
+	// heroes: the API branch and the UI branch of realRun reach the panel differently.
+	wantHeroes := 0
+	for _, v := range Views(&App{}) {
+		if v.Hero {
+			wantHeroes++
+		}
 	}
-	body := heroCap.Capture.BodyText
-	if !strings.Contains(body, HeroMarker) {
-		t.Errorf("hero body missing %q panel; got:\n%s", HeroMarker, truncate(body, 800))
+	if len(heroCaps) != wantHeroes {
+		t.Fatalf("captured %d hero desktop views, want %d — a hero view was not captured", len(heroCaps), wantHeroes)
 	}
-	if !strings.Contains(body, "MISSING") {
-		t.Errorf("hero body does not name a missing model file; got:\n%s", truncate(body, 800))
+	if wantHeroes == 0 {
+		t.Fatal("no hero views declared — the missing-models centrepiece is not being audited at all")
+	}
+	for _, hc := range heroCaps {
+		body := hc.Capture.BodyText
+		if !strings.Contains(body, HeroMarker) {
+			t.Errorf("hero %q body missing %q panel; got:\n%s", hc.View.Name, HeroMarker, truncate(body, 800))
+		}
+		if !strings.Contains(body, "MISSING") {
+			t.Errorf("hero %q body does not name a missing model file; got:\n%s", hc.View.Name, truncate(body, 800))
+		}
 	}
 
 	// The generated metadata must be schema-valid against the file set.
