@@ -50,14 +50,6 @@ const (
 // non-matching value falls back to the theme default rather than being emitted.
 var hexColorRe = regexp.MustCompile(`^#[0-9a-fA-F]{3,8}$`)
 
-// safeHexColor returns c when it is a plain hex color literal, else fallback.
-func safeHexColor(raw json.RawMessage, fallback string) string {
-	if c := authorHex(raw); c != "" {
-		return c
-	}
-	return fallback
-}
-
 // authorHex returns the graph's OWN sanitized hex color, or "" when the graph
 // specified none (or specified something that is not a hex literal).
 //
