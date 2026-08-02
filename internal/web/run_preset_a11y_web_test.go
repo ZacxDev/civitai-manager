@@ -208,10 +208,21 @@ func TestRunPresetTablistContainsOnlyTabs(t *testing.T) {
 		t.Fatal("fixture: no \"+ Fork\" button on the page — this guard could never " +
 			"observe the violation it exists for")
 	}
+	// 🔴 THIS PRECONDITION MUST DESCRIBE THE FIXTURE, NOT THE FIX. It first read
+	// `len(kids) != 2` — the child count of the CORRECT strip — which made the guard
+	// fail on the real bug with "fixture: tablist has 3 direct element children"
+	// instead of its own message, because the broken strip holds 3 (two tabs + Fork)
+	// and the Fatalf fired before the role check ever ran. That is a test going red
+	// for a DIFFERENT guard's reason, and it would have hidden the day the role check
+	// itself stopped working. Assert the lower bound the seeding guarantees and let
+	// the assertion below judge the extras.
 	kids := a11yElementChildren(list)
-	if len(kids) != 2 {
-		t.Fatalf("fixture: tablist has %d direct element children, want 2 (the two seeded presets); "+
-			"a strip that never held Fork's neighbours cannot demonstrate the fix", len(kids))
+	if len(kids) < 2 {
+		t.Fatalf("fixture: tablist has %d direct element children, want at least 2 (the two "+
+			"seeded presets); a strip with no tabs cannot demonstrate anything", len(kids))
+	}
+	if n := len(a11yWithAttr(doc, "role", "tab")); n != 2 {
+		t.Fatalf("fixture: want 2 role=tab elements (the two seeded presets), got %d", n)
 	}
 
 	// THE ASSERTION.
