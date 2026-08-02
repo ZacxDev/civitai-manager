@@ -190,6 +190,47 @@ func TestNameAffinityBreaksAScopeTie(t *testing.T) {
 	}
 }
 
+// TestScopeOutranksNameAffinity pins the PRECEDENCE between the two new signals,
+// which the tie-break test above cannot see (there, scope ties by construction).
+//
+// 🔴 This is the guard that keeps the fix a fix. A pack name is the author's choice
+// of words and is trivially gamed — "ComfyUI-UltimateSDUpscale-And-92-Other-Things"
+// is a legal repo name. If affinity were allowed to outrank scope, a broad grab-bag
+// that merely NAMES itself after the class would be promoted back to first place
+// with a filled Install button, which is exactly the failure this work removed.
+// Scope measures what the pack IS; affinity only breaks ties.
+func TestScopeOutranksNameAffinity(t *testing.T) {
+	// Named after the class, but a 1-of-93 grab-bag.
+	broadButNamed := Pack{ID: "broad-named", Title: "ComfyUI-UltimateSDUpscale-Extras",
+		Repository: "https://github.com/someone/ComfyUI-UltimateSDUpscale-Extras",
+		Source:     SourceMap,
+		Classes:    []string{"UltimateSDUpscale"}, ClaimedClasses: 93}
+	// Unrelated name, but almost entirely what was asked for.
+	tightButUnnamed := Pack{ID: "tight-unnamed", Title: "Zebra Tools",
+		Repository: "https://github.com/someone/zebra-tools",
+		Source:     SourceMap,
+		Classes:    []string{"UltimateSDUpscale"}, ClaimedClasses: 2}
+
+	// INTERMEDIATE STATE: the two signals must genuinely DISAGREE here, or the
+	// assertion proves nothing about precedence.
+	if !hasNameAffinity(broadButNamed) {
+		t.Fatal("fixture broken: the broad pack is meant to be name-affine")
+	}
+	if hasNameAffinity(tightButUnnamed) {
+		t.Fatal("fixture broken: the tight pack is meant NOT to be name-affine")
+	}
+	if compareScope(broadButNamed, tightButUnnamed) <= 0 {
+		t.Fatal("fixture broken: the tight pack is meant to win on scope")
+	}
+
+	packs := []Pack{broadButNamed, tightButUnnamed}
+	sortPacks(packs)
+	if packs[0].ID != "tight-unnamed" {
+		t.Errorf("SCOPE must outrank name affinity — a grab-bag named after the class "+
+			"must not be promoted; got %q first", packs[0].ID)
+	}
+}
+
 // TestClaimedClassesCountsDistinctClasses pins that a duplicated entry in the
 // third-party list cannot inflate a pack's apparent breadth — which would wrongly
 // DEMOTE it.
