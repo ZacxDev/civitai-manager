@@ -487,18 +487,56 @@ against `checksums.txt`, extract, and run the binary (`./civitai-manager
   malformed stored range reads back as the FULL range (it is a preference, not an
   access control, and silently narrowing on a bad read is worse than not
   filtering); an unrated ITEM is omitted.
-  **The nav control is two native `<select>`s in one CSRF-protected form**
-  (`maturityControl`). Each end offers **only** the levels that keep the band
-  valid, so it cannot emit an inverted range; `handleSetMaturity` **rejects**
-  `min > max` with 400 rather than swapping (which would grant an unasked-for
-  band) or clamping to empty (which reads as a fetch failure). Both halves are
-  load-bearing — the markup constraint only binds a browser.
-  🔴 **Do not "improve" this into a radio group: a native radio group WRAPS, a
-  `<select>` does not.** Arrow keys skip a `disabled` radio, and at a boundary
-  "skipped" means focus lands on the **far end of the scale** — which shipped a
-  content-gating control failing OPEN: from a band of "X only", one **ArrowLeft**, the
-  *reducing* direction, committed and persisted **"X to XXX"**. The fix is to emit **no
-  input at all** for an out-of-range stop — exactly what omitting the options does.
+  ⚠ **This line used to say "the nav control is two native `<select>`s" — it has
+  not been that since v0.1.9x.** Read `maturityControl` in `internal/web/layout.go`
+  rather than restating the shape here.
+  **The nav control is an icon BUTTON opening a `popover` PANEL that holds one
+  CSRF-protected form** (`maturityControl`), and each end of the band is a 5-stop
+  segmented track built from native **radios** (`maturityTrack`) sharing one
+  5-column grid. Each end renders **only** the levels that keep the band valid, so
+  it cannot emit an inverted range; `handleSetMaturity` **rejects** `min > max`
+  with 400 rather than swapping (which would grant an unasked-for band) or clamping
+  to empty (which reads as a fetch failure). Both halves are load-bearing — the
+  markup constraint only binds a browser.
+  🔴 **A native radio group WRAPS, and a `disabled` stop is still a group member.**
+  Arrow keys skip a `disabled` radio, and at a boundary "skipped" means focus lands
+  on the **far end of the scale** — which shipped a content-gating control failing
+  OPEN: from a band of "X only", one **ArrowLeft**, the *reducing* direction,
+  committed and persisted **"X to XXX"**. The fix is to emit **no input at all**
+  for an out-of-range stop (`maturityTrack` takes explicit lo/hi bounds for exactly
+  this). Never go back to `disabled`-but-present inputs.
+  🔴 **The tracks STAGE; only the Apply button COMMITS.** The form deliberately
+  carries **no `hx-trigger`**, so htmx uses a `<form>`'s natural `submit` trigger.
+  It used to carry `hx-trigger="change"`, which made a radio group commit on
+  **every arrow keypress**: the handler answers `HX-Refresh`, the full page
+  reloads, the popover closes and focus is dumped to `<body>` — walking XXX→PG was
+  four saves and four reloads, each intermediate band persisted. Consequences:
+  the trigger's `aria-label` and the panel's "current" line show the **saved** band,
+  never the pending selection; and anything setting the radios **programmatically**
+  (a preset / "safe mode" shortcut) must set both ends and then call
+  `document.getElementById('cm-maturity-form').requestSubmit()` **once** —
+  `.click()`ing radios saved twice under the old trigger and saves **nothing** now.
+  🔴 **Staging created a NEW fail-OPEN path, and the panel's `ontoggle` reset is what
+  closes it — do not remove it.** A staged selection the user never applied survives
+  in the DOM, so dismissing the panel (Escape / light-dismiss) and reopening it later
+  to change the OTHER end lets Apply commit the stale end too. **Measured end-to-end
+  on two builds against a throwaway DB:** saved `pg:pg13` → stage max=XXX → Escape →
+  reopen → Apply → the pre-fix binary persisted **`pg:xxx`** (the FULL range, from an
+  Apply the user meant as a no-op); the fixed binary persisted `pg:pg13`. The panel
+  therefore carries
+  `ontoggle="if(event.newState==='closed')this.querySelector('form').reset()"`.
+  `form.reset()` is the right instrument specifically because it restores each radio
+  to its server-rendered `checked` **attribute** — the saved band — and fires neither
+  `change` nor `submit`, so it can never itself commit; a `requestSubmit()` there
+  would commit the very band being discarded. Guarded by
+  `TestMaturityPanelDiscardsAStagedBandOnClose` (mutation-verified against removal,
+  against keying on `open` instead of `closed`, and against submitting instead of
+  resetting).
+  Because the tracks stage, the panel's band line reads **"Saved: …"**: it and the
+  radios legitimately disagree while the panel is open (radios = what Apply *would*
+  commit, line = what is in force), and it is the only on-screen cue that a staged
+  change is unapplied. Unlabelled it reads as the current selection and looks like a
+  contradiction.
   **Migration `0018` maps every old stored mode — `blur`, `show` AND `hide` — to
   the FULL range**, so nothing the user could already see disappears on upgrade;
   a fresh install stays setting-less and falls through to the code default. The

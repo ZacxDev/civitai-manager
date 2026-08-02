@@ -386,6 +386,8 @@ func TestShellMeasureIsInTheBuiltCSS(t *testing.T) {
 		// TestMaturityPopoverPositionsAndKeepsItsRadiosReachable.
 		".cm-maturity {", ".cm-maturity-trigger {", ".cm-maturity-panel {",
 		".cm-mat-track {", ".cm-mat-stops {", ".cm-mat-dot {", ".cm-mat-radio {",
+		// The commit row the tracks now stage into — see maturityControl's header.
+		".cm-maturity-actions {",
 		".cm-cardgrid {",
 		// The nav rework's hand-written CSS, here for the same purge-proofing
 		// reason as everything above it. These are PRESENCE checks only — the
