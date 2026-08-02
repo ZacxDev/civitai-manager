@@ -78,12 +78,46 @@ func (s *Server) invalidateComfyModelCache() {
 // pack's node types are absent from the cached payload and read as Unknown — the
 // fallback tier, i.e. exactly today's answer. It degrades to the old behaviour,
 // never to a confident wrong one.
+// 🔴 EVERY FAILURE HERE IS LOGGED, because every one of them silently reinstates
+// the 62%-false-positive banner this classifier exists to fix. The sibling memo
+// twenty lines below (newComfyModelIndex) already logs the identical decode
+// failure; a silent twin is how "the banner is wrong again" becomes undiagnosable
+// from the outside. A missing row is NOT logged — a cold cache is the normal
+// fresh-install state, not a fault.
 func (s *Server) comfyNodeOrigins() map[string]comfy.NodeOrigin {
 	ent, err := s.store.GetComfyObjectInfo()
-	if err != nil || ent == nil {
+	if err != nil {
+		s.log.Warn("read cached comfy object_info", "err", err)
 		return nil
 	}
-	return comfy.NodeOrigins(ent.ObjectInfoJSON)
+	if ent == nil {
+		return nil // cold cache: expected, not a fault
+	}
+	idx := comfy.NodeOrigins(ent.ObjectInfoJSON)
+	if len(idx) == 0 {
+		// NodeOrigins reports "could not classify anything" as a nil map rather than
+		// an error, so there is no err to attach — the byte count is what separates a
+		// truncated/corrupt row from a well-formed but empty one.
+		s.log.Warn("decode cached comfy object_info", "bytes", len(ent.ObjectInfoJSON))
+		return nil
+	}
+	// ⚠ THE FAILURE THIS MAKES DIAGNOSABLE: if no installed pack registers under
+	// `custom_nodes.*` (a repackaged install, a vendored fork), every class reads
+	// Builtin, the banner vanishes entirely, and nothing in code or tests can tell
+	// — the page just quietly stops warning. A 0-custom split in the log is the
+	// only externally visible signal that this happened.
+	builtin, custom := 0, 0
+	for _, o := range idx {
+		switch o {
+		case comfy.NodeOriginBuiltin:
+			builtin++
+		case comfy.NodeOriginCustom:
+			custom++
+		}
+	}
+	s.log.Debug("classified cached comfy object_info",
+		"types", len(idx), "builtin", builtin, "custom", custom)
+	return idx
 }
 
 // comfyModelIndex is the PER-REQUEST memo behind the resolver's comfyResource.
