@@ -57,19 +57,15 @@ func displayAddr(addr string) string {
 	return addr
 }
 
-// serveRun starts the web UI, poller, and download worker, and blocks until ctx
-// is cancelled (SIGINT/SIGTERM) or the HTTP server fails. On shutdown it stops
-// accepting connections, cancels the background goroutines, and WAITS for the
-// poller and worker to return before returning — so their final status writes
-// land before the caller closes the store. It does not close the store.
-func serveRun(ctx context.Context, st *store.Store, client civitai.Client, cfg *config.Config, log *slog.Logger) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	pol := configuredPoller(st, client, cfg, log)
-	wrk := queue.New(st, client, client, log)
-	wrk.SetPreviewPolicy(cfg.NoPreview, cfg.MaxPreviewSizeBytes)
-	srv := web.NewServer(st, client, pol, web.Config{
+// webConfigFor projects the loaded app config onto the web server's view of it.
+// It is the LAST hop of every web-facing knob's plumbing (YAML/flag →
+// config.Config → web.Config → Server), extracted from serveRun so that hop is
+// unit-testable: `web_scan_timeout` was carried faithfully across this exact
+// assignment from v0.1.13 to v0.1.101 while nothing on the far side read it, and a
+// value silently dropped here is invisible to both the config tests and the web
+// tests. See TestWebConfigCarriesTheWebScanTimeout.
+func webConfigFor(cfg *config.Config) web.Config {
+	return web.Config{
 		BaseURL:             cfg.BaseURL,
 		DefaultPollInterval: cfg.DefaultPollInterval.D(),
 		Addr:                cfg.Addr,
@@ -91,7 +87,22 @@ func serveRun(ctx context.Context, st *store.Store, client civitai.Client, cfg *
 		HFToken:             cfg.HFToken,
 		HFFallback:          cfg.HFFallbackEnabled(),
 		ResolveNodePacks:    cfg.ResolveNodePacksEnabled(),
-	}, log)
+	}
+}
+
+// serveRun starts the web UI, poller, and download worker, and blocks until ctx
+// is cancelled (SIGINT/SIGTERM) or the HTTP server fails. On shutdown it stops
+// accepting connections, cancels the background goroutines, and WAITS for the
+// poller and worker to return before returning — so their final status writes
+// land before the caller closes the store. It does not close the store.
+func serveRun(ctx context.Context, st *store.Store, client civitai.Client, cfg *config.Config, log *slog.Logger) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	pol := configuredPoller(st, client, cfg, log)
+	wrk := queue.New(st, client, client, log)
+	wrk.SetPreviewPolicy(cfg.NoPreview, cfg.MaxPreviewSizeBytes)
+	srv := web.NewServer(st, client, pol, webConfigFor(cfg), log)
 	// Tie background discovery crawls to the server lifecycle: cancelling ctx on
 	// shutdown cancels any in-flight crawl instead of leaking its goroutine.
 	srv.SetBaseContext(ctx)
@@ -167,7 +178,7 @@ func newServeCmd(gf *globalFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&addr, "addr", "", "listen address (default from config, 127.0.0.1:8787); use a non-loopback host to expose the UI on your LAN")
-	cmd.Flags().StringVar(&webScanTimeout, "web-scan-timeout", "", "deadline for a web \"Scan now\" (e.g. 2m; default from config). Bounds the web-triggered directory walk/hash")
+	cmd.Flags().StringVar(&webScanTimeout, "web-scan-timeout", "", "deadline for a web \"Scan now\" (e.g. 30m; default from config, 6h). Bounds the web-triggered directory walk/hash — a runaway backstop, so lower it only to cap a scan you expect to finish sooner")
 	cmd.Flags().StringVar(&comfyRoot, "comfy-root", "", "local ComfyUI INSTALL root (the folder holding custom_nodes/); enables the explicit \"install the ComfyUI helper extension\" action. Defaults to the parent of --comfy-model-path when that looks like a ComfyUI install")
 	cmd.Flags().StringVar(&comfyModelPath, "comfy-model-path", "", "local ComfyUI models/ directory root; enables the \"Download & run\" action to write a missing model into the correct subfolder (must be an existing writable dir)")
 	return cmd
