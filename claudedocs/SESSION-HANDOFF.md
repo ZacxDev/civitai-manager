@@ -1,31 +1,33 @@
-# civitai-manager — session handoff (2026-08-01)
+# civitai-manager — session handoff (2026-08-02)
 
 _Point-in-time snapshot. Verify against `git log`/live state before acting. Durable
 conventions + lessons live in the repo `CLAUDE.md` — read it first; this doc is
 STATE + OPEN THREADS only._
 
 ## ⏭️ Kickoff (paste to start next session)
-> Continuing civitai-manager (Go single-binary CivitAI/ComfyUI library manager). Read `claudedocs/SESSION-HANDOFF.md`, repo `CLAUDE.md`, and my auto-memory first. Orientation: latest release **v0.1.100**, `main` clean, **one open PR (#37 — another session's, NEEDS REWORK)**, migrations at **0018 on main** but my real DB reports **19** (see the trap). **GOPRIVATE is NOT needed.** 🔴 **Two things wait on MY decision: (1) the schema-19 trap on my real DB, (2) whether to rework #37 or hand it back.** Standing OK to push+tag+release without asking — run the real gate (`go build ./... && go vet ./... && go test ./... && go test -race ./internal/web/... ./internal/comfy/... ./internal/store/... ./internal/diskusage/... && gofmt -l ./internal/ ./e2e/ ./*.go`; **`gofmt` is NOT covered by `go vet`**, **`./cmd/` does not exist**, and **`e2e/uxaudit` is a NESTED module** a root `go test ./...` never compiles — it now has its own CI job) + `/audit-pr` scaled to blast radius + **a delta re-audit after EVERY fix round**, then **push `main` BEFORE tagging**, verify the tarball, refresh the `:8972` dogfood (kill by `pgrep -x cm` + `/proc/<pid>/exe`, wait until NO cm process remains — a free port is not a released binary — then verify the served build by pid + `--version`). If `go.mod` changes at all, re-run `nix build .`. **You CAN drive a real browser** — it found a real bug in EVERY visual branch across five sessions. 🔴 **The shared checkout is on ANOTHER session's branch (`feat/comfy-model-cache`) — do NOT switch or commit in it; use a worktree and run `git branch --show-current` immediately before any commit.** Loop: feedback → recon → clarifying Qs + recommend → worktree-isolated subagent(s) → real gate → audit → delta re-audit → ship → verify tarball → refresh dogfood.
+> Continuing civitai-manager (Go single-binary CivitAI/ComfyUI library manager). Read `claudedocs/SESSION-HANDOFF.md`, repo `CLAUDE.md`, and my auto-memory first. Orientation: latest release **v0.1.101**, `main` clean, **ZERO open PRs** (#37 closed as superseded), migrations at **0019** on main and on my real DB — the trap is CLOSED. **GOPRIVATE is NOT needed.** 🔴 **ONE thing waits on MY decision: whether to implement proposal A+B for the dead nodepack-install path (see 'The nodepack install feature is unreachable' below).** Standing OK to push+tag+release without asking — run the real gate (`go build ./... && go vet ./... && go test ./... && go test -race ./internal/web/... ./internal/comfy/... ./internal/store/... ./internal/diskusage/... && gofmt -l ./internal/ ./e2e/ ./*.go`; **`gofmt` is NOT covered by `go vet`**, **`./cmd/` does not exist**, and **`e2e/uxaudit` is a NESTED module** a root `go test ./...` never compiles — it now has its own CI job) + `/audit-pr` scaled to blast radius + **a delta re-audit after EVERY fix round**, then **push `main` BEFORE tagging**, verify the tarball, refresh the `:8972` dogfood (kill by `pgrep -x cm` + `/proc/<pid>/exe`, wait until NO cm process remains — a free port is not a released binary — then verify the served build by pid + `--version`). If `go.mod` changes at all, re-run `nix build .`. **You CAN drive a real browser** — it found a real bug in EVERY visual branch across five sessions. 🔴 **The shared checkout is on ANOTHER session's branch (`feat/comfy-model-cache`) — do NOT switch or commit in it; use a worktree and run `git branch --show-current` immediately before any commit.** Loop: feedback → recon → clarifying Qs + recommend → worktree-isolated subagent(s) → real gate → audit → delta re-audit → ship → verify tarball → refresh dogfood.
 
 ## Current state
-- **Latest release: v0.1.100** (`origin/main`). Tarball verified: `sha256sum -c` OK,
+- **Latest release: v0.1.101** (`origin/main`). Tarball verified: `sha256sum -c` OK,
   binary runs, `gh attestation verify` exits 0.
 - **Dogfood on `:8972`** runs the RELEASED binary from this session's scratchpad
   (`/tmp/claude-1000/.../766dd9a1-.../scratchpad/dogfood/cm`). ⚠ That path dies with
   the session's temp dir — re-download the release tarball rather than trusting it.
-- `go.mod`/`go.sum` **untouched across the entire v0.1.84 → v0.1.100 run**, so
+- `go.mod`/`go.sum` **untouched across the entire v0.1.84 → v0.1.101 run**, so
   `vendorHash` has never needed re-verification. Checked every release, not assumed.
 - **One open PR: #37** (another session's `feat/comfy-model-cache`) — **NEEDS REWORK**.
   The shared checkout is sitting on that branch.
 - Untracked `opencode.json` in the repo root; not mine, left alone.
 
-## What shipped this session (v0.1.99 + v0.1.100)
+## What shipped this session (v0.1.99 → v0.1.101)
 **#32/#33/#34** axe walk expanded to search/creator/model-detail · breadcrumbs on 4
 detail pages · duplicate copy + redundant `aria-label`s cut ·
 **#35** the dead axe harness + the two AA failures it then found ·
 **#36** maturity band stages, commits on an explicit **Apply** ·
 **#38** v0.1.99 + delta-re-audit corrections ·
-**#39** the inverted-range regression #36 introduced, plus a **retraction**.
+**#39** the inverted-range regression #36 introduced, plus a **retraction** ·
+**#41** the reworked ComfyUI model cache + three-state chips + Safe mode (supersedes #37) ·
+**#42** three guards the supersession audit found missing.
 
 ## 🔴 The axe harness was dead for two releases — the lesson generalises
 The hero prep looked for `button[hx-post="/workflows/N/run"]`. v0.1.97's one-run-zone
@@ -107,10 +109,102 @@ CSRF-protected POST carrying the literal `min`/`max`, validated by
 `handleSetMaturity`'s existing `min > max` rejection. Corrected in `CLAUDE.md` and
 `layout.go`, and retracted publicly on PR #37.
 
+## 🔴 The nodepack-install feature is UNREACHABLE for UI-format workflows
+
+Reported as "workflow 590 won't run: `node 663 type "UltimateSDUpscale" not available`".
+Diagnosed 2026-08-02; **not fixed** — proposal below is the open decision.
+
+**The converter is CORRECT; do not "fix" it.** Measured against the live
+`/object_info` (2462 types) and the real graph:
+- `UltimateSDUpscale` is genuinely absent from ComfyUI, node 663 is `mode=0`
+  (ACTIVE), and it feeds **five** consumers — refusing to submit is right.
+- Exactly **ONE** warning is emitted, not one per missing type. `virtualNodeTypes`
+  (`internal/comfy/convert.go:26-47`) already strips all 28 UI-only nodes in this
+  graph (`MarkdownNote` ×16, `Note` ×2, `Label (rgthree)` ×5, `Fast Bypasser` ×4,
+  `Fast Groups Bypasser` ×1).
+- **Bypass IS honoured** — the mode drop at `convert.go:199-206` runs BEFORE the
+  availability check at `:208`. Mutation-verified: flipping the 7 `mode=4` nodes to
+  `mode=0` took the warning count **1 → 4** (adding the three SeedVR2 nodes). The
+  known `flattenSubgraphs`-before-mode-drop defect is NOT implicated — this graph
+  has no `definitions` key, so `flattenSubgraphs` never runs.
+
+**ROOT CAUSE — `internal/web/run_handlers.go:492-495`:**
+```go
+if len(warnings) > 0 {
+    return &runResult{Warnings: warnings}, nil   // returns BEFORE comfy.Preflight
+}
+```
+That leaves `Preflight == nil`, and in `run_pages.go` the ENTIRE actionable failure
+UI is behind `if snap.Preflight != nil` (`run_pages.go:534`). So
+`attributeMissingNodes`, `missingNodesPanel`, the ComfyUI-Manager one-click install
+and the manual-command fallback are **dead code on the UI-format path**. The user
+gets a generic sentence plus a collapsed "Technical details" drawer holding one
+class name.
+⚠ Also: the converter DELETES the unknown node, so `report.MissingNodes` would be
+`[]` even if preflight ran. `MissingNodes` can only ever populate for **API-format**
+workflows, where the unknown class survives verbatim.
+
+**The machinery works — verified live.** ComfyUI-Manager **V3.41** answers
+`/api/customnode/getmappings?mode=cache` with **200 / 5573 entries** and resolves
+the class to `comfyui_ultimatesdupscale`; the static index places it at
+`https://github.com/ssitu/ComfyUI_UltimateSDUpscale`. A one-click install would
+have worked. (Bare `/api/customnode/getmappings` without `mode=cache` returns
+**500** — that param is load-bearing, as its comment claims.)
+⚠ **The weak `ResolveCustomNode`/`coreNodeClasses` detector is IRRELEVANT here** —
+it is referenced only by `internal/comfy/resolve.go` and `internal/web/cloud_pages.go`,
+i.e. the CivitAI **cloud** path. The local-run attribution path goes Manager →
+static index → Registry and never touches that table. **Nothing below is gated on
+fixing it.**
+
+**Proposal (ranked, NOT implemented):**
+- **A — do this one.** `ConvertUIToAPI` already computes the distinct unknown-class
+  set and throws it into a format string. Return it structured; in `realRun`
+  synthesize a `PreflightReport{MissingNodes: …, OK: false}` and fall through to the
+  EXISTING `if !report.OK` block at `run_handlers.go:537`. No new UI. Watch: keep
+  never-submit an EXPLICIT gate (not an emergent property of falling into
+  `!report.OK`); `ConvertUIToAPI` has three callers (`run_handlers.go`,
+  `cloud_handlers.go:137`, `run_batch.go`) so add a struct field rather than change
+  the signature; moving the abort later changes what preflight observes.
+- **B — free once A lands.** The same round then reports the 3 missing model files
+  (`1xSkinContrast-High-SuperUltraCompact.pth`,
+  `4xNomosWebPhoto_RealPLKSR.pth`, `ComfyUI\moody-porn-v12.6_00001_.safetensors`),
+  killing a guaranteed second round-trip. 🔴 **Copy must not claim completeness** —
+  a dropped node's own model refs vanish with it, so the list is a LOWER BOUND.
+- **C — later.** Pre-run preflight on the workflow page ("needs 1 node pack + 3
+  models" before you click Run). Real work: new fragment + a caching policy so the
+  4.66 MB `/object_info` isn't fetched per render. This is what the `0019`
+  object_info cache unlocks — sequence AFTER, don't block A on it.
+- **D — decoupled.** Make `coreNodeClasses` authoritative from cached
+  `/object_info`. Fixes the cloud banner's 790-built-ins-called-custom misfire, does
+  nothing for 590.
+- **E — skip.** Just improving the warning string duplicates attribution at a second
+  call site (the "one rule, one place" trap) and is superseded by A.
+- **NOT recommended:** relaxing the `len(warnings) > 0` abort into a severity
+  policy. Blunt, but fail-closed, and correct here.
+
+## ⚠ I deleted a live cache row by acting on stale state
+
+Recorded because the mistake is more instructive than the impact.
+
+The `comfy_model_cache` row was inspected and found to be a **256-byte hand-seeded
+stub** with fabricated filenames (`some_other_model.safetensors`), driving 5 bogus
+◎ chips. Clearing it was agreed. By the time the `DELETE` ran, the operator had
+dogfooded and the **real** write had landed — **4,661,987 bytes, `updated_at` in
+RFC3339** (i.e. `nowRFC3339()`, so the app wrote it). The delete removed real data.
+
+Impact nil — it is a cache with a designed empty state and repopulates on the next
+run; `schema_migrations` stayed 19 and `civitai-manager.db.pre-comfy-cache.bak`
+exists. **The lesson is the rule this broke: re-verify a remembered fact at the
+moment you act on it, not when you formed the plan.**
+
+Silver lining: that row is the proof the write path executes end-to-end on the real
+DB, which was the open question blocking confidence in the feature.
+
 ## Open investigations — live diagnosis state
 
-### The real DB reports schema 19, but `main` only has migrations through 0018
-- **Symptom:** a future `0019_*.sql` will **silently never apply** on this machine —
+### ~~The real DB reports schema 19 while main stops at 0018~~ — CLOSED 2026-08-02
+- **RESOLVED:** #41 shipped `0019` byte-identical to the branch that had already applied it (blob `2b0894bd`), and no `0020` was added — so `main` and the DB agree and NO repair was needed. Kept for the reasoning.
+- **Was:** a future `0019_*.sql` would **silently never apply** on this machine —
   the runner skips `version <= current` (`internal/store/store.go:117`).
 - **Observed (actual values):**
   ```
@@ -145,7 +239,8 @@ CSRF-protected POST carrying the literal `min`/`max`, validated by
   Only needed if #37 is reworked with a **different** 0019. If #37 lands as-is, the DB
   is already correct and nothing should be done.
 
-### PR #37 — NEEDS REWORK (another session's branch; findings posted publicly)
+### ~~PR #37~~ — CLOSED 2026-08-02, superseded by #41
+**Closed.** A supersession audit compared it file-by-file with `main`: nothing of value is missing, `merge-tree` conflicts on **7 files — every non-identical file of the feature**, and merging could only subtract. Kept below because the six blockers are the reasoning behind #41's shape.
 Full audit: [PR comment](https://github.com/ZacxDev/civitai-manager/pull/37#issuecomment-5154544716).
 1. **Red on its own branch, and the PR body misattributes it.** The Safe-mode `onclick`
    begins with a literal `javascript:void(...)`, tripping two site-wide XSS canaries
@@ -178,7 +273,8 @@ Full audit: [PR comment](https://github.com/ZacxDev/civitai-manager/pull/37#issu
 3. **Consider an app-wide `htmx:responseError` handler.** The maturity fix closed the
    one *reachable* silent-400; the class exists everywhere (`hx-swap="none"` + a 4xx
    renders nothing). Deliberately scoped out of #39.
-4. Work the test debt below.
+4. Two 🟢 test nits from the #42 delta audit: the ◎-rule guard's `Contains(body, "color:")` is also satisfied by `background-color:` (probe-verified), and the corrupt-cache precondition asserts `ent != nil` but not a non-empty body.
+5. Work the test debt below.
 
 ## Test debt still open (from the v0.1.96 audit — code CORRECT, guards MISSING)
 1. `internal/poller/poller.go` — that a permanently-skipped workflow version is still
@@ -229,11 +325,11 @@ Full audit: [PR comment](https://github.com/ZacxDev/civitai-manager/pull/37#issu
 
 ## How to verify the current release
 ```sh
-gh release download v0.1.100 -R ZacxDev/civitai-manager \
-  -p 'civitai-manager_0.1.100_linux_amd64.tar.gz' -p 'checksums.txt'
+gh release download v0.1.101 -R ZacxDev/civitai-manager \
+  -p 'civitai-manager_0.1.101_linux_amd64.tar.gz' -p 'checksums.txt'
 sha256sum -c --ignore-missing checksums.txt      # must print OK
-tar xzf civitai-manager_0.1.100_linux_amd64.tar.gz && ./civitai-manager --version
-gh attestation verify civitai-manager_0.1.100_linux_amd64.tar.gz -R ZacxDev/civitai-manager
+tar xzf civitai-manager_0.1.101_linux_amd64.tar.gz && ./civitai-manager --version
+gh attestation verify civitai-manager_0.1.101_linux_amd64.tar.gz -R ZacxDev/civitai-manager
 AUDITLOOP_CHROMIUM=/run/current-system/sw/bin/brave make ux-audit   # 20 pages, 0 violations
 ```
 
