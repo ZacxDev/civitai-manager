@@ -183,6 +183,46 @@ func TestCloudPanelDropsBuiltinsWhenTheObjectInfoCacheIsWarm(t *testing.T) {
 	}
 }
 
+// TestNodepackBannerStatesNoDetectionMechanism guards the copy fix.
+//
+// It is a NEGATIVE guard on purpose. Pinning the exact replacement sentence would
+// turn a wording change into a build failure; what must not come back is the
+// MECHANISM CLAIM — "flagged by a short list of known built-in node types" — which
+// is false whenever a payload answered, i.e. on every install that has run ComfyUI
+// once. The claim is unfixable in this function by design: cloudNodepackBlocker
+// receives only []ResolvedResource and cannot know which tier answered.
+//
+// The positive half is deliberately weak (the banner still hedges at all), because
+// the hedge's WORDING is expected to move and its EXISTENCE is not.
+func TestNodepackBannerStatesNoDetectionMechanism(t *testing.T) {
+	body := renderString(t, cloudNodepackBlocker([]comfy.ResolvedResource{
+		{Filename: "ImpactWildcardProcessor", Status: comfy.ResolveCustomNode},
+	}))
+	// Fixture reaches the case: a banner rendered at all.
+	if !strings.Contains(body, "CivitAI Cloud cannot run this workflow yet") {
+		t.Fatalf("fixture precondition: no banner rendered:\n%s", body)
+	}
+	for _, banned := range []string{
+		"short list of known built-in node types",
+		"short list of known built-in",
+	} {
+		if strings.Contains(body, banned) {
+			t.Errorf("the banner still claims %q. That mechanism is FALSE whenever an "+
+				"/object_info payload answered — the classification came from ComfyUI's own "+
+				"python_module attribution, not from a table. The caveat must stay "+
+				"tier-agnostic, because this function cannot know which tier answered.", banned)
+		}
+	}
+	// It must still hedge — dropping the caveat entirely would turn a conditional
+	// warning into an assertion the detector cannot support in either tier.
+	if !strings.Contains(body, "may not recognise every built-in") {
+		t.Errorf("the banner no longer hedges about unrecognised built-ins. Some flagged "+
+			"types genuinely may be built-ins — a class absent from the payload still falls "+
+			"back to a 47-of-790 table, and even an authoritative answer describes the LOCAL "+
+			"install while this warning is about CivitAI's REMOTE runner:\n%s", body)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // THE FRESH-PAYLOAD PATH.
 // ─────────────────────────────────────────────────────────────────────────────
