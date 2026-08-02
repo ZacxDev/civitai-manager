@@ -213,24 +213,34 @@ func cloudConversionWarnings(warnings []string) g.Node {
 // path stays open and the alert says what we know, sourced, without claiming to have
 // re-measured it.
 //
-// 🔴 THE HEADLINE IS CONDITIONAL, AND THAT IS NOT HEDGING — THE DETECTOR CANNOT
-// SUPPORT AN ASSERTION. `ResolveCustomNode` means only "this class_type is absent
-// from coreNodeClasses", a ~50-entry hand-written table (internal/comfy/resolve.go)
-// whose own comment says "false-positives are acceptable (the user reviews the
-// list)". That tolerance was calibrated for a TABLE ROW reading "custom node ·
-// (fill in below)"; escalating the same signal into a banner that says "do not
-// spend time on these rows" spends the tolerance on a claim it cannot cover.
-// MEASURED against a live ComfyUI (/object_info, 2462 types) and a real 70-workflow
-// library: ComfyUI ships 790 built-in class_types, coreNodeClasses knows 47 of
-// them, and 44 of 70 workflows (62%) contain at least one REAL BUILT-IN that this
-// detector calls custom — `WanImageToVideo` (comfy_extras.nodes_wan) in 14 of them,
-// `CLIPVisionLoader` (nodes) in 6. A flat assertion therefore steers most users off
-// a working paid path.
-// The nodepack limitation itself is real and stays stated in full; what changed is
-// that it now applies IF these are genuinely custom, and the copy says how to find
-// out. Do not restore the flat assertion without first making the detector
-// authoritative — /object_info distinguishes `comfy_extras.*`/`nodes` from
-// `custom_nodes.*`, so the local ComfyUI can answer this when it is reachable.
+// 🔴 THE HEADLINE IS CONDITIONAL. ⚠ THIS COMMENT USED TO SAY THE DETECTOR "CANNOT
+// SUPPORT AN ASSERTION" — THAT IS NO LONGER TRUE, AND THE COPY HAS DELIBERATELY
+// NOT CAUGHT UP YET.
+//
+// The history, because it is what the copy was calibrated against:
+// `ResolveCustomNode` used to mean only "this class_type is absent from
+// coreNodeClasses", a 50-entry hand-written table. Measured against a live ComfyUI
+// (/object_info, 2462 types) and a real 70-workflow library: ComfyUI ships 790
+// built-in class_types, that table knew 47 of them, and 44 of 70 workflows (62%)
+// contained at least one REAL BUILT-IN it called custom — `WanImageToVideo`
+// (comfy_extras.nodes_wan) in 14, `CLIPVisionLoader` (nodes) in 6. A flat
+// assertion on that signal steered most users off a working paid path.
+//
+// The detector is now AUTHORITATIVE whenever a cached /object_info exists:
+// comfy.NodeOrigins classifies on the registering `python_module`
+// (`custom_nodes.*` → custom, anything else → built-in), verified live to sort all
+// 2462 types into 790 built-in / 1672 custom with both named misfires correct. It
+// still falls back to coreNodeClasses for a class no payload can classify — a cold
+// cache, or a frontend-only LiteGraph node like `PrimitiveNode`/`Note`/`Reroute`
+// that appears in no /object_info at all.
+//
+// 🔴 SO THE HEDGED COPY BELOW IS NOW WRONG IN THE WARM-CACHE CASE — it tells the
+// user these were "flagged by a short list of known built-in node types" when they
+// were in fact flagged by ComfyUI's own module attribution. Sharpening it is a
+// deliberate SEPARATE decision (it is a user-facing claim, and the right wording
+// depends on whether the cache was warm — state which tier answered rather than
+// asserting flatly). Left alone on purpose; do not read the mismatch as an
+// oversight. The nodepack limitation itself is real and stays stated in full.
 //
 // Every class_type here is untrusted graph text and goes through g.Text.
 func cloudNodepackBlocker(rows []comfy.ResolvedResource) g.Node {

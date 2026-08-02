@@ -1219,17 +1219,36 @@ appears. **A fixture can be wrong in a way that produces a plausible screenshot.
   `comfy:nodepack` URN** at submit — it needs a `comfyNodepackSnapshot` step →
   `nodepacklayer` AIR (post-paid), so custom-node cloud runs are NOT yet supported
   (see COMFYUI-INTEGRATION-DESIGN.md).
-  🔴 **The custom-node detector behind that is WEAK — keep its banner CONDITIONAL.**
-  `ResolveCustomNode` means only "absent from `coreNodeClasses`", a hand-written table
-  of **exactly 50** entries (counted; no test pins the count, so it can drift silently).
-  Measured against a live ComfyUI (2462 node types) and the real
-  70-workflow library: **ComfyUI ships 790 built-ins, the table knows 47, and 44 of 70
-  workflows (62%) contain a real built-in it calls custom** (`WanImageToVideo` in 14,
-  `CLIPVisionLoader` in 6). Do not restore a flat "this needs custom nodes" assertion
-  before making the detector authoritative — `/object_info` distinguishes
-  `comfy_extras.*`/`nodes` from `custom_nodes.*`, and **that is newly feasible now that
-  `/object_info` is cached in the DB** (migration `0019`), so the authoritative answer
-  no longer costs a live ComfyUI connection on a render path.
+  🔴 **The custom-node detector is now AUTHORITATIVE when a cached `/object_info`
+  exists — the banner copy is still CONDITIONAL and has not caught up.** ⚠ This
+  bullet used to read "the detector is WEAK"; that was true through v0.1.102 and is
+  the bug the classifier below fixed. The old signal was "absent from
+  `coreNodeClasses`", a 50-entry hand-written table; measured against a live ComfyUI
+  (2462 node types) and the real 70-workflow library, **ComfyUI ships 790 built-ins,
+  the table knew 47, and 44 of 70 workflows (62%) contained a real built-in it called
+  custom** (`WanImageToVideo` in 14, `CLIPVisionLoader` in 6).
+  `comfy.NodeOrigins` (`internal/comfy/node_origin.go`) now classifies on the
+  registering **`python_module`**, and the rule is a **DENY-LIST on `custom_nodes.*`,
+  not an allow-list of core namespaces**. That distinction is measured, not
+  stylistic: the live roots are `custom_nodes` 1672 / `comfy_extras` 501 /
+  **`comfy_api_nodes` 224** / `nodes` 65, so excluding `custom_nodes` yields exactly
+  790 — while the obvious allow-list (`comfy_extras.*` + `nodes`) yields **566** and
+  silently reclassifies all 224 bundled API-node types as custom. A deny-list also
+  ages safely: a core namespace ComfyUI adds tomorrow reads as built-in.
+  🔴 **`coreNodeClasses` STAYS as the fallback tier — do not delete it.** It answers
+  for any class a payload cannot classify, which is not only the cold-cache case:
+  `PrimitiveNode`, `Note` and `Reroute` are frontend-only LiteGraph nodes present in
+  **no** `/object_info` (they are the only 3 of the 50 entries absent live), so
+  deleting the table would call them custom. Unknown deliberately holds the
+  PRE-EXISTING behaviour rather than assuming built-in — the failure directions are
+  asymmetric (a false *custom* silently steers the user off a working paid path; a
+  false *built-in* just omits a warning and CivitAI's own submit-time CustomComfy
+  check rejects it loudly), but assuming built-in on a cold cache would delete the
+  signal entirely on every fresh install.
+  **Restoring a flat "this needs custom nodes" assertion is still NOT done** — the
+  banner copy still says "flagged by a short list of known built-in node types",
+  which is now wrong in the warm-cache case. Sharpening it should state WHICH tier
+  answered rather than asserting flatly, since a cold cache is still the old signal.
   ⚠ **Scope, so you fix the right thing: this weak detector is on the CLOUD PATH ONLY.**
   `ResolveCustomNode` is reached only via `ResolveResources` (`internal/comfy/resolve.go`)
   → `internal/web/cloud_pages.go`, i.e. the cloud panel's resolved-resource table. **The
