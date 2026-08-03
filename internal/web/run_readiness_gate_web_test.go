@@ -58,6 +58,23 @@ var unusableGraphs = []struct {
 	// to submit, leaving ComfyUI's own validation to reject it.
 	{"empty object", store.WorkflowFormatAPI,
 		`{}`, "contains no nodes this app can read"},
+	// 🔴 The two that parse AND are non-empty. These decode to a node map with
+	// entries, so `len(nodes) > 0` — the shape comfy.PreflightReport.Nodes counted
+	// until this change. Every entry lacks a class_type, so MissingNodes skips them,
+	// ExtractResources finds no loader, detectBadOptions finds no schema, and
+	// Preflight answers OK:true with all three lists empty. Both used to render
+	// "Ready" and be SUBMITTED. Preflight now counts only nodes carrying a usable
+	// class_type — the same rule comfy.DetectFormat has always applied.
+	{"object of class_type-less entries", store.WorkflowFormatAPI,
+		`{"a":{}}`, "contains no nodes this app can read"},
+	// The realistic one: a PNG whose prompt chunk holds {"prompt": <graph>} rather
+	// than the graph. handleWorkflowImportPNG stores that verbatim as format=api
+	// without calling DetectFormat, so the wrapper becomes the ONE node — named
+	// "prompt", carrying no class_type — and the real graph inside is never seen.
+	{"api graph under a prompt wrapper", store.WorkflowFormatAPI,
+		`{"prompt":{"4":{"class_type":"CheckpointLoaderSimple",` +
+			`"inputs":{"ckpt_name":"present.safetensors"}}}}`,
+		"contains no nodes this app can read"},
 	{"ui graph stored as api", store.WorkflowFormatAPI,
 		readinessUIReadyGraph, "Preflight failed"},
 	{"ui graph under an unrecognised format", "pnginfo",

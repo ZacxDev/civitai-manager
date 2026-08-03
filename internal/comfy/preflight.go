@@ -30,14 +30,27 @@ type PreflightReport struct {
 	// OK is true when there are no missing nodes, no missing models, and no bad
 	// combo-option values.
 	OK bool
-	// Nodes is how many graph nodes this report was computed over.
+	// Nodes is how many EXECUTABLE nodes this report was computed over — entries
+	// carrying a non-empty class_type, counted by usableAPINodes, NOT len(map).
 	//
-	// 🔴 ZERO MEANS THE PAYLOAD WAS NOT A USABLE api GRAPH AT ALL — either it did
-	// not parse (a UI graph stored as api, a JSON array, a bare string, garbage
-	// bytes) or it parsed to an empty object. THE THREE LISTS ABOVE CANNOT TELL YOU
-	// THAT: they are empty for a perfect graph and equally empty for a graph with
-	// nothing in it, and OK is `true` for `{}` because nothing failed validation.
-	// This field is the only thing that separates the two.
+	// 🔴 ZERO MEANS THE PAYLOAD WAS NOT A USABLE api GRAPH AT ALL — it did not parse
+	// (a UI graph stored as api, a JSON array, a bare string, garbage bytes), or it
+	// parsed to an empty object, or it parsed to an object whose entries are not
+	// nodes (`{"a":{}}`, or a `{"prompt": <graph>}` wrapper, where the wrapper itself
+	// becomes the one entry and the real graph inside is never seen). THE THREE LISTS
+	// ABOVE CANNOT TELL YOU THAT: they are empty for a perfect graph and equally
+	// empty for a graph with nothing in it, and OK is `true` for `{}` because nothing
+	// failed validation. This field is the only thing that separates the two.
+	//
+	// ⚠ THAT SENTENCE USED TO BE FALSE and the field is what changed, not the
+	// sentence. Nodes was `len(nodes)`, so `{"a":{}}` and `{"prompt":{…}}` both
+	// scored 1 with OK:true — indistinguishable from a clean graph on every signal
+	// this struct carries, and both were rendered "Ready" and submitted. The count is
+	// now the same predicate DetectFormat has always used, so the two agree. Measured
+	// before changing it: on the operator's real database all 71 workflows convert to
+	// graphs where usable == total, so nothing that ran stopped running; and
+	// ComfyUI's own execution.py rejects every payload the tightening newly refuses,
+	// so nothing in that set could ever have executed.
 	//
 	// 🔴 IT IS DELIBERATELY NOT FOLDED INTO OK. OK answers "did anything fail
 	// validation", and a graph with nothing in it failed nothing. The decision that
@@ -124,7 +137,10 @@ func Preflight(apiGraph json.RawMessage, info ObjectInfo, localHave func(filenam
 		MissingNodes:  sortedKeys(missingNodesSet),
 		MissingModels: sortedKeys(missingModelsSet),
 		BadOptions:    detectBadOptions(nodes, info, modelRefSet),
-		Nodes:         len(nodes),
+		// NOT len(nodes) — see the Nodes field's doc. An entry with no class_type is
+		// not a node ComfyUI could run, and counting it made this field answer "a
+		// graph" for a payload that is not one.
+		Nodes: usableAPINodes(nodes),
 	}
 	report.OK = len(report.MissingNodes) == 0 &&
 		len(report.MissingModels) == 0 &&
