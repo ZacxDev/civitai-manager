@@ -226,6 +226,35 @@ func TestUncontestedPacksAreNeverCollapsed(t *testing.T) {
 	}
 }
 
+// TestScrollableCommandBlocksAreKeyboardReachable pins the axe fix.
+//
+// 🔴 `overflow-x-auto` makes a box a scrollable region, and a scrollable region with
+// no tabindex cannot be scrolled by keyboard — everything past the right edge is
+// unreachable without a pointer. These commands overflow routinely (a git URL plus a
+// custom_nodes path), so at the mobile viewport the text ends mid-URL.
+//
+// axe rated it `scrollable-region-focusable`, impact SERIOUS, on two mobile captures
+// the very first walk that could render this panel. It went unseen for so long
+// because the ux-audit lab had no ComfyUI-Manager fake and no missing node type, so
+// no pack card — and therefore no command block — ever reached a capture.
+func TestScrollableCommandBlocksAreKeyboardReachable(t *testing.T) {
+	body := renderString(t, runStatusFragment(contestedNodesSnapshot(), 7, "tok", true, fullMaturityRange()))
+
+	// PRECONDITION: the scrollable blocks are actually in this render, or "they are
+	// all focusable" is vacuously true.
+	const scrollable = `<pre class="mt-1 overflow-x-auto rounded border border-slate-800 p-2"`
+	n := strings.Count(body, scrollable)
+	if n != 2 {
+		t.Fatalf("precondition: want 2 scrollable command blocks (one per pack), got %d:\n%s", n, body)
+	}
+	// Assert on the <pre> ELEMENT, not a bare substring: a tabindex anywhere else in
+	// the panel would satisfy a naive Contains while these boxes stayed unreachable.
+	if got := strings.Count(body, scrollable+` tabindex="0"`); got != n {
+		t.Errorf("%d of %d scrollable command blocks are keyboard-reachable — a scrollable "+
+			"region without tabindex cannot be scrolled without a pointer:\n%s", got, n, body)
+	}
+}
+
 // TestLowerBoundNoticeStaysAboveTheInstallCTA is the ordering guard the caveat's
 // own comment demands: the CTA is a promise ("install these and it should run")
 // and the reader has to know the list is bounded BEFORE acting on it.

@@ -599,9 +599,31 @@ func manualInstallBlock(p comfy.Pack, comfyRoot string) g.Node {
 	// every pack and is now rendered ONCE by missingNodesPanel — do not put it back.
 	return h.Div(h.Class("pt-1"),
 		h.Div(h.Class("text-xs text-slate-500"), g.Text("Or install it by hand:")),
-		h.Pre(h.Class("mt-1 overflow-x-auto rounded border border-slate-800 p-2"),
-			h.Code(h.Class("font-mono text-xs text-slate-300"), g.Text(cmd)),
-		),
+		commandBlock(cmd),
+	)
+}
+
+// commandBlock renders a copy-able shell command in a horizontally scrollable box.
+//
+// 🔴 tabindex="0" is an ACCESSIBILITY REQUIREMENT, not decoration. `overflow-x-auto`
+// makes this a scrollable region, and a scrollable region that cannot be focused
+// cannot be scrolled by keyboard at all — the content past the right edge is simply
+// unreachable without a pointer. These commands routinely overflow (a git URL plus a
+// custom_nodes path), so at the mobile viewport the visible text ends mid-URL.
+//
+// Measured: axe reported `scrollable-region-focusable` (impact: serious) twice —
+// run-missing-models.mobile and run-missing-models-setup.mobile — the first time the
+// ux-audit walk was able to render this panel at all. It was invisible before only
+// because the lab had no ComfyUI-Manager fake and no missing node type, so no pack
+// card, and therefore no command block, ever reached a capture.
+//
+// It is ONE helper because the markup was duplicated at two call sites (the per-pack
+// manual command and the failed-install fallback) and the fix has to hold at both.
+func commandBlock(cmd string) g.Node {
+	return h.Pre(
+		h.Class("mt-1 overflow-x-auto rounded border border-slate-800 p-2"),
+		g.Attr("tabindex", "0"),
+		h.Code(h.Class("font-mono text-xs text-slate-300"), g.Text(cmd)),
 	)
 }
 
@@ -760,9 +782,7 @@ func nodepackTerminal(snap nodepackSnapshot, csrf string) g.Node {
 		if snap.ManualCmd != "" {
 			body = append(body,
 				h.Div(h.Class("text-xs text-slate-500"), g.Text("Install it by hand instead:")),
-				h.Pre(h.Class("mt-1 overflow-x-auto rounded border border-slate-800 p-2"),
-					h.Code(h.Class("font-mono text-xs text-slate-300"), g.Text(snap.ManualCmd)),
-				),
+				commandBlock(snap.ManualCmd),
 			)
 		}
 		return h.Div(h.Class("space-y-1"), g.Group(body))

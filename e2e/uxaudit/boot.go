@@ -31,8 +31,24 @@ const heroWorkflowGraph = `{
   "5": {"class_type": "EmptyLatentImage", "inputs": {"width": 1024, "height": 1024, "batch_size": 1}},
   "6": {"class_type": "KSampler", "inputs": {"model": ["2", 0], "positive": ["3", 0], "negative": ["4", 0], "latent_image": ["5", 0]}},
   "7": {"class_type": "VAEDecode", "inputs": {"samples": ["6", 0], "vae": ["1", 2]}},
-  "8": {"class_type": "SaveImage", "inputs": {"images": ["7", 0], "filename_prefix": "uxaudit"}}
+  "8": {"class_type": "SaveImage", "inputs": {"images": ["7", 0], "filename_prefix": "uxaudit"}},
+  "9": {"class_type": "UltimateSDUpscale", "inputs": {"image": ["7", 0], "upscale_by": 2.0}}
 }`
+
+// 🔴 Node "9" is a MISSING CUSTOM NODE, and it is deliberately only on the API
+// graph. UltimateSDUpscale is absent from fakeObjectInfoJSON, so comfy.Preflight
+// reports it in MissingNodes and the run panel renders its custom-node half —
+// attribution, the two contesting packs, the ambiguity notice, the Install buttons
+// and the collapsed alternatives disclosure. Before it, MissingNodes was always
+// empty and every one of those surfaces was unreachable from the walk, so "0 axe
+// violations" was a true statement about a panel rendering half of itself.
+//
+// ⚠ It must NOT be added to heroWorkflowGraphUI. A class absent from /object_info
+// has no input_order there, ConvertUIToAPI emits a warning, and realRun returns on
+// warnings BEFORE comfy.Preflight — so the UI hero would screenshot the
+// conversion-warnings panel instead of the missing-models one. That is the exact
+// fixture trap TestUIHeroGraphReachesPreflight exists to catch, and it produces a
+// plausible screenshot of the wrong page rather than a failure.
 
 // heroWorkflowGraphUI is the SECOND seeded hero graph: the same pipeline as
 // heroWorkflowGraph, expressed in the editor's UI ("Save") format.
@@ -139,18 +155,27 @@ type App struct {
 	// batch endpoint) and it DOES render the count segment.
 	WorkflowUIID int64
 	ScanDir      string // a seeded install dir the library scanner can walk offline
+	// UnsetPathURL is a SECOND server over the same store whose ComfyModelPath is
+	// empty. It exists so the walk can reach the run panel's unconfigured branch —
+	// the disabled batch CTA plus the comfy_model_path setup disclosure — which the
+	// primary app can never render. See Boot.
+	UnsetPathURL string
 
-	ts     *httptest.Server
-	comfy  *httptest.Server
-	store  *store.Store
-	cancel context.CancelFunc
+	ts      *httptest.Server
+	setupTS *httptest.Server
+	comfy   *httptest.Server
+	store   *store.Store
+	cancel  context.CancelFunc
 }
 
-// Close tears down the web server, the fake ComfyUI, the base context, and the
-// store, in that order.
+// Close tears down BOTH web servers, the fake ComfyUI, the base context, and the
+// store, in that order. Both servers share one store, so neither may outlive it.
 func (a *App) Close() {
 	if a.ts != nil {
 		a.ts.Close()
+	}
+	if a.setupTS != nil {
+		a.setupTS.Close()
 	}
 	if a.comfy != nil {
 		a.comfy.Close()
@@ -303,12 +328,43 @@ func Boot(workDir string) (*App, error) {
 
 	ts := httptest.NewServer(srv.Handler())
 
+	// 🔴 The UNCONFIGURED variant: the same store, the same seeded workflows, the
+	// same fake ComfyUI — everything identical EXCEPT an empty ComfyModelPath.
+	//
+	// That one value is what decides comfyDownloadEligible, hence batchInstallPlan's
+	// Available, hence which branch of installAllMissingAction renders. With a path
+	// configured (the primary app above) the panel shows the live batch CTA and the
+	// setup disclosure's CONFIGURED wording; with it empty the CTA is disabled and
+	// the panel offers the setup step. The walk could only ever load the first, so
+	// the disabled-CTA branch — the state a fresh install is actually in — was never
+	// screenshotted or axe-scanned.
+	//
+	// Sharing the store is deliberate and safe: the walk drives one page at a time,
+	// the two servers hold their own in-memory run state, and sharing keeps the
+	// workflow ids identical so the same View paths address both.
+	setupSrv := web.NewServer(st, fakeReader{}, fakeSubscriber{}, web.Config{
+		BaseURL:             "https://civitai.com",
+		DefaultPollInterval: time.Hour,
+		Addr:                "127.0.0.1:8787",
+		ModelRoot:           scanDir,
+		TrashDir:            filepath.Join(workDir, ".trash"),
+		WebScanTimeout:      2 * time.Minute,
+		WebScanMaxFiles:     10000,
+		ComfyURL:            comfySrv.URL,
+		ComfyModelPath:      "", // the whole point of this variant
+		HFFallback:          false,
+	}, nil)
+	setupSrv.SetBaseContext(base)
+	setupTS := httptest.NewServer(setupSrv.Handler())
+
 	return &App{
 		URL:          ts.URL,
+		UnsetPathURL: setupTS.URL,
 		WorkflowID:   wfID,
 		WorkflowUIID: wfUIID,
 		ScanDir:      scanDir,
 		ts:           ts,
+		setupTS:      setupTS,
 		comfy:        comfySrv,
 		store:        st,
 		cancel:       cancel,

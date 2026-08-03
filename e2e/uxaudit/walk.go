@@ -22,7 +22,13 @@ import (
 type View struct {
 	Name string
 	Path string
-	Prep func(app *App) []chromedp.Action
+	// BaseURL overrides which booted server this view is fetched from. Empty means
+	// the primary app (App.URL), which is every view but one. It exists because a
+	// couple of the app's branches are selected by CONFIGURATION rather than by
+	// navigation — App.UnsetPathURL serves the same pages with comfy_model_path
+	// unset — and a config-selected branch is unreachable by any Path or Prep.
+	BaseURL string
+	Prep    func(app *App) []chromedp.Action
 	// Hero marks the missing-models resolution panel — the product's centrepiece.
 	// The walk fails loudly if a Hero view's Prep can't reach its end-state.
 	Hero bool
@@ -156,6 +162,17 @@ func Views(app *App) []View {
 		// comfy.Preflight) if that conversion warns, so only this view proves the
 		// missing-models panel is reachable for the format 100% of real workflows use.
 		{Name: "run-missing-models-ui", Path: wfUIPath, Hero: true, Prep: heroRunPrep(runUISel)},
+		// The SAME failure panel on a server with comfy_model_path UNSET — a fresh
+		// install's actual state. It is not a duplicate of the two heroes above: the
+		// primary CTA is DISABLED here and the panel offers the comfy_model_path setup
+		// disclosure instead, a branch of installAllMissingAction the configured app
+		// can never render and which the walk therefore never loaded or axe-scanned.
+		//
+		// Deliberately NOT Hero: the centrepiece is the resolution panel itself, which
+		// the two heroes already pin. A capture failure here is still fatal (Walk errors
+		// on any view), so nothing is lost by leaving wantHeroes at 2.
+		{Name: "run-missing-models-setup", Path: wfPath, BaseURL: app.UnsetPathURL,
+			Prep: heroRunPrep(runSel)},
 		// Discover browse (workflows), served offline from the fake CivitAI reader.
 		{Name: "discover-workflows", Path: "/workflows/discover"},
 		// Library "Scan for model files" entry (the Sources tab lists the seeded dir).
@@ -274,7 +291,11 @@ func Walk(ctx context.Context, execPath, outDir, label string) (*WalkResult, err
 
 	var caps []CapturedView
 	for _, v := range Views(app) {
-		pageURL := app.URL + v.Path
+		base := app.URL
+		if v.BaseURL != "" {
+			base = v.BaseURL
+		}
+		pageURL := base + v.Path
 		var prep []chromedp.Action
 		if v.Prep != nil {
 			prep = v.Prep(app)

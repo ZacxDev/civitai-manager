@@ -130,6 +130,9 @@ func (fakeSubscriber) SubscribeCreator(context.Context, string, poller.Subscribe
 //   - GET /object_info   → a node schema whose loader combos list only INSTALLED
 //     files, so a workflow referencing an un-installed checkpoint/LoRA fails
 //     comfy.Preflight and the "missing models" hero panel renders.
+//   - the ComfyUI-Manager V3 subset → so the missing-CUSTOM-NODE half of that same
+//     panel renders too. Manager is a custom node, so its web API is served by
+//     ComfyUI itself and belongs on this mux rather than behind a new seam.
 //
 // No /prompt is ever hit: preflight stops the run before submission. The web
 // server (server-side) is the only client — the browser never talks to it.
@@ -142,6 +145,51 @@ func newFakeComfyUI() *httptest.Server {
 	mux.HandleFunc("/object_info", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(fakeObjectInfoJSON))
+	})
+	// --- ComfyUI-Manager V3.41 subset ---
+	//
+	// 🔴 Without these the walk certified a panel it never fully rendered.
+	// ManagerProbe requires one of the queue/status routes to answer before
+	// ManagerPresent is true, and with it false the attribution pass produced no
+	// packs at all — so the pack cards, the "Best match"/"Also claims it" badges,
+	// the Install buttons, the ambiguity notice and the alternatives disclosure were
+	// ALL absent from every capture. The axe result was therefore true and scoped to
+	// a panel missing its entire node-pack half.
+	mux.HandleFunc("/api/manager/queue/status", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total_count":0,"done_count":0,"in_progress_count":0,"is_processing":false}`))
+	})
+	mux.HandleFunc("/api/manager/version", func(w http.ResponseWriter, _ *http.Request) {
+		// V3 answers PLAIN TEXT, not JSON — matching the real Manager.
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("V3.41-uxaudit-fake"))
+	})
+	mux.HandleFunc("/api/customnode/getmappings", func(w http.ResponseWriter, r *http.Request) {
+		// The real handler bracket-accesses query["mode"] and 500s without it.
+		if r.URL.Query().Get("mode") == "" {
+			http.Error(w, "KeyError: 'mode'", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fakeManagerMappingsJSON))
+	})
+	mux.HandleFunc("/api/customnode/getlist", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("mode") == "" {
+			http.Error(w, "KeyError: 'mode'", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fakeManagerGetlistJSON))
+	})
+	mux.HandleFunc("/api/customnode/installed", func(w http.ResponseWriter, _ *http.Request) {
+		// Nothing is installed, so both claimants stay installable and the contest is
+		// a real choice rather than a settled one.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	})
+	mux.HandleFunc("/queue", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"queue_running":[],"queue_pending":[]}`))
 	})
 	// Any other ComfyUI call would mean the run got past preflight unexpectedly;
 	// answer 404 loudly rather than silently succeeding.
@@ -208,6 +256,70 @@ func newFakeComfyUI() *httptest.Server {
 // seed to expose for the Parameters panel the UI-format run surface is audited
 // with. The API-format hero graph simply omits those inputs; preflight does not
 // require an input to be present, so it is unaffected.
+// fakeManagerMappingsJSON is ComfyUI-Manager's node-class → pack index, shaped
+// exactly like the real /api/customnode/getmappings body: pack id → [class list,
+// metadata].
+//
+// 🔴 TWO packs deliberately claim UltimateSDUpscale, and that contest is the whole
+// point of this fixture. It reproduces the measured live case
+// (comfyui_ultimatesdupscale enumerates 4 classes, comfyui-promptchain 93), which is
+// what makes the run panel render its ambiguity notice, the "Best match" /
+// "Also claims it" badges, and — the state the audit could not reach before — the
+// COLLAPSED alternatives disclosure. A single-claimant fixture renders none of them.
+//
+// ⚠ Keep PromptChain's list long. The ranking is by SCOPE (matched classes over
+// claimed classes), so if the two lists were the same length the winner would be
+// decided by the weaker name-affinity signal instead, and the fixture would stop
+// exercising the comparator it exists to exercise.
+const fakeManagerMappingsJSON = `{
+ "https://github.com/ssitu/ComfyUI_UltimateSDUpscale": [
+  ["UltimateSDUpscale", "UltimateSDUpscaleNoUpscale", "UltimateSDUpscaleCustomSample", "UltimateSDUpscalePipe"],
+  {"title_aux": "UltimateSDUpscale", "author": "ssitu"}
+ ],
+ "https://github.com/mobcat40/ComfyUI-PromptChain": [
+  ["UltimateSDUpscale", "PromptChain", "PromptChainLoad", "PromptChainSave", "PromptChainMerge",
+   "PromptChainSplit", "PromptChainRandom", "PromptChainWeight", "PromptChainStyle",
+   "PromptChainPreview", "PromptChainBatch", "PromptChainFilter"],
+  {"title_aux": "ComfyUI-PromptChain", "author": "mobcat40"}
+ ]
+}`
+
+// fakeManagerGetlistJSON is Manager's pack catalogue — where the repository URL, the
+// title and the installability of each claimant come from. Both packs are
+// "not-installed" so both keep a working Install button: the alternatives disclosure
+// must stay REACHABLE and actionable, not merely present.
+const fakeManagerGetlistJSON = `{
+ "channel": "default",
+ "node_packs": {
+  "https://github.com/ssitu/ComfyUI_UltimateSDUpscale": {
+   "id": "https://github.com/ssitu/ComfyUI_UltimateSDUpscale",
+   "title": "UltimateSDUpscale",
+   "author": "ssitu",
+   "reference": "https://github.com/ssitu/ComfyUI_UltimateSDUpscale",
+   "repository": "https://github.com/ssitu/ComfyUI_UltimateSDUpscale",
+   "files": ["https://github.com/ssitu/ComfyUI_UltimateSDUpscale"],
+   "install_type": "git-clone",
+   "state": "not-installed",
+   "version": "1.0.0",
+   "cnr_latest": "1.0.0",
+   "trust": true
+  },
+  "https://github.com/mobcat40/ComfyUI-PromptChain": {
+   "id": "https://github.com/mobcat40/ComfyUI-PromptChain",
+   "title": "ComfyUI-PromptChain",
+   "author": "mobcat40",
+   "reference": "https://github.com/mobcat40/ComfyUI-PromptChain",
+   "repository": "https://github.com/mobcat40/ComfyUI-PromptChain",
+   "files": ["https://github.com/mobcat40/ComfyUI-PromptChain"],
+   "install_type": "git-clone",
+   "state": "not-installed",
+   "version": "nightly",
+   "cnr_latest": "nightly",
+   "trust": true
+  }
+ }
+}`
+
 const fakeObjectInfoJSON = `{
   "CheckpointLoaderSimple": {"input": {"required": {
     "ckpt_name": [["installed-sdxl-base.safetensors"], {}]
