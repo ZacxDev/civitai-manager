@@ -350,7 +350,7 @@ func (s *Server) handleWorkflowInstallMissingAndRun(w http.ResponseWriter, r *ht
 		seen[key] = true
 		// Fast path: the destination already holds this file → nothing to fetch.
 		if subdir, ok := comfy.TypeSubdir(typ); ok {
-			if dest, derr := comfy.SafeModelDest(s.cfg.ComfyModelPath, subdir, name); derr == nil && fileExists(dest) {
+			if dest, derr := comfy.SafeModelDest(s.comfyModelPath(), subdir, name); derr == nil && fileExists(dest) {
 				present++
 				continue
 			}

@@ -181,7 +181,7 @@ type comfyHelperView struct {
 
 // comfyHelperState builds the on-disk helper view for a render path.
 func (s *Server) comfyHelperState() comfyHelperView {
-	root := strings.TrimSpace(s.cfg.ComfyRoot)
+	root := strings.TrimSpace(s.comfyRoot())
 	return comfyHelperView{disk: comfyext.Inspect(root), rootSet: root != "", csrf: s.csrf}
 }
 
@@ -606,7 +606,7 @@ func (s *Server) handleComfyExtensionAction(w http.ResponseWriter, r *http.Reque
 	// These endpoints take NO request-supplied values beyond the CSRF token: the
 	// helper is a single server-wide install and the container they swap is a
 	// constant, so there is nothing to validate and nothing to reflect.
-	root := strings.TrimSpace(s.cfg.ComfyRoot)
+	root := strings.TrimSpace(s.comfyRoot())
 	if root == "" {
 		s.renderComfyExtResult(w, false,
 			"No ComfyUI install directory is configured. Set comfy_root (or comfy_model_path, whose parent is used when it looks like a ComfyUI install).")

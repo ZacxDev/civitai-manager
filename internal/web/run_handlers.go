@@ -673,7 +673,7 @@ func (s *Server) preflightFailureResult(ctx context.Context, wf *store.Workflow,
 	var nodeAttr nodeAttribution
 	if len(report.MissingNodes) > 0 {
 		nodeAttr = s.attributeMissingNodes(ctx, report.MissingNodes)
-		nodeAttr.ComfyRoot = s.cfg.ComfyRoot
+		nodeAttr.ComfyRoot = s.comfyRoot()
 		nodeAttr.RemoteLookup = s.cfg.ResolveNodePacks
 	}
 	if len(report.MissingModels) > 0 {
