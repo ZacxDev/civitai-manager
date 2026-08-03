@@ -283,6 +283,19 @@ func TestRunFailureBlockedByARemoteComfyOffersNoSetupCTA(t *testing.T) {
 	if strings.Contains(body, "missing model files and run") {
 		t.Errorf("and still no dead install-all button:\n%s", body)
 	}
+	// 🔴 THE STRUCTURAL HALF. Everything above this line is spelled against a
+	// LABEL, and every other no-POST guard in the package exercises the
+	// SetupCanHelp branch — so this branch, which is new code, had no guard against
+	// the defect class the whole change is about. Planting a live "Install
+	// everything" civButton carrying hx-post=".../install-missing-and-run" inside
+	// blockedInstallAction's remote branch failed ZERO tests. It is not exploitable
+	// (handleInstallMissingAndRun refuses with installMissingUnavailable), but a
+	// server that cannot install must not render a control that POSTs the install,
+	// whatever the button happens to be called.
+	if strings.Contains(body, "install-missing-and-run") {
+		t.Errorf("a remote-blocked panel must render no control that POSTs the batch "+
+			"install, under any label:\n%s", body)
+	}
 	// It must say WHY, without a click, since there is nothing to click.
 	if !strings.Contains(body, "not pointed at a ComfyUI on this machine") {
 		t.Errorf("the remote-ComfyUI blocker must be stated in the panel itself:\n%s", body)
