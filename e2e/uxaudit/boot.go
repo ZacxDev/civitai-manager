@@ -247,6 +247,26 @@ func Boot(workDir string) (*App, error) {
 		return nil, fmt.Errorf("disable remote match: %w", err)
 	}
 
+	// Seed the 0019 comfy_model_cache with the SAME payload the fake ComfyUI serves,
+	// so the run zone's pre-click readiness line renders its NEEDS state.
+	//
+	// 🔴 WITHOUT THIS THE WALK CERTIFIES THE WRONG BRANCH — the exact failure this
+	// lab has already shipped once. The readiness line reads that row and nothing
+	// else; the app populates it from a RUN, and the walk captures the workflow page
+	// without running first. So the cold-cache branch rendered on every capture, and
+	// the state that actually matters — the amber "Needs N …" line, the only one
+	// using a colour the walk had never scanned — was never on screen at all. A green
+	// "0 violations" would have been a fact about a surface the audit never loaded.
+	//
+	// It changes NOTHING else, and that was checked rather than assumed: the resource
+	// chips' third state reads the same row through ModelFileChoices, but the choices
+	// here list installed-sdxl-base / installed-detail-lora while both heroes
+	// reference the -MISSING files, so every chip stays ✗ exactly as before.
+	if err := st.PutComfyObjectInfo([]byte(fakeObjectInfoJSON)); err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("seed comfy object_info cache: %w", err)
+	}
+
 	// Seed a subscription so the dashboard renders a non-empty subscriptions list.
 	modelID := 4384
 	if _, err := st.CreateSubscription(store.Subscription{
