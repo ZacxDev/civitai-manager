@@ -647,9 +647,20 @@ func TestBatchInstallDisabledOnlyWhenServerCannotInstall(t *testing.T) {
 	if strings.Contains(body, "install-missing-and-run") {
 		t.Errorf("an ineligible server must not offer the POST:\n%s", body)
 	}
-	if strings.Contains(body, "missing model file") && strings.Contains(body, " and run") {
+	// 🔴 BOUND TO THE ELEMENT, not to the page. This was a page-wide conjunction —
+	// `Contains(body,"missing model file") && Contains(body," and run")` — and it was
+	// untethered in both directions. The first half is ALWAYS true in the blocked
+	// state (the setup CTA's own label contains it), so the guard reduced to a
+	// page-wide `!Contains(" and run")` bound to no element at all; and it FALSE-FIRES
+	// the moment a CivitAI match resolves, because " and run" then comes from the
+	// per-card "Install and run", not from any install-all button. It passed only
+	// because this fixture's MissingResolved is empty — see the resolved-match case
+	// pinned below.
+	blocked := renderString(t, installAllMissingAction(
+		planBatchInstall(snap.MissingModels, false /* dlEligible */, false), 1, 7, "tok"))
+	if strings.Contains(blocked, "missing model file") && strings.Contains(blocked, " and run") {
 		t.Errorf("an ineligible server must not render the install-all button at all, "+
-			"enabled or disabled:\n%s", body)
+			"enabled or disabled:\n%s", blocked)
 	}
 	if !strings.Contains(body, `hx-get="/workflows/7/comfy-setup"`) {
 		t.Errorf("a blocked panel must offer the setup step, not just name a config key:\n%s", body)
@@ -657,6 +668,53 @@ func TestBatchInstallDisabledOnlyWhenServerCannotInstall(t *testing.T) {
 	if !strings.Contains(body, "Set up automatic install for 1 missing model file") {
 		t.Errorf("the setup step must carry what the removed button carried — how many "+
 			"files it unblocks:\n%s", body)
+	}
+}
+
+// TestBlockedInstallAllGuardSurvivesAResolvedMatch pins the FALSE-FIRE that the
+// guard above used to be one fixture away from.
+//
+// The old assertion was a page-wide conjunction, `Contains(body,"missing model
+// file") && Contains(body," and run")`, and it passed only because
+// TestBatchInstallDisabledOnlyWhenServerCannotInstall's fixture has an EMPTY
+// MissingResolved. Resolutions are computed automatically at run settle, so a
+// blocked failure page with a resolved CivitAI match is the ordinary case, not an
+// edge one — and on that page " and run" comes from the per-card "Install and run",
+// which is a correct, expected control that has nothing to do with the install-all
+// button.
+//
+// So this test asserts BOTH halves: the page-wide form would have fired (proving the
+// fixture really reaches the false-positive state, not that the state is
+// unreachable), and the element-bound form does not.
+func TestBlockedInstallAllGuardSurvivesAResolvedMatch(t *testing.T) {
+	snap := twoMissingSnapshot()
+	snap.MissingResolved = map[string]missingResolution{
+		"dreamshaperXL-MISSING.safetensors": {Reached: true, Result: resolveResult("A Match")},
+	}
+	body := renderString(t, runStatusFragment(snap, 7, "tok", false /* dlEligible */, fullMaturityRange()))
+
+	// PRECONDITION: this is the blocked panel, and the resolved card really rendered.
+	if strings.Contains(body, "install-missing-and-run") {
+		t.Fatalf("precondition: want the BLOCKED panel:\n%s", body)
+	}
+	if !strings.Contains(body, "Install and run") {
+		t.Fatalf("precondition: want the per-card CivitAI control, which is where the "+
+			"false-firing %q comes from:\n%s", " and run", body)
+	}
+
+	// The old page-wide form FIRES here — on a page carrying no install-all button at
+	// all. Without this half, "the bound form passes" would be equally true of a
+	// fixture that never reached the ambiguity.
+	if !(strings.Contains(body, "missing model file") && strings.Contains(body, " and run")) {
+		t.Fatal("precondition: the page-wide conjunction did NOT fire, so this fixture " +
+			"does not reproduce the false positive it exists to pin")
+	}
+
+	// THE ASSERTION: bound to the install-all element, the guard is silent.
+	blocked := renderString(t, installAllMissingAction(
+		planBatchInstall(snap.MissingModels, false, false), len(snap.MissingModels), 7, "tok"))
+	if strings.Contains(blocked, "missing model file") && strings.Contains(blocked, " and run") {
+		t.Errorf("the install-all element itself must carry no install-all button:\n%s", blocked)
 	}
 }
 
