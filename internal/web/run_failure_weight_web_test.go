@@ -188,6 +188,144 @@ func TestSoleClaimantIsNeverCollapsedAsAnAlternative(t *testing.T) {
 	}
 }
 
+// installButtonOpenTag returns the OPEN TAG of ONE pack's Install button, so an
+// assertion can be about THAT button's attributes and nothing else.
+//
+// 🔴 It exists because the thing under guard is an attribute VALUE that every other
+// button on the panel also carries: `strings.Contains(body, "data-variant=\"filled\"")`
+// is satisfied by the other pack's button and by the panel's own primary CTA, so it
+// stays green with the pack under test demoted to `outline`. That is the repo's
+// documented "the assertion matched a DIFFERENT element's attribute" failure.
+//
+// The label marker is anchored on BOTH sides (">Install <title><"), so one pack title
+// being a prefix of another cannot make this return the wrong element — the other
+// documented trap ("one fixture name was a substring of another").
+func installButtonOpenTag(t *testing.T, body, packTitle string) string {
+	t.Helper()
+	marker := ">Install " + packTitle + "<"
+	at := strings.Index(body, marker)
+	if at < 0 {
+		t.Fatalf("no Install button for %q in the panel:\n%s", packTitle, body)
+	}
+	open := strings.LastIndex(body[:at], "<button")
+	if open < 0 {
+		t.Fatalf("the Install label for %q is not inside a <button>:\n%s", packTitle, body)
+	}
+	tag := body[open : at+1]
+	// INTEGRITY: the slice must be exactly one open tag. If any other element opened
+	// between that "<button" and the label, LastIndex found the wrong button and every
+	// assertion below would be about a different element's attributes.
+	if strings.Contains(tag[len("<button"):], "<") {
+		t.Fatalf("the %q Install label is not a direct child of the button found: %q", packTitle, tag)
+	}
+	return tag
+}
+
+// TestRequiredPackKeepsTheLoudInstallButton is the guard for the THIRD consumer of
+// needed() — the Install button's prominence (nodepackCard's `variant`). The collapse
+// and the badge each had one; this one did not, and re-open-coding it as
+// `Contested && !Best` passed the entire suite.
+//
+// What that mutation ships: a pack the user MUST install renders with an `outline`
+// button beside the best match's `filled` one, which is the panel's own "you probably
+// do not need this" signal — the exact message nodepackCard's comment forbids. The
+// pack stays present and installable, so nothing about presence, naming or ordering
+// can see it; only the variant can.
+//
+// Both directions are asserted, because a rule that demotes NOTHING is equally wrong:
+// the pure alternative in contestedNodesSnapshot() must still be quiet.
+func TestRequiredPackKeepsTheLoudInstallButton(t *testing.T) {
+	snap := contestedNodesSnapshot()
+	snap.Preflight.MissingNodes = []string{"UltimateSDUpscale", "SoloNode"}
+	snap.NodeAttr.Packs = mixedClaimPacks()
+
+	// PRECONDITIONS on the RANKING. The guard is only meaningful for a pack that LOST
+	// a contest and is nonetheless required — that is the single state where the two
+	// predicates disagree. Without these, the assertion could be green about a pack
+	// neither predicate would ever have demoted.
+	ranked := rankPacks(snap.NodeAttr.Packs)
+	if len(ranked) != 2 {
+		t.Fatalf("precondition: want 2 ranked packs, got %d", len(ranked))
+	}
+	y := ranked[1]
+	if !y.Contested || y.Best {
+		t.Fatalf("precondition: pack Y must LOSE its contest, got Contested=%v Best=%v", y.Contested, y.Best)
+	}
+	if !y.Sole || !y.needed() {
+		t.Fatalf("precondition: pack Y must still be REQUIRED (sole claimant of SoloNode), "+
+			"got Sole=%v needed=%v", y.Sole, y.needed())
+	}
+
+	body := renderString(t, runStatusFragment(snap, 7, "tok", true, fullMaturityRange()))
+
+	// THE ASSERTION. A required pack gets the loud button, whatever it lost.
+	if tag := installButtonOpenTag(t, body, "ComfyUI-PromptChain"); !strings.Contains(tag, `data-variant="filled"`) {
+		t.Errorf("a REQUIRED pack was demoted to a quiet Install button — it is the sole "+
+			"claimant of SoloNode, so an outline button beside the best match's filled one "+
+			"tells the reader to skip a pack they must install; button was %q", tag)
+	}
+	// The winner is the control: it must be loud too, so the assertion above cannot be
+	// satisfied by a build that simply made every button filled... which is what the
+	// negative half below rules out.
+	if tag := installButtonOpenTag(t, body, "ComfyUI_UltimateSDUpscale"); !strings.Contains(tag, `data-variant="filled"`) {
+		t.Errorf("the best match lost its loud Install button; button was %q", tag)
+	}
+
+	// NEGATIVE HALF — a pack that is genuinely OPTIONAL must still be demoted, or the
+	// rule collapses into "everything is filled" and the prominence carries no signal.
+	altSnap := contestedNodesSnapshot()
+	altRanked := rankPacks(altSnap.NodeAttr.Packs)
+	if len(altRanked) != 2 || altRanked[1].needed() {
+		t.Fatalf("precondition: contestedNodesSnapshot's runner-up must be a PURE alternative, "+
+			"got %d packs, needed=%v", len(altRanked), altRanked[len(altRanked)-1].needed())
+	}
+	altBody := renderString(t, runStatusFragment(altSnap, 7, "tok", true, fullMaturityRange()))
+	if tag := installButtonOpenTag(t, altBody, "ComfyUI-PromptChain"); !strings.Contains(tag, `data-variant="outline"`) {
+		t.Errorf("an OPTIONAL alternative kept the loud Install button — the prominence is the "+
+			"only thing distinguishing it from the best match; button was %q", tag)
+	}
+}
+
+// TestRequiredPackIsBadgedAsAlsoNeeded is the POSITIVE half of the contest badge.
+//
+// 🔴 The existing coverage only forbids the WRONG label ("Also claims it"), so
+// deleting the "Also needed" case — returning "" from it — survived the whole suite:
+// "one was absent" is not "the correct one is present". A pack that must be installed
+// then renders with no badge at all, beside a pack badged "Best match", which reads as
+// the unlabelled one being the also-ran.
+func TestRequiredPackIsBadgedAsAlsoNeeded(t *testing.T) {
+	snap := contestedNodesSnapshot()
+	snap.Preflight.MissingNodes = []string{"UltimateSDUpscale", "SoloNode"}
+	snap.NodeAttr.Packs = mixedClaimPacks()
+
+	ranked := rankPacks(snap.NodeAttr.Packs)
+	if len(ranked) != 2 {
+		t.Fatalf("precondition: want 2 ranked packs, got %d", len(ranked))
+	}
+	// PRECONDITION: this is the mixed state the third case of contestLabel exists for.
+	// An uncontested or a winning pack never reaches it.
+	if y := ranked[1]; !y.Contested || y.Best || !y.needed() {
+		t.Fatalf("precondition: pack Y must be contested, losing and still required, "+
+			"got Contested=%v Best=%v needed=%v", y.Contested, y.Best, y.needed())
+	}
+
+	// The function itself, pinned to a literal. This is what a `return ""` mutation
+	// trips, and it cannot be satisfied by any other string in the panel.
+	if got := contestLabel(ranked[1]); got != "Also needed" {
+		t.Errorf("contestLabel for a required-but-losing pack = %q, want %q — an unbadged "+
+			"card beside a \"Best match\" reads as the one to skip", got, "Also needed")
+	}
+
+	// And it must actually REACH the panel, once, on the card it describes.
+	body := renderString(t, runStatusFragment(snap, 7, "tok", true, fullMaturityRange()))
+	if n := strings.Count(body, ">Also needed<"); n != 1 {
+		t.Errorf("want exactly 1 \"Also needed\" badge rendered, got %d:\n%s", n, body)
+	}
+	if n := strings.Count(body, ">Best match<"); n != 1 {
+		t.Errorf("precondition: want exactly 1 \"Best match\" badge to contrast with, got %d:\n%s", n, body)
+	}
+}
+
 // TestUncontestedPacksAreNeverCollapsed covers a DIFFERENT mutation: three missing
 // node types from three different packs means three REQUIRED packs, and a
 // position-based implementation (collapse everything after the first) would hide
