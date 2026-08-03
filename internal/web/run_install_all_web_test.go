@@ -174,8 +174,13 @@ func TestRunFailurePrimaryActionDisabledWhenIneligible(t *testing.T) {
 	if !strings.Contains(body, "Install 2 missing model files and run") || !strings.Contains(body, "disabled") {
 		t.Errorf("expected a disabled primary action:\n%s", body)
 	}
-	if !strings.Contains(body, "comfy_model_path") {
-		t.Errorf("disabled primary action must explain itself:\n%s", body)
+	// "Explain itself" now means OFFER THE FIX, not name a config key: the disabled
+	// action carries the setup disclosure that makes it live.
+	if !strings.Contains(body, `hx-get="/workflows/7/comfy-setup"`) {
+		t.Errorf("disabled primary action must offer the setup step:\n%s", body)
+	}
+	if !strings.Contains(body, "where ComfyUI keeps its models") {
+		t.Errorf("the setup step must say what it needs in plain words:\n%s", body)
 	}
 	// The lead is GATED on the CTA being able to deliver.
 	if strings.Contains(body, "Nothing is broken") || strings.Contains(body, "Install them and it should run") {
@@ -294,8 +299,13 @@ func TestInstallMissingAndRunInstallsViaHFFallback(t *testing.T) {
 }
 
 // TestBatchInstallDisabledOnlyWhenServerCannotInstall: the ONE decisive precondition is
-// dlEligible, and its reason is the actionable one (a config line), never the softer
-// per-file uncertainty.
+// dlEligible, never the softer per-file uncertainty.
+//
+// The blocked branch used to be asserted by grepping for the string
+// "comfy_model_path" — i.e. that the panel NAMED the config key. That expectation
+// was inverted deliberately: naming the key in config-file jargon under a dead
+// button IS the defect. The assertion now pins the recovery AFFORDANCE (the setup
+// disclosure's GET route), which is the thing a user can act on.
 func TestBatchInstallDisabledOnlyWhenServerCannotInstall(t *testing.T) {
 	snap := twoMissingSnapshot()
 	snap.Preflight = &comfy.PreflightReport{MissingModels: []string{"mystery-MISSING.bin"}}
@@ -311,8 +321,13 @@ func TestBatchInstallDisabledOnlyWhenServerCannotInstall(t *testing.T) {
 	if strings.Contains(body, "install-missing-and-run") {
 		t.Errorf("an ineligible server must not offer the POST:\n%s", body)
 	}
-	if !strings.Contains(body, "comfy_model_path") {
-		t.Errorf("the disabled reason must be the actionable eligibility one:\n%s", body)
+	if !strings.Contains(body, `hx-get="/workflows/7/comfy-setup"`) {
+		t.Errorf("a blocked CTA must offer the setup step, not just name a config key:\n%s", body)
+	}
+	// The button is still THERE, disabled — hiding it would delete the signpost for
+	// the recovery path the disclosure unblocks.
+	if !strings.Contains(body, "Install 1 missing model file and run") {
+		t.Errorf("the blocked CTA must stay rendered and disabled:\n%s", body)
 	}
 }
 

@@ -175,16 +175,26 @@ func installAllMissingAction(p batchInstallPlan, total int, wfID int64, csrf str
 	}
 	n := len(p.Installable)
 	if !p.Available {
-		// dlEligible is the ACTIONABLE blocker (a config line the user can add), so it
-		// wins whenever it applies; "nothing to install" is only reachable with an empty
-		// set and is a defensive fallback.
-		reason := installMissingUnavailable
+		// 🔴 The blocker here is ACTIONABLE — comfy_model_path is a value the user can
+		// supply — so the panel offers the SETUP STEP instead of naming the config key
+		// and stopping. This used to render installMissingUnavailable as a flat
+		// sentence ("Installing automatically needs comfy_model_path set and comfy_url
+		// pointing at a ComfyUI on this machine"), which is 141 characters of
+		// config-file jargon under the panel's PRIMARY action, telling the reader what
+		// is wrong while offering no way to fix it. Measured on the operator's install:
+		// their ComfyUI answers on loopback and they have no config.yaml at all, so
+		// they were exactly one value away from this button working.
+		//
+		// The button stays rendered-and-DISABLED rather than hidden (the rule
+		// installAndRunButton follows) so the recovery path is still visible as the
+		// thing being unblocked. Its `title` is gone deliberately: a native tooltip is
+		// unreachable by keyboard and this repo has already had one race a CSS popover
+		// — the disclosure below carries the same information as real text.
 		return h.Div(h.Class("mt-3 space-y-1"),
 			civButton("filled", "md", []g.Node{
 				h.Type("button"), h.Disabled(),
-				g.Attr("title", reason),
 			}, g.Text(fmt.Sprintf("Install %d missing model file%s and run", total, plural(total)))),
-			h.P(h.Class("text-xs text-slate-500"), g.Text(reason)),
+			comfySetupDisclosure(wfID),
 		)
 	}
 
