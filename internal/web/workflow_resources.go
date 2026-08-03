@@ -96,6 +96,73 @@ func (r workflowResolver) resource(basename string) (resourceInfo, bool) {
 	return r.localResource(basename)
 }
 
+// resourceState* are the three values a chip's mark can take, as they appear in the
+// chip's own `data-have` attribute. They are the vocabulary of resourceMarkState.
+const (
+	resourceStateHave    = "yes"   // ✓ present in the local library
+	resourceStateComfy   = "comfy" // ◎ absent from the library, resolvable by ComfyUI
+	resourceStateMissing = "no"    // ✗ neither
+)
+
+// resourceMarkState is the SINGLE definition of a referenced resource's ✓/◎/✗ state.
+//
+// 🔴 It exists so the chip's mark and any COUNT of those marks are computed by one
+// rule. The card's summary line now states "N mentioned · M not on this machine",
+// and a summary derived from a second, parallel reading of the same two lookups is
+// exactly the shape this repo has been bitten by — a predicate duplicated across call
+// sites regenerates the same bug at every site. A count that disagreed with the chips
+// it summarises would be worse than no count at all.
+//
+// The ORDER is load-bearing and matches the chip's documented contract: ◎ is only
+// consulted when ✓ is false, so a local file is never described by what ComfyUI
+// happens to have.
+func resourceMarkState(res string, resolver workflowResolver) string {
+	base := store.ResourceBasename(res)
+	switch {
+	case resolver.have(base):
+		return resourceStateHave
+	case resolver.comfyHas(base):
+		return resourceStateComfy
+	}
+	return resourceStateMissing
+}
+
+// countMissingResources reports how many of resources are ✗ — neither in the local
+// library nor resolvable by ComfyUI. It reads resourceMarkState, never its own copy
+// of the lookups.
+func countMissingResources(resources []string, resolver workflowResolver) int {
+	n := 0
+	for _, res := range resources {
+		if resourceMarkState(res, resolver) == resourceStateMissing {
+			n++
+		}
+	}
+	return n
+}
+
+// resourcesSummaryLine is the collapsed "Referenced resources" card's one line: how
+// many files the saved workflow mentions, and how many of them are on this machine.
+//
+// It is the CROSS-LINK between this card and the run-failure panel above it. The panel
+// enumerates what a run needs; this states the SUPERSET and its size, so the reader can
+// see the two are not the same list without expanding anything. Saying "3 of these are
+// what the run needs" would be a fourth place stating the same count and would couple
+// this card to a run snapshot it does not receive.
+//
+// "on this machine" is the right scope because ✗ means neither in the local library nor
+// resolvable by ComfyUI — see resourceMarkState, which this counts through.
+func resourcesSummaryLine(total, missing int) string {
+	files := "files"
+	if total == 1 {
+		files = "file"
+	}
+	head := strconv.Itoa(total) + " " + files + " this workflow mentions"
+	if missing == 0 {
+		return head + " · all on this machine"
+	}
+	return head + " · " + strconv.Itoa(missing) + " not on this machine"
+}
+
 // workflowResourceChips renders a workflow's referenced resources as a wrapping row
 // of chips. Shared by the detail page's "Referenced resources" card and the list
 // item's popover, so the two can never drift.
@@ -207,18 +274,18 @@ func workflowResourceChip(res string, resolver workflowResolver) g.Node {
 	// this model" query, so a chip's ✓/◎/✗ and that list can never disagree about
 	// what a resource is called.
 	base := store.ResourceBasename(res)
-	have := resolver.have(base)
 	info, _ := resolver.resource(base)
 
-	mark, state, state1 := "✗", "no", "not in your library"
-	switch {
-	case have:
-		mark, state, state1 = "✓", "yes", "present in your library"
-	case resolver.comfyHas(base):
+	state := resourceMarkState(res, resolver)
+	mark, state1 := "✗", "not in your library"
+	switch state {
+	case resourceStateHave:
+		mark, state1 = "✓", "present in your library"
+	case resourceStateComfy:
 		// The THIRD state. The wording names both halves on purpose: the file is
 		// usable by a run, and it is still not something this app indexes, tracks
 		// or can open a folder for. "In ComfyUI" alone reads as "you have it".
-		mark, state, state1 = "◎", "comfy", "in ComfyUI, not in your library"
+		mark, state1 = "◎", "in ComfyUI, not in your library"
 	}
 
 	// The ABSOLUTE on-disk path when we know it; otherwise the plain statement that
