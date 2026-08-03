@@ -129,13 +129,23 @@ func runStatusHoldsARunFor(snap runSnapshot, wfID int64) bool {
 // deliberate in three ways:
 //
 //   - Monotonic. The line is emitted at page render if and only if the page was
-//     idle, and cleared exactly once when a run appears. It can never be re-fetched,
-//     so the ~4.66 MB /object_info decode behind it cannot be re-paid per poll tick.
-//   - A re-arming OOB would fire on responses that carry NO usable workflow id.
-//     handleWorkflowRunStop renders with the id absent (0), which would have
-//     re-armed the container against /workflows/0/run/readiness and replaced a
-//     correctly-hidden line with "Not checked — this workflow is no longer in your
-//     library".
+//     idle, and from the first response that carries a run it is only ever emptied.
+//     ⚠ NOT "cleared exactly once" — this line used to say that and it is FALSE.
+//     The OOB element rides EVERY run-status response, so for the whole duration of
+//     a run htmx outerHTML-swaps an already-empty #cm-run-readiness once per ~1 s
+//     poll tick. That is idempotent and costs one empty <div> per tick; the property
+//     that actually matters is that it NEVER RE-ARMS, so the ~4.66 MB /object_info
+//     decode behind the line cannot be re-paid per tick.
+//   - A re-arming OOB would have to name a workflow, and not every response that
+//     writes into #run-status has a usable id to name. handleWorkflowRunStop takes
+//     its id from the POST body and falls back to 0, which would have re-armed the
+//     container against /workflows/0/run/readiness and replaced a correctly-hidden
+//     line with "Not checked — this workflow is no longer in your library".
+//     ⚠ THAT ZERO IS A HAND-CRAFTED POST, NOT THE SHIPPED UI, and this line used to
+//     present it as the live shape. runStopVals (run_pages.go) ALWAYS writes
+//     workflow_id, and the only Stop button is rendered by runRunning with the
+//     caller's real id — so no click in the app can produce it. The conclusion is
+//     unaffected: it rests on the monotonicity above, not on this reachability.
 //   - It closes the load-race for free: a readiness GET still in flight when the
 //     user clicks Generate lands in a node this swap has already detached. (The
 //     handler refuses independently — see handleWorkflowRunReadiness — because a

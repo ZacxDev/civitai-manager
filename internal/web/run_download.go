@@ -629,6 +629,15 @@ func workflowReferencesFile(wf *store.Workflow, filename string) bool {
 // cards + "Search CivitAI" link) for a filename — the degrade path when a
 // download cannot/should not proceed automatically — prefixed with reason, the
 // one-line explanation of why this click installed nothing.
+//
+// ⚠ DELIBERATE BYPASS: this answers into hx-target="#run-status" WITHOUT going
+// through runStatusBody, so it carries no out-of-band clear of #cm-run-readiness.
+// Safe today for one reason only — it is reachable ONLY from an already-rendered
+// failure panel, so the readiness line has already been cleared by the response that
+// put that panel there, and this path STARTS NO RUN. 🔴 If you ever make it start
+// one, it must route through runStatusBody: this is exactly the site where the
+// one-owner property would break silently. TestEveryRunStatusWriterGoesThroughRunStatusBody
+// cannot see it (it does not call runStatusFragment either).
 func (s *Server) renderResolveFallback(w http.ResponseWriter, r *http.Request, filename, typ, reason string) {
 	query := comfy.CleanModelQuery(filename)
 	var res *civitai.ModelSearchResult
@@ -642,6 +651,12 @@ func (s *Server) renderResolveFallback(w http.ResponseWriter, r *http.Request, f
 // workflow references: it downloads NOTHING and instead names both files and offers a
 // second, explicit click (confirm_substitute=1) that carries the same target. The
 // resolve cards are kept below so picking a different model stays one click away.
+//
+// ⚠ DELIBERATE BYPASS, same shape and same reasoning as renderResolveFallback above:
+// it writes into #run-status without runStatusBody, and that is only safe because it
+// is reachable solely from an already-rendered failure panel and STARTS NO RUN (the
+// whole point of the offer is that this click performs nothing). 🔴 The second,
+// confirmed click does start one — and it goes through runStatusBody, as it must.
 func (s *Server) renderSubstituteOffer(w http.ResponseWriter, r *http.Request, wfID int64, typ string, chosenModel int, plan installPlan) {
 	query := comfy.CleanModelQuery(plan.FileName)
 	var res *civitai.ModelSearchResult
