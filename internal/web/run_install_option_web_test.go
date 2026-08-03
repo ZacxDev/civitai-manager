@@ -89,8 +89,23 @@ func TestBadOptionInstallIneligibleFallback(t *testing.T) {
 	if !strings.Contains(section, "Install face_yolov9c.pt") || !strings.Contains(section, "disabled") {
 		t.Errorf("ineligible section should show a DISABLED Install action:\n%s", section)
 	}
-	if !strings.Contains(section, "Set comfy_model_path") {
+	if !strings.Contains(section, badOptionInstallBlockedText) {
 		t.Errorf("ineligible section should explain why:\n%s", section)
+	}
+	// 🔴 Plain language, and no native tooltip. See cardInstallBlockedText — this
+	// surface carried the same two defects, plus a `title` that duplicated the
+	// sentence into a place no keyboard can reach.
+	if strings.Contains(section, "comfy_model_path") {
+		t.Errorf("a blocked bad-option install must not name a config key:\n%s", section)
+	}
+	// Scoped to the CONTROL: a panel-wide `title=` check reports decorative icon
+	// tooltips elsewhere in the report instead of the thing under guard.
+	btn := renderString(t, badOptionInstallAction(detectorBadOption, 7, "csrf-tok", false))
+	if !strings.Contains(btn, "disabled") {
+		t.Fatalf("precondition: want the blocked control:\n%s", btn)
+	}
+	if strings.Contains(btn, "title=") {
+		t.Errorf("the reason must be real text, not a native tooltip:\n%s", btn)
 	}
 	if !strings.Contains(section, "Search CivitAI") {
 		t.Errorf("ineligible section should offer a manual-fetch link:\n%s", section)

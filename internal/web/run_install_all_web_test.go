@@ -417,18 +417,28 @@ func TestBatchInstallDisabledOnlyWhenServerCannotInstall(t *testing.T) {
 		body, "/workflows/7/install-missing-and-run") {
 		t.Errorf("uncertainty alone must not disable the batch:\n%s", body)
 	}
-	// Ineligible: disabled, and the reason names the config blocker the user can fix.
+	// Ineligible: NO install-all control of any kind, and the setup step in its place.
+	//
+	// ⚠ This half used to assert the opposite — that the CTA "must stay rendered and
+	// disabled" as a signpost. The invariant it was really protecting is that a server
+	// which cannot install must not offer a control that POSTs the install; asserting
+	// "it is disabled" was only one way to satisfy that, and it is the way that put an
+	// inert primary-coloured button above every live action on the panel. The
+	// assertion below is the stronger form: no POSTing control AND no dead control.
 	body := renderString(t, runStatusFragment(snap, 7, "tok", false, fullMaturityRange()))
 	if strings.Contains(body, "install-missing-and-run") {
 		t.Errorf("an ineligible server must not offer the POST:\n%s", body)
 	}
-	if !strings.Contains(body, `hx-get="/workflows/7/comfy-setup"`) {
-		t.Errorf("a blocked CTA must offer the setup step, not just name a config key:\n%s", body)
+	if strings.Contains(body, "missing model file") && strings.Contains(body, " and run") {
+		t.Errorf("an ineligible server must not render the install-all button at all, "+
+			"enabled or disabled:\n%s", body)
 	}
-	// The button is still THERE, disabled — hiding it would delete the signpost for
-	// the recovery path the disclosure unblocks.
-	if !strings.Contains(body, "Install 1 missing model file and run") {
-		t.Errorf("the blocked CTA must stay rendered and disabled:\n%s", body)
+	if !strings.Contains(body, `hx-get="/workflows/7/comfy-setup"`) {
+		t.Errorf("a blocked panel must offer the setup step, not just name a config key:\n%s", body)
+	}
+	if !strings.Contains(body, "Set up automatic install for 1 missing model file") {
+		t.Errorf("the setup step must carry what the removed button carried — how many "+
+			"files it unblocks:\n%s", body)
 	}
 }
 
