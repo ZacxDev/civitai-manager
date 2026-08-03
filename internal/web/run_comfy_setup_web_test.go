@@ -1,0 +1,474 @@
+package web
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ZacxDev/civitai-manager/internal/comfy"
+	"github.com/ZacxDev/civitai-manager/internal/comfyext"
+	"github.com/ZacxDev/civitai-manager/internal/store"
+)
+
+// setupTestServer builds a server whose ComfyUI is local (so the setup form is
+// offerable) with comfy_model_path deliberately UNSET — the operator's real state:
+// no config.yaml at all, but a ComfyUI answering on loopback.
+func setupTestServer(t *testing.T) *Server {
+	t.Helper()
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return NewServer(st, stubReader{}, stubSubscriber{}, Config{
+		BaseURL:             "https://civitai.com",
+		DefaultPollInterval: time.Hour,
+		Addr:                "127.0.0.1:8787",
+		ComfyURL:            "http://127.0.0.1:8188",
+	}, nil)
+}
+
+// modelsDir makes a real, writable directory shaped like a ComfyUI models root.
+func modelsDir(t *testing.T) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "ComfyUI", "models")
+	if err := os.MkdirAll(filepath.Join(root, "checkpoints"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	return root
+}
+
+// comfyInstallDir makes a models root whose PARENT is a directory comfyext
+// recognises as a ComfyUI install.
+//
+// 🔴 custom_nodes/ alone is NOT enough — comfyext.LooksLikeRoot requires it AND a
+// fingerprint (main.py / folder_paths.py / nodes.py / comfy/). A fixture with only
+// custom_nodes/ makes DeriveRoot return "", which is a FIXTURE defect that reads
+// exactly like a broken accessor; it cost a diagnosis here.
+func comfyInstallDir(t *testing.T) string {
+	t.Helper()
+	root := modelsDir(t)
+	install := filepath.Dir(root)
+	if err := os.MkdirAll(filepath.Join(install, "custom_nodes"), 0o755); err != nil {
+		t.Fatalf("mkdir custom_nodes: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(install, "main.py"), []byte("# ComfyUI\n"), 0o644); err != nil {
+		t.Fatalf("write main.py: %v", err)
+	}
+	// PRECONDITION: prove the fixture actually reaches the derivation.
+	if got := comfyext.DeriveRoot(root); got != install {
+		t.Fatalf("fixture does not look like a ComfyUI install: DeriveRoot(%q) = %q, want %q", root, got, install)
+	}
+	return root
+}
+
+func getSetupForm(t *testing.T, srv *Server) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/workflows/7/comfy-setup", nil))
+	return rec
+}
+
+// postSetupTo submits the setup form for a SPECIFIC workflow.
+//
+// 🔴 The workflow id is not cosmetic: runStatusFragment deliberately renders an
+// empty div for a run belonging to a different workflow, so posting to the wrong
+// id returns `<div></div>` and reads exactly like the save having done nothing.
+func postSetupTo(t *testing.T, srv *Server, wfID, path, csrf string) *httptest.ResponseRecorder {
+	t.Helper()
+	body := strings.NewReader("model_path=" + path + "&csrf_token=" + csrf)
+	req := httptest.NewRequest(http.MethodPost, "/workflows/"+wfID+"/comfy-setup", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// postSetup is postSetupTo for the states that carry no real run (workflow id is
+// then irrelevant to what is being asserted).
+func postSetup(t *testing.T, srv *Server, path, csrf string) *httptest.ResponseRecorder {
+	t.Helper()
+	return postSetupTo(t, srv, "7", path, csrf)
+}
+
+// TestComfyModelPathPrefersConfigOverTheStoredSetting pins the precedence rule
+// lifted from Config.ComfyCloud: an explicit config-file/flag value is
+// AUTHORITATIVE and the UI must never silently override it.
+func TestComfyModelPathPrefersConfigOverTheStoredSetting(t *testing.T) {
+	srv := setupTestServer(t)
+	if got := srv.comfyModelPath(); got != "" {
+		t.Fatalf("unset server: comfyModelPath = %q, want \"\"", got)
+	}
+
+	// Settings-only → the stored value governs.
+	if err := srv.store.SetSetting(comfyModelPathSettingKey, "/from/settings"); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	if got := srv.comfyModelPath(); got != "/from/settings" {
+		t.Fatalf("comfyModelPath = %q, want the stored value", got)
+	}
+
+	// Config set → config wins even though a row exists.
+	srv.cfg.ComfyModelPath = "/from/config"
+	if got := srv.comfyModelPath(); got != "/from/config" {
+		t.Fatalf("comfyModelPath = %q, want the configured value to win", got)
+	}
+}
+
+// TestComfyRootDerivesFromTheStoredModelPath: a root set up through the UI must
+// behave like one set up in YAML — otherwise the manual git-clone command keeps
+// printing its /path/to/ComfyUI placeholder after the user configured everything.
+func TestComfyRootDerivesFromTheStoredModelPath(t *testing.T) {
+	srv := setupTestServer(t)
+	root := comfyInstallDir(t)
+	if err := srv.store.SetSetting(comfyModelPathSettingKey, root); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	if got, want := srv.comfyRoot(), filepath.Dir(root); got != want {
+		t.Fatalf("comfyRoot = %q, want %q", got, want)
+	}
+}
+
+// TestValidateComfyModelPathRejectsUnusablePaths covers every refusal branch, and
+// asserts each carries its OWN reason (a shared generic message would make the
+// form unable to tell the user what is actually wrong).
+func TestValidateComfyModelPathRejectsUnusablePaths(t *testing.T) {
+	dir := modelsDir(t)
+	file := filepath.Join(t.TempDir(), "a-file")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	t.Run("accepts a real writable dir", func(t *testing.T) {
+		got, problem := validateComfyModelPath("  " + dir + "  ")
+		if problem != "" {
+			t.Fatalf("rejected a good path: %s", problem)
+		}
+		if got != dir {
+			t.Fatalf("cleaned to %q, want %q", got, dir)
+		}
+	})
+
+	cases := map[string]struct {
+		in   string
+		want string
+	}{
+		"empty":       {"", "Enter the full path"},
+		"blank":       {"   ", "Enter the full path"},
+		"relative":    {"models", "absolute path"},
+		"dot":         {"./models", "absolute path"},
+		"missing":     {filepath.Join(dir, "nope"), "nothing at"},
+		"is-a-file":   {file, "is a file, not a folder"},
+		"nul-byte":    {"/tmp/a\x00b", "invalid character"},
+		"home-tilde":  {"~/ComfyUI/models", "absolute path"},
+		"parent-trav": {"../models", "absolute path"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, problem := validateComfyModelPath(c.in)
+			if problem == "" {
+				t.Fatalf("accepted %q (returned %q)", c.in, got)
+			}
+			if !strings.Contains(problem, c.want) {
+				t.Fatalf("reason = %q, want it to mention %q", problem, c.want)
+			}
+			if got != "" {
+				t.Fatalf("a rejected path must return no value, got %q", got)
+			}
+		})
+	}
+}
+
+// TestComfySetupFormPreFillsFromTheRunningComfyUI is the whole point of probing:
+// the user CONFIRMS a found path instead of typing one.
+func TestComfySetupFormPreFillsFromTheRunningComfyUI(t *testing.T) {
+	srv := setupTestServer(t)
+	root := modelsDir(t)
+	srv.folderPathsFn = func(context.Context) (map[string][]string, error) {
+		return map[string][]string{
+			"checkpoints": {filepath.Join(root, "checkpoints")},
+			"loras":       {filepath.Join(root, "loras")},
+		}, nil
+	}
+
+	body := getSetupForm(t, srv).Body.String()
+	if !strings.Contains(body, `value="`+root+`"`) {
+		t.Fatalf("form must pre-fill the probed root %q:\n%s", root, body)
+	}
+	if !strings.Contains(body, "Your ComfyUI reports this folder") {
+		t.Errorf("a pre-filled form must say where the value came from:\n%s", body)
+	}
+	if !strings.Contains(body, `hx-post="/workflows/7/comfy-setup"`) {
+		t.Errorf("form must POST back to the save endpoint:\n%s", body)
+	}
+	if !strings.Contains(body, `name="csrf_token"`) {
+		t.Errorf("form must carry a CSRF token:\n%s", body)
+	}
+}
+
+// TestComfySetupFormDegradesWhenTheProbeCannotAnswer: an older ComfyUI (404), a
+// wedged one, and a genuinely ambiguous install must all land on the SAME
+// type-it-yourself form rather than an error or a guess.
+func TestComfySetupFormDegradesWhenTheProbeCannotAnswer(t *testing.T) {
+	cases := map[string]func(context.Context) (map[string][]string, error){
+		"endpoint absent": func(context.Context) (map[string][]string, error) {
+			return nil, errors.New("folder_paths: HTTP 404")
+		},
+		"ambiguous tie": func(context.Context) (map[string][]string, error) {
+			return map[string][]string{
+				"checkpoints": {"/a/models/checkpoints"},
+				"loras":       {"/b/models/loras"},
+			}, nil
+		},
+		"suggests a path that does not exist": func(context.Context) (map[string][]string, error) {
+			return map[string][]string{
+				"checkpoints": {"/definitely/not/here/models/checkpoints"},
+				"loras":       {"/definitely/not/here/models/loras"},
+			}, nil
+		},
+	}
+	for name, fn := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv := setupTestServer(t)
+			srv.folderPathsFn = fn
+			body := getSetupForm(t, srv).Body.String()
+			if !strings.Contains(body, "did not report a models folder") {
+				t.Fatalf("want the type-it-yourself form:\n%s", body)
+			}
+			if strings.Contains(body, `value="/definitely/not/here`) {
+				t.Fatalf("must never pre-fill a path it just failed to validate:\n%s", body)
+			}
+			// Still a usable form, not a dead end.
+			if !strings.Contains(body, `name="model_path"`) {
+				t.Fatalf("degraded state must still offer the input:\n%s", body)
+			}
+		})
+	}
+}
+
+// TestComfySetupRefusesToOfferAFormWhenComfyURLIsNotLocal is the fail-honest half:
+// comfy_model_path is only HALF the precondition, so on a server whose ComfyUI is
+// not local, saving a path would change nothing. Offering the form there would
+// persist a setting, report success, and leave the button just as dead.
+func TestComfySetupRefusesToOfferAFormWhenComfyURLIsNotLocal(t *testing.T) {
+	srv := setupTestServer(t)
+	srv.cfg.ComfyURL = "http://comfy.example.com:8188"
+	srv.folderPathsFn = func(context.Context) (map[string][]string, error) {
+		t.Error("a non-local ComfyUI must not be probed at all")
+		return nil, nil
+	}
+
+	body := getSetupForm(t, srv).Body.String()
+	if strings.Contains(body, `name="model_path"`) {
+		t.Fatalf("must not offer a form that cannot help:\n%s", body)
+	}
+	if !strings.Contains(body, "not pointed at a ComfyUI on this machine") {
+		t.Fatalf("must explain the real blocker:\n%s", body)
+	}
+}
+
+// TestComfySetupSavePersistsAndMakesTheCTALive is the end-to-end claim the whole
+// item rests on: a user looking at a REAL failed run, whose primary action is
+// dead, saves the folder and gets a LIVE button back in the same interaction.
+//
+// 🔴 It drives an actual run to a settled preflight failure rather than calling the
+// renderer directly. An earlier version asserted `data-run-seq` on a server with no
+// run at all — dataRunSeq omits the attribute for seq<=0, so the fixture could not
+// reach the state it was asserting. That is this repo's most-repeated vacuity mode,
+// and here it showed up as a false RED, which is the lucky direction.
+func TestComfySetupSavePersistsAndMakesTheCTALive(t *testing.T) {
+	srv := setupTestServer(t)
+	root := modelsDir(t)
+	srv.runFn = func(context.Context, *store.Workflow, runUpdater, runOptions) (*runResult, error) {
+		return &runResult{
+			Preflight:     &comfy.PreflightReport{MissingModels: []string{"needed.safetensors"}},
+			MissingModels: []comfy.MissingModel{{Filename: "needed.safetensors", Query: "needed", CivitaiType: "Checkpoint"}},
+		}, nil
+	}
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatAPI,
+		`{"1":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"needed.safetensors"}}}`)
+
+	if rec := post(t, srv, "/workflows/"+wfID+"/run-with-params", url.Values{}, true); rec.Code != http.StatusOK {
+		t.Fatalf("start run = %d", rec.Code)
+	}
+	before := pollRunUntilDone(t, srv, wfID)
+
+	// PRECONDITIONS — the panel really is in the blocked state, or nothing after
+	// this proves anything.
+	if !strings.Contains(before, "data-run-seq") {
+		t.Fatalf("precondition: want a settled run panel:\n%s", before)
+	}
+	if strings.Contains(before, "install-missing-and-run") {
+		t.Fatalf("precondition: the CTA must start DEAD:\n%s", before)
+	}
+	if !strings.Contains(before, "/comfy-setup") {
+		t.Fatalf("precondition: the blocked panel must offer the setup step:\n%s", before)
+	}
+
+	rec := postSetupTo(t, srv, wfID, root, srv.csrf)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	stored, ok, err := srv.store.GetSetting(comfyModelPathSettingKey)
+	if err != nil || !ok || stored != root {
+		t.Fatalf("stored %q (ok=%v err=%v), want %q", stored, ok, err, root)
+	}
+
+	// THE CLAIM: the same panel now offers the live install action.
+	after := rec.Body.String()
+	if !strings.Contains(after, "data-run-seq") {
+		t.Fatalf("save must answer with the run panel:\n%s", after)
+	}
+	if !strings.Contains(after, "/workflows/"+wfID+"/install-missing-and-run") {
+		t.Fatalf("the CTA must be LIVE after the save:\n%s", after)
+	}
+	if strings.Contains(after, "/comfy-setup") {
+		t.Errorf("the setup step must be gone once it is done:\n%s", after)
+	}
+	if !srv.comfyDownloadEligible() {
+		t.Error("the server must be eligible after the save")
+	}
+}
+
+// TestBlockedCTANeverPostsWhileThePathIsUnset is the standing guard behind the
+// state above: as long as no models folder is known, the primary action must NOT
+// render as something clickable. A CTA that POSTs with no destination configured
+// would resolve files and then fail at the write, after the network round-trips.
+func TestBlockedCTANeverPostsWhileThePathIsUnset(t *testing.T) {
+	srv := setupTestServer(t)
+	body := renderString(t, runStatusFragment(twoMissingSnapshot(), 7, "tok", srv.comfyDownloadEligible(), fullMaturityRange()))
+
+	if srv.comfyDownloadEligible() {
+		t.Fatal("precondition: an unset path must be ineligible")
+	}
+	if strings.Contains(body, "install-missing-and-run") {
+		t.Fatalf("an unset models folder must not render a POSTing CTA:\n%s", body)
+	}
+	if !strings.Contains(body, "disabled") {
+		t.Fatalf("the CTA must render disabled:\n%s", body)
+	}
+}
+
+// TestComfySetupSaveKeepsTheTypedValueOnRejection: a rejected path must come back
+// as the FORM carrying what the user typed plus the reason — never as the run
+// panel, which would swallow the reason and look like the save worked.
+func TestComfySetupSaveKeepsTheTypedValueOnRejection(t *testing.T) {
+	srv := setupTestServer(t)
+	const typo = "/opt/ComfyUI/modles"
+
+	rec := postSetup(t, srv, typo, srv.csrf)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (an htmx client discards a 4xx body)", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `value="`+typo+`"`) {
+		t.Errorf("the typed value must survive a rejection:\n%s", body)
+	}
+	if !strings.Contains(body, "nothing at "+typo) {
+		t.Errorf("the rejection must say what is wrong:\n%s", body)
+	}
+	if strings.Contains(body, "data-run-seq") {
+		t.Errorf("a rejection must not answer with the run panel:\n%s", body)
+	}
+	if _, ok, _ := srv.store.GetSetting(comfyModelPathSettingKey); ok {
+		t.Error("a rejected path must not be persisted")
+	}
+}
+
+// TestComfySetupSaveRequiresCSRF: it is a state-changing POST like every other.
+func TestComfySetupSaveRequiresCSRF(t *testing.T) {
+	srv := setupTestServer(t)
+	root := modelsDir(t)
+
+	rec := postSetup(t, srv, root, "not-the-token")
+	if rec.Code == http.StatusOK {
+		t.Fatalf("a bad CSRF token must be refused, got %d", rec.Code)
+	}
+	if _, ok, _ := srv.store.GetSetting(comfyModelPathSettingKey); ok {
+		t.Error("a CSRF-refused request must not persist anything")
+	}
+}
+
+// TestComfySetupIsLoopbackGated: both halves take/hand out an arbitrary filesystem
+// path, which is exactly what extraPathsAllowed fences off on a non-loopback bind.
+func TestComfySetupIsLoopbackGated(t *testing.T) {
+	root := modelsDir(t)
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		t.Run(method, func(t *testing.T) {
+			srv := setupTestServer(t)
+			srv.cfg.Addr = "0.0.0.0:8787"
+			srv.folderPathsFn = func(context.Context) (map[string][]string, error) {
+				t.Error("a gated request must not probe ComfyUI")
+				return nil, nil
+			}
+
+			var rec *httptest.ResponseRecorder
+			if method == http.MethodGet {
+				rec = getSetupForm(t, srv)
+			} else {
+				rec = postSetup(t, srv, root, srv.csrf)
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, "non-loopback") {
+				t.Fatalf("want the gating note:\n%s", body)
+			}
+			if strings.Contains(body, `name="model_path"`) {
+				t.Errorf("a gated GET must not hand out a path form:\n%s", body)
+			}
+			if _, ok, _ := srv.store.GetSetting(comfyModelPathSettingKey); ok {
+				t.Error("a gated POST must not persist anything")
+			}
+		})
+	}
+}
+
+// TestComfySetupFormSaysSoWhenAlreadyConfigured stops the disclosure contradicting
+// the panel around it.
+func TestComfySetupFormSaysSoWhenAlreadyConfigured(t *testing.T) {
+	srv := setupTestServer(t)
+	root := modelsDir(t)
+	srv.cfg.ComfyModelPath = root
+
+	body := getSetupForm(t, srv).Body.String()
+	if !strings.Contains(body, "already set to "+root) {
+		t.Fatalf("want the already-configured note:\n%s", body)
+	}
+	if strings.Contains(body, `name="model_path"`) {
+		t.Errorf("no form is needed when it is already configured:\n%s", body)
+	}
+}
+
+// TestComfySetupDisclosureIsLazyAndAddsExactlyOneControl guards the measurement
+// this rework is judged on. The blocked panel must gain the setup step WITHOUT
+// eagerly rendering its form: the panel already carries ~123 hidden controls, and
+// making that worse is the opposite of the goal.
+func TestComfySetupDisclosureIsLazyAndAddsExactlyOneControl(t *testing.T) {
+	body := renderString(t, comfySetupDisclosure(7))
+
+	if strings.Contains(body, `name="model_path"`) || strings.Contains(body, "<form") {
+		t.Fatalf("the disclosure must NOT eagerly render the form:\n%s", body)
+	}
+	if strings.Contains(body, "<button") {
+		t.Fatalf("the disclosure must add no button before it is opened:\n%s", body)
+	}
+	if n := strings.Count(body, "<summary"); n != 1 {
+		t.Fatalf("want exactly one summary control, got %d:\n%s", n, body)
+	}
+	// Lazy: fetched on the details' own toggle, once.
+	if !strings.Contains(body, `hx-trigger="toggle once"`) {
+		t.Fatalf("the body must load on first open, not on page load:\n%s", body)
+	}
+	// The swap target is a STABLE container, never the trigger element itself
+	// (this package's streaming-job invariant).
+	if !strings.Contains(body, `hx-target="#`+comfySetupContainerID+`"`) ||
+		!strings.Contains(body, `id="`+comfySetupContainerID+`"`) {
+		t.Fatalf("must swap into a stable container:\n%s", body)
+	}
+}
