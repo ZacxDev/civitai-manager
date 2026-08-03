@@ -94,6 +94,12 @@ const (
 	// a straight lie; but the warnings are not a count of anything, so "needs N" would
 	// be one too.
 	reasonConvertWarned readinessReason = "warnings"
+	// reasonMultiPipeline — the workflow is a multi-mode template: it ships several
+	// mutually-exclusive pipelines in ONE graph and the user picks which one runs.
+	// WHAT IT NEEDS DEPENDS ON THE PICK, and this fragment cannot know the pick.
+	//
+	// 🔴 THE SUPPRESSION IS THE POINT — see workflowReadiness for the measurement.
+	reasonMultiPipeline readinessReason = "modes"
 	// reasonNoWorkflow — there is no workflow to check: the row is gone (deleted or
 	// re-scanned away since the page rendered), or the read itself failed.
 	//
@@ -152,6 +158,34 @@ func (s *Server) workflowReadiness(wf *store.Workflow) readinessView {
 	}
 	if wf == nil {
 		return unknown(reasonNoWorkflow)
+	}
+	// 🔴 A MULTI-MODE TEMPLATE HAS NO SINGLE ANSWER, so this must not invent one.
+	//
+	// realRun applies comfy.ApplyModeSelection BEFORE converting, un-bypassing the
+	// pipeline the user picked; this fragment converts the STORED graph verbatim. On a
+	// template those are DIFFERENT GRAPHS. Reproduced end to end on a two-pipeline
+	// fixture (TestReadinessSuppressesTheClaimForAMultiPipelineTemplate): the stored
+	// graph preflights clean — the line said "Ready" — while the run with pipeline B
+	// picked reports a missing model file. And the picker is pre-selected from the
+	// ACTIVE PRESET'S stored mode (runModesPanelSelected), so the divergence exists at
+	// FIRST PAINT, before any click.
+	//
+	// WHY SUPPRESS RATHER THAN FOLLOW THE PICK. Three shapes were on the table:
+	//   (a) apply the mode selection here. The container is `hx-trigger="load"` with
+	//       no params and sits OUTSIDE #run-params (what the picker swaps), so it can
+	//       only ever answer about the mode that was current at first paint — the next
+	//       pick silently makes it wrong again. (a) MOVES the lie; it does not remove it.
+	//   (b) (a) plus re-triggering the fragment on every mode change. That is the
+	//       honest full answer and it is real feature work — mode params on a GET
+	//       fragment, a second hx-target on the picker, and the same staleness problem
+	//       the run poller has. Deferred deliberately, not forgotten.
+	//   (c) this: say the line cannot answer, and name why.
+	// (c) is the only one of the three that is correct at first paint AND after every
+	// pick, and it costs almost nothing: MEASURED on a copy of the operator's real
+	// database, 3 of 71 workflows carry a mode selector (ids 589, 588, 581).
+	if wf.Format == store.WorkflowFormatUI &&
+		len(comfy.DetectModeSelectors(json.RawMessage(wf.Graph))) > 0 {
+		return unknown(reasonMultiPipeline)
 	}
 
 	ent, err := s.store.GetComfyObjectInfo()
@@ -334,6 +368,8 @@ func readinessReasonText(r readinessReason) string {
 	switch r {
 	case reasonNoWorkflow:
 		return "this workflow is no longer in your library, so there is nothing to check. Reload the page."
+	case reasonMultiPipeline:
+		return "this workflow holds several pipelines, so what it needs depends on which one you pick above. Generate checks the one you picked."
 	case reasonColdCache:
 		return "this app has not seen your ComfyUI's node list yet. Run any workflow once and it will be checked from then on."
 	case reasonUnreadableSchema:
