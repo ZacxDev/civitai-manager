@@ -29,10 +29,24 @@ import (
 // memcmp, not a parse.
 //
 // HONEST RESIDUE, stated so nobody re-measures it as a win it is not: the SQLite
-// READ still happens on every request — GetComfyObjectInfo pulls the whole blob,
-// measured at ~18 ms on that row. Only the decode is avoided. Removing the read as
-// well would need a store method that fetches updated_at alone, and that trades the
-// exact key above for a second-granularity one.
+// READ still happens on every request — GetComfyObjectInfo pulls the whole blob.
+// Only the decode is avoided. Removing the read as well would need a store method
+// that fetches updated_at alone, and that trades the exact key above for a
+// second-granularity one.
+//
+// ⚠ THAT READ USED TO BE DOCUMENTED HERE AS "~18 ms" AND THAT NUMBER WAS WRONG —
+// wrong in the direction that matters, because it exceeded the post-memo end-to-end
+// figure this change reports, i.e. the part claimed to REMAIN was larger than the
+// whole. Re-measured on a copy of the operator's real database, same
+// 4,661,986-byte row, 24 reads across two separate processes: median 3.8 ms, 22 of
+// 24 between 2.8 and 6.4 ms, two outliers at 12.2 and 34.2 ms. That agrees with the
+// independently recorded 2.8-5.1 ms for the same call on the same payload in the
+// repo's CLAUDE.md. Quote the range and the outliers, not a single number — the
+// outliers are real and a lone median would hide them.
+//
+// For scale, the same harness timed the DECODE the memo actually removes at
+// 65-110 ms over 12 iterations, consistent with the 73-113 ms recorded above. The
+// memo is worth having because of that figure, not because of the read.
 //
 // MEMORY: the memo retains one copy of the blob plus its decoded form. That is
 // deliberate — the decoded ObjectInfo is much larger than the 4.66 MB source, so
