@@ -260,7 +260,7 @@ func installAllMissingAction(p batchInstallPlan, total int, wfID int64, csrf str
 // TOPMOST, primary-coloured control on the whole failure panel while doing nothing at
 // all. The thing that would have made it work (the setup step) rendered underneath it
 // as a 16px, 12px-font disclosure summary, and the panel's one genuinely working
-// button (Install <nodepack>) was smaller and 234px further down. A dead control
+// button (Install <nodepack>) was smaller and 233px further down. A dead control
 // outranking both its own fix and every live action is the defect; restyling it
 // quieter would not have fixed it, because a quieter dead button is still a dead
 // button.
