@@ -191,6 +191,27 @@ type rankedPack struct {
 	// contested class. comfy.sortPacks has already ordered the slice, so "top" is
 	// simply "seen first".
 	Best bool
+	// Sole is true when this pack is the ONLY claimant of at least one class.
+	//
+	// 🔴 Sole is what makes Contested/Best sufficient to answer "is this pack
+	// needed?". The two are computed per CLASS, and a pack holds several — so a pack
+	// can lose a contest on one class while being the only provider of another. That
+	// mixed pack is REQUIRED, and without this field it presented as
+	// {Contested: true, Best: false}, i.e. indistinguishable from a pure alternative.
+	// See needed().
+	Sole bool
+}
+
+// needed reports whether this pack must be installed, as opposed to being an
+// alternative answer to a class another pack already covers.
+//
+// 🔴 THIS IS THE ONE PLACE THE RULE LIVES. It was previously open-coded as
+// `Contested && !Best` at three sites — the collapse, the Install button's
+// prominence, and the contest badge — and all three were wrong in the same
+// direction for the same reason (see Sole). A pack is needed when it is the top
+// answer for ANY class it claims, whether or not that class was contested.
+func (rp rankedPack) needed() bool {
+	return !rp.Contested || rp.Best || rp.Sole
 }
 
 // rankPacks annotates the (already comfy-ranked) packs with their contest roles.
@@ -216,6 +237,12 @@ func rankPacks(packs []comfy.Pack) []rankedPack {
 		rp := rankedPack{Pack: p}
 		for _, c := range p.Classes {
 			if claimants[c] < 2 {
+				// The only claimant of this class — so whatever happens to this pack's
+				// OTHER classes, nothing else can provide this one and the pack is
+				// required. Falling straight through to `continue` here (leaving only
+				// Contested/Best set, from the other classes) is the bug this field
+				// exists to close.
+				rp.Sole = true
 				continue
 			}
 			rp.Contested = true
@@ -329,6 +356,14 @@ func managerStateNote(attr nodeAttribution) g.Node {
 //     HIDE work the user has to do.
 //   - A pack that is contested and NOT the best claimant is an alternative answer to
 //     a class another pack already covers. Only these collapse.
+//   - 🔴 A pack claims SEVERAL classes, so those two cases are not exhaustive and the
+//     leftover is the one that shipped broken: a pack that loses a contest on one
+//     class while being the ONLY claimant of another. It is required. Rendering it as
+//     an alternative put a node type nothing else provides behind a closed
+//     disclosure, under a summary line that called it "claiming the same node" —
+//     so the user installed the best match, re-ran, and hit the same missing node
+//     with no explanation on screen. That is why the rule is rankedPack.needed()
+//     and not `Contested && !Best`; see rankedPack.Sole.
 //
 // Measured case: ComfyUI_UltimateSDUpscale (4 node types) and ComfyUI-PromptChain
 // (93) both claim UltimateSDUpscale. The app already ranked them correctly and then
@@ -368,7 +403,7 @@ func nodepackGroup(title, caveat string, packs []rankedPack, managerPresent bool
 // nodepackGroup. Order is preserved within each half.
 func splitNeededFromAlternatives(packs []rankedPack) (needed, alternatives []rankedPack) {
 	for _, p := range packs {
-		if p.Contested && !p.Best {
+		if !p.needed() {
 			alternatives = append(alternatives, p)
 			continue
 		}
@@ -380,6 +415,12 @@ func splitNeededFromAlternatives(packs []rankedPack) (needed, alternatives []ran
 // alternativesSummary names what is behind the disclosure. It names the packs when
 // there are few enough for the line to stay one line, because "ComfyUI-PromptChain"
 // is a far better decision aid than "1 other pack".
+//
+// 🔴 "claiming the same node" is only TRUE because splitNeededFromAlternatives now
+// admits nothing else: a pack providing a class no one else claims is needed(), so
+// it never reaches this function. That wording was a live falsehood while the split
+// was `Contested && !Best` — do not restore that predicate and leave this line
+// alone. Guarded by TestSoleClaimantIsNeverCollapsedAsAnAlternative.
 func alternativesSummary(alts []rankedPack) string {
 	if len(alts) <= 2 {
 		names := make([]string, 0, len(alts))
@@ -432,8 +473,12 @@ func nodepackCard(rp rankedPack, managerPresent bool, wfID int64, csrf, comfyRoo
 		// button, but not an equally loud one. Dropping it would make the ranking
 		// authoritative, which it is not; leaving it `filled` beside the best match is
 		// what shipped the coin-flip.
+		// Demote only a pack that is genuinely OPTIONAL. A losing claimant that is
+		// nonetheless the sole provider of another missing class must keep the loud
+		// button — it is required, and an outline button beside a filled one reads as
+		// "you probably do not need this".
 		variant := "filled"
-		if rp.Contested && !rp.Best {
+		if !rp.needed() {
 			variant = "outline"
 		}
 		body = append(body, h.Div(h.Class("pt-1"), nodepackInstallButton(p, wfID, csrf, variant)))
@@ -447,12 +492,21 @@ func nodepackCard(rp rankedPack, managerPresent bool, wfID int64, csrf, comfyRoo
 // contestLabel is the short badge distinguishing the favoured claimant of a
 // contested class from the alternatives. Empty when nothing is contested, so an
 // uncontested pack renders exactly as before.
+//
+// 🔴 The third case is not decoration. A pack that LOST a contest but is the only
+// claimant of some other missing class is required, and labelling it "Also claims
+// it" beside a "Best match" tells the reader to skip a pack they must install —
+// the same false message the collapse used to send, one layer down. It reads the
+// same needed() predicate so the badge can never disagree with the button beside
+// it or with whether the card was collapsed.
 func contestLabel(rp rankedPack) string {
 	switch {
 	case !rp.Contested:
 		return ""
 	case rp.Best:
 		return "Best match"
+	case rp.needed():
+		return "Also needed"
 	}
 	return "Also claims it"
 }

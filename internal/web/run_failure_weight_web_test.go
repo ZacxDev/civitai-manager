@@ -105,10 +105,100 @@ func TestAlternativePackIsCollapsedButStillReachable(t *testing.T) {
 	}
 }
 
-// TestUncontestedPacksAreNeverCollapsed is the other side of the collapse rule, and
-// it is the case a position-based implementation gets WRONG: three missing node
-// types from three different packs means three REQUIRED packs, and hiding the
-// second and third would hide work the user has to do.
+// mixedClaimPacks is the fixture for the case that shipped broken: pack Y LOSES the
+// contest for UltimateSDUpscale to the tighter pack X, and is simultaneously the
+// ONLY claimant of SoloNode. Y is therefore REQUIRED, not an alternative.
+//
+// 🔴 The two classes are load-bearing and so is the order. A one-class-each fixture
+// cannot express this at all — the bug needs a single pack to hold both a losing
+// claim and a sole claim, which is precisely what TestUncontestedPacksAreNeverCollapsed
+// (three packs, one disjoint class each, zero contests) structurally cannot reach.
+func mixedClaimPacks() []comfy.Pack {
+	return []comfy.Pack{
+		{ID: "ultimate", Title: "ComfyUI_UltimateSDUpscale",
+			Repository: "https://github.com/ssitu/ComfyUI_UltimateSDUpscale",
+			Classes:    []string{"UltimateSDUpscale"}, ClaimedClasses: 4,
+			Source: comfy.SourceMap, Installable: true},
+		{ID: "promptchain", Title: "ComfyUI-PromptChain",
+			Repository: "https://github.com/mobcat40/ComfyUI-PromptChain",
+			Classes:    []string{"UltimateSDUpscale", "SoloNode"}, ClaimedClasses: 93,
+			Source: comfy.SourceMap, Installable: true},
+	}
+}
+
+// TestSoleClaimantIsNeverCollapsedAsAnAlternative is the guard for the mixed case:
+// a pack that loses one contest while being the sole provider of another missing
+// node type must render as a REQUIRED pack, not behind the alternatives disclosure.
+//
+// Measured before the fix: needed=1 alternatives=1, ComfyUI-PromptChain collapsed,
+// "SoloNode" reachable only inside the closed <details>, and the summary line
+// reading "Other pack claiming the same node: ComfyUI-PromptChain" — false, since
+// it also claims a node nothing else does.
+func TestSoleClaimantIsNeverCollapsedAsAnAlternative(t *testing.T) {
+	snap := contestedNodesSnapshot()
+	snap.Preflight.MissingNodes = []string{"UltimateSDUpscale", "SoloNode"}
+	snap.NodeAttr.Packs = mixedClaimPacks()
+
+	// PRECONDITIONS on the RANKING, asserted before any rendering. A fixture that
+	// cannot express the contest must fail loudly here rather than pass quietly
+	// downstream — the repo's documented "the fixture never populated the signal"
+	// failure. These pin the exact shape the bug needs: ONE contested class with two
+	// claimants, and a second class claimed by exactly one of them.
+	ranked := rankPacks(snap.NodeAttr.Packs)
+	if len(ranked) != 2 {
+		t.Fatalf("precondition: want 2 ranked packs, got %d", len(ranked))
+	}
+	if got := contestedClasses(ranked); len(got) != 1 || got[0] != "UltimateSDUpscale" {
+		t.Fatalf("precondition: want exactly UltimateSDUpscale contested, got %v", got)
+	}
+	if !ranked[0].Contested || !ranked[0].Best {
+		t.Fatalf("precondition: pack X must WIN the contest, got Contested=%v Best=%v",
+			ranked[0].Contested, ranked[0].Best)
+	}
+	if !ranked[1].Contested || ranked[1].Best {
+		t.Fatalf("precondition: pack Y must LOSE the contest, got Contested=%v Best=%v",
+			ranked[1].Contested, ranked[1].Best)
+	}
+
+	// THE ASSERTION. Y is the only claimant of SoloNode, so it is needed.
+	if _, alternatives := splitNeededFromAlternatives(ranked); len(alternatives) != 0 {
+		t.Errorf("a pack that is the SOLE claimant of a missing node type was collapsed as an "+
+			"alternative: %s claims %v, and nothing else claims SoloNode",
+			alternatives[0].Pack.Title, alternatives[0].Pack.Classes)
+	}
+
+	body := renderString(t, runStatusFragment(snap, 7, "tok", true, fullMaturityRange()))
+
+	// SoloNode must be reachable in the open panel, not only inside a closed
+	// <details>. Position is what proves it: anything after the alternatives summary
+	// is inside that disclosure.
+	if !strings.Contains(body, "SoloNode") {
+		t.Fatalf("SoloNode is missing from the panel entirely:\n%s", body)
+	}
+	if det := strings.Index(body, "claiming the same node"); det >= 0 {
+		t.Errorf("nothing may be collapsed here — the alternatives disclosure rendered, and "+
+			"the only candidate for it is the sole claimant of SoloNode:\n%s", body)
+	}
+	// The required pack keeps a LOUD install button and is not badged as optional.
+	if !strings.Contains(body, "Install ComfyUI-PromptChain") {
+		t.Errorf("the required pack lost its Install button:\n%s", body)
+	}
+	if strings.Contains(body, "Also claims it") {
+		t.Errorf("a REQUIRED pack must not be badged as a mere alternative claimant:\n%s", body)
+	}
+}
+
+// TestUncontestedPacksAreNeverCollapsed covers a DIFFERENT mutation: three missing
+// node types from three different packs means three REQUIRED packs, and a
+// position-based implementation (collapse everything after the first) would hide
+// the second and third.
+//
+// ⚠ It is deliberately NOT the guard for the sole-claimant bug and cannot be: with
+// one disjoint class per pack NOTHING is contested, so a pack that both loses a
+// contest and solely claims another class is structurally unreachable from this
+// fixture. That case is TestSoleClaimantIsNeverCollapsedAsAnAlternative, above.
+// Mutation-verified as covering the position-based collapse and NOT the
+// `Contested && !Best` one — see the PR's mutation matrix.
 func TestUncontestedPacksAreNeverCollapsed(t *testing.T) {
 	snap := contestedNodesSnapshot()
 	snap.Preflight.MissingNodes = []string{"NodeA", "NodeB", "NodeC"}
