@@ -258,6 +258,17 @@ func TestRunStatusResponseCarriesTheOutOfBandClear(t *testing.T) {
 		t.Run(string(shape), func(t *testing.T) {
 			installRunShape(t, srv, wfID, shape)
 			body := get(t, srv, "/workflows/"+id+"/run/status").Body.String()
+			// 🔴 STATE THE CASE BEFORE MEASURING IT. divExtent t.Fatal's on an absent
+			// element, and "no element carrying id=…" is the HELPER's precondition
+			// message, not this guard's — the deletion this test exists to catch
+			// removes the element outright, so without this branch the whole guard
+			// reports through someone else's error and names nothing about the bug.
+			if !strings.Contains(body, `id="`+runReadinessID+`"`) {
+				t.Fatalf("the %s run-status response carries no #%s element at all, so it "+
+					"cannot clear a readiness line already on screen — the poller swaps "+
+					"#run-status and nothing else ever revisits that container:\n%s",
+					shape, runReadinessID, body)
+			}
 			s, e := divExtent(t, body, `id="`+runReadinessID+`"`)
 			ext := body[s:e]
 			if !strings.Contains(ext, `hx-swap-oob="true"`) {
@@ -321,6 +332,13 @@ func TestAFailedRunLeavesExactlyOneAnswerOnThePage(t *testing.T) {
 		t.Errorf("the readiness endpoint still answers after the run failed — the line the "+
 			"user is looking at is re-servable and the panel below it says the same "+
 			"thing:\n%s", body)
+	}
+	// Same reason as above: name the outright-absent case in this guard's own words
+	// rather than letting divExtent's precondition fatal speak for it.
+	if !strings.Contains(terminal, `id="`+runReadinessID+`"`) {
+		t.Fatalf("the terminal run response carries no #%s element at all — the readiness "+
+			"line the user has been looking at since first paint is never removed, which "+
+			"is the reported 0px stack:\n%s", runReadinessID, terminal)
 	}
 	s, e := divExtent(t, terminal, `id="`+runReadinessID+`"`)
 	if !strings.Contains(terminal[s:e], `hx-swap-oob="true"`) {
