@@ -64,6 +64,105 @@ import (
 // invariant (a self-replacing node cannot be re-targeted).
 const runReadinessID = "cm-run-readiness"
 
+// ── READINESS YIELDS TO A RUN ────────────────────────────────────────────────
+//
+// v0.1.104 shipped this line and v0.1.105 reworked the run-failure panel. Each was
+// verified alone; together, on a workflow that cannot run, they stacked FLUSH — a
+// 36px-tall "! A run needs at least 1 node type and 3 model files that are not
+// installed. The count may be low…" sitting at y=1802–1838 directly on top of
+// "⚠ Run failed — 3 model files and 1 custom node are missing. This is a lower
+// bound…" at y=1838. Gap: 0px. Same counts, same lower-bound caveat, twice.
+//
+// 🔴 THE RULE IS GENERAL, NOT A PATCH FOR THAT ONE PAIRING: once a run for this
+// workflow exists, the RUN is the fresher and more authoritative answer to the
+// question the readiness line asks, so the line yields. That covers all four
+// terminal shapes, not just the failure one:
+//
+//	failed   — the panel states the same counts AND carries the install actions.
+//	           Pure duplication; this is the reported bug.
+//	done     — the run SUCCEEDED, which is proof by execution that it could run.
+//	           A surviving "needs 3 model files" is not redundant, it is FALSE.
+//	stopped  — the panel says only "Run stopped." So the line is not duplicated
+//	           here — but it is just as stale, and for the same reason (below).
+//	running  — the decision the line exists to inform has already been made. An
+//	           amber "!" beside a spinner is noise, and letting it survive into the
+//	           settle is precisely how the 0px stack happened.
+//
+// WHY "STALE" IS THE LOAD-BEARING WORD, AND WHY stopped/running ARE IN. The line is
+// fetched ONCE, on load, and is never re-fetched within a page (see runZone's
+// KNOWN AND DEFERRED note). A run does not merely pass time — the failure panel's
+// own Install CTAs DOWNLOAD MODEL FILES, and download-then-run installs before it
+// submits. So after any run, the first-paint snapshot may be describing files that
+// now exist. Keeping it for the two states where it is not duplicated would keep it
+// exactly where it is most likely to be wrong.
+//
+// CONSEQUENCE, ACCEPTED: "Run again" does NOT bring the line back. It cannot be a
+// return to the idle state — the click starts a run — and after a run the panel is
+// strictly the better instrument (it is recomputed at every settle; this is not).
+// A reload restores it, and the reload is what makes it true again.
+//
+// FAIL DIRECTION: suppression REMOVES an advisory, it never adds a claim. The worst
+// case is a user who must reload to see a line they could already act on from the
+// panel — versus the alternative failure, a stale line contradicting a fresh result.
+
+// runStatusHoldsARunFor reports whether #run-status is showing a report about a run
+// OF THIS WORKFLOW — running, stopped, failed or done alike.
+//
+// 🔴 IT IS THE ONE RULE, AND runStatusFragment READS IT TOO. That function's idle
+// early-return is the exact negation of this predicate, so "the readiness line is
+// hidden" and "#run-status is occupied" are decided by ONE expression rather than by
+// two that agree today. Two containers swapped by DIFFERENT requests is how the
+// original bug happened; a rule enforced in only one of them would re-create it.
+//
+// A run belonging to a different workflow is deliberately NOT held: the page shows a
+// one-line "a run is already in progress for another workflow" note there, which
+// duplicates nothing, and the readiness answer for THIS workflow is still a live,
+// un-stale, pre-click answer.
+func runStatusHoldsARunFor(snap runSnapshot, wfID int64) bool {
+	return snap.Started && snap.WorkflowID == wfID
+}
+
+// runReadinessCleared is the OUT-OF-BAND emptying of #cm-run-readiness that rides
+// along with a #run-status response.
+//
+// 🔴 IT ONLY EVER CLEARS — it never re-arms the lazy loader, and that asymmetry is
+// deliberate in three ways:
+//
+//   - Monotonic. The line is emitted at page render if and only if the page was
+//     idle, and from the first response that carries a run it is only ever emptied.
+//     ⚠ NOT "cleared exactly once" — this line used to say that and it is FALSE.
+//     The OOB element rides EVERY run-status response, so for the whole duration of
+//     a run htmx outerHTML-swaps an already-empty #cm-run-readiness once per ~1 s
+//     poll tick. That is idempotent and costs one empty <div> per tick; the property
+//     that actually matters is that it NEVER RE-ARMS, so the ~4.66 MB /object_info
+//     decode behind the line cannot be re-paid per tick.
+//   - A re-arming OOB would have to name a workflow, and not every response that
+//     writes into #run-status has a usable id to name. handleWorkflowRunStop takes
+//     its id from the POST body and falls back to 0, which would have re-armed the
+//     container against /workflows/0/run/readiness and replaced a correctly-hidden
+//     line with "Not checked — this workflow is no longer in your library".
+//     ⚠ THAT ZERO IS A HAND-CRAFTED POST, NOT THE SHIPPED UI, and this line used to
+//     present it as the live shape. runStopVals (run_pages.go) ALWAYS writes
+//     workflow_id, and the only Stop button is rendered by runRunning with the
+//     caller's real id — so no click in the app can produce it. The conclusion is
+//     unaffected: it rests on the monotonicity above, not on this reachability.
+//   - It closes the load-race for free: a readiness GET still in flight when the
+//     user clicks Generate lands in a node this swap has already detached. (The
+//     handler refuses independently — see handleWorkflowRunReadiness — because a
+//     detached-target swap is htmx behaviour, not a guarantee we should rest on.)
+//
+// hx-swap-oob="true" is an outerHTML replace, which is safe here and NOT a breach of
+// the streaming invariant: #cm-run-readiness is a one-shot lazy target, not a
+// re-arming poller node, and the replacement drops its hx-get so nothing can refill
+// it. Returns an empty group when nothing needs clearing, so an idle response is
+// byte-identical to before.
+func runReadinessCleared(snap runSnapshot, wfID int64) g.Node {
+	if !runStatusHoldsARunFor(snap, wfID) {
+		return g.Group(nil)
+	}
+	return h.Div(h.ID(runReadinessID), hx("swap-oob", "true"))
+}
+
 // readinessState is the three-way answer. It is rendered as a data-readiness
 // attribute so a test can assert the STATE rather than the prose (prose that a
 // failure message can contain has produced vacuous guards here before).

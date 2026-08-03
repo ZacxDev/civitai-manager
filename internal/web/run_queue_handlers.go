@@ -114,7 +114,7 @@ func (s *Server) handleWorkflowRunQueue(w http.ResponseWriter, r *http.Request) 
 	respond := func(lead g.Node) {
 		s.render(w, http.StatusOK, g.Group([]g.Node{
 			lead,
-			runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()),
+			runStatusBody(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()),
 		}))
 	}
 

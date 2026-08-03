@@ -364,6 +364,6 @@ func (s *Server) handleComfySetupSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("comfy_model_path set from the run panel", "path", clean)
-	s.render(w, http.StatusOK, runStatusFragment(
+	s.render(w, http.StatusOK, runStatusBody(
 		s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
 }

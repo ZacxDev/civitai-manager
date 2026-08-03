@@ -3620,6 +3620,22 @@ a.cm-res-chip .cm-res-name {
 }
 
 /*
+ * The readiness container is ALWAYS in the DOM (runZone emits it unconditionally so
+ * the out-of-band clear has a target), but it is EMPTY whenever a run for this
+ * workflow is showing in #run-status. .cm-runbar is `flex-direction: column; gap:
+ * 0.6rem`, and a gap is charged BETWEEN items regardless of their height — so a
+ * zero-height empty child still costs 9.6px of dead space directly under the hint.
+ * display:none removes it from flex layout entirely, gap included.
+ *
+ * An ID selector rather than a .cm-* class on purpose: no new class means no
+ * Tailwind rebuild and nothing for the reverse class-coverage guard to chase. The
+ * count radios (#cm-count-2:checked …) set the precedent a few rules up.
+ */
+#cm-run-readiness:empty {
+  display: none;
+}
+
+/*
  * .cm-dest-* — the DESTINATION control (runDestination in run_zone.go): "this
  * computer" vs "CivitAI Cloud" as one choice, with CSS-only panel switching.
  *

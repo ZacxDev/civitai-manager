@@ -92,7 +92,7 @@ func generateSection(wf *store.Workflow, snap runSnapshot, csrf string, extraAll
 	// WHERE it runs is ONE decision: the zone and the cloud block are the two panels
 	// of a single destination control (runDestination), not two stacked apparatuses.
 	body = append(body, runDestination(
-		runZone(wf.ID, csrf, canQueueWorkflow(wf), editable),
+		runZone(wf.ID, csrf, canQueueWorkflow(wf), editable, snap),
 		cloudGenerateBlock(wf.ID),
 	))
 	// Run job status container (unchanged): poller drives running → terminal.
@@ -273,6 +273,34 @@ func recheckButton(id string) g.Node {
 // targeting.)
 func comfyDisplayURL(_ *store.Workflow) string { return "local ComfyUI" }
 
+// runStatusBody is what a HANDLER answers with when it writes into #run-status: the
+// fragment itself, PLUS the out-of-band clear of the readiness container computed
+// from the SAME snapshot.
+//
+// 🔴 ONE RESPONSE UPDATES BOTH CONTAINERS, and that is the entire fix. #run-status
+// and #cm-run-readiness are swapped by DIFFERENT requests — the run poller owns one,
+// a lazy `hx-trigger="load"` owns the other — so a rule enforced in only one of them
+// drifts by construction. That drift is exactly what shipped: the readiness line was
+// fetched legitimately at first paint and then simply never revisited, so a run that
+// failed afterwards stacked its panel flush underneath it.
+//
+// A server-side check alone could not have fixed this. By the time Generate is
+// clicked the line is already on screen; nothing re-requests it. Something has to
+// reach out and remove it, and riding it out-of-band on the response that puts the
+// run there is the only way to keep the two in one place.
+//
+// runReadinessCleared is a no-op group when no run for this workflow is showing, so
+// an idle response is byte-identical to before. generateSection deliberately does
+// NOT use this — hx-swap-oob is only processed on an AJAX response, so on a full
+// page load the marker would sit inert in the markup; the page-render path decides
+// the same question by simply not emitting the lazy loader (see runZone).
+func runStatusBody(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mr maturityRange) g.Node {
+	return g.Group([]g.Node{
+		runStatusFragment(snap, wfID, csrf, dlEligible, mr),
+		runReadinessCleared(snap, wfID),
+	})
+}
+
 // runStatusFragment dispatches the run job's current state into #run-status: the
 // running fragment (with poller + Stop) while in flight, else the terminal result.
 // A run belonging to a DIFFERENT workflow is not shown here (the poller would
@@ -282,7 +310,10 @@ func runStatusFragment(snap runSnapshot, wfID int64, csrf string, dlEligible boo
 		return h.Div(h.Class("text-sm text-amber-400"),
 			g.Text("A run is already in progress for another workflow. Try again when it finishes."))
 	}
-	if !snap.Started || snap.WorkflowID != wfID {
+	// 🔴 THE SAME predicate the readiness line's suppression reads — shared, not
+	// mirrored. "This container is idle" and "the readiness line may render" are one
+	// decision; see runStatusHoldsARunFor in run_readiness.go.
+	if !runStatusHoldsARunFor(snap, wfID) {
 		return h.Div() // idle: nothing to show for this workflow yet
 	}
 	// Stopped is set synchronously by stopRun (before the run goroutine settles), so
