@@ -62,8 +62,12 @@ const comfySetupInputID = "comfy-model-path-input"
 // panel". This app has no settings page, so that made the ONE value deciding where
 // gigabytes land uncorrectable in-app: only by writing the config.yaml this whole
 // control exists to avoid, or by hand-editing SQLite. The flag only picks the
-// summary wording — an unconfigured install is being asked to do a setup step, a
-// configured one is being offered a change.
+// summary wording — a blocked install is being asked to do a setup step, a working
+// one is being offered a change.
+//
+// ⚠ That sentence used to read "an UNCONFIGURED install … a CONFIGURED one", and
+// that is the misreading this next paragraph exists to correct.
+//
 // ⚠ `configured` is fed from batchInstallPlan.Available — "can this server install
 // right now" — NOT from "is a path saved". Those come apart: a SAVED path whose
 // folder was deleted or unmounted fails comfyDownloadEligible's os.Stat, so the
