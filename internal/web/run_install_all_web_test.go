@@ -305,6 +305,97 @@ func TestRunFailureBlockedByARemoteComfyOffersNoSetupCTA(t *testing.T) {
 	}
 }
 
+// deadControlAt reports the byte offset of the first `disabled` ATTRIBUTE in s, or
+// -1. htmx's `hx-disabled-elt` is deliberately excluded.
+//
+// 🔴 THAT EXCLUSION IS THE WHOLE POINT, and it is not fussiness: the fifth guard on
+// this panel (TestBlockedCTANeverPostsWhileThePathIsUnset) asserted
+// `Contains(body, "disabled")` and was GREEN ONLY because the live setup CTA emits
+// hx-disabled-elt="this". A bare substring cannot tell an inert control from an
+// htmx in-flight lockout, so a check written that way would either pass forever or
+// forbid the working button.
+func deadControlAt(s string) int {
+	for i := 0; ; {
+		j := strings.Index(s[i:], "disabled")
+		if j < 0 {
+			return -1
+		}
+		at := i + j
+		if !strings.HasPrefix(s[at:], "disabled-elt") {
+			return at
+		}
+		i = at + len("disabled")
+	}
+}
+
+// TestBlockedPanelRendersNoDeadControlAtAll is the STRUCTURAL half of "the blocked
+// panel offers no dead button". The POST axis is well guarded; the dead-control axis
+// was spelled, not structural — every assertion named the one label the removed
+// button carried.
+//
+// 🔴 MEASURED: re-adding a civButton("filled", "md", …, h.Disabled()) labelled
+// "Fetch all 2 files automatically" at the top of the blocked panel — a
+// primary-filled, inert, topmost control, i.e. the shipped defect restored in
+// substance — failed ZERO tests. A label is not an invariant.
+//
+// The assertion is scoped to installAllMissingAction's own fragment rather than the
+// whole page, because the per-file CivitAI card legitimately renders a DISABLED
+// "Install and run" beside its View-on-CivitAI link (run_resolve.go), and a
+// page-wide check would report that instead of the thing under guard.
+func TestBlockedPanelRendersNoDeadControlAtAll(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		remote       bool
+		wantSetupCTA bool
+	}{
+		{"local ComfyUI, no models folder", false, true},
+		{"comfy_url points somewhere else", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			models := twoMissingSnapshot().MissingModels
+			p := planBatchInstall(models, false /* dlEligible */, tc.remote)
+
+			// PRECONDITIONS: this really is the blocked branch of the state it names,
+			// and it really rendered something. A fragment that rendered nothing
+			// satisfies the assertion below perfectly.
+			if p.Available {
+				t.Fatalf("precondition: want a BLOCKED plan, got %+v", p)
+			}
+			if p.SetupCanHelp != tc.wantSetupCTA {
+				t.Fatalf("precondition: SetupCanHelp = %v, want %v", p.SetupCanHelp, tc.wantSetupCTA)
+			}
+			panel := renderString(t, installAllMissingAction(p, len(models), 7, "tok"))
+			if !strings.Contains(panel, "<") {
+				t.Fatalf("precondition: the blocked panel rendered nothing:\n%q", panel)
+			}
+			if got := strings.Contains(panel, "/comfy-setup"); got != tc.wantSetupCTA {
+				t.Fatalf("precondition: setup CTA present = %v, want %v:\n%s", got, tc.wantSetupCTA, panel)
+			}
+
+			// THE ASSERTION.
+			if at := deadControlAt(panel); at >= 0 {
+				lo := at - 120
+				if lo < 0 {
+					lo = 0
+				}
+				t.Errorf("the blocked panel renders a dead control — an inert button here "+
+					"outranks every live action on the page, which is the defect this "+
+					"change removed:\n…%s…\n\nfull panel:\n%s", panel[lo:at+8], panel)
+			}
+
+			// NEGATIVE CONTROL: deadControlAt must actually be able to fire, and must
+			// NOT fire on htmx's lockout attribute. Without this the assertion above is
+			// indistinguishable from a scanner wired to nothing.
+			if deadControlAt(`<button type="button" disabled>x</button>`) < 0 {
+				t.Fatal("deadControlAt cannot see a real disabled attribute — its verdict above is worthless")
+			}
+			if deadControlAt(`<button hx-disabled-elt="this">x</button>`) >= 0 {
+				t.Fatal("deadControlAt flags htmx's in-flight lockout, which would forbid the working setup CTA")
+			}
+		})
+	}
+}
+
 // blockedPanelPointer is a pointer-shaped phrase the failure panel's copy may use,
 // paired with the on-page marker that phrase PROMISES the reader will find. Copy
 // containing the phrase while the page lacks the marker is a dangling
