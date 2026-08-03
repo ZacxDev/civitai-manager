@@ -329,11 +329,82 @@ func TestComfySetupSavePersistsAndMakesTheCTALive(t *testing.T) {
 	if !strings.Contains(after, "/workflows/"+wfID+"/install-missing-and-run") {
 		t.Fatalf("the CTA must be LIVE after the save:\n%s", after)
 	}
-	if strings.Contains(after, "/comfy-setup") {
-		t.Errorf("the setup step must be gone once it is done:\n%s", after)
+	// ⚠ This used to assert "the setup step must be gone once it is done". That is
+	// what made comfy_model_path a WRITE-ONCE value: the disclosure was the only
+	// control in the app that can change it, there is no settings page, and a
+	// wrong-but-writable path validates fine — so a saved mistake was correctable
+	// only by hand-editing SQLite or writing the config.yaml this control exists to
+	// avoid. What must change is the summary's PROMPT, not its presence: the setup
+	// step becomes a change affordance.
+	if !strings.Contains(after, "/comfy-setup") {
+		t.Errorf("the folder must stay changeable after the save — this is the only "+
+			"control in the app that can change it:\n%s", after)
+	}
+	if strings.Contains(after, "Set up automatic install") {
+		t.Errorf("a configured install must not still be asked to SET UP the path:\n%s", after)
+	}
+	if !strings.Contains(after, "Change where civitai-manager installs model files") {
+		t.Errorf("want the change-affordance summary after the save:\n%s", after)
 	}
 	if !srv.comfyDownloadEligible() {
 		t.Error("the server must be eligible after the save")
+	}
+}
+
+// TestRejectedPathRetargetsInsteadOfEatingTheFailureReport guards BOTH directions of
+// the setup form's swap target, because they are genuinely different and the form can
+// only carry one.
+//
+// 🔴 SUCCESS must land in #run-status — that is how the disabled CTA the user was
+// looking at goes live in the same interaction. A REJECTION must not: the rejection
+// answer is only the form, and swapping it into #run-status deletes the headline, the
+// lower-bound caveat, the CTA, the missing-nodes panel, every per-file picker,
+// Technical details and "Run again", leaving a bare context-free form. The typed-path
+// branch is the documented degradation for EVERY probe failure (404, timeout, tie,
+// rejected suggestion), so the users most likely to be rejected are exactly the ones
+// with nothing pre-filled.
+func TestRejectedPathRetargetsInsteadOfEatingTheFailureReport(t *testing.T) {
+	srv := setupTestServer(t)
+	root := modelsDir(t)
+
+	// REJECTION — retargeted at the disclosure, and the response is its INNER content.
+	rec := postSetup(t, srv, "not-an-absolute-path", srv.csrf)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (a 4xx is swallowed by htmx and would be invisible)", rec.Code)
+	}
+	body := rec.Body.String()
+	// PRECONDITION: this really is the rejection branch, and it really is small enough
+	// to destroy the report it would otherwise replace.
+	if !strings.Contains(body, "absolute path") {
+		t.Fatalf("precondition: want the rejection reason:\n%s", body)
+	}
+	if strings.Contains(body, "data-run-seq") {
+		t.Fatalf("precondition: a rejection must not answer with the run panel:\n%s", body)
+	}
+	if got := rec.Header().Get("HX-Retarget"); got != "#"+comfySetupContainerID {
+		t.Errorf("HX-Retarget = %q, want %q — without it this fragment replaces the whole "+
+			"failure report:\n%s", got, "#"+comfySetupContainerID, body)
+	}
+	// With swap=innerHTML the response is the container's CONTENTS, so it must not
+	// carry the container's own id: that would nest a second #comfy-setup one level
+	// deeper on every rejection.
+	if strings.Contains(body, `id="`+comfySetupContainerID+`"`) {
+		t.Errorf("the retargeted response must be the container's INNER content, not a "+
+			"second element carrying its id:\n%s", body)
+	}
+	// The typed value survives, so a typo is corrected rather than retyped.
+	if !strings.Contains(body, `value="not-an-absolute-path"`) {
+		t.Errorf("the rejected input must be preserved:\n%s", body)
+	}
+
+	// SUCCESS — NOT retargeted, so the panel re-renders and the CTA goes live.
+	ok := postSetup(t, srv, root, srv.csrf)
+	if ok.Code != http.StatusOK {
+		t.Fatalf("status = %d", ok.Code)
+	}
+	if got := ok.Header().Get("HX-Retarget"); got != "" {
+		t.Errorf("a SUCCESSFUL save must not retarget (got %q) — it has to replace the run "+
+			"panel for the CTA to go live", got)
 	}
 }
 
@@ -429,19 +500,74 @@ func TestComfySetupIsLoopbackGated(t *testing.T) {
 	}
 }
 
-// TestComfySetupFormSaysSoWhenAlreadyConfigured stops the disclosure contradicting
-// the panel around it.
-func TestComfySetupFormSaysSoWhenAlreadyConfigured(t *testing.T) {
+// TestComfySetupFormIsChangeableWhenAlreadyConfigured pins the CORRECTION to this
+// test's own earlier expectation.
+//
+// ⚠ It used to assert the opposite — "no form is needed when it is already
+// configured" — and that is exactly what made the body's closing promise, "Change it
+// any time from this panel", false. comfy_model_path is the one value deciding where
+// gigabytes land; this app has no settings page; and a wrong-but-writable choice
+// passes validation. Read-only was therefore a dead end correctable only by writing
+// the config.yaml this control exists to avoid, or by hand-editing SQLite.
+//
+// The fragment must now NAME the folder in force AND offer a pre-filled form to
+// change it — the pre-fill is what stops "change" meaning "retype from memory".
+func TestComfySetupFormIsChangeableWhenAlreadyConfigured(t *testing.T) {
 	srv := setupTestServer(t)
 	root := modelsDir(t)
 	srv.cfg.ComfyModelPath = root
 
 	body := getSetupForm(t, srv).Body.String()
-	if !strings.Contains(body, "already set to "+root) {
-		t.Fatalf("want the already-configured note:\n%s", body)
+	if !strings.Contains(body, "currently installs model files into "+root) {
+		t.Fatalf("want the folder in force named:\n%s", body)
 	}
-	if strings.Contains(body, `name="model_path"`) {
-		t.Errorf("no form is needed when it is already configured:\n%s", body)
+	if !strings.Contains(body, `name="model_path"`) {
+		t.Errorf("a configured install must still be able to CHANGE the folder:\n%s", body)
+	}
+	// Pre-filled with the saved value, so the promise is "change it", not "retype it".
+	if !strings.Contains(body, `value="`+root+`"`) {
+		t.Errorf("the form must be pre-filled with the saved path:\n%s", body)
+	}
+	// The promise the whole test exists for.
+	if !strings.Contains(body, "Change it any time from this panel") {
+		t.Errorf("want the change-it-any-time promise, now that it is true:\n%s", body)
+	}
+}
+
+// TestComfySetupDisclosureRendersInBothStates is the reachability half of the fix
+// above: a form nobody can open is the same dead end as no form at all.
+//
+// 🔴 comfySetupDisclosure had ONE call site, inside installAllMissingAction's
+// `!p.Available` branch, so the moment a path was saved the disclosure stopped
+// rendering anywhere in the app. This is the repo's documented recurring defect —
+// code that is correct and never runs — so the guard asserts the CALL SITES, through
+// the real action, in both states.
+func TestComfySetupDisclosureRendersInBothStates(t *testing.T) {
+	plan := batchInstallPlan{
+		Available:   true,
+		Installable: []comfy.MissingModel{{Filename: "upscaler.pth", CivitaiType: "Upscaler"}},
+	}
+	working := renderString(t, installAllMissingAction(plan, 1, 7, "tok"))
+	// PRECONDITION: this really is the WORKING state — a live submit button, not the
+	// disabled control the blocked branch renders.
+	if !strings.Contains(working, "install-missing-and-run") {
+		t.Fatalf("precondition: want the enabled install action:\n%s", working)
+	}
+	if !strings.Contains(working, "/comfy-setup") {
+		t.Errorf("a configured install must still reach the setup disclosure — it is the "+
+			"only control in the app that can change comfy_model_path:\n%s", working)
+	}
+	if !strings.Contains(working, "Change where civitai-manager installs model files") {
+		t.Errorf("the configured summary must offer a CHANGE, not a setup step:\n%s", working)
+	}
+
+	plan.Available = false
+	blocked := renderString(t, installAllMissingAction(plan, 1, 7, "tok"))
+	if !strings.Contains(blocked, "/comfy-setup") {
+		t.Errorf("the blocked panel must still offer the setup step:\n%s", blocked)
+	}
+	if !strings.Contains(blocked, "Set up automatic install") {
+		t.Errorf("the unconfigured summary must read as a setup step:\n%s", blocked)
 	}
 }
 
@@ -450,7 +576,7 @@ func TestComfySetupFormSaysSoWhenAlreadyConfigured(t *testing.T) {
 // eagerly rendering its form: the panel already carries ~123 hidden controls, and
 // making that worse is the opposite of the goal.
 func TestComfySetupDisclosureIsLazyAndAddsExactlyOneControl(t *testing.T) {
-	body := renderString(t, comfySetupDisclosure(7))
+	body := renderString(t, comfySetupDisclosure(7, false))
 
 	if strings.Contains(body, `name="model_path"`) || strings.Contains(body, "<form") {
 		t.Fatalf("the disclosure must NOT eagerly render the form:\n%s", body)

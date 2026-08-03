@@ -194,7 +194,7 @@ func installAllMissingAction(p batchInstallPlan, total int, wfID int64, csrf str
 			civButton("filled", "md", []g.Node{
 				h.Type("button"), h.Disabled(),
 			}, g.Text(fmt.Sprintf("Install %d missing model file%s and run", total, plural(total)))),
-			comfySetupDisclosure(wfID),
+			comfySetupDisclosure(wfID, false),
 		)
 	}
 
@@ -224,18 +224,28 @@ func installAllMissingAction(p batchInstallPlan, total int, wfID int64, csrf str
 			g.Text(fmt.Sprintf("At most %d files are installed per click, so %d are left for a second click.",
 				maxBatchInstallFiles, p.Overflow))))
 	}
-	return h.Form(
-		hx("post", "/workflows/"+strconv.FormatInt(wfID, 10)+"/install-missing-and-run"),
-		hx("target", "#"+runStatusContainerID),
-		hx("swap", "innerHTML"),
-		hx("disabled-elt", "find button[type='submit']"),
-		hx("include", runModesInclude),
-		h.Class("mt-3 space-y-1"),
-		csrfInput(csrf),
-		g.Group(fields),
-		civButton("filled", "md", []g.Node{h.Type("submit")}, g.Text(label)),
-		h.P(h.Class("text-xs text-slate-400"), g.Text(batchInstallHint)),
-		g.Group(notes),
+	// 🔴 The disclosure renders in the WORKING state too, not only when the CTA is
+	// blocked. comfy_model_path is the single value deciding where gigabytes land, it
+	// is writable from exactly one control in the whole app, and a wrong-but-valid
+	// choice (a path that exists and is writable, so it passes validation) is
+	// otherwise uncorrectable in-app — there is no settings page. It sits AFTER the
+	// action, collapsed, so it never competes with the primary CTA; it costs nothing
+	// until opened, since the body is fetched on first toggle.
+	return h.Div(
+		h.Form(
+			hx("post", "/workflows/"+strconv.FormatInt(wfID, 10)+"/install-missing-and-run"),
+			hx("target", "#"+runStatusContainerID),
+			hx("swap", "innerHTML"),
+			hx("disabled-elt", "find button[type='submit']"),
+			hx("include", runModesInclude),
+			h.Class("mt-3 space-y-1"),
+			csrfInput(csrf),
+			g.Group(fields),
+			civButton("filled", "md", []g.Node{h.Type("submit")}, g.Text(label)),
+			h.P(h.Class("text-xs text-slate-400"), g.Text(batchInstallHint)),
+			g.Group(notes),
+		),
+		comfySetupDisclosure(wfID, true),
 	)
 }
 

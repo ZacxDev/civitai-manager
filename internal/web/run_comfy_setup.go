@@ -54,15 +54,27 @@ const comfySetupInputID = "comfy-model-path-input"
 // reachable, so the summary says so and the body explains before it offers.
 // It takes no CSRF token: the disclosure only issues a GET, and the form it loads
 // carries the server's own token (see comfySetupFragment).
-func comfySetupDisclosure(wfID int64) g.Node {
+//
+// 🔴 `configured` is why this renders in BOTH states. It used to have a single call
+// site, inside the `!p.Available` branch, so once a path was saved the disclosure
+// never rendered again — while its own body promised "Change it any time from this
+// panel". This app has no settings page, so that made the ONE value deciding where
+// gigabytes land uncorrectable in-app: only by writing the config.yaml this whole
+// control exists to avoid, or by hand-editing SQLite. The flag only picks the
+// summary wording — an unconfigured install is being asked to do a setup step, a
+// configured one is being offered a change.
+func comfySetupDisclosure(wfID int64, configured bool) g.Node {
+	summary := "Set up automatic install — civitai-manager needs to know where ComfyUI keeps its models"
+	if configured {
+		summary = "Change where civitai-manager installs model files"
+	}
 	return h.Details(
 		h.Class("mt-1"),
 		hx("get", "/workflows/"+strconv.FormatInt(wfID, 10)+"/comfy-setup"),
 		hx("trigger", "toggle once"),
 		hx("target", "#"+comfySetupContainerID),
 		hx("swap", "innerHTML"),
-		h.Summary(h.Class("cursor-pointer text-xs text-indigo-400"),
-			g.Text("Set up automatic install — civitai-manager needs to know where ComfyUI keeps its models")),
+		h.Summary(h.Class("cursor-pointer text-xs text-indigo-400"), g.Text(summary)),
 		h.Div(h.ID(comfySetupContainerID), h.Class("mt-1"),
 			h.P(h.Class("text-xs text-slate-500"), g.Text("Checking your ComfyUI…"))),
 	)
@@ -108,28 +120,47 @@ func (s *Server) comfySetupFragment(ctx context.Context, wfID int64, value, prob
 				g.Text("Until then, use the per-file options below to download each model yourself.")),
 		)
 	}
-	if p := s.comfyModelPath(); p != "" && problem == "" {
-		// Already configured — the disclosure should never contradict the panel.
-		return h.P(h.Class("text-xs text-slate-500"),
-			g.Text("ComfyUI's models folder is already set to "+p+"."))
-	}
+	// 🔴 A CONFIGURED install gets the form too, pre-filled with the saved path.
+	// This branch used to return that path as a bare sentence and nothing else, which
+	// made the body's closing "Change it any time from this panel" false even once the
+	// disclosure did render: there was no control to change it with. Showing the value
+	// read-only is the same dead end as naming the config key.
+	current := s.comfyModelPath()
 
+	// Precedence: what the user just typed (so a typo is corrected, not retyped), then
+	// the saved value, then the probe. The probe is LAST and is skipped entirely once
+	// a value exists — it is a network round-trip whose only job is to seed an empty
+	// field, and re-running it on a configured install would let a ComfyUI answer
+	// overwrite the operator's own saved choice in the input.
 	suggested := value
+	if suggested == "" {
+		suggested = current
+	}
 	if suggested == "" {
 		suggested = s.suggestComfyModelPath(ctx)
 	}
 
-	body := []g.Node{
-		h.P(h.Class("text-xs text-slate-400"),
+	var body []g.Node
+	if current == "" {
+		body = append(body, h.P(h.Class("text-xs text-slate-400"),
 			g.Text("civitai-manager writes missing model files straight into ComfyUI's models folder. "+
-				"Tell it where that is and the button above starts working.")),
+				"Tell it where that is and the button above starts working.")))
+	} else {
+		body = append(body, h.P(h.Class("text-xs text-slate-400"),
+			g.Text("civitai-manager currently installs model files into "+current+
+				". Save a different folder to change that.")))
 	}
-	if problem != "" {
+	switch {
+	case problem != "":
 		body = append(body, h.P(g.Attr("role", "status"), h.Class("text-xs text-amber-400"), g.Text(problem)))
-	} else if suggested != "" {
+	case current != "":
+		// Nothing to add: the line above already names the folder in force, and a
+		// "check it looks right" nudge belongs to a PROBE result, not to the value the
+		// operator chose themselves.
+	case suggested != "":
 		body = append(body, h.P(h.Class("text-xs text-slate-500"),
 			g.Text("Your ComfyUI reports this folder — check it looks right, then save it.")))
-	} else {
+	default:
 		body = append(body, h.P(h.Class("text-xs text-slate-500"),
 			g.Text("Your ComfyUI did not report a models folder, so type the full path to it "+
 				"(the folder containing checkpoints/ and loras/).")))
@@ -240,11 +271,27 @@ func (s *Server) handleComfySetupSave(w http.ResponseWriter, r *http.Request) {
 	raw := r.FormValue("model_path")
 	clean, problem := validateComfyModelPath(raw)
 	if problem != "" {
+		// 🔴 RETARGET, or a rejected path destroys the whole failure report. The form
+		// posts with hx-target="#run-status" because SUCCESS must re-render the panel
+		// (that is how the disabled CTA goes live in the same interaction) — but the
+		// rejection answer is ~1.3 KB containing only this form, and swapping THAT into
+		// #run-status deletes the headline, the lower-bound caveat, the CTA, the
+		// missing-nodes panel, every per-file picker, Technical details and "Run
+		// again". The user is left with a bare, context-free form.
+		//
+		// It is not a corner case: the typed-path branch is the documented degradation
+		// for EVERY probe failure (404 / timeout / tie / rejected suggestion), so the
+		// users most likely to be rejected are exactly those with no pre-filled value.
+		//
+		// The response is therefore the disclosure's INNER content and nothing else —
+		// same shape handleComfySetupForm returns, so the wrapper div is deliberately
+		// gone: with swap=innerHTML a wrapper carrying id="comfy-setup" would nest a
+		// second element of that id inside the first, one level deeper per rejection.
+		w.Header().Set("HX-Retarget", "#"+comfySetupContainerID)
 		// 200 + the form: htmx swaps a 4xx into nothing by default, and this app has
 		// no htmx:responseError handler anywhere (see the maturity control's shipped
 		// dead-button bug), so a status-coded rejection here would be invisible.
-		s.render(w, http.StatusOK, h.Div(h.ID(comfySetupContainerID), h.Class("mt-1"),
-			s.comfySetupFragment(r.Context(), id, raw, problem)))
+		s.render(w, http.StatusOK, s.comfySetupFragment(r.Context(), id, raw, problem))
 		return
 	}
 	if err := s.store.SetSetting(comfyModelPathSettingKey, clean); err != nil {
