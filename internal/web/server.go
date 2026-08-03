@@ -172,6 +172,13 @@ type Server struct {
 	// or nil before the first workflow scan is triggered.
 	workflowScanJob *workflowScanJob
 
+	// schemaMemo caches the DECODED 0019 /object_info payload, keyed on the raw blob.
+	// The pre-click readiness fragment is a separate lazy request per workflow-page
+	// view and decoding that payload costs ~73-113 ms on the operator's real row —
+	// see run_readiness_schema.go for the key, the safety argument and what it does
+	// NOT save. It carries a mutex, so *Server must not be copied (it never is).
+	schemaMemo readinessSchemaMemo
+
 	// importedWorkflowsFn answers "which of these civitai model ids already have
 	// workflows in the local library" for ONE rendered page of cards. Nil
 	// (production) uses store.CountWorkflowsByModels — a single batched query.

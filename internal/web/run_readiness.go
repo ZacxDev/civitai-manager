@@ -188,26 +188,12 @@ func (s *Server) workflowReadiness(wf *store.Workflow) readinessView {
 		return unknown(reasonMultiPipeline)
 	}
 
-	ent, err := s.store.GetComfyObjectInfo()
-	if err != nil {
-		s.log.Warn("readiness: read cached comfy object_info", "err", err)
-		return unknown(reasonUnreadableSchema)
-	}
-	if ent == nil || len(ent.ObjectInfoJSON) == 0 {
-		return unknown(reasonColdCache) // cold cache: expected, not a fault
-	}
-	var info comfy.ObjectInfo
-	if uerr := json.Unmarshal(ent.ObjectInfoJSON, &info); uerr != nil {
-		s.log.Warn("readiness: decode cached comfy object_info",
-			"err", uerr, "bytes", len(ent.ObjectInfoJSON))
-		return unknown(reasonUnreadableSchema)
-	}
-	if len(info) == 0 {
-		// A well-formed but EMPTY schema is not "nothing is installed" — it is a row
-		// we cannot trust. Every class in the graph would read as missing.
-		s.log.Warn("readiness: cached comfy object_info decoded to zero node types",
-			"bytes", len(ent.ObjectInfoJSON))
-		return unknown(reasonUnreadableSchema)
+	// The 0019 row, decoded ONCE per distinct payload rather than once per page view
+	// — a ~73-113 ms decode on the operator's real 4.66 MB row. See
+	// run_readiness_schema.go for the memo, its key, and what it does NOT save.
+	info, sreason := s.readinessSchema()
+	if sreason != "" {
+		return unknown(sreason)
 	}
 
 	apiGraph := json.RawMessage(wf.Graph)
