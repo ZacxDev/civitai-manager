@@ -450,6 +450,12 @@ func TestReadinessContainerIsLazyAndStable(t *testing.T) {
 	if strings.Contains(ext, "data-readiness=") {
 		t.Errorf("#%s must load LAZILY, not carry a pre-computed answer:\n%s", runReadinessID, ext)
 	}
+	// …but lazy must not mean EMPTY. The sibling #run-comfy-status renders "Checking
+	// ComfyUI…" while it loads; this one rendered nothing and popped in, which reads
+	// as a layout glitch rather than as work in progress.
+	if !strings.Contains(ext, "Checking what this workflow needs") {
+		t.Errorf("#%s must render a placeholder while it loads:\n%s", runReadinessID, ext)
+	}
 }
 
 // TestReadinessIsLoopbackGated pins that the fragment is gated exactly like the
