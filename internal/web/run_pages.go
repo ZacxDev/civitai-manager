@@ -591,9 +591,16 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mr m
 // contributes none of them — quoting a number here would encode that coupling
 // into user-facing copy, and it would be wrong the moment both sources
 // contribute.
-const lowerBoundNoticeText = "Heads up: this is a lower bound, not a complete list. " +
-	"The missing custom nodes below were dropped from the graph, so any model files that only they " +
-	"use are not listed here. Install the nodes first, then run again to see everything that is needed."
+//
+// ⚠ SHORTENED, NOT WEAKENED (it was 246 characters). Every load-bearing element is
+// still here and was checked off individually: it names the bound in the same words
+// ("a lower bound, not a complete list"), it states NO count, it gives the CAUSE
+// (the dropped nodes took their references with them) so the reader can tell this
+// is not a hedge, and it names the SECOND ROUND. What went was the restatement of
+// the mechanism in a second clause. Do not shorten it further by dropping the cause
+// or the next step — a caveat the reader cannot act on is one they learn to skip.
+const lowerBoundNoticeText = "This is a lower bound, not a complete list: the missing custom nodes below " +
+	"took their own model files out of the graph with them. Install the nodes, then run again to see the rest."
 
 // lowerBoundNotice renders lowerBoundNoticeText, or nil when the graph is whole
 // (an api-format workflow, or a UI conversion that removed nothing — then the
@@ -645,26 +652,26 @@ func failureTitle(snap runSnapshot, nm, nn int) string {
 // case where it does not.
 func failureLead(snap runSnapshot, nm, nn int, canInstall bool) string {
 	switch {
-	case nm > 0 && nn > 0:
-		if !canInstall {
-			return fmt.Sprintf("This workflow needs %d model file%s and %d custom node%s that are not installed in "+
-				"ComfyUI yet. This copy of civitai-manager cannot fetch the model files for you — see the options "+
-				"for each one below.", nm, plural(nm), nn, plural(nn))
-		}
-		return fmt.Sprintf("Nothing is broken — this workflow just needs %d model file%s and %d custom node%s "+
-			"that are not installed in ComfyUI yet. Add them and it should run.", nm, plural(nm), nn, plural(nn))
-	case nm > 0:
-		if !canInstall {
-			return fmt.Sprintf("This workflow needs %d model file%s that %s not installed in ComfyUI yet. "+
-				"This copy of civitai-manager cannot fetch %s for you — see the options for each one below.",
-				nm, plural(nm), isAre(nm), itThem(nm))
-		}
-		return fmt.Sprintf("Nothing is broken — this workflow just needs %d model file%s that %s not installed "+
-			"in ComfyUI yet. Install %s and it should run.",
-			nm, plural(nm), isAre(nm), itThem(nm))
-	case nn > 0:
-		return fmt.Sprintf("This workflow uses %d custom node%s that %s not installed in ComfyUI yet. "+
-			"Install %s and it should run.", nn, plural(nn), isAre(nn), itThem(nn))
+	case nm > 0 && !canInstall:
+		// Deliberately SILENT. The old copy here said "this copy of civitai-manager
+		// cannot fetch the model files for you", which is no longer true — the disabled
+		// CTA now carries a setup step that makes it able to. Repeating a dead end
+		// directly above the control that offers the way out is worse than saying
+		// nothing, so the disabled button and its disclosure speak for themselves.
+		//
+		// 🔴 The guard is `nm > 0 && !canInstall`, NOT `!canInstall`. canInstall is
+		// about MODEL files only (comfy_model_path + a local ComfyUI); a nodes-only
+		// failure is installed through ComfyUI-Manager and needs none of that, so
+		// keying the whole lead off canInstall silently blanked a state that was never
+		// blocked. Caught by TestRunFailureNodeAndOptionCopy.
+		return ""
+	case nm > 0 || nn > 0:
+		// 🔴 The COUNTS are the headline's job, and repeating them here was pure
+		// restatement — measured at 194 characters directly under a headline that had
+		// just said the same thing. The lead now adds only what the headline cannot:
+		// that this is a setup gap rather than a broken workflow, plus the promise the
+		// primary action is about to deliver.
+		return "Nothing is broken — these are just not installed in ComfyUI yet. Add them and it should run."
 	case snap.Preflight != nil && len(snap.Preflight.BadOptions) > 0:
 		return "Some settings saved with this workflow no longer exist on your installed nodes. " +
 			"Pick a valid choice for each one below, then run."
@@ -686,6 +693,11 @@ func failureTechnicalDetail(snap runSnapshot, nm, nn int) g.Node {
 	var body []g.Node
 	if hasSummary && strings.TrimSpace(snap.Message) != "" {
 		body = append(body, h.P(h.Class("text-xs text-slate-400 break-all"), g.Text(snap.Message)))
+	}
+	// The custom-node methodology lives here rather than above the recovery actions —
+	// it is provenance, not instruction. See nodePackProvenanceNotes.
+	if snap.Preflight != nil && len(snap.Preflight.MissingNodes) > 0 {
+		body = append(body, nodePackProvenanceNotes(snap.NodeAttr)...)
 	}
 	if len(snap.Warnings) > 0 {
 		body = append(body, missingList("Conversion warnings", snap.Warnings))

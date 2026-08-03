@@ -50,8 +50,11 @@ func TestRunFailureLeadsWithSummaryThenOnePrimaryAction(t *testing.T) {
 	// 1. Plain-language headline + lead naming the count in user terms.
 	for _, want := range []string{
 		"Run failed — 2 model files missing",
+		// The lead no longer RESTATES the count — that is the headline's job, and
+		// repeating it measured 194 characters of pure duplication. What the lead
+		// still owes the reader is that this is a setup gap, not a broken workflow.
 		"Nothing is broken",
-		"2 model files that are not installed in ComfyUI yet",
+		"Add them and it should run",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("failure state missing plain-language copy %q:\n%s", want, body)
@@ -151,8 +154,9 @@ func TestRunFailureSingularCopy(t *testing.T) {
 
 	for _, want := range []string{
 		"Run failed — 1 model file missing",
-		"1 model file that is not installed",
-		"Install it and it should run",
+		// The COUNT is carried by the headline and by the CTA label; the lead is
+		// count-free on purpose (see failureLead).
+		"Add them and it should run",
 		"Install 1 missing model file and run",
 	} {
 		if !strings.Contains(body, want) {
@@ -174,15 +178,24 @@ func TestRunFailurePrimaryActionDisabledWhenIneligible(t *testing.T) {
 	if !strings.Contains(body, "Install 2 missing model files and run") || !strings.Contains(body, "disabled") {
 		t.Errorf("expected a disabled primary action:\n%s", body)
 	}
-	if !strings.Contains(body, "comfy_model_path") {
-		t.Errorf("disabled primary action must explain itself:\n%s", body)
+	// "Explain itself" now means OFFER THE FIX, not name a config key: the disabled
+	// action carries the setup disclosure that makes it live.
+	if !strings.Contains(body, `hx-get="/workflows/7/comfy-setup"`) {
+		t.Errorf("disabled primary action must offer the setup step:\n%s", body)
+	}
+	if !strings.Contains(body, "where ComfyUI keeps its models") {
+		t.Errorf("the setup step must say what it needs in plain words:\n%s", body)
 	}
 	// The lead is GATED on the CTA being able to deliver.
 	if strings.Contains(body, "Nothing is broken") || strings.Contains(body, "Install them and it should run") {
 		t.Errorf("lead must not promise an install the disabled CTA cannot perform:\n%s", body)
 	}
-	if !strings.Contains(body, "cannot fetch them for you") {
-		t.Errorf("lead must name the real next step when installing is unavailable:\n%s", body)
+	// The lead used to say "this copy of civitai-manager cannot fetch them for you".
+	// That is now FALSE — the setup disclosure asserted above makes it able to — so
+	// the blocked state is deliberately lead-free, and the guard is INVERTED: a dead
+	// end must not be stated above a control that offers the way out.
+	if strings.Contains(body, "cannot fetch") {
+		t.Errorf("the blocked lead must not claim a dead end the setup step disproves:\n%s", body)
 	}
 }
 
@@ -294,8 +307,13 @@ func TestInstallMissingAndRunInstallsViaHFFallback(t *testing.T) {
 }
 
 // TestBatchInstallDisabledOnlyWhenServerCannotInstall: the ONE decisive precondition is
-// dlEligible, and its reason is the actionable one (a config line), never the softer
-// per-file uncertainty.
+// dlEligible, never the softer per-file uncertainty.
+//
+// The blocked branch used to be asserted by grepping for the string
+// "comfy_model_path" — i.e. that the panel NAMED the config key. That expectation
+// was inverted deliberately: naming the key in config-file jargon under a dead
+// button IS the defect. The assertion now pins the recovery AFFORDANCE (the setup
+// disclosure's GET route), which is the thing a user can act on.
 func TestBatchInstallDisabledOnlyWhenServerCannotInstall(t *testing.T) {
 	snap := twoMissingSnapshot()
 	snap.Preflight = &comfy.PreflightReport{MissingModels: []string{"mystery-MISSING.bin"}}
@@ -311,8 +329,13 @@ func TestBatchInstallDisabledOnlyWhenServerCannotInstall(t *testing.T) {
 	if strings.Contains(body, "install-missing-and-run") {
 		t.Errorf("an ineligible server must not offer the POST:\n%s", body)
 	}
-	if !strings.Contains(body, "comfy_model_path") {
-		t.Errorf("the disabled reason must be the actionable eligibility one:\n%s", body)
+	if !strings.Contains(body, `hx-get="/workflows/7/comfy-setup"`) {
+		t.Errorf("a blocked CTA must offer the setup step, not just name a config key:\n%s", body)
+	}
+	// The button is still THERE, disabled — hiding it would delete the signpost for
+	// the recovery path the disclosure unblocks.
+	if !strings.Contains(body, "Install 1 missing model file and run") {
+		t.Errorf("the blocked CTA must stay rendered and disabled:\n%s", body)
 	}
 }
 
@@ -453,8 +476,10 @@ func TestFailureHeadlineAgreesWithTheCTA(t *testing.T) {
 	if !strings.Contains(body, "Install 1 missing model file and run") {
 		t.Errorf("CTA count changed unexpectedly:\n%s", body)
 	}
-	if !strings.Contains(body, "1 model file that is not installed") {
-		t.Errorf("the lead must agree too:\n%s", body)
+	// The lead cannot DISAGREE with the headline any more, because it no longer
+	// carries a count at all — which is a stronger form of the same invariant.
+	if strings.Contains(body, "2 model files") {
+		t.Errorf("nothing in the report may quote the raw preflight count:\n%s", body)
 	}
 
 	// Fallback: an OLDER snapshot with no enriched analysis has no triage to count, so the
@@ -523,7 +548,8 @@ func TestRunFailureNodeAndOptionCopy(t *testing.T) {
 	}{
 		"nodes only": {
 			&comfy.PreflightReport{MissingNodes: []string{"CR Float To Integer"}},
-			[]string{"Run failed — 1 custom node missing", "1 custom node that is not installed"},
+			// The count lives in the headline only; the lead is count-free.
+			[]string{"Run failed — 1 custom node missing", "Add them and it should run"},
 		},
 		"models and nodes": {
 			&comfy.PreflightReport{MissingModels: []string{"a.safetensors"}, MissingNodes: []string{"N1", "N2"}},

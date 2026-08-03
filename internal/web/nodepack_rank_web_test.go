@@ -219,7 +219,7 @@ func TestAmbiguityNoticeNamesEveryContestedClass(t *testing.T) {
 	}
 	body := renderMissingNodesPanel(t, attr)
 
-	if !strings.Contains(body, "More than one pack claims Alpha and Beta.") {
+	if !strings.Contains(body, "More than one pack claims Alpha and Beta") {
 		t.Errorf("the notice does not name every contested class:\n%s", body)
 	}
 }

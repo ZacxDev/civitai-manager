@@ -42,7 +42,7 @@ func comfyURLIsLocal(comfyURL string) bool {
 // since, the actual download (comfy.WriteModelStream) fails cleanly and the user
 // sees the error — button visibility does not need the stronger probe.
 func (s *Server) comfyDownloadEligible() bool {
-	root := strings.TrimSpace(s.cfg.ComfyModelPath)
+	root := strings.TrimSpace(s.comfyModelPath())
 	if root == "" {
 		return false
 	}
@@ -195,7 +195,7 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 	// what makes any earlier install (right or wrong) permanent, so it must not look
 	// like a fresh download.
 	if subdir, ok := comfy.TypeSubdir(typ); ok {
-		if dest, derr := comfy.SafeModelDest(s.cfg.ComfyModelPath, subdir, filename); derr == nil && fileExists(dest) {
+		if dest, derr := comfy.SafeModelDest(s.comfyModelPath(), subdir, filename); derr == nil && fileExists(dest) {
 			s.startRunWithMessage(wf, runOptions{}, alreadyInstalledNote(filename))
 			s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
 			return
@@ -322,7 +322,7 @@ func (s *Server) handleWorkflowInstallOptionAndRun(w http.ResponseWriter, r *htt
 	// Fast path: a routable CivitAI type whose destination already exists → skip the
 	// network and run with the picked option-fixes (the original value is valid).
 	if subdir, ok := comfy.TypeSubdir(typ); ok {
-		if dest, derr := comfy.SafeModelDest(s.cfg.ComfyModelPath, subdir, filename); derr == nil && fileExists(dest) {
+		if dest, derr := comfy.SafeModelDest(s.comfyModelPath(), subdir, filename); derr == nil && fileExists(dest) {
 			s.startRunWithMessage(wf, opts, alreadyInstalledNote(filename))
 			s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
 			return
@@ -436,10 +436,15 @@ const (
 // then makes every later click a no-op).
 func (s *Server) resolveInstallPlan(ctx context.Context, filename, typ string, chosenModel int) (installPlan, installResolveOutcome) {
 	want := path.Base(strings.ReplaceAll(filename, "\\", "/"))
+	// Read the effective models root ONCE: both branches below resolve a destination
+	// under it, and the batch handler calls this per file. Re-reading it per branch
+	// would also let the two destinations disagree if the setting changed between
+	// them.
+	modelRoot := s.comfyModelPath()
 
 	// CivitAI branch — needs a routable type so the destination subdir is defined.
 	if subdir, ok := comfy.TypeSubdir(typ); ok {
-		if dest, err := comfy.SafeModelDest(s.cfg.ComfyModelPath, subdir, filename); err == nil {
+		if dest, err := comfy.SafeModelDest(modelRoot, subdir, filename); err == nil {
 			src, out := s.resolveDownloadSource(ctx, filename, typ, chosenModel)
 			switch out {
 			case resolveInstallOK:
@@ -467,7 +472,7 @@ func (s *Server) resolveInstallPlan(ctx context.Context, filename, typ string, c
 	// be a substitution.
 	if chosenModel == 0 {
 		if m := s.resolveHF(ctx, filename); m != nil && s.hfInstallEligible(m) {
-			if dest, err := comfy.SafeModelDest(s.cfg.ComfyModelPath, m.Subdir, m.FileName); err == nil {
+			if dest, err := comfy.SafeModelDest(modelRoot, m.Subdir, m.FileName); err == nil {
 				return installPlan{
 					FileName:       m.FileName,
 					RemoteFileName: m.FileName,

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
+	g "maragu.dev/gomponents"
 )
 
 // The `resolve_node_packs` opt-out. Custom-node attribution reaches TWO public
@@ -215,9 +216,13 @@ func TestNodePackEgressNoticeMatchesState(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			body := renderString(t, missingNodesPanel(
-				nodeAttribution{ManagerPresent: true, RemoteLookup: c.remote},
-				[]string{"SomeUnplaceableNode"}, 9, "TOKEN", "/opt/ComfyUI"))
+			// The egress disclosure is PROVENANCE and now renders inside the failure
+			// report's "Technical details" disclosure rather than at the top of the
+			// missing-nodes panel. What it must say is unchanged and is still pinned
+			// here — only the surface it is read from moved.
+			attr := nodeAttribution{ManagerPresent: true, RemoteLookup: c.remote,
+				Unattributed: []string{"SomeUnplaceableNode"}}
+			body := renderString(t, g.Group(nodePackProvenanceNotes(attr)))
 			for _, w := range c.want {
 				if !strings.Contains(body, w) {
 					t.Errorf("missing %q in:\n%s", w, body)

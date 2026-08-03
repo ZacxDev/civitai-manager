@@ -175,16 +175,26 @@ func installAllMissingAction(p batchInstallPlan, total int, wfID int64, csrf str
 	}
 	n := len(p.Installable)
 	if !p.Available {
-		// dlEligible is the ACTIONABLE blocker (a config line the user can add), so it
-		// wins whenever it applies; "nothing to install" is only reachable with an empty
-		// set and is a defensive fallback.
-		reason := installMissingUnavailable
+		// 🔴 The blocker here is ACTIONABLE — comfy_model_path is a value the user can
+		// supply — so the panel offers the SETUP STEP instead of naming the config key
+		// and stopping. This used to render installMissingUnavailable as a flat
+		// sentence ("Installing automatically needs comfy_model_path set and comfy_url
+		// pointing at a ComfyUI on this machine"), which is 141 characters of
+		// config-file jargon under the panel's PRIMARY action, telling the reader what
+		// is wrong while offering no way to fix it. Measured on the operator's install:
+		// their ComfyUI answers on loopback and they have no config.yaml at all, so
+		// they were exactly one value away from this button working.
+		//
+		// The button stays rendered-and-DISABLED rather than hidden (the rule
+		// installAndRunButton follows) so the recovery path is still visible as the
+		// thing being unblocked. Its `title` is gone deliberately: a native tooltip is
+		// unreachable by keyboard and this repo has already had one race a CSS popover
+		// — the disclosure below carries the same information as real text.
 		return h.Div(h.Class("mt-3 space-y-1"),
 			civButton("filled", "md", []g.Node{
 				h.Type("button"), h.Disabled(),
-				g.Attr("title", reason),
 			}, g.Text(fmt.Sprintf("Install %d missing model file%s and run", total, plural(total)))),
-			h.P(h.Class("text-xs text-slate-500"), g.Text(reason)),
+			comfySetupDisclosure(wfID, false),
 		)
 	}
 
@@ -214,18 +224,28 @@ func installAllMissingAction(p batchInstallPlan, total int, wfID int64, csrf str
 			g.Text(fmt.Sprintf("At most %d files are installed per click, so %d are left for a second click.",
 				maxBatchInstallFiles, p.Overflow))))
 	}
-	return h.Form(
-		hx("post", "/workflows/"+strconv.FormatInt(wfID, 10)+"/install-missing-and-run"),
-		hx("target", "#"+runStatusContainerID),
-		hx("swap", "innerHTML"),
-		hx("disabled-elt", "find button[type='submit']"),
-		hx("include", runModesInclude),
-		h.Class("mt-3 space-y-1"),
-		csrfInput(csrf),
-		g.Group(fields),
-		civButton("filled", "md", []g.Node{h.Type("submit")}, g.Text(label)),
-		h.P(h.Class("text-xs text-slate-400"), g.Text(batchInstallHint)),
-		g.Group(notes),
+	// 🔴 The disclosure renders in the WORKING state too, not only when the CTA is
+	// blocked. comfy_model_path is the single value deciding where gigabytes land, it
+	// is writable from exactly one control in the whole app, and a wrong-but-valid
+	// choice (a path that exists and is writable, so it passes validation) is
+	// otherwise uncorrectable in-app — there is no settings page. It sits AFTER the
+	// action, collapsed, so it never competes with the primary CTA; it costs nothing
+	// until opened, since the body is fetched on first toggle.
+	return h.Div(
+		h.Form(
+			hx("post", "/workflows/"+strconv.FormatInt(wfID, 10)+"/install-missing-and-run"),
+			hx("target", "#"+runStatusContainerID),
+			hx("swap", "innerHTML"),
+			hx("disabled-elt", "find button[type='submit']"),
+			hx("include", runModesInclude),
+			h.Class("mt-3 space-y-1"),
+			csrfInput(csrf),
+			g.Group(fields),
+			civButton("filled", "md", []g.Node{h.Type("submit")}, g.Text(label)),
+			h.P(h.Class("text-xs text-slate-400"), g.Text(batchInstallHint)),
+			g.Group(notes),
+		),
+		comfySetupDisclosure(wfID, true),
 	)
 }
 
@@ -350,7 +370,7 @@ func (s *Server) handleWorkflowInstallMissingAndRun(w http.ResponseWriter, r *ht
 		seen[key] = true
 		// Fast path: the destination already holds this file → nothing to fetch.
 		if subdir, ok := comfy.TypeSubdir(typ); ok {
-			if dest, derr := comfy.SafeModelDest(s.cfg.ComfyModelPath, subdir, name); derr == nil && fileExists(dest) {
+			if dest, derr := comfy.SafeModelDest(s.comfyModelPath(), subdir, name); derr == nil && fileExists(dest) {
 				present++
 				continue
 			}

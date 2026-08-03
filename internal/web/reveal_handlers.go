@@ -237,7 +237,7 @@ func (s *Server) graphical() func() bool {
 // model_root, and a user who writes that has disabled their own containment
 // check on purpose.
 func (s *Server) revealRoots() []string {
-	candidates := []string{s.cfg.ModelRoot, s.cfg.ComfyModelPath}
+	candidates := []string{s.cfg.ModelRoot, s.comfyModelPath()}
 	candidates = append(candidates, s.cfg.LibraryPaths...)
 	if s.store != nil {
 		if sel, err := s.store.ListScanDirs(); err == nil {

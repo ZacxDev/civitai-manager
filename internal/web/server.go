@@ -196,6 +196,13 @@ type Server struct {
 	// Nil (production) builds a comfy.Client from cfg.ComfyURL/ComfyToken; tests
 	// inject a fake to exercise the real run orchestration and the view proxy.
 	comfyClientFn func() comfyClient
+	// folderPathsFn is the ComfyUI models-root probe seam (GET
+	// /internal/folder_paths), used ONLY to pre-fill the run panel's comfy_model_path
+	// setup step. It is a standalone seam rather than a comfyClient method because
+	// exactly one surface calls it, and widening that interface would force every
+	// existing fake in the package to grow a method it does not care about. Nil
+	// (production) builds a comfy.Client from cfg.ComfyURL/ComfyToken.
+	folderPathsFn func(ctx context.Context) (map[string][]string, error)
 	// managerClientFn builds the ComfyUI-Manager client used by custom-node
 	// attribution and the gated node-pack install. Nil (production) builds a
 	// comfy.Client from cfg.ComfyURL/ComfyToken; tests inject a fake so the
@@ -724,6 +731,12 @@ func (s *Server) Handler() http.Handler {
 	// The failure panel's ONE primary recovery action: install every missing model
 	// file, then run (all-or-nothing on resolution — see run_install_all.go).
 	mux.HandleFunc("POST /workflows/{id}/install-missing-and-run", s.handleWorkflowInstallMissingAndRun)
+	// The setup step BEHIND that action when it is unavailable: capture ComfyUI's
+	// models folder (pre-filled from the running ComfyUI when it can say) so the
+	// primary CTA stops rendering dead. Both halves are loopback-gated — they hand
+	// out and accept an arbitrary filesystem path. See run_comfy_setup.go.
+	mux.HandleFunc("GET /workflows/{id}/comfy-setup", s.handleComfySetupForm)
+	mux.HandleFunc("POST /workflows/{id}/comfy-setup", s.handleComfySetupSave)
 	mux.HandleFunc("GET /workflows/{id}/run/comfy-status", s.handleWorkflowRunComfyStatus)
 	// The pre-click readiness line. Same lazy-fragment shape as comfy-status, but it
 	// contacts NOTHING — it answers from the 0019 object_info cache plus the local

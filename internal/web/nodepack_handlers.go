@@ -253,7 +253,7 @@ func (s *Server) startNodepackInstall(pack comfy.Pack) (bool, string) {
 		s.nodepackMu.Unlock()
 		return false, "Another node-pack install is already running. Wait for it to finish."
 	}
-	manual, _ := manualInstallCommand(pack, s.cfg.ComfyRoot)
+	manual, _ := manualInstallCommand(pack, s.comfyRoot())
 	job := &nodepackJob{
 		running:   true,
 		title:     packDisplayTitle(pack),
