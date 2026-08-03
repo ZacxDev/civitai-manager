@@ -281,16 +281,37 @@ func readinessGlyph(s readinessState) (glyph, state string) {
 	}
 }
 
-// readinessSentence is the whole of the copy. Three rules it must keep:
+// readinessSentence is the whole of the copy. Four rules it must keep:
 //
 //   - "ready" claims only what was checked: node types and model files against the
 //     cached schema and the local library. It does not promise the run succeeds.
 //   - "needs" states COUNTS, and says "at least" whenever the graph was incomplete.
 //   - "unknown" always names WHY, and never implies the workflow is fine.
+//   - 🔴 EVERY STATE SAYS WHAT IT COUNTS, and the subject is "a run".
+//
+// The fourth rule is the fix for a reported confusion: this line said "3 model
+// files" on a page whose "Referenced resources" card showed 6 chips, and the
+// original explanation — the converter cut a node — was only ONE of FOUR reasons
+// the two numbers differ:
+//
+//  1. a cut node's model references vanish with it (the "at least" hedge, and the
+//     only source that hedge covers);
+//  2. wf.Resources comes from ExtractResourcesAny → extractResourcesUI with
+//     activeOnly=false, so it DELIBERATELY includes bypassed pipelines;
+//  3. the UI extractor scans every node's widgets_values while ExtractResources on
+//     the api graph looks only at loader classes;
+//  4. wf.Resources is a snapshot written at INSERT time and never recomputed.
+//
+// On a template pack (2) is likely the dominant source — the repo documents 15-31
+// optional groups on pack 1386234 — and the hedge does not fire for it at all. So
+// the label cannot enumerate causes and stay true; it states the SCOPE instead,
+// which is true for all four. The chips card states its own scope (see
+// workflow_pages.go). Neither figure is changed: they count different things and
+// both are correct about the thing they count.
 func readinessSentence(v readinessView) string {
 	switch v.state {
 	case readinessReady:
-		return "Ready — every node type and model file this workflow references is installed."
+		return "Ready — every node type and model file a run would load is installed."
 	case readinessNeeds:
 		return readinessNeedsSentence(v)
 	default:
@@ -303,10 +324,11 @@ func readinessSentence(v readinessView) string {
 // option value that no longer exists on a node that IS installed.
 func readinessNeedsSentence(v readinessView) string {
 	var out []string
-	if parts := readinessCountParts(v); len(parts) > 0 {
-		lead := "Needs "
+	parts := readinessCountParts(v)
+	if len(parts) > 0 {
+		lead := "A run needs "
 		if v.graphIncomplete {
-			lead = "Needs at least "
+			lead = "A run needs at least "
 		}
 		// The relative clause has to agree with the TOTAL, not with the last part.
 		// The live sweep over the operator's 71 real workflows caught this rendering
@@ -319,12 +341,21 @@ func readinessNeedsSentence(v readinessView) string {
 		out = append(out, lead+joinAnd(parts)+tail)
 	}
 	if v.badOptions > 0 {
-		verb := " is "
-		if v.badOptions != 1 {
-			verb = " are "
+		count := readinessCount(v.badOptions, "saved option value", "saved option values")
+		if len(parts) == 0 {
+			// 🔴 THE ONLY FINDING, so it has to carry the lead itself. With zero missing
+			// nodes and zero missing models `parts` is empty, the "A run needs …" sentence
+			// above never renders, and the line was an amber ! beside a bare statement
+			// with nothing naming it as the thing to act on. Reachable (an installed node
+			// whose saved combo value drifted) and previously untested.
+			out = append(out, "A run needs "+count+" updated — no longer valid on your installed nodes.")
+		} else {
+			verb := " is "
+			if v.badOptions != 1 {
+				verb = " are "
+			}
+			out = append(out, count+verb+"no longer valid on your installed nodes.")
 		}
-		out = append(out, readinessCount(v.badOptions, "saved option value", "saved option values")+
-			verb+"no longer valid on your installed nodes.")
 	}
 	if v.graphIncomplete {
 		// The lower bound, named. A cut node's model references went with it, so the

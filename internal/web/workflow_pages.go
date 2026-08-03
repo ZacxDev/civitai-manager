@@ -1137,6 +1137,20 @@ func workflowDetailPage(wf *store.Workflow, csrf string, mr maturityRange, gener
 		kids := []g.Node{
 			sectionTitle("Referenced resources"),
 			workflowResourceChips(wf.Resources, resolver),
+			// 🔴 SAY WHAT THIS COUNTS. This card and the pre-click readiness line above
+			// legitimately disagree — 6 chips here beside "a run needs 3 model files" was
+			// reported as a contradiction — and there are FOUR reasons they differ, not
+			// one: wf.Resources comes from ExtractResourcesAny → extractResourcesUI with
+			// activeOnly=false (bypassed pipelines INCLUDED, likely the dominant source on
+			// a template pack); the UI extractor scans every node's widgets_values while
+			// the api-graph extractor looks only at loader classes; wf.Resources is a
+			// snapshot taken at INSERT time and never recomputed; and the converter may
+			// have cut a node. Enumerating those in the UI would be noise, and only the
+			// last one is covered by the readiness line's "at least" hedge — so both
+			// places state their SCOPE, which is true of all four. Neither number moves.
+			h.P(h.Class("text-xs text-slate-400 mt-2"),
+				g.Text("Everything the saved workflow file mentions, including pipelines that are "+
+					"switched off — so this can list more than any one run loads.")),
 		}
 		// The folder control execs a file manager on the SERVER. Say so once, here,
 		// rather than only in a tooltip — someone driving this UI from a phone or

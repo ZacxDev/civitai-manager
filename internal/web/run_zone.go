@@ -172,10 +172,30 @@ func runZone(wfID int64, csrf string, canQueue, editable bool) g.Node {
 	// Its container is STABLE and the fragment swaps its innerHTML, never the node
 	// (the repo's streaming-fragment invariant). It sits AFTER the hint deliberately:
 	// it is advisory, and the hint is what the count segment is aria-describedby.
+	//
+	// ⚠ KNOWN AND DEFERRED — THE LINE GOES STALE WITHIN A PAGE. It is fetched once,
+	// on load. On a fresh install the user reads "Not checked — run any workflow
+	// once", runs one (which warms the 0019 row), and the line still says "Not
+	// checked" until a full reload; the same happens in reverse after a library scan
+	// drops the row. The run poller swaps #run-status, not this container.
+	//
+	// It is NOT fixed here because the contained-looking fixes are not: re-fetching
+	// on a plain interval puts a permanent poll on every open workflow page for a
+	// line that almost never changes, and firing exactly once on the settle
+	// TRANSITION needs new run-job state threaded into handleWorkflowRunStatus (plus
+	// a second trigger on scan completion) — the poller cannot tell "settled" from
+	// "settled a while ago" today. Same plumbing the deferred mode-change re-trigger
+	// needs (see workflowReadiness), so the two should land together or not at all.
+	//
+	// The placeholder mirrors #run-comfy-status's "Checking ComfyUI…" a few lines
+	// up: without it the line renders EMPTY and then pops in, which reads as a
+	// layout glitch rather than as work in progress. It is plain text on purpose —
+	// no data-readiness attribute, so it can never be mistaken for an answer.
 	body = append(body, h.Div(h.ID(runReadinessID),
 		hx("get", "/workflows/"+id+"/run/readiness"),
 		hx("trigger", "load"),
 		hx("swap", "innerHTML"),
+		h.Span(h.Class("text-sm text-slate-400"), g.Text("Checking what this workflow needs…")),
 	))
 	return h.Div(body...)
 }
