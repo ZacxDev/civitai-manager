@@ -292,6 +292,120 @@ func TestRunFailureBlockedByARemoteComfyOffersNoSetupCTA(t *testing.T) {
 	}
 }
 
+// blockedPanelPointer is a pointer-shaped phrase the failure panel's copy may use,
+// paired with the on-page marker that phrase PROMISES the reader will find. Copy
+// containing the phrase while the page lacks the marker is a dangling
+// cross-reference — the defect TestBlockedCardReasonHoldsInBothBlockedStates exists
+// to catch.
+type blockedPanelPointer struct{ phrase, marker, what string }
+
+var blockedPanelPointers = []blockedPanelPointer{
+	{"setup step", "/comfy-setup", "a setup control"},
+	{"per-file options below", "Missing model files", "the per-file missing-models panel"},
+}
+
+// danglingPointersIn returns every pointer in copy whose promised marker is absent
+// from page.
+func danglingPointersIn(copy, page string) []string {
+	var bad []string
+	for _, p := range blockedPanelPointers {
+		if strings.Contains(copy, p.phrase) && !strings.Contains(page, p.marker) {
+			bad = append(bad, fmt.Sprintf("%q points at %s (%q), which is not on the page", p.phrase, p.what, p.marker))
+		}
+	}
+	return bad
+}
+
+// TestBlockedCardReasonHoldsInBothBlockedStates is the guard cardInstallBlockedText's
+// header cites. It did not exist until this fix round: the header claimed to be
+// "pinned by TestBlockedCardPointsAtTheSetupStepThatIsAlwaysAboveIt", and a
+// repo-wide grep for that name returned exactly one hit — the comment itself.
+//
+// 🔴 THE BUG IT WOULD HAVE CAUGHT, measured on runStatusFragment with ComfyRemote
+// set and one resolved CivitAI match: cardInstallBlockedText rendered saying "use
+// the setup step at the top of this report" while NO setup CTA and no /comfy-setup
+// control existed anywhere on the page. The old copy was written when the blocked
+// batch action always rendered comfySetupDisclosure; splitting blockedInstallAction
+// into SetupCanHelp / remote-comfy branches left the remote branch with no setup
+// control and the sentence dangling. It is the ordinary failure page for any user
+// whose comfy_url is not local, since resolutions are computed at run settle.
+//
+// The invariant is deliberately about the PAGE, not about one const: copy on this
+// panel may only point at a control the page actually contains. Both blocked states
+// are rendered whole, and the scan is fed a known-bad sentence in the state where
+// the marker is genuinely absent, so a green here is a fact about the scan as well
+// as about the copy.
+func TestBlockedCardReasonHoldsInBothBlockedStates(t *testing.T) {
+	// Every copy const that can render on this panel. Ones absent from a given
+	// state's body are skipped — the check is about what the reader actually sees.
+	panelCopy := []struct{ name, text string }{
+		{"cardInstallBlockedText", cardInstallBlockedText},
+		{"installRemoteComfyReason", installRemoteComfyReason},
+		{"installRemoteComfyNextStep", installRemoteComfyNextStep},
+		{"comfySetupWhyText", comfySetupWhyText},
+	}
+
+	for _, tc := range []struct {
+		name      string
+		remote    bool
+		wantSetup bool
+	}{
+		{"local ComfyUI, no models folder", false, true},
+		{"comfy_url points somewhere else", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := twoMissingSnapshot()
+			snap.ComfyRemote = tc.remote
+			// A resolved CivitAI match is what makes the per-card Install-and-run
+			// render at all, and with dlEligible false it renders BLOCKED — which is
+			// the only state carrying cardInstallBlockedText.
+			snap.MissingResolved = map[string]missingResolution{
+				"dreamshaperXL-MISSING.safetensors": {Reached: true, Result: resolveResult("A Match")},
+			}
+			body := renderString(t, runStatusFragment(snap, 7, "tok", false, fullMaturityRange()))
+
+			// PRECONDITION: the fixture really reaches the blocked card. Without a
+			// resolved match no card renders and every check below is about nothing.
+			if !strings.Contains(body, cardInstallBlockedText) {
+				t.Fatalf("precondition: want the blocked per-card reason on the page:\n%s", body)
+			}
+			// PRECONDITION: the two states really differ on the thing under test.
+			if got := strings.Contains(body, "/comfy-setup"); got != tc.wantSetup {
+				t.Fatalf("precondition: setup control present = %v, want %v — this case does "+
+					"not exercise the state it names:\n%s", got, tc.wantSetup, body)
+			}
+
+			// THE ASSERTION: no rendered copy points at a control that is not here.
+			checked := 0
+			for _, c := range panelCopy {
+				if !strings.Contains(body, c.text) {
+					continue // not rendered in this state
+				}
+				checked++
+				for _, bad := range danglingPointersIn(c.text, body) {
+					t.Errorf("%s dangles: %s\n%s", c.name, bad, body)
+				}
+			}
+			if checked == 0 {
+				t.Fatal("no panel copy was scanned — the table has gone stale against the render")
+			}
+
+			// NEGATIVE CONTROL. A scan that cannot fire reports zero danglers whatever
+			// the copy says, which is exactly how the original defect stayed invisible.
+			// In the state with no setup control, the sentence this test exists to
+			// forbid MUST be detected.
+			if !tc.wantSetup {
+				if hits := danglingPointersIn(
+					"civitai-manager cannot install this file for you yet — use the setup step "+
+						"at the top of this report, or download it from CivitAI yourself.", body); len(hits) == 0 {
+					t.Fatal("the cross-reference scan is asleep: it did not flag the exact " +
+						"sentence that shipped dangling, so its verdict on the real copy is worthless")
+				}
+			}
+		})
+	}
+}
+
 // TestBatchInstallKeepsUninferrableTypesAndFlagsThem is the REGRESSION GUARD for a
 // real capability loss an earlier revision introduced.
 //
