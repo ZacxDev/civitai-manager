@@ -59,6 +59,17 @@ type runGate struct {
 // 🔴 THE DISJUNCTION IS WRITTEN OUT ON PURPOSE. Do not collapse it into
 // `!ReportOK`: three of the four conditions are true of graphs preflight itself
 // calls OK, so any collapse silently re-opens exactly one of the holes above.
+//
+// ⚠ MEASURED, so nobody re-derives it: deleting `GraphIncomplete` from this
+// disjunction leaves the WHOLE suite green — BOTH surfaces. That is not a coverage
+// hole, it is the SECOND cover: evalRunGate below already forces `report.OK = false`
+// for an incomplete graph, so `!ReportOK` catches it too, and the merged
+// MissingNodes makes the readiness answer "needs" rather than "ready". Both covers
+// are deliberate; do not delete either on the grounds that the other exists.
+// Deleting any of the OTHER three turns both surfaces red (ConvWarned →
+// TestReadinessConvertWarnedIsUnknownNotReady + TestRunNeverSubmitsAWarnOnlyGraph;
+// NoNodes → the empty_object case of both gate suites; ReportOK → 3 readiness tests
+// + 8 run tests).
 func (g runGate) blocked() bool {
 	return g.ConvWarned || g.GraphIncomplete || g.NoNodes || !g.ReportOK
 }

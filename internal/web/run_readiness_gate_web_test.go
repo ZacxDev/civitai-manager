@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ZacxDev/civitai-manager/internal/comfy"
 	"github.com/ZacxDev/civitai-manager/internal/store"
 )
 
@@ -125,6 +126,49 @@ func TestRunNeverSubmitsAnUnusableGraph(t *testing.T) {
 				t.Errorf("the run did not stop at the gate (want %q):\n%s", tc.runWant, body)
 			}
 		})
+	}
+}
+
+// TestRunNeverSubmitsAWarnOnlyGraph closes a coverage hole this change's own
+// mutation sweep found: deleting `g.ConvWarned` from runGate.blocked() turned the
+// READINESS suite red and left the RUN suite entirely green, because every existing
+// run-side warning fixture ALSO has a missing node type and is therefore blocked
+// twice over. A shared predicate only stays shared if both surfaces can discriminate
+// it.
+//
+// readinessWarnInfo installs the node WITHOUT input_order, so the converter warns
+// while nothing at all is missing — the only combination that isolates ConvWarned.
+func TestRunNeverSubmitsAWarnOnlyGraph(t *testing.T) {
+	srv := newLibraryTestServer(t, t.TempDir())
+	fake := &fakeComfy{
+		info: mustObjectInfo(t, readinessWarnInfo),
+		// Programmed history: without it a WRONGLY submitted graph polls /history until
+		// pollRunUntilDone's deadline and the failure reads "run did not finish" — a red
+		// for the wrong reason. See nodepackFakeComfy.
+		history: &comfy.HistoryEntry{
+			Status: comfy.HistoryStatus{Completed: true, StatusStr: "success"},
+		},
+	}
+	srv.comfyClientFn = func() comfyClient { return fake }
+
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, readinessWarnGraph)
+	if r := post(t, srv, "/workflows/"+id+"/run", nil, true); r.Code != http.StatusOK {
+		t.Fatalf("run start = %d", r.Code)
+	}
+	body := pollRunUntilDone(t, srv, id)
+
+	if fake.submitCalled {
+		t.Fatalf("SUBMITTED a graph whose conversion only WARNED: %s", fake.submittedGraph)
+	}
+	// INTERMEDIATE STATE: the fixture really did reach the warn-only case. If nothing
+	// were missing AND nothing warned, this would be the ready path and "did not
+	// submit" would be measuring a run that was blocked for some other reason.
+	if !strings.Contains(body, "input_order") {
+		t.Errorf("fixture reached the wrong branch — no conversion warning was raised:\n%s", body)
+	}
+	if strings.Contains(body, "Preflight failed") {
+		t.Errorf("fixture reached the wrong branch — something was MISSING, so ConvWarned "+
+			"is not the condition under test:\n%s", body)
 	}
 }
 
