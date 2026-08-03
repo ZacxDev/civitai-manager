@@ -1,0 +1,227 @@
+package web
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/ZacxDev/civitai-manager/internal/comfy"
+	"github.com/ZacxDev/civitai-manager/internal/store"
+)
+
+// contestedNodesSnapshot reproduces the operator's measured workflow-590 state: a
+// preflight failure with missing model files AND one missing node type claimed by
+// TWO packs — the tight, correct one and the sprawling alternative.
+//
+// The two packs' signals are deliberately OPPOSED in the way that matters here:
+// the winner is the one with the SMALLER surface (4 claimed classes vs 93), so a
+// collapse keyed on anything but the ranking would pick the wrong one.
+func contestedNodesSnapshot() runSnapshot {
+	return runSnapshot{
+		Started: true, WorkflowID: 7, Phase: runPhaseFailed,
+		Message:         "Preflight failed.",
+		GraphIncomplete: true,
+		Preflight: &comfy.PreflightReport{
+			MissingModels: []string{"upscaler.pth"},
+			MissingNodes:  []string{"UltimateSDUpscale"},
+		},
+		MissingModels: []comfy.MissingModel{
+			{Filename: "upscaler.pth", Query: "upscaler", CivitaiType: "Upscaler"},
+		},
+		MissingResolved: map[string]missingResolution{},
+		LibMeta:         map[string]store.LocalModelMeta{},
+		NodeAttr: nodeAttribution{
+			ManagerPresent: true,
+			RemoteLookup:   true,
+			Packs: []comfy.Pack{
+				{ID: "ultimate", Title: "ComfyUI_UltimateSDUpscale",
+					Repository: "https://github.com/ssitu/ComfyUI_UltimateSDUpscale",
+					Classes:    []string{"UltimateSDUpscale"}, ClaimedClasses: 4,
+					Source: comfy.SourceMap, Installable: true},
+				{ID: "promptchain", Title: "ComfyUI-PromptChain",
+					Repository: "https://github.com/mobcat40/ComfyUI-PromptChain",
+					Classes:    []string{"UltimateSDUpscale"}, ClaimedClasses: 93,
+					Source: comfy.SourceMap, Installable: true},
+			},
+		},
+	}
+}
+
+// TestAlternativePackIsCollapsedButStillReachable is the guard for the runner-up
+// collapse. Both halves are load-bearing and are asserted separately:
+//
+//	COLLAPSED  — it must not render as a peer of the best match;
+//	REACHABLE  — it must still be present, named, and installable.
+//
+// The ranking is a heuristic over a third-party index, so hiding the alternative
+// outright would make a guess authoritative.
+func TestAlternativePackIsCollapsedButStillReachable(t *testing.T) {
+	body := renderString(t, runStatusFragment(contestedNodesSnapshot(), 7, "tok", true, fullMaturityRange()))
+
+	// PRECONDITION: the fixture really did produce a contest, and the app ranked the
+	// tight pack first. Without this the rest is green on a panel with no contest.
+	if !strings.Contains(body, "More than one pack claims UltimateSDUpscale") {
+		t.Fatalf("precondition: the fixture must produce a contested class:\n%s", body)
+	}
+	if !strings.Contains(body, "Best match") || !strings.Contains(body, "Also claims it") {
+		t.Fatalf("precondition: the fixture must produce a best/alternative split:\n%s", body)
+	}
+
+	// REACHABLE — present, named, and its Install button intact.
+	for _, want := range []string{
+		"ComfyUI-PromptChain",
+		"https://github.com/mobcat40/ComfyUI-PromptChain",
+		"Install ComfyUI-PromptChain",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the alternative pack must stay reachable, missing %q:\n%s", want, body)
+		}
+	}
+
+	// COLLAPSED — inside a <details>, and the summary names it so the disclosure is
+	// not a mystery box.
+	summary := "Other pack claiming the same node: ComfyUI-PromptChain"
+	if !strings.Contains(body, summary) {
+		t.Errorf("the alternative must sit behind a summary naming it (%q):\n%s", summary, body)
+	}
+	alt := strings.Index(body, "Install ComfyUI-PromptChain")
+	det := strings.Index(body, summary)
+	if det < 0 || alt < 0 || det > alt {
+		t.Fatalf("the alternative must render AFTER its summary (summary=%d alt=%d)", det, alt)
+	}
+	// The BEST match must NOT be behind that disclosure — it is the answer.
+	best := strings.Index(body, "Install ComfyUI_UltimateSDUpscale")
+	if best < 0 {
+		t.Fatalf("the best match must stay expanded:\n%s", body)
+	}
+	if best > det {
+		t.Errorf("the best match must render BEFORE the alternatives disclosure (best=%d summary=%d)", best, det)
+	}
+}
+
+// TestUncontestedPacksAreNeverCollapsed is the other side of the collapse rule, and
+// it is the case a position-based implementation gets WRONG: three missing node
+// types from three different packs means three REQUIRED packs, and hiding the
+// second and third would hide work the user has to do.
+func TestUncontestedPacksAreNeverCollapsed(t *testing.T) {
+	snap := contestedNodesSnapshot()
+	snap.Preflight.MissingNodes = []string{"NodeA", "NodeB", "NodeC"}
+	snap.NodeAttr.Packs = []comfy.Pack{
+		{ID: "a", Title: "PackA", Repository: "https://github.com/x/a",
+			Classes: []string{"NodeA"}, ClaimedClasses: 3, Source: comfy.SourceMap, Installable: true},
+		{ID: "b", Title: "PackB", Repository: "https://github.com/x/b",
+			Classes: []string{"NodeB"}, ClaimedClasses: 3, Source: comfy.SourceMap, Installable: true},
+		{ID: "c", Title: "PackC", Repository: "https://github.com/x/c",
+			Classes: []string{"NodeC"}, ClaimedClasses: 3, Source: comfy.SourceMap, Installable: true},
+	}
+	body := renderString(t, runStatusFragment(snap, 7, "tok", true, fullMaturityRange()))
+
+	// PRECONDITION: nothing is contested here, so nothing may collapse.
+	if strings.Contains(body, "Also claims it") {
+		t.Fatalf("precondition: this fixture must produce NO contest:\n%s", body)
+	}
+	if strings.Contains(body, "claiming the same node") {
+		t.Errorf("three separately-needed packs must not be collapsed as alternatives:\n%s", body)
+	}
+	for _, want := range []string{"Install PackA", "Install PackB", "Install PackC"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("every REQUIRED pack must stay expanded, missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// TestLowerBoundNoticeStaysAboveTheInstallCTA is the ordering guard the caveat's
+// own comment demands: the CTA is a promise ("install these and it should run")
+// and the reader has to know the list is bounded BEFORE acting on it.
+//
+// It pins position, presence, and the two things the wording must never do — quote
+// a count, or read as a complete list.
+func TestLowerBoundNoticeStaysAboveTheInstallCTA(t *testing.T) {
+	body := renderString(t, runStatusFragment(contestedNodesSnapshot(), 7, "tok", true, fullMaturityRange()))
+
+	notice := strings.Index(body, lowerBoundNotice190Marker)
+	if notice < 0 {
+		t.Fatalf("the lower-bound caveat is missing entirely:\n%s", body)
+	}
+	// PRECONDITION: the CTA is actually present in this render, or "above" is vacuous.
+	cta := strings.Index(body, "install-missing-and-run")
+	if cta < 0 {
+		t.Fatalf("precondition: this fixture must render the install CTA:\n%s", body)
+	}
+	if notice > cta {
+		t.Errorf("the caveat must render ABOVE the install CTA (caveat=%d cta=%d):\n%s", notice, cta, body)
+	}
+	// It must also stay above the missing-nodes panel it refers to.
+	if nodes := strings.Index(body, "Missing custom nodes"); nodes >= 0 && notice > nodes {
+		t.Errorf("the caveat must render above the panels it qualifies (caveat=%d nodes=%d)", notice, nodes)
+	}
+}
+
+// TestFailureReportDoesNotRestateItsOwnHeadline guards item 4: the counts belong to
+// the headline, and the lead repeating them was 194 characters of duplication.
+func TestFailureReportDoesNotRestateItsOwnHeadline(t *testing.T) {
+	body := renderString(t, runStatusFragment(contestedNodesSnapshot(), 7, "tok", true, fullMaturityRange()))
+
+	if !strings.Contains(body, "Run failed — 1 model file and 1 custom node are missing") {
+		t.Fatalf("precondition: want the counted headline:\n%s", body)
+	}
+	// The old lead's shape, in both numbers, must not come back.
+	for _, banned := range []string{
+		"This workflow needs 1 model file",
+		"1 model file that is not installed",
+		"1 custom node that is not installed",
+	} {
+		if strings.Contains(body, banned) {
+			t.Errorf("the lead restates the headline (%q):\n%s", banned, body)
+		}
+	}
+}
+
+// TestManualInstallNoteRendersOnceForTheWholePanel guards the de-duplication: the
+// per-pack COMMANDS stay (each names a different repository), the identical
+// after-install advice does not repeat per pack.
+func TestManualInstallNoteRendersOnceForTheWholePanel(t *testing.T) {
+	body := renderString(t, runStatusFragment(contestedNodesSnapshot(), 7, "tok", true, fullMaturityRange()))
+
+	// PRECONDITION: two packs really are rendered, so a per-pack duplicate WOULD
+	// appear twice if it existed.
+	if n := strings.Count(body, "git clone"); n != 2 {
+		t.Fatalf("precondition: want 2 manual commands (one per pack), got %d:\n%s", n, body)
+	}
+	if n := strings.Count(body, "requirements.txt"); n != 1 {
+		t.Errorf("the after-install note must render once, got %d occurrences:\n%s", n, body)
+	}
+}
+
+// TestNodePackMethodologyLivesInTechnicalDetails guards item 3 — relocation, NOT
+// deletion. Every relocated sentence must still be reachable, and must sit inside
+// the Technical details disclosure rather than above the recovery actions.
+func TestNodePackMethodologyLivesInTechnicalDetails(t *testing.T) {
+	body := renderString(t, runStatusFragment(contestedNodesSnapshot(), 7, "tok", true, fullMaturityRange()))
+
+	tech := strings.Index(body, "Technical details")
+	if tech < 0 {
+		t.Fatalf("precondition: want the Technical details disclosure:\n%s", body)
+	}
+	cta := strings.Index(body, "install-missing-and-run")
+	if cta < 0 {
+		t.Fatalf("precondition: want the install CTA:\n%s", body)
+	}
+
+	for _, moved := range []string{
+		"belongs to a custom-node pack",      // what a pack is
+		"api.comfy.org",                      // where the names come from
+		"ranked by how much of each pack is", // how the ranking works
+	} {
+		at := strings.Index(body, moved)
+		if at < 0 {
+			t.Errorf("relocated methodology was DELETED, not moved: %q missing", moved)
+			continue
+		}
+		if at < tech {
+			t.Errorf("%q still renders above Technical details (at=%d tech=%d)", moved, at, tech)
+		}
+		if at < cta {
+			t.Errorf("%q still renders before the primary action (at=%d cta=%d)", moved, at, cta)
+		}
+	}
+}
