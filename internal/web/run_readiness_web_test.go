@@ -394,12 +394,29 @@ func TestReadinessUnreadableCacheIsUnknown(t *testing.T) {
 
 // TestReadinessMissingWorkflowIsUnknown pins that a workflow deleted since the page
 // rendered degrades to the advisory unknown state rather than 404-ing a fragment
-// whose whole job is to be reassuring or not.
+// whose whole job is to be reassuring or not — and that it names its OWN cause.
+//
+// 🔴 This used to pin `cold`, which was the wrong reason and pinned the bug in
+// place. The cache here is deliberately WARM (seedObjectInfo above), so the
+// cold-cache text — "Run any workflow once and it will be checked from then on" —
+// was false about the cache and useless as advice: running a workflow does not
+// bring back a deleted row. Red at aadf83f, green at HEAD.
 func TestReadinessMissingWorkflowIsUnknown(t *testing.T) {
 	srv := newReadinessServer(t)
 	seedObjectInfo(t, srv, readinessInfo)
 
-	wantState(t, readiness(t, srv, "999999"), "unknown", "cold")
+	body := readiness(t, srv, "999999")
+	wantState(t, body, "unknown", "gone")
+	// The two reasons must not share prose either: this is the sentence a reader acts
+	// on, and the cold-cache advice is actively wrong here.
+	if strings.Contains(body, "Run any workflow once") {
+		t.Errorf("a deleted workflow must not be told to warm the node-list cache:\n%s", body)
+	}
+	// POSITIVE CONTROL for the fixture: the very same server, warm cache, answers
+	// READY for a workflow that exists. Without this, "unknown" would be equally
+	// consistent with a server that cannot answer anything at all.
+	id := seedWorkflow(t, srv, store.WorkflowFormatAPI, readinessReadyGraph)
+	wantState(t, readiness(t, srv, id), "ready", "")
 }
 
 // ── WIRING ───────────────────────────────────────────────────────────────────

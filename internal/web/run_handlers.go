@@ -925,7 +925,13 @@ func (s *Server) handleWorkflowRunReadiness(w http.ResponseWriter, r *http.Reque
 	}
 	wf, werr := s.store.GetWorkflow(r.Context(), id)
 	if werr != nil {
-		wf = nil // workflowReadiness answers "unknown" for a nil workflow
+		// A genuine read failure is NOT the same event as a deleted row, and it is the
+		// one worth a log line — the fragment says the same thing either way (there is
+		// no workflow to check), but only one of the two is a fault.
+		if !errors.Is(werr, store.ErrNotFound) {
+			s.log.Warn("readiness: read workflow", "err", werr, "workflow_id", id)
+		}
+		wf = nil // workflowReadiness answers unknown/reasonNoWorkflow for a nil workflow
 	}
 	s.render(w, http.StatusOK, runReadinessFragment(s.workflowReadiness(wf)))
 }

@@ -94,6 +94,16 @@ const (
 	// a straight lie; but the warnings are not a count of anything, so "needs N" would
 	// be one too.
 	reasonConvertWarned readinessReason = "warnings"
+	// reasonNoWorkflow — there is no workflow to check: the row is gone (deleted or
+	// re-scanned away since the page rendered), or the read itself failed.
+	//
+	// 🔴 IT IS NOT reasonColdCache, which is what this used to answer. The cold-cache
+	// text tells the user "Run any workflow once and it will be checked from then on"
+	// — advice that is false here (the cache may be perfectly warm) and useless here
+	// (running a workflow does not bring back a deleted row). Every reason in this
+	// list must name a DIFFERENT cause, or "could not check" is indistinguishable
+	// from a bug in this code.
+	reasonNoWorkflow readinessReason = "gone"
 	// reasonUnusableGraph — the stored graph is not an api graph this app can
 	// validate: comfy.Preflight either could not parse it (a UI graph stored as api, a
 	// JSON array, a bare string, garbage bytes) or parsed it to ZERO nodes.
@@ -141,7 +151,7 @@ func (s *Server) workflowReadiness(wf *store.Workflow) readinessView {
 		return readinessView{state: readinessUnknown, reason: r}
 	}
 	if wf == nil {
-		return unknown(reasonColdCache)
+		return unknown(reasonNoWorkflow)
 	}
 
 	ent, err := s.store.GetComfyObjectInfo()
@@ -322,6 +332,8 @@ func readinessCountParts(v readinessView) []string {
 // a bug in this code.
 func readinessReasonText(r readinessReason) string {
 	switch r {
+	case reasonNoWorkflow:
+		return "this workflow is no longer in your library, so there is nothing to check. Reload the page."
 	case reasonColdCache:
 		return "this app has not seen your ComfyUI's node list yet. Run any workflow once and it will be checked from then on."
 	case reasonUnreadableSchema:
