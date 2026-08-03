@@ -58,17 +58,21 @@ func missingNodesPanel(attr nodeAttribution, missing []string, wfID int64, csrf,
 		unattributed = missing
 	}
 
+	// 🔴 The panel opens on the ACTIONABLE content. The three meta-explanations that
+	// used to sit here — what a custom-node pack is, where the names come from, and
+	// how the ranking works — were measured at 23.3% of the whole failure report's
+	// text, rendered BEFORE anything the reader could act on. Not one word was
+	// wrong, which is why it grew; it is provenance, so it moved WHOLE into the
+	// report's existing "Technical details" disclosure (see nodePackProvenanceNotes).
+	// Do not reintroduce an explanatory paragraph here.
 	body := []g.Node{
 		h.Div(h.Class("text-xs font-semibold text-slate-200"), g.Text("Missing custom nodes")),
-		h.P(h.Class("text-xs text-slate-400"),
-			g.Text("This workflow uses node types your ComfyUI does not have. "+
-				"Each one belongs to a custom-node pack — install the packs below (or by hand), "+
-				"then restart ComfyUI and run again.")),
 	}
+	// The Manager-state note STAYS: it is not methodology, it is why the Install
+	// buttons are absent right now.
 	if note := managerStateNote(attr); note != nil {
 		body = append(body, note)
 	}
-	body = append(body, nodePackEgressNotice(attr.RemoteLookup))
 
 	// Rank BEFORE splitting: contest detection has to see every claimant of a class,
 	// and a class can legitimately be claimed by an exact-match pack and a
@@ -95,6 +99,16 @@ func missingNodesPanel(attr nodeAttribution, missing []string, wfID int64, csrf,
 	if len(unattributed) > 0 {
 		body = append(body, unattributedNodesSection(unattributed))
 	}
+	// ONE shared after-install note, rendered once for the whole panel. It used to be
+	// repeated verbatim under every pack's manual command (232 characters × N packs),
+	// which is the same words telling the user the same thing two or three times in
+	// one screen. The COMMANDS stay per-pack — each names a different repository — but
+	// what to do afterwards is identical for all of them.
+	if len(ranked) > 0 {
+		body = append(body, h.P(h.Class("text-xs text-slate-500"),
+			g.Text("After installing any of these by hand, restart ComfyUI. Some packs also need "+
+				"their requirements.txt installed into ComfyUI's Python environment.")))
+	}
 	// Stable container for the install confirmation / progress / result and the
 	// restart control. Empty until the user acts.
 	body = append(body, h.Div(h.ID(nodepackStatusContainerID)))
@@ -102,6 +116,40 @@ func missingNodesPanel(attr nodeAttribution, missing []string, wfID int64, csrf,
 		body = append(body, h.Div(h.Class("pt-1"), restartComfyButton(csrf)))
 	}
 	return h.Div(h.Class("mt-2 space-y-2"), g.Group(body))
+}
+
+// nodePackProvenanceNotes is the custom-node METHODOLOGY, relocated out of the
+// failure panel's opening and into the report's "Technical details" disclosure.
+//
+// 🔴 Nothing here was deleted or softened — this is the same text, moved. It answers
+// "where did these names come from and how were they ordered?", which is a real and
+// answerable question, but it is provenance: it explains the machinery rather than
+// telling the reader what to do. Rendered first, it was 606 characters (23.3% of the
+// whole report) standing between a failed run and its recovery actions.
+//
+// It returns nil when there are no attributed packs, so a report with nothing to
+// explain gains no empty section.
+func nodePackProvenanceNotes(attr nodeAttribution) []g.Node {
+	ranked := rankPacks(attr.Packs)
+	if len(ranked) == 0 && len(attr.Unattributed) == 0 {
+		return nil
+	}
+	notes := []g.Node{
+		h.P(h.Class("text-xs text-slate-400"),
+			g.Text("Each missing node type belongs to a custom-node pack. Installing the pack (from "+
+				"here or by hand) and restarting ComfyUI is what makes the node type exist.")),
+		nodePackEgressNotice(attr.RemoteLookup),
+	}
+	// The ranking explanation is only meaningful when something was actually
+	// contested — otherwise there was no ordering decision to justify.
+	if len(contestedClasses(ranked)) > 0 {
+		notes = append(notes, h.P(h.Class("text-xs text-slate-400"),
+			g.Text("Where more than one pack claims a node type they are listed best match first, "+
+				"ranked by how much of each pack is what you actually need. That is a guess from "+
+				"ComfyUI-Manager's index, not a certainty — which is why the alternatives stay "+
+				"installable rather than being hidden.")))
+	}
+	return notes
 }
 
 // nodePackEgressNotice renders the data-egress disclosure, in the same spirit as
@@ -212,10 +260,14 @@ func ambiguityNotice(ranked []rankedPack) g.Node {
 	if len(contested) == 0 {
 		return nil
 	}
-	msg := "More than one pack claims " + joinAnd(contested) + ". " +
-		"They are listed best match first — ranked by how much of each pack is what you " +
-		"actually need — but this is a guess from ComfyUI-Manager's index, not a certainty. " +
-		"Check the repository before installing."
+	// ⚠ SHORTENED here, RELOCATED not deleted: the explanation of HOW the ranking is
+	// computed (and that it is a guess from a third-party index) is methodology and
+	// now lives in the Technical details disclosure — see nodePackProvenanceNotes.
+	// What stays is the part the reader must act on, because the consequence is
+	// concrete: installing the wrong claimant writes an unrelated pack (93 node types,
+	// in the measured case) into their ComfyUI.
+	msg := "More than one pack claims " + joinAnd(contested) +
+		" — check the repository before installing."
 	return h.P(g.Attr("role", "status"), h.Class("text-xs text-amber-400"), g.Text(msg))
 }
 
@@ -264,8 +316,28 @@ func managerStateNote(attr nodeAttribution) g.Node {
 	return h.P(g.Attr("role", "status"), h.Class("text-xs text-amber-400"), g.Text(note))
 }
 
-// nodepackGroup renders one confidence rung: a heading, an optional caveat, and
-// one card per pack.
+// nodepackGroup renders one confidence rung: a heading, an optional caveat, the
+// packs the workflow actually needs, and — collapsed — the alternative claimants.
+//
+// 🔴 THE SPLIT IS "IS THIS PACK NEEDED, OR IS IT AN ALTERNATIVE TO ONE THAT IS?",
+// NOT "is it first in the list". That distinction is the whole correctness of this
+// collapse and it is easy to get wrong:
+//
+//   - A pack that is UNCONTESTED is the only claimant of a class this workflow is
+//     missing, so it is genuinely required. Three missing node types from three
+//     different packs means three required packs, and collapsing two of them would
+//     HIDE work the user has to do.
+//   - A pack that is contested and NOT the best claimant is an alternative answer to
+//     a class another pack already covers. Only these collapse.
+//
+// Measured case: ComfyUI_UltimateSDUpscale (4 node types) and ComfyUI-PromptChain
+// (93) both claim UltimateSDUpscale. The app already ranked them correctly and then
+// rendered the LOSER fully expanded — repository line, provides-list, scope line,
+// Install button and its own manual command — at 18% of the whole report.
+//
+// They are COLLAPSED, never dropped: the ranking is a heuristic over a third-party
+// index, so the user must be able to reach and install the alternative. The summary
+// states how many there are so the disclosure is not a mystery.
 func nodepackGroup(title, caveat string, packs []rankedPack, managerPresent bool, wfID int64, csrf, comfyRoot string) g.Node {
 	body := []g.Node{
 		h.Div(h.Class("text-xs font-semibold text-slate-300"), g.Text(title)),
@@ -273,10 +345,51 @@ func nodepackGroup(title, caveat string, packs []rankedPack, managerPresent bool
 	if caveat != "" {
 		body = append(body, h.P(h.Class("text-xs text-slate-500"), g.Text(caveat)))
 	}
-	for _, p := range packs {
+
+	needed, alternatives := splitNeededFromAlternatives(packs)
+	for _, p := range needed {
 		body = append(body, nodepackCard(p, managerPresent, wfID, csrf, comfyRoot))
 	}
+	if len(alternatives) > 0 {
+		alts := make([]g.Node, 0, len(alternatives))
+		for _, p := range alternatives {
+			alts = append(alts, nodepackCard(p, managerPresent, wfID, csrf, comfyRoot))
+		}
+		body = append(body, h.Details(h.Class("mt-1"),
+			h.Summary(h.Class("cursor-pointer text-xs text-slate-400"),
+				g.Text(alternativesSummary(alternatives))),
+			h.Div(h.Class("mt-1 space-y-2"), g.Group(alts)),
+		))
+	}
 	return h.Div(h.Class("mt-2 space-y-2"), g.Group(body))
+}
+
+// splitNeededFromAlternatives partitions a rung by the rule documented on
+// nodepackGroup. Order is preserved within each half.
+func splitNeededFromAlternatives(packs []rankedPack) (needed, alternatives []rankedPack) {
+	for _, p := range packs {
+		if p.Contested && !p.Best {
+			alternatives = append(alternatives, p)
+			continue
+		}
+		needed = append(needed, p)
+	}
+	return needed, alternatives
+}
+
+// alternativesSummary names what is behind the disclosure. It names the packs when
+// there are few enough for the line to stay one line, because "ComfyUI-PromptChain"
+// is a far better decision aid than "1 other pack".
+func alternativesSummary(alts []rankedPack) string {
+	if len(alts) <= 2 {
+		names := make([]string, 0, len(alts))
+		for _, a := range alts {
+			names = append(names, packDisplayTitle(a.Pack))
+		}
+		return "Other pack" + plural(len(alts)) + " claiming the same node" + plural(len(alts)) +
+			": " + joinAnd(names)
+	}
+	return strconv.Itoa(len(alts)) + " other packs claim the same node types"
 }
 
 // nodepackCard is one attributed pack: its title, the repository URL as VISIBLE
@@ -427,14 +540,14 @@ func manualInstallBlock(p comfy.Pack, comfyRoot string) g.Node {
 			g.Text("This pack has no usable repository URL, so there is no command to run. "+
 				"Search for it by name in ComfyUI-Manager."))
 	}
+	// The COMMAND is per-pack (it names this pack's repository). The "then restart
+	// ComfyUI / requirements.txt" note that used to follow it here is identical for
+	// every pack and is now rendered ONCE by missingNodesPanel — do not put it back.
 	return h.Div(h.Class("pt-1"),
 		h.Div(h.Class("text-xs text-slate-500"), g.Text("Or install it by hand:")),
 		h.Pre(h.Class("mt-1 overflow-x-auto rounded border border-slate-800 p-2"),
 			h.Code(h.Class("font-mono text-xs text-slate-300"), g.Text(cmd)),
 		),
-		h.P(h.Class("text-xs text-slate-500"),
-			g.Text("Then restart ComfyUI. Some packs also need their requirements.txt installed "+
-				"into ComfyUI's Python environment.")),
 	)
 }
 
