@@ -30,6 +30,21 @@ type PreflightReport struct {
 	// OK is true when there are no missing nodes, no missing models, and no bad
 	// combo-option values.
 	OK bool
+	// Nodes is how many graph nodes this report was computed over.
+	//
+	// 🔴 ZERO MEANS THE PAYLOAD WAS NOT A USABLE api GRAPH AT ALL — either it did
+	// not parse (a UI graph stored as api, a JSON array, a bare string, garbage
+	// bytes) or it parsed to an empty object. THE THREE LISTS ABOVE CANNOT TELL YOU
+	// THAT: they are empty for a perfect graph and equally empty for a graph with
+	// nothing in it, and OK is `true` for `{}` because nothing failed validation.
+	// This field is the only thing that separates the two.
+	//
+	// 🔴 IT IS DELIBERATELY NOT FOLDED INTO OK. OK answers "did anything fail
+	// validation", and a graph with nothing in it failed nothing. The decision that
+	// DOES care — never submit / never claim ready — lives in exactly one place,
+	// internal/web's runGate, so the run path and the pre-click readiness line can
+	// never answer it differently again.
+	Nodes int
 }
 
 // BadOption is one combo (enum) input whose current value is not a valid choice on
@@ -68,7 +83,9 @@ func Preflight(apiGraph json.RawMessage, info ObjectInfo, localHave func(filenam
 	var nodes map[string]apiNode
 	if err := json.Unmarshal(apiGraph, &nodes); err != nil {
 		// A graph we cannot parse cannot be pre-flighted; report not-OK with no
-		// specifics rather than panicking on untrusted input.
+		// specifics rather than panicking on untrusted input. Nodes stays 0, which is
+		// what tells a caller this is "not a graph" rather than "a clean graph" —
+		// every list below is empty in BOTH cases.
 		return PreflightReport{OK: false}
 	}
 
@@ -107,6 +124,7 @@ func Preflight(apiGraph json.RawMessage, info ObjectInfo, localHave func(filenam
 		MissingNodes:  sortedKeys(missingNodesSet),
 		MissingModels: sortedKeys(missingModelsSet),
 		BadOptions:    detectBadOptions(nodes, info, modelRefSet),
+		Nodes:         len(nodes),
 	}
 	report.OK = len(report.MissingNodes) == 0 &&
 		len(report.MissingModels) == 0 &&

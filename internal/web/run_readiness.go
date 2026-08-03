@@ -44,7 +44,17 @@ import (
 // claim completeness the bound does not have.
 //
 // WHAT IT REUSES rather than re-deciding: comfy.ConvertUIToAPIResult, comfy.Preflight,
-// mergeMissingNodes and Server.localHaveFile — the same four decisions realRun makes.
+// Server.localHaveFile and — the load-bearing one — evalRunGate, realRun's own
+// never-submit predicate, which also performs the mergeMissingNodes union.
+//
+// 🔴 THAT GATE IS SHARED, NOT MIRRORED, AND IT MUST STAY THAT WAY. This function
+// originally re-implemented the decision from the three preflight counts plus
+// conv.Warnings, and the copy was strictly weaker than the original: it never read
+// report.OK, so an api graph comfy.Preflight could not parse — which reports OK:false
+// with all three lists EMPTY — fell through every count and rendered "Ready". See
+// run_gate.go for the measured blast radius. Mutating the gate must break tests on
+// BOTH surfaces; that is the evidence there is only one copy.
+//
 // The one thing it deliberately does NOT share is realRun's per-run mutation of the
 // graph (mode selection, parameter overrides, substitutions): this answers about the
 // STORED workflow, which is what the page is showing.
@@ -84,6 +94,17 @@ const (
 	// a straight lie; but the warnings are not a count of anything, so "needs N" would
 	// be one too.
 	reasonConvertWarned readinessReason = "warnings"
+	// reasonUnusableGraph — the stored graph is not an api graph this app can
+	// validate: comfy.Preflight either could not parse it (a UI graph stored as api, a
+	// JSON array, a bare string, garbage bytes) or parsed it to ZERO nodes.
+	//
+	// 🔴 THIS IS THE STATE THAT USED TO RENDER "Ready". Preflight answers `OK:false`
+	// with all three lists EMPTY for a graph it could not parse, and `OK:true` with
+	// all three lists empty for `{}` — so a count-driven decision sees a spotless
+	// report either way. It is separated from reasonConvertFailed because that one is
+	// the UI→API CONVERTER erroring; this one is the api graph itself being unusable,
+	// which is reachable with no conversion in sight.
+	reasonUnusableGraph readinessReason = "graph"
 )
 
 // readinessView is the resolved answer the fragment renders.
@@ -157,28 +178,35 @@ func (s *Server) workflowReadiness(wf *store.Workflow) readinessView {
 	}
 
 	report := comfy.Preflight(apiGraph, info, s.localHaveFile)
-	// The SAME union realRun's never-submit gate builds: a UI graph has the unknown
-	// class cut out before preflight sees it, an api graph keeps it verbatim.
-	nodes := mergeMissingNodes(report.MissingNodes, conv.MissingNodeTypes)
+	// 🔴 THE SAME never-submit decision realRun makes, from the SAME function — not a
+	// second copy of it. evalRunGate also performs the MissingNodes union (a UI graph
+	// has the unknown class cut out before preflight sees it, an api graph keeps it
+	// verbatim), so report.MissingNodes below is already merged. See run_gate.go.
+	gate := evalRunGate(conv, &report)
+	if !gate.blocked() {
+		return readinessView{state: readinessReady}
+	}
 
 	v := readinessView{
-		missingNodes:    len(nodes),
+		missingNodes:    len(report.MissingNodes),
 		missingModels:   len(report.MissingModels),
 		badOptions:      len(report.BadOptions),
-		graphIncomplete: len(conv.MissingNodeTypes) > 0,
+		graphIncomplete: gate.GraphIncomplete,
 	}
 	if v.missingNodes+v.missingModels+v.badOptions > 0 {
 		v.state = readinessNeeds
 		return v
 	}
-	// Nothing structured is missing — but realRun still refuses a graph that only
-	// WARNED, so this is not ready either. Report it as unknown rather than inventing
-	// a count for something that has none.
-	if len(conv.Warnings) > 0 {
-		return unknown(reasonConvertWarned)
+	// Blocked with nothing to count. Name WHICH of the gate's countless conditions
+	// fired — "could not check" with no cause is indistinguishable from a bug here.
+	if gate.NoNodes || !gate.ReportOK {
+		// !ReportOK with every list empty is comfy.Preflight's parse-failure return,
+		// which also leaves Nodes at 0; the second test is belt-and-braces so a future
+		// not-OK-with-no-specifics answer cannot fall through to a warning it did not
+		// produce.
+		return unknown(reasonUnusableGraph)
 	}
-	v.state = readinessReady
-	return v
+	return unknown(reasonConvertWarned)
 }
 
 // runReadinessFragment renders the ONE quiet line: a state glyph plus a sentence.
@@ -302,6 +330,8 @@ func readinessReasonText(r readinessReason) string {
 		return "this workflow's graph could not be converted to API format."
 	case reasonConvertWarned:
 		return "this workflow's graph did not convert cleanly, so it was not checked. Generate will report the details."
+	case reasonUnusableGraph:
+		return "this workflow's saved graph has no nodes this app can read, so there is nothing to check. Generate will refuse it too."
 	default:
 		return "this workflow could not be checked."
 	}
