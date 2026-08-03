@@ -183,8 +183,14 @@ func (s *Server) workflowReadiness(wf *store.Workflow) readinessView {
 	// (c) is the only one of the three that is correct at first paint AND after every
 	// pick, and it costs almost nothing: MEASURED on a copy of the operator's real
 	// database, 3 of 71 workflows carry a mode selector (ids 589, 588, 581).
-	if wf.Format == store.WorkflowFormatUI &&
-		len(comfy.DetectModeSelectors(json.RawMessage(wf.Graph))) > 0 {
+	//
+	// Asked through detectWorkflowModes (run_modes.go), which is the single place
+	// every other run surface asks it. This site open-coded the same
+	// `Format == UI && len(DetectModeSelectors(graph)) > 0` test — a third copy of a
+	// predicate in the PR whose whole thesis is one rule, one place. A drift here
+	// would be silent in the worst direction: the readiness line would answer for a
+	// template the run surfaces treat as multi-mode.
+	if len(detectWorkflowModes(wf)) > 0 {
 		return unknown(reasonMultiPipeline)
 	}
 
@@ -291,7 +297,7 @@ func readinessGlyph(s readinessState) (glyph, state string) {
 //
 // The fourth rule is the fix for a reported confusion: this line said "3 model
 // files" on a page whose "Referenced resources" card showed 6 chips, and the
-// original explanation — the converter cut a node — was only ONE of FOUR reasons
+// original explanation — the converter cut a node — was only ONE of THREE reasons
 // the two numbers differ:
 //
 //  1. a cut node's model references vanish with it (the "at least" hedge, and the
@@ -299,13 +305,22 @@ func readinessGlyph(s readinessState) (glyph, state string) {
 //  2. wf.Resources comes from ExtractResourcesAny → extractResourcesUI with
 //     activeOnly=false, so it DELIBERATELY includes bypassed pipelines;
 //  3. the UI extractor scans every node's widgets_values while ExtractResources on
-//     the api graph looks only at loader classes;
-//  4. wf.Resources is a snapshot written at INSERT time and never recomputed.
+//     the api graph looks only at loader classes.
+//
+// ⚠ A FOURTH SOURCE WAS LISTED HERE AND IT IS NOT REAL: "wf.Resources is a snapshot
+// written at INSERT time and never recomputed". Verified in internal/store/
+// workflows.go — UpsertWorkflowByPath's ON CONFLICT sets `resources =
+// excluded.resources` in the SAME statement as `graph = excluded.graph`, and no
+// other `UPDATE workflows` in the package touches either column (they move
+// name/model_id/version_id/is_golden/updated_at only). So a re-scan refreshes both
+// together and the plain InsertWorkflow path writes both exactly once. resources
+// cannot go stale RELATIVE TO THE GRAPH, which is the only staleness that could
+// make these two figures disagree. Do not re-add it.
 //
 // On a template pack (2) is likely the dominant source — the repo documents 15-31
 // optional groups on pack 1386234 — and the hedge does not fire for it at all. So
 // the label cannot enumerate causes and stay true; it states the SCOPE instead,
-// which is true for all four. The chips card states its own scope (see
+// which is true for all three. The chips card states its own scope (see
 // workflow_pages.go). Neither figure is changed: they count different things and
 // both are correct about the thing they count.
 func readinessSentence(v readinessView) string {
