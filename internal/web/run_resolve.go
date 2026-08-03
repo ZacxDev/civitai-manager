@@ -535,6 +535,23 @@ func civitaiMatchSection(mm comfy.MissingModel, res missingResolution, wfID int6
 	return h.Div(g.Group(body))
 }
 
+// cardInstallBlockedText is the reason under a blocked per-card "Install and run".
+//
+// 🔴 It names NO config key, and it carries no `title` tooltip. Both were live
+// defects: `title` is unreachable by keyboard and has already raced a CSS popover in
+// this repo, and "Set comfy_model_path to install here" tells a reader with no
+// config.yaml what is wrong in config-file vocabulary while offering nothing to do
+// about it — the same dead end blockedInstallAction removed one level up.
+//
+// It points AT that control rather than duplicating it. A per-card setup form would
+// mean N copies of id="comfy-setup" on one page, and this card only ever renders
+// inside missingModelsPanel, which renders only when snap.MissingModels is non-empty
+// — exactly the condition under which runFailure has already rendered the batch
+// action, and therefore the setup CTA, above it. Pinned by
+// TestBlockedCardPointsAtTheSetupStepThatIsAlwaysAboveIt.
+const cardInstallBlockedText = "civitai-manager cannot install this file for you yet — use the setup step " +
+	"at the top of this report, or download it from CivitAI yourself."
+
 // installAndRunButton renders the "Install and run" CTA for a resolved CivitAI
 // model card. When the download-and-run flow is eligible (comfy_model_path +
 // local ComfyUI + a routable type) it POSTs the (CSRF-carrying) download-and-run
@@ -557,12 +574,10 @@ func installAndRunButton(mm comfy.MissingModel, modelID int, dlEligible bool, wf
 			h.Div(h.Class("flex flex-wrap items-center gap-2"),
 				civButton("filled", "sm", []g.Node{
 					h.Type("button"), h.Disabled(),
-					g.Attr("title", "Set comfy_model_path to install here."),
 				}, g.Text("Install and run")),
 				viewOnCivitaiLink(civitaiModelURL(modelID)),
 			),
-			h.P(h.Class("text-xs text-slate-500"),
-				g.Text("Set comfy_model_path to install here.")),
+			h.P(h.Class("text-xs text-slate-500"), g.Text(cardInstallBlockedText)),
 		)
 	}
 	vals := map[string]string{"csrf_token": csrf, "filename": mm.Filename, "type": mm.CivitaiType}

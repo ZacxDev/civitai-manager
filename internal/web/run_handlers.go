@@ -788,6 +788,25 @@ type runSnapshot struct {
 	Aborted         bool
 	UIFormat        bool
 	Stopped         bool
+	// ComfyRemote reports that comfy_url does NOT point at a ComfyUI on this
+	// machine, which is the ONE cause of a blocked install that no in-app control
+	// can fix. The failure panel branches on it: with a local ComfyUI a blocked
+	// install is one folder choice away, so the panel offers that choice as its
+	// primary action; with a remote one there is nothing to offer and a primary
+	// CTA would be a dead end (see installAllMissingAction).
+	//
+	// It travels on the snapshot rather than as yet another parameter threaded
+	// through the whole run-status fragment chain — the same reasoning, and the same
+	// precedent, as nodeAttribution.ComfyRoot. It is CONFIG, not job state:
+	// comfy_url cannot change without a restart, so a snapshot can carry it without
+	// ever going stale.
+	//
+	// 🔴 The field is deliberately spelled REMOTE, not Local. A zero-valued
+	// runSnapshot (every test literal, and the no-job case) then means "ComfyUI is
+	// on this machine", which is the default configuration and the overwhelmingly
+	// common state. Spelled the other way, the safe-looking default would silently
+	// route every such snapshot down the no-affordance branch.
+	ComfyRemote bool
 	// Batch progress. BatchTotal <= 1 is a single run and every batch-aware render
 	// falls back to today's markup exactly. All four are snapshotted under the SAME
 	// runMu hold as the rest of the view, so a poller can never observe a torn
@@ -810,6 +829,10 @@ func (s *Server) runJobState() runSnapshot {
 	if j == nil {
 		return runSnapshot{}
 	}
+	// Config, read here rather than captured at settle so it is right on every
+	// render (see runSnapshot.ComfyRemote). s.cfg is immutable for the process, so
+	// reading it under runMu costs nothing and keeps the snapshot self-consistent.
+	comfyRemote := !comfyURLIsLocal(s.cfg.ComfyURL)
 	imgs := make([]comfy.ImageRef, len(j.images))
 	copy(imgs, j.images)
 	warns := make([]string, len(j.warnings))
@@ -821,7 +844,8 @@ func (s *Server) runJobState() runSnapshot {
 		MissingResolved: j.missingResolved, LibMeta: j.libMeta, NodeAttr: j.nodeAttr,
 		Warnings: warns, GraphIncomplete: j.graphIncomplete,
 		Aborted: j.aborted, UIFormat: j.uiFormat, Stopped: j.stopped,
-		BatchID: j.batchID, BatchIndex: j.batchIndex, BatchTotal: j.batchTotal,
+		ComfyRemote: comfyRemote,
+		BatchID:     j.batchID, BatchIndex: j.batchIndex, BatchTotal: j.batchTotal,
 		BatchDone: j.batchDone, BatchSummary: j.batchSummary,
 	}
 }

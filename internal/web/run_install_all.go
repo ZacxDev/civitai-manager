@@ -29,11 +29,16 @@ import (
 // far below "someone posted a graph referencing 400 files".
 const maxBatchInstallFiles = 12
 
-// installMissingUnavailable is the reason shown when this server cannot install
-// model files at all. It is the SAME precondition as resolveReasonNotEligible
-// (run_download.go), deliberately kept as its own string because the registers
-// differ: that one is a sentence rendered above resolve cards, this one is a button
-// tooltip/hint. Keep the two in sync if the precondition itself changes.
+// installMissingUnavailable is the reason returned when a batch-install POST reaches
+// a server that cannot install model files at all. It is the SAME precondition as
+// resolveReasonNotEligible (run_download.go), deliberately kept as its own string
+// because the registers differ. Keep the two in sync if the precondition changes.
+//
+// ⚠ It is a HANDLER refusal, not render copy: the render layer no longer offers a
+// control in this state at all (see blockedInstallAction), so reaching this string
+// means a hand-rolled POST or a page that went stale under a config change. Naming
+// the config keys is right for that audience; do not copy this register back into
+// the panel, which is the dead end this rework removed.
 const installMissingUnavailable = "Installing automatically needs comfy_model_path set and comfy_url pointing at a ComfyUI on this machine."
 
 // installMissingUncertain is the ADVISORY for files whose model type could not be
@@ -78,11 +83,27 @@ type batchInstallPlan struct {
 	Overflow int
 	// Available reports whether the batch CTA can be offered ENABLED at all.
 	Available bool
+	// SetupCanHelp reports that the batch is blocked ONLY for a reason the user can
+	// fix from this page: civitai-manager does not have a usable ComfyUI models
+	// folder, and the ComfyUI it talks to is on this machine, so choosing that
+	// folder makes the batch live.
+	//
+	// 🔴 It is what decides whether the blocked panel gets a PRIMARY ACTION at all.
+	// With a remote comfy_url no folder choice can unblock anything, and a
+	// prominent "Set up automatic install" leading to a panel that says "this
+	// server is not pointed at a ComfyUI on this machine" is the same dead end,
+	// one click further in.
+	SetupCanHelp bool
 }
 
 // planBatchInstall triages the missing set for the render layer. dlEligible is the ONE
 // decisive precondition (comfy_model_path + a local ComfyUI); everything else here is
 // advisory.
+//
+// comfyRemote splits the NOT-eligible case in two, which is the only thing the render
+// layer needs beyond dlEligible: a blocked install whose ComfyUI is local is one folder
+// choice away from working, and a blocked install whose ComfyUI is somewhere else
+// cannot be fixed from this page at all.
 //
 // Duplicate references collapse — but only when they are the SAME INSTALL. The key is
 // (basename, destination subfolder), NOT the basename alone: `SDXL/model.safetensors`
@@ -90,7 +111,7 @@ type batchInstallPlan struct {
 // SafeModelDest routes them to checkpoints/ and loras/ respectively. They are two
 // files, and collapsing them would under-count the batch ("Install 1 …" for two
 // missing files) and quietly leave the run still broken.
-func planBatchInstall(models []comfy.MissingModel, dlEligible bool) batchInstallPlan {
+func planBatchInstall(models []comfy.MissingModel, dlEligible, comfyRemote bool) batchInstallPlan {
 	var p batchInstallPlan
 	seen := map[string]bool{}
 	for _, mm := range models {
@@ -111,6 +132,7 @@ func planBatchInstall(models []comfy.MissingModel, dlEligible bool) batchInstall
 		p.Installable = p.Installable[:maxBatchInstallFiles]
 	}
 	p.Available = dlEligible && len(p.Installable) > 0
+	p.SetupCanHelp = !dlEligible && !comfyRemote && len(p.Installable) > 0
 	return p
 }
 
@@ -175,27 +197,7 @@ func installAllMissingAction(p batchInstallPlan, total int, wfID int64, csrf str
 	}
 	n := len(p.Installable)
 	if !p.Available {
-		// 🔴 The blocker here is ACTIONABLE — comfy_model_path is a value the user can
-		// supply — so the panel offers the SETUP STEP instead of naming the config key
-		// and stopping. This used to render installMissingUnavailable as a flat
-		// sentence ("Installing automatically needs comfy_model_path set and comfy_url
-		// pointing at a ComfyUI on this machine"), which is 141 characters of
-		// config-file jargon under the panel's PRIMARY action, telling the reader what
-		// is wrong while offering no way to fix it. Measured on the operator's install:
-		// their ComfyUI answers on loopback and they have no config.yaml at all, so
-		// they were exactly one value away from this button working.
-		//
-		// The button stays rendered-and-DISABLED rather than hidden (the rule
-		// installAndRunButton follows) so the recovery path is still visible as the
-		// thing being unblocked. Its `title` is gone deliberately: a native tooltip is
-		// unreachable by keyboard and this repo has already had one race a CSS popover
-		// — the disclosure below carries the same information as real text.
-		return h.Div(h.Class("mt-3 space-y-1"),
-			civButton("filled", "md", []g.Node{
-				h.Type("button"), h.Disabled(),
-			}, g.Text(fmt.Sprintf("Install %d missing model file%s and run", total, plural(total)))),
-			comfySetupDisclosure(wfID, false),
-		)
+		return blockedInstallAction(p, total, wfID)
 	}
 
 	label := fmt.Sprintf("Install %d missing model file%s and run", n, plural(n))
@@ -245,9 +247,89 @@ func installAllMissingAction(p batchInstallPlan, total int, wfID int64, csrf str
 			h.P(h.Class("text-xs text-slate-400"), g.Text(batchInstallHint)),
 			g.Group(notes),
 		),
-		comfySetupDisclosure(wfID, true),
+		comfySetupDisclosure(wfID),
 	)
 }
+
+// blockedInstallAction is what the failure panel renders INSTEAD of the batch CTA when
+// this server cannot install model files.
+//
+// 🔴 IT RENDERS NO DISABLED BUTTON. The previous version did — a `filled`/`md` control
+// carrying the same `rgb(25,113,194)` fill as a working one, distinguished only by
+// `opacity: 0.6` — and measured live on the operator's install it was the LARGEST,
+// TOPMOST, primary-coloured control on the whole failure panel while doing nothing at
+// all. The thing that would have made it work (the setup step) rendered underneath it
+// as a 16px, 12px-font disclosure summary, and the panel's one genuinely working
+// button (Install <nodepack>) was smaller and 234px further down. A dead control
+// outranking both its own fix and every live action is the defect; restyling it
+// quieter would not have fixed it, because a quieter dead button is still a dead
+// button.
+//
+// The information the dead button carried — that N model files could be installed
+// automatically once this is set up — is NOT lost: it moved into the setup CTA's own
+// label, which is where a reader deciding whether to bother needs it.
+//
+// Two blocked states, and they get different treatment because only one of them has
+// an answer on this page:
+//
+//   - SetupCanHelp: the ComfyUI is on this machine and only the models folder is
+//     missing, so choosing that folder is the recovery action — rendered as a real
+//     primary control, the ONE live primary action in this section.
+//   - otherwise (a remote comfy_url): nothing here can fix it, so there is no action
+//     to offer. Saying so plainly, once, and pointing at the per-file paths that DO
+//     work beats a prominent button that opens a panel explaining it cannot help.
+func blockedInstallAction(p batchInstallPlan, total int, wfID int64) g.Node {
+	if !p.SetupCanHelp {
+		return h.Div(h.Class("mt-3 space-y-1"),
+			h.P(g.Attr("role", "status"), h.Class("text-xs text-amber-400"), g.Text(installRemoteComfyReason)),
+			h.P(h.Class("text-xs text-slate-500"), g.Text(installRemoteComfyNextStep)),
+		)
+	}
+	// The CTA lives INSIDE #comfy-setup and targets it with innerHTML, so the first
+	// click REPLACES the button and its explanation with the setup form. That shape is
+	// deliberate: it leaves no stale control that has already been used, it needs no
+	// `once` trigger (which would render the button permanently inert-looking), and a
+	// rejected save — which retargets #comfy-setup — lands in the same container it
+	// came from. The body is still fetched lazily, so the ComfyUI probe stays off the
+	// panel's render path exactly as before.
+	return h.Div(h.Class("mt-3"),
+		h.Div(h.ID(comfySetupContainerID), h.Class("space-y-1"),
+			civButton("filled", "md", []g.Node{
+				h.Type("button"),
+				hx("get", "/workflows/"+strconv.FormatInt(wfID, 10)+"/comfy-setup"),
+				hx("target", "#"+comfySetupContainerID),
+				hx("swap", "innerHTML"),
+				hx("disabled-elt", "this"),
+				g.Attr("aria-describedby", comfySetupWhyID),
+			}, g.Text(fmt.Sprintf("Set up automatic install for %d missing model file%s", total, plural(total)))),
+			h.P(h.ID(comfySetupWhyID), h.Class("text-xs text-slate-400"), g.Text(comfySetupWhyText)),
+		),
+	)
+}
+
+// comfySetupWhyID names the sentence explaining the setup CTA, so the button can point
+// at it with aria-describedby — the count is in the label, the reason is here, and a
+// screen reader gets both from the control itself.
+const comfySetupWhyID = "comfy-setup-why"
+
+// comfySetupWhyText is the one line under the setup CTA. It says what civitai-manager
+// needs and what the reader gets for supplying it, and names no config key: the whole
+// point of the control is that the value is suppliable from this page.
+const comfySetupWhyText = "Choose where ComfyUI keeps its models and installing them becomes one click."
+
+// installRemoteComfyReason / installRemoteComfyNextStep are the blocked state that has
+// NO answer on this page: comfy_url points at a ComfyUI somewhere else, so
+// civitai-manager cannot write files into it whatever folder is configured.
+//
+// 🔴 The first string is shared with comfySetupFragment's own comfy_url branch, which
+// is the panel a user would have reached by clicking a setup CTA here. Keeping ONE
+// copy is the point — the two are the same claim about the same precondition, and they
+// used to be reachable only in that order.
+const installRemoteComfyReason = "This server is not pointed at a ComfyUI on this machine, so it cannot install " +
+	"model files for you. Set comfy_url to your local ComfyUI (for example " +
+	"http://127.0.0.1:8188) and restart civitai-manager."
+
+const installRemoteComfyNextStep = "Until then, use the per-file options below to download each model yourself."
 
 // batchInstallHint states what the click does, with the guarantee SCOPED to the stage
 // that actually provides it.

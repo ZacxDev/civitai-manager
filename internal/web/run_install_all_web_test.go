@@ -165,37 +165,130 @@ func TestRunFailureSingularCopy(t *testing.T) {
 	}
 }
 
-// TestRunFailurePrimaryActionDisabledWhenIneligible: a server that cannot install
-// files must still SHOW the action, disabled, with the reason — never a silent
-// omission, and never a POST target. AND the lead must not promise the install: "…
-// Install them and it should run" is false when the button is greyed out.
-func TestRunFailurePrimaryActionDisabledWhenIneligible(t *testing.T) {
+// TestRunFailureBlockedStateRendersNoDeadInstallButton is the guard for the defect
+// this change exists to remove, and it is the INVERSE of what used to be asserted
+// here (TestRunFailurePrimaryActionDisabledWhenIneligible, which required the
+// disabled button to be present).
+//
+// 🔴 MEASURED on the operator's install, workflow 590, with no comfy_model_path:
+// the disabled "Install 3 missing model files and run" rendered 278×36 at the TOP of
+// the panel carrying the primary fill rgb(25,113,194) at opacity 0.6 — the largest,
+// highest, primary-coloured control on the page, and completely inert. The setup
+// disclosure that would have made it work rendered underneath it at 16px tall in a
+// 12px font, and the panel's one genuinely working button (Install
+// ComfyUI_UltimateSDUpscale, 250×30, opacity 1) sat 233px further down. Rendering
+// the dead control "so the recovery path stays visible" cost more than it bought:
+// the recovery path IS the setup step, so that is what gets the primary control.
+//
+// The information the dead button carried is not lost — the count moves into the
+// setup CTA's own label, asserted below.
+func TestRunFailureBlockedStateRendersNoDeadInstallButton(t *testing.T) {
 	body := renderString(t, runStatusFragment(twoMissingSnapshot(), 7, "tok", false, fullMaturityRange()))
 
+	// PRECONDITION: this really is the blocked state, and it really did reach the
+	// batch-install render path (an unreachable branch would pass every assertion
+	// below by rendering nothing at all).
 	if strings.Contains(body, "install-missing-and-run") {
-		t.Errorf("ineligible failure state must not POST the batch install:\n%s", body)
+		t.Fatalf("precondition: the ineligible failure state must not POST the batch install:\n%s", body)
 	}
-	if !strings.Contains(body, "Install 2 missing model files and run") || !strings.Contains(body, "disabled") {
-		t.Errorf("expected a disabled primary action:\n%s", body)
+	if !strings.Contains(body, "Run failed — 2 model files missing") {
+		t.Fatalf("precondition: want the 2-missing-model failure panel:\n%s", body)
 	}
-	// "Explain itself" now means OFFER THE FIX, not name a config key: the disabled
-	// action carries the setup disclosure that makes it live.
+
+	// THE ASSERTION: no dead install-all button, in either of its two spellings.
+	if strings.Contains(body, "Install 2 missing model files and run") {
+		t.Errorf("the blocked panel must not render the install-all button at all — it "+
+			"cannot act, and it outranks every live control on the panel:\n%s", body)
+	}
+	if strings.Contains(body, "missing model files and run") {
+		t.Errorf("no variant of the dead install-all label may render while blocked:\n%s", body)
+	}
+
+	// The setup step is the primary action, and it carries the count the dead button
+	// used to carry.
 	if !strings.Contains(body, `hx-get="/workflows/7/comfy-setup"`) {
-		t.Errorf("disabled primary action must offer the setup step:\n%s", body)
+		t.Errorf("the blocked panel's primary action must be the setup step:\n%s", body)
+	}
+	if !strings.Contains(body, "Set up automatic install for 2 missing model files") {
+		t.Errorf("the setup CTA must carry how many files it unblocks:\n%s", body)
+	}
+	if !strings.Contains(body, `data-variant="filled"`) {
+		t.Errorf("the setup step must be styled as a real primary control:\n%s", body)
 	}
 	if !strings.Contains(body, "where ComfyUI keeps its models") {
 		t.Errorf("the setup step must say what it needs in plain words:\n%s", body)
 	}
-	// The lead is GATED on the CTA being able to deliver.
+	// The lead is GATED on the batch being able to deliver.
 	if strings.Contains(body, "Nothing is broken") || strings.Contains(body, "Install them and it should run") {
-		t.Errorf("lead must not promise an install the disabled CTA cannot perform:\n%s", body)
+		t.Errorf("lead must not promise an install this server cannot perform:\n%s", body)
 	}
 	// The lead used to say "this copy of civitai-manager cannot fetch them for you".
-	// That is now FALSE — the setup disclosure asserted above makes it able to — so
-	// the blocked state is deliberately lead-free, and the guard is INVERTED: a dead
-	// end must not be stated above a control that offers the way out.
+	// That is now FALSE — the setup step asserted above makes it able to — so the
+	// blocked state is deliberately lead-free, and the guard is INVERTED: a dead end
+	// must not be stated above a control that offers the way out.
 	if strings.Contains(body, "cannot fetch") {
 		t.Errorf("the blocked lead must not claim a dead end the setup step disproves:\n%s", body)
+	}
+}
+
+// TestRunFailureSingularSetupCTACopy: the setup CTA's generated label has to read
+// correctly for one file, since that is the count it most often carries.
+func TestRunFailureSingularSetupCTACopy(t *testing.T) {
+	snap := twoMissingSnapshot()
+	snap.Preflight = &comfy.PreflightReport{MissingModels: []string{"only-MISSING.safetensors"}}
+	snap.MissingModels = snap.MissingModels[:1]
+	body := renderString(t, runStatusFragment(snap, 7, "tok", false, fullMaturityRange()))
+
+	if !strings.Contains(body, "Set up automatic install for 1 missing model file") {
+		t.Errorf("want the singular setup CTA label:\n%s", body)
+	}
+	if strings.Contains(body, "1 missing model files") {
+		t.Errorf("plural leaked into the singular label:\n%s", body)
+	}
+}
+
+// TestRunFailureBlockedByARemoteComfyOffersNoSetupCTA is the other blocked state, and
+// it is the reason batchInstallPlan carries SetupCanHelp rather than just !Available.
+//
+// 🔴 When comfy_url points at a ComfyUI on another machine, NO folder choice unblocks
+// the install — comfyDownloadEligible requires a loopback comfy_url as well, and
+// comfySetupFragment's first branch refuses to offer the form at all. A prominent
+// "Set up automatic install" here would be the same dead end the disabled button was,
+// one click deeper: the user clicks a primary control and is told it cannot help.
+func TestRunFailureBlockedByARemoteComfyOffersNoSetupCTA(t *testing.T) {
+	snap := twoMissingSnapshot()
+	snap.ComfyRemote = true
+	body := renderString(t, runStatusFragment(snap, 7, "tok", false, fullMaturityRange()))
+
+	// PRECONDITION: the failure panel really rendered, so the assertions below are
+	// about a state that exists.
+	if !strings.Contains(body, "Run failed — 2 model files missing") {
+		t.Fatalf("precondition: want the failure panel:\n%s", body)
+	}
+	// PRECONDITION: the SAME snapshot with a local ComfyUI DOES offer the setup step,
+	// so this test discriminates on ComfyRemote and not on something incidental.
+	local := twoMissingSnapshot()
+	if !strings.Contains(renderString(t, runStatusFragment(local, 7, "tok", false, fullMaturityRange())),
+		"Set up automatic install") {
+		t.Fatal("precondition: a LOCAL blocked panel must offer the setup step")
+	}
+
+	if strings.Contains(body, "Set up automatic install") {
+		t.Errorf("a remote ComfyUI cannot be fixed by choosing a folder, so no setup CTA "+
+			"may be offered:\n%s", body)
+	}
+	if strings.Contains(body, "/comfy-setup") {
+		t.Errorf("no control may lead to a setup form that will refuse to help:\n%s", body)
+	}
+	if strings.Contains(body, "missing model files and run") {
+		t.Errorf("and still no dead install-all button:\n%s", body)
+	}
+	// It must say WHY, without a click, since there is nothing to click.
+	if !strings.Contains(body, "not pointed at a ComfyUI on this machine") {
+		t.Errorf("the remote-ComfyUI blocker must be stated in the panel itself:\n%s", body)
+	}
+	if !strings.Contains(body, "use the per-file options below") {
+		t.Errorf("and it must name the path that does still work:\n%s", body)
 	}
 }
 
@@ -254,7 +347,7 @@ func TestBatchInstallCuratedHFFamilyIsNotFlagged(t *testing.T) {
 	if comfyTypeRoutable(detector.CivitaiType) {
 		t.Fatal("fixture invalid: the detector should have no routable CivitAI type")
 	}
-	p := planBatchInstall([]comfy.MissingModel{detector}, true)
+	p := planBatchInstall([]comfy.MissingModel{detector}, true, false)
 	if len(p.Installable) != 1 || !p.Available {
 		t.Fatalf("curated HF family must be installable: %+v", p)
 	}
@@ -347,7 +440,7 @@ func TestPlanBatchInstallDeDupesAndCaps(t *testing.T) {
 		{Filename: "sub/dir/a.safetensors", CivitaiType: "Checkpoint"}, // same basename
 		{Filename: "b.safetensors", CivitaiType: "Checkpoint"},
 	}
-	p := planBatchInstall(dupes, true)
+	p := planBatchInstall(dupes, true, false)
 	if len(p.Installable) != 2 {
 		t.Errorf("duplicate references must collapse: got %d installable %v", len(p.Installable), p.Installable)
 	}
@@ -357,7 +450,7 @@ func TestPlanBatchInstallDeDupesAndCaps(t *testing.T) {
 		many = append(many, comfy.MissingModel{
 			Filename: fmt.Sprintf("m%02d.safetensors", i), CivitaiType: "Checkpoint"})
 	}
-	p = planBatchInstall(many, true)
+	p = planBatchInstall(many, true, false)
 	if len(p.Installable) != maxBatchInstallFiles || p.Overflow != 3 {
 		t.Errorf("cap not applied: installable=%d overflow=%d", len(p.Installable), p.Overflow)
 	}
@@ -382,7 +475,7 @@ func TestPlanBatchInstallKeepsDistinctFilesSharingABasename(t *testing.T) {
 		{Filename: "SDXL/model.safetensors", CivitaiType: "Checkpoint"},
 		{Filename: "flux/model.safetensors", CivitaiType: "LORA"},
 	}
-	p := planBatchInstall(models, true)
+	p := planBatchInstall(models, true, false)
 	if len(p.Installable) != 2 {
 		t.Fatalf("same basename + different destination = two installs, got %d: %+v",
 			len(p.Installable), p.Installable)
@@ -400,7 +493,7 @@ func TestPlanBatchInstallKeepsDistinctFilesSharingABasename(t *testing.T) {
 		{Filename: "a/x.safetensors", CivitaiType: "LORA"},
 		{Filename: "b/x.safetensors", CivitaiType: "LoCon"},
 	}
-	if got := len(planBatchInstall(same, true).Installable); got != 1 {
+	if got := len(planBatchInstall(same, true, false).Installable); got != 1 {
 		t.Errorf("same basename + same destination must collapse, got %d", got)
 	}
 	// Two same-named files with UN-ROUTABLE types are ONE install: neither has a
@@ -409,7 +502,7 @@ func TestPlanBatchInstallKeepsDistinctFilesSharingABasename(t *testing.T) {
 		{Filename: "x.bin", CivitaiType: ""},
 		{Filename: "x.bin", CivitaiType: "SomethingUnmapped"},
 	}
-	if got := len(planBatchInstall(odd, true).Installable); got != 1 {
+	if got := len(planBatchInstall(odd, true, false).Installable); got != 1 {
 		t.Errorf("same basename with no destination is one install, got %d", got)
 	}
 }
@@ -432,7 +525,7 @@ func TestInstallDedupeKeyIsCaseSensitiveLikeSafeModelDest(t *testing.T) {
 		{Filename: "Model.safetensors", CivitaiType: "Checkpoint"},
 		{Filename: "model.safetensors", CivitaiType: "Checkpoint"},
 	}
-	p := planBatchInstall(models, true)
+	p := planBatchInstall(models, true, false)
 	if len(p.Installable) != 2 {
 		t.Fatalf("two case-variant references are two installs, got %d: %+v", len(p.Installable), p.Installable)
 	}
@@ -1315,7 +1408,7 @@ func TestDetectorPrefixIsNotFlaggedUncertain(t *testing.T) {
 	if comfyTypeRoutable(civitaiTypeParam(custom.CivitaiType)) {
 		t.Fatal("fixture invalid: the ref must have no routable CivitAI type")
 	}
-	p := planBatchInstall([]comfy.MissingModel{custom}, true)
+	p := planBatchInstall([]comfy.MissingModel{custom}, true, false)
 	if len(p.Installable) != 1 || !p.Available {
 		t.Fatalf("a detector ref must be installable: %+v", p)
 	}
@@ -1323,7 +1416,7 @@ func TestDetectorPrefixIsNotFlaggedUncertain(t *testing.T) {
 		t.Errorf("a bbox/ detector ref must NOT be flagged uncertain: %+v", p.Uncertain)
 	}
 	plain := comfy.MissingModel{Filename: "mystery-MISSING.bin", CivitaiType: ""}
-	if got := planBatchInstall([]comfy.MissingModel{plain}, true); len(got.Uncertain) != 1 {
+	if got := planBatchInstall([]comfy.MissingModel{plain}, true, false); len(got.Uncertain) != 1 {
 		t.Errorf("a genuinely unroutable ref must stay flagged: %+v", got.Uncertain)
 	}
 }
