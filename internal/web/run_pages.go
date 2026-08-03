@@ -282,7 +282,10 @@ func runStatusFragment(snap runSnapshot, wfID int64, csrf string, dlEligible boo
 		return h.Div(h.Class("text-sm text-amber-400"),
 			g.Text("A run is already in progress for another workflow. Try again when it finishes."))
 	}
-	if !snap.Started || snap.WorkflowID != wfID {
+	// 🔴 THE SAME predicate the readiness line's suppression reads — shared, not
+	// mirrored. "This container is idle" and "the readiness line may render" are one
+	// decision; see runStatusHoldsARunFor in run_readiness.go.
+	if !runStatusHoldsARunFor(snap, wfID) {
 		return h.Div() // idle: nothing to show for this workflow yet
 	}
 	// Stopped is set synchronously by stopRun (before the run goroutine settles), so
