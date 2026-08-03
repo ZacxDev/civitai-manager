@@ -143,7 +143,7 @@ func runDestination(local, cloud g.Node) g.Node {
 // it exists from the first paint. Do not convert it — the browser has to open the
 // tab synchronously from the click for the handler's 303 into
 // <comfy_url>/?cm_open=<path> to land.
-func runZone(wfID int64, csrf string, canQueue, editable bool) g.Node {
+func runZone(wfID int64, csrf string, canQueue, editable bool, snap runSnapshot) g.Node {
 	id := strconv.FormatInt(wfID, 10)
 
 	row := []g.Node{
@@ -191,12 +191,28 @@ func runZone(wfID int64, csrf string, canQueue, editable bool) g.Node {
 	// up: without it the line renders EMPTY and then pops in, which reads as a
 	// layout glitch rather than as work in progress. It is plain text on purpose —
 	// no data-readiness attribute, so it can never be mistaken for an answer.
-	body = append(body, h.Div(h.ID(runReadinessID),
-		hx("get", "/workflows/"+id+"/run/readiness"),
-		hx("trigger", "load"),
-		hx("swap", "innerHTML"),
-		h.Span(h.Class("text-sm text-slate-400"), g.Text("Checking what this workflow needs…")),
-	))
+	//
+	// 🔴 THE CONTAINER IS ALWAYS EMITTED; ONLY THE LAZY LOADER IS CONDITIONAL. A run
+	// already showing for this workflow means the run — not this line — is the
+	// answer (see runStatusHoldsARunFor), and the container then carries NO hx-get,
+	// so the request is never issued and the ~4.66 MB /object_info decode behind it
+	// is never paid. Avoiding the pixels while still firing the fetch would be the
+	// wrong half of the fix.
+	//
+	// It stays in the DOM, empty, for two reasons: it is the target
+	// runReadinessCleared's out-of-band swap needs when a run STARTS after the page
+	// rendered, and #cm-run-readiness:empty in app.css collapses .cm-runbar's 0.6rem
+	// flex gap so an empty container costs no vertical space.
+	readiness := []g.Node{h.ID(runReadinessID)}
+	if !runStatusHoldsARunFor(snap, wfID) {
+		readiness = append(readiness,
+			hx("get", "/workflows/"+id+"/run/readiness"),
+			hx("trigger", "load"),
+			hx("swap", "innerHTML"),
+			h.Span(h.Class("text-sm text-slate-400"), g.Text("Checking what this workflow needs…")),
+		)
+	}
+	body = append(body, h.Div(readiness...))
 	return h.Div(body...)
 }
 
