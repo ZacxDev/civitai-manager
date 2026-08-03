@@ -197,6 +197,13 @@ func TestCollapsingDoesNotReopenTheNeededPredicate(t *testing.T) {
 	if !strings.Contains(card, "Also needed") {
 		t.Errorf("a required losing claimant is badged 'Also needed', not 'Also claims it':\n%s", card)
 	}
+	// PRECONDITION, same as TestWinningPackCardCollapsesItsProvenance's: without it a
+	// mutation that removes the disclosure fails inside detailsExtent with the
+	// INSTRUMENT's message ("no <details> at or after byte 0") instead of this guard's
+	// own, which reads as a broken helper rather than a broken invariant.
+	if !strings.Contains(card, "<details") {
+		t.Fatalf("precondition: want a disclosure on the card:\n%s", card)
+	}
 	start, end := detailsExtent(t, card, 0)
 	if !strings.Contains(card[start:end], "Repository: ") {
 		t.Errorf("provenance must collapse on a required card too — the collapse is "+
