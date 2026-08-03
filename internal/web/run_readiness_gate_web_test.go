@@ -18,10 +18,21 @@ import (
 // one — which is the only evidence the consolidation is real rather than two copies
 // that happen to agree today.
 //
-// 🔴 REGRESSION, NOT INVARIANT GUARD, on the readiness side. Before this change the
-// readiness line rendered data-readiness="ready" — "Ready — every node type and
-// model file this workflow references is installed" — for every payload in
-// unusableGraphs. Red at 43ade22 (the PR head), green at HEAD.
+// 🔴 REGRESSION, NOT INVARIANT GUARD, on the readiness side — and the baseline is
+// PER CASE, so read the two apart rather than quoting one ref for the table:
+//
+//   - Most of unusableGraphs is red at 43ade22 (the last commit before the gate was
+//     consolidated) and green from ca3d19d on. Before that the readiness line
+//     rendered data-readiness="ready" — "Ready — every node type and model file this
+//     workflow references is installed" — for all of them.
+//   - The two class_type-less cases are red at 43ade22 AND STILL RED at b7f9be8,
+//     i.e. they survived the consolidation: the gate was reading Preflight's Nodes
+//     count faithfully, and that count was itself wrong. They go green only with the
+//     usableAPINodes change in comfy. Verified with `go build ./...` passing, so the
+//     red is an assertion and not a compiler-caught false red.
+//
+// Both surfaces iterate this ONE table, which is what makes the consolidation claim
+// testable rather than asserted.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // unusableGraphs are the payloads that are NOT an api graph at all. comfy.Preflight
@@ -146,7 +157,13 @@ func TestRunNeverSubmitsAnUnusableGraph(t *testing.T) {
 	}
 }
 
-// TestRunNeverSubmitsAWarnOnlyGraph closes a coverage hole this change's own
+// TestRunNeverSubmitsAWarnOnlyGraph is an INVARIANT GUARD, not regression coverage —
+// labelled explicitly so it is never counted in a regression tally. It PASSES at
+// 43ade22: ConvWarned was already in the old run-path gate, so the run has always
+// refused a warn-only graph and this test pins that it keeps doing so. Its value is
+// mutation DISCRIMINATION, below, not a bug it caught.
+//
+// It closes a coverage hole this change's own
 // mutation sweep found: deleting `g.ConvWarned` from runGate.blocked() turned the
 // READINESS suite red and left the RUN suite entirely green, because every existing
 // run-side warning fixture ALSO has a missing node type and is therefore blocked

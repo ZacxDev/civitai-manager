@@ -66,10 +66,26 @@ type runGate struct {
 // for an incomplete graph, so `!ReportOK` catches it too, and the merged
 // MissingNodes makes the readiness answer "needs" rather than "ready". Both covers
 // are deliberate; do not delete either on the grounds that the other exists.
-// Deleting any of the OTHER three turns both surfaces red (ConvWarned →
-// TestReadinessConvertWarnedIsUnknownNotReady + TestRunNeverSubmitsAWarnOnlyGraph;
-// NoNodes → the empty_object case of both gate suites; ReportOK → 3 readiness tests
-// + 8 run tests).
+//
+// Deleting any of the OTHER three turns BOTH surfaces red. Named, not counted —
+// this repo has twice shipped a comment-embedded count that went stale and was then
+// trusted, and a test name at least fails loudly (a grep for it finds nothing) where
+// a number just quietly lies:
+//
+//   - ConvWarned → TestReadinessConvertWarnedIsUnknownNotReady (readiness) and
+//     TestRunNeverSubmitsAWarnOnlyGraph (run).
+//   - NoNodes → every case of the shared `unusableGraphs` table, through
+//     TestReadinessNeverCallsAnUnusableGraphReady and
+//     TestRunNeverSubmitsAnUnusableGraph. One table, both surfaces — that is the
+//     consolidation evidence.
+//   - ReportOK → 🔴 DO NOT EXPECT A FAILURE COUNT HERE, AND DO NOT WRITE ONE DOWN.
+//     Measured: `go test ./internal/web/` does not survive the deletion. It ends in
+//     `panic: test timed out`, having printed only four top-level failures — none of
+//     them a gate test — before the truncation ate the rest. An un-blocked bad graph
+//     is SUBMITTED, and a run poller then waits on a run that never settles. So the
+//     honest statement is the mechanism: without ReportOK the gate stops reading
+//     preflight's own verdict at all, and the suite hangs rather than reporting.
+//     Any number you see attached to this condition was truncated, not measured.
 func (g runGate) blocked() bool {
 	return g.ConvWarned || g.GraphIncomplete || g.NoNodes || !g.ReportOK
 }
