@@ -222,6 +222,36 @@ func TestReadinessReadsTheLocalLibrary(t *testing.T) {
 	}
 }
 
+// readinessOneMissingGraph references EXACTLY ONE missing thing. It exists because
+// every other fixture here has pairwise-distinct multi-item counts, and that is
+// precisely the shape that cannot produce a singular sentence — the live sweep over
+// the operator's 71 real workflows rendered "Needs 1 model file that are not
+// installed" while this whole file was green.
+const readinessOneMissingGraph = `{
+  "1":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"lonely_one.safetensors"}},
+  "2":{"class_type":"KSampler","inputs":{"sampler_name":"euler","scheduler":"normal"}}
+}`
+
+// TestReadinessAgreesWithItselfAboutNumber pins the relative clause to the TOTAL
+// count, not to the last clause rendered.
+func TestReadinessAgreesWithItselfAboutNumber(t *testing.T) {
+	srv := newReadinessServer(t)
+	seedObjectInfo(t, srv, readinessInfo)
+	single := seedWorkflow(t, srv, store.WorkflowFormatAPI, readinessOneMissingGraph)
+	multi := seedWorkflow(t, srv, store.WorkflowFormatAPI, readinessAPIGraph)
+
+	one := readiness(t, srv, single)
+	wantState(t, one, "needs", "")
+	if !strings.Contains(one, "1 model file that is not installed") {
+		t.Errorf("a single missing item must take a SINGULAR verb:\n%s", one)
+	}
+	// The other half of the agreement, so this cannot pass by hard-coding "is".
+	many := readiness(t, srv, multi)
+	if !strings.Contains(many, "3 model files that are not installed") {
+		t.Errorf("several missing items must take a PLURAL verb:\n%s", many)
+	}
+}
+
 // ── THE UI-FORMAT PATH ───────────────────────────────────────────────────────
 
 // TestReadinessUIFormatReportsTheDroppedNodeAndHedges covers the format ALL 71 real

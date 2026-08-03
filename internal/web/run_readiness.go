@@ -250,7 +250,15 @@ func readinessNeedsSentence(v readinessView) string {
 		if v.graphIncomplete {
 			lead = "Needs at least "
 		}
-		out = append(out, lead+joinAnd(parts)+" that are not installed.")
+		// The relative clause has to agree with the TOTAL, not with the last part.
+		// The live sweep over the operator's 71 real workflows caught this rendering
+		// "Needs 1 model file that are not installed" — the one shape no fixture with
+		// distinct multi-item counts can produce.
+		tail := " that are not installed."
+		if v.missingNodes+v.missingModels == 1 {
+			tail = " that is not installed."
+		}
+		out = append(out, lead+joinAnd(parts)+tail)
 	}
 	if v.badOptions > 0 {
 		verb := " is "
