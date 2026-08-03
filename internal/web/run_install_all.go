@@ -483,7 +483,7 @@ func (s *Server) handleWorkflowInstallMissingAndRun(w http.ResponseWriter, r *ht
 			s.renderRunActionDeclined(w, id, installMissingBusyReason)
 			return
 		}
-		s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
+		s.render(w, http.StatusOK, runStatusBody(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
 		return
 	}
 	// A click that lands while another run/download is in flight is DISCARDED by the
@@ -494,7 +494,7 @@ func (s *Server) handleWorkflowInstallMissingAndRun(w http.ResponseWriter, r *ht
 		s.renderRunActionDeclined(w, id, installMissingBusyReason)
 		return
 	}
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, true, s.maturity()))
+	s.render(w, http.StatusOK, runStatusBody(s.runJobState(), id, s.csrf, true, s.maturity()))
 }
 
 // installMissingUnresolvedReason is the honest report for a declined batch: how many
@@ -519,6 +519,6 @@ func installMissingUnresolvedReason(total int, unresolved []string) string {
 func (s *Server) renderRunActionDeclined(w http.ResponseWriter, wfID int64, reason string) {
 	s.render(w, http.StatusOK, g.Group([]g.Node{
 		alertIcon("warning", "⚠", "Nothing was downloaded", h.P(h.Class("text-sm"), g.Text(reason))),
-		runStatusFragment(s.runJobState(), wfID, s.csrf, s.comfyDownloadEligible(), s.maturity()),
+		runStatusBody(s.runJobState(), wfID, s.csrf, s.comfyDownloadEligible(), s.maturity()),
 	}))
 }

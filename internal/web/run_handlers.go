@@ -269,7 +269,7 @@ func (s *Server) startRunNotice(wf *store.Workflow, opts runOptions) string {
 func (s *Server) renderRunStatus(w http.ResponseWriter, wfID int64, notice string) {
 	s.render(w, http.StatusOK, g.Group([]g.Node{
 		runNoticeLine(notice, false),
-		runStatusFragment(s.runJobState(), wfID, s.csrf, s.comfyDownloadEligible(), s.maturity()),
+		runStatusBody(s.runJobState(), wfID, s.csrf, s.comfyDownloadEligible(), s.maturity()),
 	}))
 }
 
@@ -947,6 +947,25 @@ func (s *Server) handleWorkflowRunReadiness(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "bad workflow id", http.StatusBadRequest)
 		return
 	}
+	// 🔴 REFUSE BEFORE READING ANYTHING. A run for this workflow is showing in
+	// #run-status, so the run — not this line — is the answer (runStatusHoldsARunFor
+	// in run_readiness.go carries the reasoning). Two distinct things this closes:
+	//
+	//   - THE LOAD RACE. The page renders idle, the lazy GET goes out, and the user
+	//     clicks Generate before it returns. The out-of-band clear then detaches the
+	//     container mid-flight, which htmx handles — but a swap into a detached node
+	//     is htmx's behaviour, not a guarantee this app should rest on.
+	//   - THE COST. Returning empty here skips workflowReadiness entirely, so the
+	//     UI→API conversion and the ~4.66 MB /object_info decode are not paid for an
+	//     answer that will not be shown. Same principle as runZone omitting the
+	//     hx-get: avoid the work, not just the pixels.
+	//
+	// An empty body is the right answer rather than a 204/4xx: this is an
+	// innerHTML swap into a stable container, and 200-with-nothing empties it.
+	if runStatusHoldsARunFor(s.runJobState(), id) {
+		s.render(w, http.StatusOK, g.Group(nil))
+		return
+	}
 	wf, werr := s.store.GetWorkflow(r.Context(), id)
 	if werr != nil {
 		// A genuine read failure is NOT the same event as a deleted row, and it is the
@@ -971,7 +990,7 @@ func (s *Server) handleWorkflowRunStatus(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "bad workflow id", http.StatusBadRequest)
 		return
 	}
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
+	s.render(w, http.StatusOK, runStatusBody(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
 }
 
 // handleWorkflowRunStop cancels the running run and interrupts ComfyUI.
@@ -991,7 +1010,7 @@ func (s *Server) handleWorkflowRunStop(w http.ResponseWriter, r *http.Request) {
 	// The stop button carries the workflow id so the terminal fragment can offer a
 	// "Run again" button; 0 (absent) simply omits it.
 	id, _ := strconv.ParseInt(r.FormValue("workflow_id"), 10, 64)
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
+	s.render(w, http.StatusOK, runStatusBody(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
 }
 
 // handleWorkflowRunView proxies a result image from ComfyUI's /view to the browser

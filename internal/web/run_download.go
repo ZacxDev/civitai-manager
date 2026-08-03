@@ -197,7 +197,7 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 	if subdir, ok := comfy.TypeSubdir(typ); ok {
 		if dest, derr := comfy.SafeModelDest(s.comfyModelPath(), subdir, filename); derr == nil && fileExists(dest) {
 			s.startRunWithMessage(wf, runOptions{}, alreadyInstalledNote(filename))
-			s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
+			s.render(w, http.StatusOK, runStatusBody(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
 			return
 		}
 	}
@@ -236,7 +236,7 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 			s.renderRunActionDeclined(w, id, installMissingBusyReason)
 			return
 		}
-		s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
+		s.render(w, http.StatusOK, runStatusBody(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
 		return
 	}
 
@@ -247,7 +247,7 @@ func (s *Server) handleWorkflowDownloadAndRun(w http.ResponseWriter, r *http.Req
 		s.renderRunActionDeclined(w, id, installMissingBusyReason)
 		return
 	}
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, true, s.maturity()))
+	s.render(w, http.StatusOK, runStatusBody(s.runJobState(), id, s.csrf, true, s.maturity()))
 }
 
 // handleWorkflowInstallOptionAndRun installs the model FILE behind ONE model-file
@@ -324,7 +324,7 @@ func (s *Server) handleWorkflowInstallOptionAndRun(w http.ResponseWriter, r *htt
 	if subdir, ok := comfy.TypeSubdir(typ); ok {
 		if dest, derr := comfy.SafeModelDest(s.comfyModelPath(), subdir, filename); derr == nil && fileExists(dest) {
 			s.startRunWithMessage(wf, opts, alreadyInstalledNote(filename))
-			s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
+			s.render(w, http.StatusOK, runStatusBody(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
 			return
 		}
 	}
@@ -354,7 +354,7 @@ func (s *Server) handleWorkflowInstallOptionAndRun(w http.ResponseWriter, r *htt
 			s.renderRunActionDeclined(w, id, installMissingBusyReason)
 			return
 		}
-		s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
+		s.render(w, http.StatusOK, runStatusBody(s.runJobState(), id, s.csrf, s.comfyDownloadEligible(), s.maturity()))
 		return
 	}
 
@@ -363,7 +363,7 @@ func (s *Server) handleWorkflowInstallOptionAndRun(w http.ResponseWriter, r *htt
 		s.renderRunActionDeclined(w, id, installMissingBusyReason)
 		return
 	}
-	s.render(w, http.StatusOK, runStatusFragment(s.runJobState(), id, s.csrf, true, s.maturity()))
+	s.render(w, http.StatusOK, runStatusBody(s.runJobState(), id, s.csrf, true, s.maturity()))
 }
 
 // installPlan is a resolved, ready-to-execute install: the source download URL, the
