@@ -650,6 +650,63 @@ func TestComfySetupIsReachableInBothStates(t *testing.T) {
 	}
 }
 
+// TestBlockedSetupCTAIsReplacedByTheFormItLoads pins the shape of the blocked
+// state's primary action, and the copy consequence that shape has.
+//
+// 🔴 The CTA renders INSIDE #comfy-setup and targets it with innerHTML, so clicking
+// it replaces the button with the form. That is deliberate — it leaves no stale
+// control that has already been used, it needs no `once` trigger (which would render
+// the button permanently inert-looking), and a rejected save, which HX-Retargets to
+// #comfy-setup, lands in the container it came from.
+//
+// The copy consequence is what this test exists for and it shipped wrong: the form's
+// unconfigured branch said "Tell it where that is and THE BUTTON ABOVE starts
+// working". True while the form lived in a disclosure beneath a disabled CTA; false
+// the moment the form replaces that CTA. Caught by clicking it in a real browser —
+// no markup assertion in this package could see it, because both halves are correct
+// in isolation.
+func TestBlockedSetupCTAIsReplacedByTheFormItLoads(t *testing.T) {
+	plan := batchInstallPlan{
+		Installable:  []comfy.MissingModel{{Filename: "upscaler.pth", CivitaiType: "Upscaler"}},
+		SetupCanHelp: true,
+	}
+	blocked := renderString(t, installAllMissingAction(plan, 1, 7, "tok"))
+
+	// PRECONDITION: this is the blocked branch, and the CTA really is the trigger.
+	if !strings.Contains(blocked, `hx-get="/workflows/7/comfy-setup"`) {
+		t.Fatalf("precondition: want the setup CTA:\n%s", blocked)
+	}
+	// The trigger sits INSIDE the container it swaps, which is what makes the click
+	// replace it. Assert the ORDER of the two attributes' owners by extent, not by a
+	// bare Contains of both strings — they are both present either way.
+	ci := strings.Index(blocked, `id="`+comfySetupContainerID+`"`)
+	bi := strings.Index(blocked, `hx-get="/workflows/7/comfy-setup"`)
+	if ci < 0 || bi < 0 || ci > bi {
+		t.Errorf("the CTA must render INSIDE #%s so the loaded form replaces it "+
+			"(container at %d, button at %d):\n%s", comfySetupContainerID, ci, bi, blocked)
+	}
+	if !strings.Contains(blocked, `hx-swap="innerHTML"`) {
+		t.Errorf("the CTA must swap the container's innerHTML:\n%s", blocked)
+	}
+	// Exactly one container: a second id="comfy-setup" on the page would make the
+	// htmx target ambiguous and could nest one inside the other on every rejection.
+	if n := strings.Count(blocked, `id="`+comfySetupContainerID+`"`); n != 1 {
+		t.Errorf("want exactly one #%s container, got %d:\n%s", comfySetupContainerID, n, blocked)
+	}
+
+	// THE COPY CONSEQUENCE. The form that replaces the CTA must not point at a button
+	// that is, by then, gone.
+	srv := setupTestServer(t)
+	form := renderString(t, srv.comfySetupFragment(context.Background(), 7, "", ""))
+	if !strings.Contains(form, `name="model_path"`) {
+		t.Fatalf("precondition: want the unconfigured setup form:\n%s", form)
+	}
+	if strings.Contains(form, "button above") {
+		t.Errorf("the form replaces the button it would be referring to — it cannot tell "+
+			"the reader that 'the button above' starts working:\n%s", form)
+	}
+}
+
 // TestComfySetupDisclosureIsLazyAndAddsExactlyOneControl guards the measurement
 // this rework is judged on. The working panel must carry the change-the-folder
 // affordance WITHOUT eagerly rendering its form: the panel already carries ~123
