@@ -342,7 +342,12 @@ func TestWalkViewPathsAreServable(t *testing.T) {
 	// 10 → 12 when the UI-format workflow-detail-ui + run-missing-models-ui views were
 	// added. The floor is what stops the UI-format coverage from being quietly deleted
 	// again the way it was never added in the first place.
-	const minViews = 12
+	//
+	// 12 → 13 with run-missing-models-setup (the comfy_model_path-UNSET panel). Raising
+	// it in the same commit as the view is the whole point of a ratchet: left at 12, the
+	// one view covering that branch could be deleted again and this test would still
+	// pass — which is precisely how the branch went uncaptured in the first place.
+	const minViews = 13
 	if n := len(Views(app)); n < minViews {
 		t.Errorf("Views() returned %d views, want at least %d — the walk's coverage shrank; "+
 			"if a view was deliberately removed, lower this floor in the same commit", n, minViews)
