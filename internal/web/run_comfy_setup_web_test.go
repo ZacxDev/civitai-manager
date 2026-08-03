@@ -408,6 +408,76 @@ func TestRejectedPathRetargetsInsteadOfEatingTheFailureReport(t *testing.T) {
 	}
 }
 
+// TestSuggestionIsCorroboratedAgainstTheFilesystem closes the remaining half of the
+// hostile-payload gap.
+//
+// 🔴 comfy.ModelsRoot's vote floor stops a ONE-category payload, and nothing more: a
+// hostile ComfyUI can list five fabricated categories under one parent as cheaply as
+// one, and the parent it nominates need not itself look like anything. The
+// downstream re-validation cannot help — it only asks whether the path exists, is a
+// directory, and is writable, which any home directory satisfies. Measured before
+// this check, a payload naming /home/zach/<category> for several categories got
+// /home/zach accepted and PRE-FILLED into the form.
+//
+// So the suggestion must be checkable, not merely self-consistent: at least one
+// reported category directory has to actually exist on disk.
+func TestSuggestionIsCorroboratedAgainstTheFilesystem(t *testing.T) {
+	// A directory that exists and is writable, but whose claimed category folders do
+	// not exist — the shape of a home directory named by a hostile payload.
+	bare := t.TempDir()
+
+	t.Run("uncorroborated layout is not suggested", func(t *testing.T) {
+		srv := setupTestServer(t)
+		srv.folderPathsFn = func(context.Context) (map[string][]string, error) {
+			return map[string][]string{
+				"checkpoints": {filepath.Join(bare, "checkpoints")},
+				"loras":       {filepath.Join(bare, "loras")},
+				"vae":         {filepath.Join(bare, "vae")},
+			}, nil
+		}
+		// PRECONDITION: the vote floor does NOT reject this payload, so what is being
+		// measured is the corroboration and nothing else. Without this the test would
+		// pass against a floor of 4 and prove nothing about the filesystem check.
+		if got := comfy.ModelsRoot(map[string][]string{
+			"checkpoints": {filepath.Join(bare, "checkpoints")},
+			"loras":       {filepath.Join(bare, "loras")},
+			"vae":         {filepath.Join(bare, "vae")},
+		}); got != bare {
+			t.Fatalf("precondition: the vote must nominate %q, got %q", bare, got)
+		}
+		// PRECONDITION: the nominated directory passes the downstream re-validation, so
+		// it really would have been pre-filled.
+		if _, problem := validateComfyModelPath(bare); problem != "" {
+			t.Fatalf("precondition: %q must be re-validation-clean, got %q", bare, problem)
+		}
+
+		body := getSetupForm(t, srv).Body.String()
+		if strings.Contains(body, `value="`+bare+`"`) {
+			t.Errorf("a nomination whose category folders do not exist must not be pre-filled "+
+				"(%q):\n%s", bare, body)
+		}
+		if !strings.Contains(body, "did not report a models folder") {
+			t.Errorf("want the degraded type-it-yourself copy:\n%s", body)
+		}
+	})
+
+	// POSITIVE CONTROL. Without it, an always-empty suggestion passes the case above.
+	t.Run("a real layout is still suggested", func(t *testing.T) {
+		srv := setupTestServer(t)
+		root := modelsDir(t) // creates <root>/checkpoints for real
+		srv.folderPathsFn = func(context.Context) (map[string][]string, error) {
+			return map[string][]string{
+				"checkpoints": {filepath.Join(root, "checkpoints")},
+				"loras":       {filepath.Join(root, "loras")}, // never created — one is enough
+			}, nil
+		}
+		body := getSetupForm(t, srv).Body.String()
+		if !strings.Contains(body, `value="`+root+`"`) {
+			t.Errorf("a corroborated root must still be pre-filled (%q):\n%s", root, body)
+		}
+	})
+}
+
 // TestBlockedCTANeverPostsWhileThePathIsUnset is the standing guard behind the
 // state above: as long as no models folder is known, the primary action must NOT
 // render as something clickable. A CTA that POSTs with no destination configured

@@ -102,6 +102,77 @@ func TestModelsRootReturnsEmptyWhenAmbiguous(t *testing.T) {
 	}
 }
 
+// TestModelsRootRefusesAOneCategoryNomination is the hostile-payload floor.
+//
+// 🔴 The payload comes from a remote ComfyUI over HTTP, and the thing nominated is a
+// category directory's PARENT — which never has to look like a models root. Measured
+// before minModelsRootVotes: {"checkpoints":["/tmp/checkpoints"]} nominated /tmp, and
+// the re-validation downstream accepted it (it exists, it is a directory, it is
+// writable — that is the whole of that check). The 57-vs-11 margin the design rests
+// on is a fact about an HONEST payload and carries no weight against a chosen one.
+func TestModelsRootRefusesAOneCategoryNomination(t *testing.T) {
+	cases := map[string]map[string][]string{
+		"single fabricated category": {"checkpoints": {"/tmp/checkpoints"}},
+		// A lone real-looking vote is refused for the same reason: one category is not
+		// agreement, whoever sent it.
+		"single honest category": {"checkpoints": {"/opt/ComfyUI/models/checkpoints"}},
+		// The off-name and custom_nodes exclusions do not count toward the floor, so a
+		// payload padded with them still has only ONE real vote.
+		"padded with non-voting entries": {
+			"checkpoints":  {"/home/zach/checkpoints"},
+			"custom_nodes": {"/home/zach/custom_nodes"},
+			"ultralytics":  {"/home/zach/yolo"},
+		},
+	}
+	for name, fp := range cases {
+		if got := ModelsRoot(fp); got != "" {
+			t.Errorf("%s: ModelsRoot = %q, want \"\" — one agreeing category is not evidence", name, got)
+		}
+	}
+}
+
+// TestModelsRootStillAcceptsTwoAgreeingCategories is the POSITIVE CONTROL for the
+// floor above: without it, a test asserting "" everywhere passes just as well
+// against a ModelsRoot that always returns "".
+//
+// Two is the smallest payload a real install can produce, so it is the boundary the
+// floor must not overshoot.
+func TestModelsRootStillAcceptsTwoAgreeingCategories(t *testing.T) {
+	fp := map[string][]string{
+		"checkpoints": {"/opt/ComfyUI/models/checkpoints"},
+		"loras":       {"/opt/ComfyUI/models/loras"},
+	}
+	if got, want := ModelsRoot(fp), "/opt/ComfyUI/models"; got != want {
+		t.Fatalf("ModelsRoot = %q, want %q — the floor must not reject a real install", got, want)
+	}
+}
+
+// TestModelsRootCategoryDirsReportsTheVoters pins the corroboration input: the
+// caller stats exactly the directories that voted, so the existence check and the
+// vote can never drift apart.
+func TestModelsRootCategoryDirsReportsTheVoters(t *testing.T) {
+	fp := map[string][]string{
+		"checkpoints":  {"/mnt/share/checkpoints", "/opt/ComfyUI/models/checkpoints"},
+		"loras":        {"/opt/ComfyUI/models/loras"},
+		"custom_nodes": {"/opt/ComfyUI/custom_nodes"},
+		"ultralytics":  {"/opt/ComfyUI/models/yolo"},
+	}
+	got := ModelsRootCategoryDirs(fp, "/opt/ComfyUI/models")
+	want := []string{"/opt/ComfyUI/models/checkpoints", "/opt/ComfyUI/models/loras"}
+	if len(got) != len(want) {
+		t.Fatalf("ModelsRootCategoryDirs = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ModelsRootCategoryDirs = %v, want %v", got, want)
+		}
+	}
+	// A directory that did not vote for THIS root is not reported.
+	if dirs := ModelsRootCategoryDirs(fp, "/mnt/share"); len(dirs) != 1 || dirs[0] != "/mnt/share/checkpoints" {
+		t.Fatalf("ModelsRootCategoryDirs(/mnt/share) = %v, want just its own voter", dirs)
+	}
+}
+
 // TestFolderPathsDecodesAndDegrades covers the client: a 200 decodes, and a 404
 // (an older ComfyUI that has no such endpoint) is an ERROR the caller can degrade
 // on rather than a silent empty success.

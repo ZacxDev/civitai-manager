@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -220,6 +221,25 @@ func (s *Server) suggestComfyModelPath(ctx context.Context) string {
 	if root == "" {
 		return ""
 	}
+	// 🔴 CORROBORATE the nomination against the filesystem. comfy.ModelsRoot counts
+	// votes over a payload from a remote ComfyUI, and the thing it nominates is a
+	// category directory's PARENT — which the payload never has to describe truthfully
+	// and which need not itself look like a models root. Its vote floor stops a
+	// one-category payload; it cannot stop a payload that simply lists several fake
+	// categories under one parent, because inventing five costs no more than inventing
+	// one. Requiring that at least one reported category directory actually EXISTS is
+	// what makes the claim checkable rather than merely self-consistent: measured,
+	// {"checkpoints":["/home/zach/checkpoints"], …} nominated /home/zach, and the
+	// downstream re-validation accepted it because /home/zach exists and is writable.
+	//
+	// This is a SUGGESTION filter, not an access control — the residual risk needs a
+	// hostile ComfyUI, which already implies code execution on that box, and a human
+	// confirms the value on screen. It is here because the cost is one Stat and the
+	// alternative is pre-filling a plausible-looking wrong answer.
+	if !hasExistingCategoryDir(comfy.ModelsRootCategoryDirs(fp, root)) {
+		s.log.Debug("comfy folder_paths suggestion not corroborated on disk", "root", root)
+		return ""
+	}
 	// Only suggest something this server could actually use. Suggesting a path that
 	// then fails validation on submit would read as the app contradicting itself.
 	clean, problem := validateComfyModelPath(root)
@@ -228,6 +248,22 @@ func (s *Server) suggestComfyModelPath(ctx context.Context) string {
 		return ""
 	}
 	return clean
+}
+
+// hasExistingCategoryDir reports whether ANY of the reported category directories
+// is a real directory on this machine.
+//
+// One is enough on purpose: a legitimate ComfyUI lists categories it has not
+// created yet (they are search paths, not a manifest), so requiring all of them —
+// or even most — would reject real installs to buy nothing. What it rules out is
+// the payload that describes a layout which does not exist at all.
+func hasExistingCategoryDir(dirs []string) bool {
+	for _, d := range dirs {
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // comfyFolderPaths runs the models-root probe through the test seam when one is
