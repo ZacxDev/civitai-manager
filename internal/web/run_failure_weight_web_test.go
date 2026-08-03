@@ -62,15 +62,22 @@ func TestAlternativePackIsCollapsedButStillReachable(t *testing.T) {
 	if !strings.Contains(body, "More than one pack claims UltimateSDUpscale") {
 		t.Fatalf("precondition: the fixture must produce a contested class:\n%s", body)
 	}
-	if !strings.Contains(body, "Best match") || !strings.Contains(body, "Also claims it") {
-		t.Fatalf("precondition: the fixture must produce a best/alternative split:\n%s", body)
+	// 🔴 The precondition checks only the WINNER's badge. It deliberately does NOT
+	// check "Also claims it": that badge renders on the alternative's own card, so
+	// including it here would make DELETING the alternative fail at the precondition
+	// instead of at the reachability assertion below — red for the wrong reason, and
+	// indistinguishable from a broken fixture. Verified: with the alternatives
+	// dropped, the reachability block is what reports it.
+	if !strings.Contains(body, "Best match") {
+		t.Fatalf("precondition: the fixture must produce a ranked winner:\n%s", body)
 	}
 
-	// REACHABLE — present, named, and its Install button intact.
+	// REACHABLE — present, named, badged, and its Install button intact.
 	for _, want := range []string{
 		"ComfyUI-PromptChain",
 		"https://github.com/mobcat40/ComfyUI-PromptChain",
 		"Install ComfyUI-PromptChain",
+		"Also claims it",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the alternative pack must stay reachable, missing %q:\n%s", want, body)
