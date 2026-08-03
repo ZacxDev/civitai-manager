@@ -671,3 +671,114 @@ func TestComfySetupDisclosureIsLazyAndAddsExactlyOneControl(t *testing.T) {
 		t.Fatalf("must swap into a stable container:\n%s", body)
 	}
 }
+
+// TestVanishedModelFolderIsReportedInsteadOfClaimedAsInForce is the guard for the
+// state a saved path can reach on its own: the folder was deleted or its drive was
+// unmounted, so comfyDownloadEligible's os.Stat fails and the primary CTA goes back
+// to DISABLED — while nothing on screen said why.
+//
+// 🔴 The two halves of the panel contradicted each other. The summary read "Set up
+// automatic install", implying no folder was known; the body read "civitai-manager
+// currently installs model files into <gone path>", implying one was and it worked.
+// The disabled button disproves the body, and the user's only route to the actual
+// reason was to re-save the same value and read the rejection.
+//
+// This is reachable without any user error at all — an external drive that is not
+// mounted at boot produces it — which is why it is a guard and not a hypothetical.
+func TestVanishedModelFolderIsReportedInsteadOfClaimedAsInForce(t *testing.T) {
+	srv := setupTestServer(t)
+	root := modelsDir(t)
+	if err := srv.store.SetSetting(comfyModelPathSettingKey, root); err != nil {
+		t.Fatalf("seed the saved path: %v", err)
+	}
+
+	// PRECONDITION 1: while the folder exists this really is the WORKING state — the
+	// server is eligible and the body names the folder in force. Without this the
+	// assertions below could pass on a server that was never configured at all.
+	if !srv.comfyDownloadEligible() {
+		t.Fatalf("precondition: the server must start eligible with %s saved", root)
+	}
+	if before := getSetupForm(t, srv).Body.String(); !strings.Contains(before, "currently installs model files into "+root) {
+		t.Fatalf("precondition: want the in-force line before the folder goes away:\n%s", before)
+	}
+
+	// The event: the folder goes away. Nothing else changes — the setting still holds
+	// the same path, which is the whole point.
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatalf("remove the models dir: %v", err)
+	}
+
+	// PRECONDITION 2: the app really is in the blocked state now, and the saved value
+	// really did survive. This is what makes the two claims collide.
+	if srv.comfyDownloadEligible() {
+		t.Fatalf("precondition: the server must be INELIGIBLE once %s is gone", root)
+	}
+	if got := srv.comfyModelPath(); got != root {
+		t.Fatalf("precondition: the saved path must survive the folder, got %q want %q", got, root)
+	}
+
+	body := getSetupForm(t, srv).Body.String()
+
+	// THE ASSERTION. The panel must not claim it installs into a folder it cannot use.
+	if strings.Contains(body, "currently installs model files into") {
+		t.Errorf("the setup body claims a vanished folder is in force while the CTA above it "+
+			"is disabled — the app is contradicting itself and neither half says why:\n%s", body)
+	}
+	// And it must say WHAT is wrong, naming the folder, in the validator's own words
+	// (the same sentence a re-save would answer with).
+	if !strings.Contains(body, "cannot use the folder it has saved ("+root+")") {
+		t.Errorf("the body must name the saved folder as unusable:\n%s", body)
+	}
+	if !strings.Contains(body, "There is nothing at "+root+" that this server can read.") {
+		t.Errorf("the body must carry the validator's own reason, not a generic one:\n%s", body)
+	}
+	// The recovery is still one interaction away: the form is here and pre-filled, so
+	// the path can be corrected rather than retyped.
+	if !strings.Contains(body, `name="model_path"`) || !strings.Contains(body, `value="`+root+`"`) {
+		t.Errorf("the pre-filled form must still be offered so the folder can be corrected:\n%s", body)
+	}
+}
+
+// TestBlockedSetupSummaryDoesNotDenyASavedFolder pins the OTHER half of the same
+// contradiction — the eagerly-rendered summary, which is all the user sees before
+// opening the disclosure.
+//
+// `configured` is fed from batchInstallPlan.Available ("can this install run now"),
+// not from "is a path saved", so the blocked summary renders over a configured
+// install whenever the saved folder stops working. It may therefore not assert
+// anything about whether a folder is known.
+func TestBlockedSetupSummaryDoesNotDenyASavedFolder(t *testing.T) {
+	blocked := renderString(t, comfySetupDisclosure(7, false))
+	working := renderString(t, comfySetupDisclosure(7, true))
+
+	// PRECONDITION: the two states really do render different summaries, or the
+	// assertion below is about a string that never varies.
+	if blocked == working {
+		t.Fatalf("precondition: the blocked and working summaries must differ:\n%s", blocked)
+	}
+	// It still reads as a setup step, and still names what it needs rather than a
+	// config key — both are the affordance the disabled CTA depends on.
+	if !strings.Contains(blocked, "Set up automatic install") {
+		t.Errorf("the blocked summary must still offer the setup step:\n%s", blocked)
+	}
+	if !strings.Contains(blocked, "where ComfyUI keeps its models") {
+		t.Errorf("the blocked summary must still name what it needs:\n%s", blocked)
+	}
+	// THE ASSERTION: it must not claim the folder is UNKNOWN. It is reached with a
+	// folder saved-but-broken, where that is false.
+	//
+	// ⚠ Honest limit: this is a copy check, so it pins the two natural spellings of
+	// the claim that actually shipped, not a general property. A reworded assertion of
+	// ignorance would slip past it — the durable part is the comment on
+	// comfySetupDisclosure explaining WHY `configured` cannot be read as "a path is
+	// saved".
+	for _, denial := range []string{
+		"needs to know where ComfyUI keeps its models",
+		"does not know where ComfyUI keeps its models",
+	} {
+		if strings.Contains(blocked, denial) {
+			t.Errorf("the blocked summary denies that a folder is saved (%q), but it also "+
+				"renders when one IS saved and merely stopped working:\n%s", denial, blocked)
+		}
+	}
+}

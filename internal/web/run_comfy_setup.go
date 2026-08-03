@@ -64,8 +64,20 @@ const comfySetupInputID = "comfy-model-path-input"
 // control exists to avoid, or by hand-editing SQLite. The flag only picks the
 // summary wording — an unconfigured install is being asked to do a setup step, a
 // configured one is being offered a change.
+// ⚠ `configured` is fed from batchInstallPlan.Available — "can this server install
+// right now" — NOT from "is a path saved". Those come apart: a SAVED path whose
+// folder was deleted or unmounted fails comfyDownloadEligible's os.Stat, so the
+// blocked summary renders over a body that knows a folder is configured. The
+// blocked wording is therefore an INSTRUCTION ("choose …"), which is true for every
+// reason the action can be unavailable — no path, a non-loopback comfy_url, or a
+// path that has gone away. It used to assert "civitai-manager needs to know where
+// ComfyUI keeps its models", a claim about what the app knows that is simply false
+// once a path is saved, and that contradicted the body directly underneath it.
+//
+// It still NAMES what it needs rather than a config key — that is the point of the
+// control and TestRunFailurePrimaryActionDisabledWhenIneligible pins it.
 func comfySetupDisclosure(wfID int64, configured bool) g.Node {
-	summary := "Set up automatic install — civitai-manager needs to know where ComfyUI keeps its models"
+	summary := "Set up automatic install — choose where ComfyUI keeps its models"
 	if configured {
 		summary = "Change where civitai-manager installs model files"
 	}
@@ -141,12 +153,35 @@ func (s *Server) comfySetupFragment(ctx context.Context, wfID int64, value, prob
 		suggested = s.suggestComfyModelPath(ctx)
 	}
 
+	// 🔴 A SAVED path is not a WORKING path. comfyDownloadEligible re-stats the folder
+	// on every poll precisely because it can go away — a deleted directory, an
+	// unmounted drive — and when it does, the CTA above goes back to DISABLED while
+	// this body still reported "civitai-manager currently installs model files into
+	// <gone path>". That sentence is the app asserting something the dead button
+	// directly disproves, with no hint of which of the two is lying; the user's only
+	// route to the real reason was to re-save the same value and read the rejection.
+	//
+	// It re-uses the SAVE validator rather than a second stat, so the reason shown
+	// here is byte-identical to the one a submit would produce — one rule, one place.
+	// Its write probe is affordable HERE and nowhere near the poll: this fragment
+	// renders on the disclosure's first toggle and on a rejected save, both explicit
+	// user actions (see writableDirProbe's note on that asymmetry).
+	var currentProblem string
+	if current != "" {
+		_, currentProblem = validateComfyModelPath(current)
+	}
+
 	var body []g.Node
-	if current == "" {
+	switch {
+	case current == "":
 		body = append(body, h.P(h.Class("text-xs text-slate-400"),
 			g.Text("civitai-manager writes missing model files straight into ComfyUI's models folder. "+
 				"Tell it where that is and the button above starts working.")))
-	} else {
+	case currentProblem != "":
+		body = append(body, h.P(g.Attr("role", "status"), h.Class("text-xs text-amber-400"),
+			g.Text("civitai-manager cannot use the folder it has saved ("+current+"): "+currentProblem+
+				" Nothing is installed automatically until this points at a folder that works.")))
+	default:
 		body = append(body, h.P(h.Class("text-xs text-slate-400"),
 			g.Text("civitai-manager currently installs model files into "+current+
 				". Save a different folder to change that.")))
@@ -155,9 +190,9 @@ func (s *Server) comfySetupFragment(ctx context.Context, wfID int64, value, prob
 	case problem != "":
 		body = append(body, h.P(g.Attr("role", "status"), h.Class("text-xs text-amber-400"), g.Text(problem)))
 	case current != "":
-		// Nothing to add: the line above already names the folder in force, and a
-		// "check it looks right" nudge belongs to a PROBE result, not to the value the
-		// operator chose themselves.
+		// Nothing to add: the line above already named the saved folder — either as the
+		// one in force or as the one that stopped working — and a "check it looks right"
+		// nudge belongs to a PROBE result, not to the value the operator chose themselves.
 	case suggested != "":
 		body = append(body, h.P(h.Class("text-xs text-slate-500"),
 			g.Text("Your ComfyUI reports this folder — check it looks right, then save it.")))
