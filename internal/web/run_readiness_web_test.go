@@ -260,6 +260,37 @@ func TestReadinessUIFormatCanReachReady(t *testing.T) {
 	wantState(t, readiness(t, srv, id), "ready", "")
 }
 
+// readinessWarnInfo installs one class WITHOUT input_order. The converter cannot
+// map that node's widget values onto named inputs and warns — while the class
+// itself is installed and the graph references no model file at all, so nothing is
+// missing. That is the only combination that reaches the convert-warned branch.
+const readinessWarnInfo = `{
+  "NoInputOrderNode": {"python_module":"nodes","input":{"required":{"text":["STRING",{}]}}}
+}`
+
+const readinessWarnGraph = `{"nodes":[
+  {"id":1,"type":"NoInputOrderNode","widgets_values":["hello"]}
+],"links":[]}`
+
+// TestReadinessConvertWarnedIsUnknownNotReady is the subtlest fail-direction case:
+// NOTHING is missing, so every count is zero — and realRun's never-submit gate
+// REFUSES this graph anyway, because a conversion that warned is not a graph the
+// user asked to run. "Ready" here would be a straight lie about a workflow that
+// provably will not start, and "needs 0 things" would be one too.
+func TestReadinessConvertWarnedIsUnknownNotReady(t *testing.T) {
+	srv := newReadinessServer(t)
+	seedObjectInfo(t, srv, readinessWarnInfo)
+	id := seedWorkflow(t, srv, store.WorkflowFormatUI, readinessWarnGraph)
+
+	body := readiness(t, srv, id)
+	wantState(t, body, "unknown", "warnings")
+	// Precondition on the fixture, not just the outcome: if anything WERE missing
+	// this would be the "needs" branch and the test would be measuring that instead.
+	if strings.Contains(body, "node type") || strings.Contains(body, "model file") {
+		t.Errorf("fixture reached the wrong branch — nothing should be missing here:\n%s", body)
+	}
+}
+
 // ── THE FAIL DIRECTION ───────────────────────────────────────────────────────
 
 // TestReadinessColdCacheIsUnknownNotReady is the fail-direction test. A fresh
