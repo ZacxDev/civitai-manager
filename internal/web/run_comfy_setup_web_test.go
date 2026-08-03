@@ -518,8 +518,11 @@ func TestComfySetupFormIsChangeableWhenAlreadyConfigured(t *testing.T) {
 	srv.cfg.ComfyModelPath = root
 
 	body := getSetupForm(t, srv).Body.String()
+	// Errorf, not Fatalf: the CHANGEABILITY assertions below are the point of this
+	// test, and a Fatalf on the wording would stop the run before any of them
+	// reported — red at a copy check reads as a copy problem and hides the dead end.
 	if !strings.Contains(body, "currently installs model files into "+root) {
-		t.Fatalf("want the folder in force named:\n%s", body)
+		t.Errorf("want the folder in force named:\n%s", body)
 	}
 	if !strings.Contains(body, `name="model_path"`) {
 		t.Errorf("a configured install must still be able to CHANGE the folder:\n%s", body)
