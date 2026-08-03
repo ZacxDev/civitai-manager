@@ -551,10 +551,11 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater,
 	}
 
 	up.setPhase(runPhasePreparing, "Checking installed nodes & models…", 0)
-	localHave := func(name string) bool {
-		ok, _ := s.store.HasLocalFileNamed(name)
-		return ok
-	}
+	// localHaveFile (run_readiness.go) is the ONE have-this-file predicate. The
+	// pre-click readiness fragment asks the identical question against the identical
+	// library, so an inline second copy here is exactly how the two answers would
+	// drift into "the page said ready and the run says missing".
+	localHave := s.localHaveFile
 	report := comfy.Preflight(apiGraph, info, localHave)
 
 	// Apply any user-selected incompatible-option fixes to the CONVERTED (ephemeral)
@@ -905,6 +906,36 @@ func (s *Server) handleWorkflowRunComfyStatus(w http.ResponseWriter, r *http.Req
 		view.version = stats.ComfyUIVersion
 	}
 	s.render(w, http.StatusOK, runComfyStatusFragment(id, s.csrf, view))
+}
+
+// handleWorkflowRunReadiness returns the pre-click readiness line for
+// #cm-run-readiness. GET (no state change, no CSRF); loopback-gated for the same
+// reason the rest of the run zone is — generateSection renders nothing but a note
+// off-loopback, so an ungated readiness line would describe a surface the caller
+// cannot use.
+//
+// 🔴 IT MAKES NO OUTBOUND REQUEST — no ComfyUI probe, no /object_info fetch, no
+// ComfyUI-Manager, no Registry, no CivitAI. It reads the 0019 cache row and the local
+// library and nothing else. See run_readiness.go's header; the enrichment this
+// deliberately omits lives in preflightFailureResult, which runs once per FAILED RUN
+// rather than once per page view.
+//
+// A workflow that has gone missing since the page rendered renders the unknown state
+// rather than 404-ing an advisory fragment.
+func (s *Server) handleWorkflowRunReadiness(w http.ResponseWriter, r *http.Request) {
+	if !s.gate(w) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad workflow id", http.StatusBadRequest)
+		return
+	}
+	wf, werr := s.store.GetWorkflow(r.Context(), id)
+	if werr != nil {
+		wf = nil // workflowReadiness answers "unknown" for a nil workflow
+	}
+	s.render(w, http.StatusOK, runReadinessFragment(s.workflowReadiness(wf)))
 }
 
 // handleWorkflowRunStatus is polled by the running fragment. GET (no state change,

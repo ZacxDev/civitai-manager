@@ -718,6 +718,10 @@ func (s *Server) Handler() http.Handler {
 	// file, then run (all-or-nothing on resolution — see run_install_all.go).
 	mux.HandleFunc("POST /workflows/{id}/install-missing-and-run", s.handleWorkflowInstallMissingAndRun)
 	mux.HandleFunc("GET /workflows/{id}/run/comfy-status", s.handleWorkflowRunComfyStatus)
+	// The pre-click readiness line. Same lazy-fragment shape as comfy-status, but it
+	// contacts NOTHING — it answers from the 0019 object_info cache plus the local
+	// library. See run_readiness.go.
+	mux.HandleFunc("GET /workflows/{id}/run/readiness", s.handleWorkflowRunReadiness)
 	mux.HandleFunc("GET /workflows/{id}/run/status", s.handleWorkflowRunStatus)
 	mux.HandleFunc("GET /workflows/{id}/run/params", s.handleWorkflowRunParams)
 	// Run presets (the run panel's tabs). Every one is CSRF + loopback gated: they

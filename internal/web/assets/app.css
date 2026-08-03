@@ -3789,6 +3789,48 @@ a.cm-res-chip .cm-res-name {
 .cm-status-ico[data-state="off"] {
   color: var(--civitai-color-text-dimmed);
 }
+/*
+ * "warn" is the readiness line's needs-things state (run_readiness.go). It reuses
+ * --civitai-color-warning-text — the FOREGROUND half of the intent token, never the
+ * bare fill — so it introduces NO new coloured pair: warning-text on the body and
+ * warning-text on a surface are both already pinned in contrast_web_test.go.
+ */
+.cm-status-ico[data-state="warn"] {
+  color: var(--civitai-color-warning-text);
+}
+
+/*
+ * .cm-readiness — the ONE quiet line answering "could this run?" BEFORE the click.
+ *
+ * Quiet is the design, not an oversight: most workflows are fine, and this repo has
+ * already removed one flat "this needs custom nodes" banner for crying wolf. It is
+ * sized and coloured like .cm-run-hint directly above it so a healthy workflow reads
+ * as one more line of small print, while the glyph carries the state.
+ *
+ * align-items: baseline (not center) keeps the glyph on the text baseline when the
+ * sentence wraps to two lines, which the "needs at least …" copy routinely does.
+ */
+.cm-readiness {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  max-width: 46rem;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  line-height: 1rem;
+  color: var(--civitai-color-text-dimmed);
+}
+/*
+ * .cm-status-ico's own box is sized for the 1rem run row it was built for; at this
+ * line's 0.75rem it would be a 21.6px glyph beside 12px text. Only the BOX is
+ * relaxed here — the [data-state] colours are inherited untouched, which is the
+ * whole reason for reusing the class.
+ */
+.cm-readiness .cm-status-ico {
+  width: auto;
+  height: auto;
+  font-size: 0.85rem;
+}
 
 /*
  * .cm-param-* — the run "Parameters" form layout. Each control is sized to the

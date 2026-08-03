@@ -164,6 +164,19 @@ func runZone(wfID int64, csrf string, canQueue, editable bool) g.Node {
 	}
 	body = append(body, h.Div(h.Class("cm-gen-row"), g.Group(row)))
 	body = append(body, h.P(h.ID(runZoneHintID), h.Class("cm-run-hint"), g.Text(runZoneHint(canQueue))))
+	// The pre-click readiness line: "needs 1 node type and 3 model files", answered
+	// from local state only. It is a SECOND lazy fragment beside the reachability one
+	// — computing it during the page render would put a UI→API conversion and a 4.66 MB
+	// object_info decode on the critical path of every workflow page.
+	//
+	// Its container is STABLE and the fragment swaps its innerHTML, never the node
+	// (the repo's streaming-fragment invariant). It sits AFTER the hint deliberately:
+	// it is advisory, and the hint is what the count segment is aria-describedby.
+	body = append(body, h.Div(h.ID(runReadinessID),
+		hx("get", "/workflows/"+id+"/run/readiness"),
+		hx("trigger", "load"),
+		hx("swap", "innerHTML"),
+	))
 	return h.Div(body...)
 }
 
