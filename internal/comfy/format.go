@@ -47,14 +47,35 @@ func DetectFormat(raw json.RawMessage) (string, error) {
 
 	// API graphs are a flat map of node-id → {class_type, inputs}.
 	var nodes map[string]apiNode
-	if err := json.Unmarshal(raw, &nodes); err == nil {
-		for _, n := range nodes {
-			if strings.TrimSpace(n.ClassType) != "" {
-				return FormatAPI, nil
-			}
-		}
+	if err := json.Unmarshal(raw, &nodes); err == nil && usableAPINodes(nodes) > 0 {
+		return FormatAPI, nil
 	}
 	return "", ErrUnknownFormat
+}
+
+// usableAPINodes counts the entries of a decoded api graph that actually carry a
+// class_type — i.e. the nodes ComfyUI could execute.
+//
+// 🔴 THIS IS ONE RULE WITH TWO CALLERS ON PURPOSE. DetectFormat's "is this an api
+// graph at all" and Preflight's Nodes count are the SAME question, and they used to
+// answer it differently: DetectFormat required a non-empty class_type while
+// Preflight counted raw map entries. Anything that reached Preflight WITHOUT going
+// through DetectFormat — handleWorkflowImportPNG stores a prompt chunk as format=api
+// verbatim — could therefore present `{"a":{}}` or a `{"prompt": <graph>}` wrapper,
+// score Nodes=1, and be called a graph by the only signal that separates "not a
+// graph" from "a clean graph". See comfy.PreflightReport.Nodes.
+//
+// Empty-but-present and whitespace-only both count as absent, matching ComfyUI:
+// execution.py's validate_prompt rejects a missing class_type outright, and a blank
+// one then fails the NODE_CLASS_MAPPINGS lookup on the next line.
+func usableAPINodes(nodes map[string]apiNode) int {
+	n := 0
+	for _, node := range nodes {
+		if strings.TrimSpace(node.ClassType) != "" {
+			n++
+		}
+	}
+	return n
 }
 
 // ExtractResources scans an api-format graph for referenced model filenames. It

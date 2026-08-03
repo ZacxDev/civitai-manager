@@ -172,6 +172,13 @@ type Server struct {
 	// or nil before the first workflow scan is triggered.
 	workflowScanJob *workflowScanJob
 
+	// schemaMemo caches the DECODED 0019 /object_info payload, keyed on the raw blob.
+	// The pre-click readiness fragment is a separate lazy request per workflow-page
+	// view and decoding that payload costs ~73-113 ms on the operator's real row —
+	// see run_readiness_schema.go for the key, the safety argument and what it does
+	// NOT save. It carries a mutex, so *Server must not be copied (it never is).
+	schemaMemo readinessSchemaMemo
+
 	// importedWorkflowsFn answers "which of these civitai model ids already have
 	// workflows in the local library" for ONE rendered page of cards. Nil
 	// (production) uses store.CountWorkflowsByModels — a single batched query.
@@ -718,6 +725,10 @@ func (s *Server) Handler() http.Handler {
 	// file, then run (all-or-nothing on resolution — see run_install_all.go).
 	mux.HandleFunc("POST /workflows/{id}/install-missing-and-run", s.handleWorkflowInstallMissingAndRun)
 	mux.HandleFunc("GET /workflows/{id}/run/comfy-status", s.handleWorkflowRunComfyStatus)
+	// The pre-click readiness line. Same lazy-fragment shape as comfy-status, but it
+	// contacts NOTHING — it answers from the 0019 object_info cache plus the local
+	// library. See run_readiness.go.
+	mux.HandleFunc("GET /workflows/{id}/run/readiness", s.handleWorkflowRunReadiness)
 	mux.HandleFunc("GET /workflows/{id}/run/status", s.handleWorkflowRunStatus)
 	mux.HandleFunc("GET /workflows/{id}/run/params", s.handleWorkflowRunParams)
 	// Run presets (the run panel's tabs). Every one is CSRF + loopback gated: they

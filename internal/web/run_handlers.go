@@ -551,10 +551,11 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater,
 	}
 
 	up.setPhase(runPhasePreparing, "Checking installed nodes & models…", 0)
-	localHave := func(name string) bool {
-		ok, _ := s.store.HasLocalFileNamed(name)
-		return ok
-	}
+	// localHaveFile (run_readiness.go) is the ONE have-this-file predicate. The
+	// pre-click readiness fragment asks the identical question against the identical
+	// library, so an inline second copy here is exactly how the two answers would
+	// drift into "the page said ready and the run says missing".
+	localHave := s.localHaveFile
 	report := comfy.Preflight(apiGraph, info, localHave)
 
 	// Apply any user-selected incompatible-option fixes to the CONVERTED (ephemeral)
@@ -570,42 +571,34 @@ func (s *Server) realRun(ctx context.Context, wf *store.Workflow, up runUpdater,
 		}
 	}
 
-	// 🔴 NEVER-SUBMIT GATE. Two conditions veto the submit ON THEIR OWN, each
-	// independently of report.OK — and that independence is the invariant:
-	//
-	//   graphIncomplete — the converter had to CUT one or more ACTIVE nodes out of
-	//     the graph because their class is not installed. The class is then no
-	//     longer IN the document comfy.Preflight validates, so preflight sees a
-	//     perfectly well-formed graph and can legitimately answer OK. Submitting it
-	//     runs a workflow with a hole in it. The report below is therefore
-	//     SYNTHESIZED from the converter's own findings.
-	//   convWarned — any other conversion warning (an unresolved link, an ambiguous
-	//     bypass). Blunt, but fail-closed and correct: a graph whose links did not
-	//     resolve is not a graph the user asked to run.
-	//
-	// The disjunction is written out rather than collapsed into `!report.OK` on
-	// purpose: a future edit to the failure branch must not be able to make a holed
-	// graph submittable. Guarded by TestRunNeverSubmitsAConversionBlockedGraph.
-	convWarned := len(conv.Warnings) > 0
-	graphIncomplete := len(conv.MissingNodeTypes) > 0
-	if graphIncomplete {
-		report.MissingNodes = mergeMissingNodes(report.MissingNodes, conv.MissingNodeTypes)
-		report.OK = false
-	}
-	if convWarned || graphIncomplete || !report.OK {
-		if report.OK {
-			// Warnings with nothing structured behind them: the raw warning list IS the
-			// whole report, exactly as this path behaved before it learned to synthesize
-			// one. Still never submitted.
-			return &runResult{Warnings: conv.Warnings}, nil
+	// 🔴 NEVER-SUBMIT GATE — evaluated in run_gate.go, which is the ONE place this
+	// decision is made. The pre-click readiness line asks the identical question of
+	// the identical inputs; a second copy here is precisely how the two answers drifted
+	// into "the page says Ready and the run refuses to start". Read run_gate.go for
+	// what each condition vetoes and why the disjunction is written out.
+	// Guarded by TestRunNeverSubmitsAConversionBlockedGraph (+ the readiness suite,
+	// which fails on the same mutations — that shared failure IS the consolidation).
+	gate := evalRunGate(conv, &report)
+	if gate.blocked() {
+		if !report.OK {
+			res := s.preflightFailureResult(ctx, wf, apiGraph, info, &report)
+			// The raw converter text stays available in the failure card's subordinated
+			// "Technical details" — the structured panels are the primary surface now, but
+			// the engine's own words are what a bug report needs.
+			res.Warnings = conv.Warnings
+			res.GraphIncomplete = gate.GraphIncomplete
+			return res, nil
 		}
-		res := s.preflightFailureResult(ctx, wf, apiGraph, info, &report)
-		// The raw converter text stays available in the failure card's subordinated
-		// "Technical details" — the structured panels are the primary surface now, but
-		// the engine's own words are what a bug report needs.
-		res.Warnings = conv.Warnings
-		res.GraphIncomplete = graphIncomplete
-		return res, nil
+		// Nothing structured is missing and the graph is still not submittable: the
+		// warning list IS the whole report, exactly as this path behaved before it
+		// learned to synthesize one. Still never submitted.
+		warnings := conv.Warnings
+		if gate.NoNodes {
+			// A graph with nothing in it produces no warnings of its own, so it would
+			// otherwise reach the terminal panel saying nothing at all.
+			warnings = append(append([]string{}, warnings...), emptyGraphWarning)
+		}
+		return &runResult{Warnings: warnings}, nil
 	}
 
 	clientID := comfy.NewID()
@@ -905,6 +898,42 @@ func (s *Server) handleWorkflowRunComfyStatus(w http.ResponseWriter, r *http.Req
 		view.version = stats.ComfyUIVersion
 	}
 	s.render(w, http.StatusOK, runComfyStatusFragment(id, s.csrf, view))
+}
+
+// handleWorkflowRunReadiness returns the pre-click readiness line for
+// #cm-run-readiness. GET (no state change, no CSRF); loopback-gated for the same
+// reason the rest of the run zone is — generateSection renders nothing but a note
+// off-loopback, so an ungated readiness line would describe a surface the caller
+// cannot use.
+//
+// 🔴 IT MAKES NO OUTBOUND REQUEST — no ComfyUI probe, no /object_info fetch, no
+// ComfyUI-Manager, no Registry, no CivitAI. It reads the 0019 cache row and the local
+// library and nothing else. See run_readiness.go's header; the enrichment this
+// deliberately omits lives in preflightFailureResult, which runs once per FAILED RUN
+// rather than once per page view.
+//
+// A workflow that has gone missing since the page rendered renders the unknown state
+// rather than 404-ing an advisory fragment.
+func (s *Server) handleWorkflowRunReadiness(w http.ResponseWriter, r *http.Request) {
+	if !s.gate(w) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad workflow id", http.StatusBadRequest)
+		return
+	}
+	wf, werr := s.store.GetWorkflow(r.Context(), id)
+	if werr != nil {
+		// A genuine read failure is NOT the same event as a deleted row, and it is the
+		// one worth a log line — the fragment says the same thing either way (there is
+		// no workflow to check), but only one of the two is a fault.
+		if !errors.Is(werr, store.ErrNotFound) {
+			s.log.Warn("readiness: read workflow", "err", werr, "workflow_id", id)
+		}
+		wf = nil // workflowReadiness answers unknown/reasonNoWorkflow for a nil workflow
+	}
+	s.render(w, http.StatusOK, runReadinessFragment(s.workflowReadiness(wf)))
 }
 
 // handleWorkflowRunStatus is polled by the running fragment. GET (no state change,
