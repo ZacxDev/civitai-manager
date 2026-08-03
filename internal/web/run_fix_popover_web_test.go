@@ -219,8 +219,26 @@ func TestFixPopoverIneligibleInstallDisabled(t *testing.T) {
 	if !strings.Contains(body, "Install and run") || !strings.Contains(body, "disabled") {
 		t.Errorf("ineligible popover should render a disabled Install-and-run:\n%s", body)
 	}
-	if !strings.Contains(body, "Set comfy_model_path to install here") {
+	if !strings.Contains(body, cardInstallBlockedText) {
 		t.Errorf("ineligible popover missing the reason line:\n%s", body)
+	}
+	// 🔴 The reason may not be config-file vocabulary, and may not hide in a native
+	// tooltip. "Set comfy_model_path to install here" told a reader with no
+	// config.yaml what was wrong in a language they have never seen, and the same
+	// sentence was ALSO duplicated into a `title` — which no keyboard user can reach
+	// and which has already raced a CSS popover in this repo.
+	if strings.Contains(body, "comfy_model_path") {
+		t.Errorf("a blocked card must not name a config key at the user:\n%s", body)
+	}
+	// Scoped to the CONTROL, not the panel: the panel legitimately carries `title` on
+	// its stat icons (they are decorative <svg> with a matching aria-label), and a
+	// panel-wide check reports those instead of the thing under guard.
+	btn := renderString(t, installAndRunButton(mm, 1, false /* dlEligible */, 7, "tok"))
+	if !strings.Contains(btn, "disabled") {
+		t.Fatalf("precondition: want the blocked control:\n%s", btn)
+	}
+	if strings.Contains(btn, "title=") {
+		t.Errorf("the reason must be real text, not a native tooltip:\n%s", btn)
 	}
 	if !strings.Contains(body, "View on CivitAI") || !strings.Contains(body, "https://civitai.com/models/1") {
 		t.Errorf("ineligible popover missing the View-on-CivitAI link:\n%s", body)

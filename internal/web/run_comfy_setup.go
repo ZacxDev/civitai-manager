@@ -28,15 +28,22 @@ const comfySetupProbeTimeout = 5 * time.Second
 // label/for from it).
 const comfySetupInputID = "comfy-model-path-input"
 
-// comfySetupDisclosure is the run panel's replacement for the dead-end sentence
-// that used to sit under the disabled "Install N missing model files and run"
-// button ("Installing automatically needs comfy_model_path set and comfy_url
-// pointing at a ComfyUI on this machine").
+// comfySetupDisclosure is the WORKING state's "change where model files go" control:
+// a collapsed, lazy disclosure sitting AFTER the live batch-install CTA.
 //
-// 🔴 The point of this control is that the primary recovery action was DISABLED and
-// the panel's only response was to name a config key in config-file jargon. The
-// operator was one setting away from it working — their ComfyUI answers on
-// loopback — with no way to supply it from the page telling them it was missing.
+// ⚠ It used to serve both states, taking a `configured` flag to switch its summary
+// between an instruction and an offer. The blocked state no longer uses it at all —
+// there, choosing the folder IS the recovery action, so it is rendered as a real
+// primary control by blockedInstallAction rather than as a 16px disclosure summary
+// under a dead button. What remains here is only the offer, so the flag is gone.
+//
+// 🔴 This renders even though the install is working, and that is the point.
+// comfy_model_path is the single value deciding where gigabytes land, it is writable
+// from exactly one control in the whole app, and a wrong-but-valid choice (a path that
+// exists and is writable, so it passes validation) would otherwise be uncorrectable
+// in-app — there is no settings page. It used to have a single call site inside the
+// blocked branch, so once a path was saved the disclosure never rendered again while
+// its own body promised "Change it any time from this panel".
 //
 // It is LAZY by construction: a closed <details> whose body is fetched on its first
 // `toggle`. Two reasons, both load-bearing:
@@ -56,35 +63,11 @@ const comfySetupInputID = "comfy-model-path-input"
 // It takes no CSRF token: the disclosure only issues a GET, and the form it loads
 // carries the server's own token (see comfySetupFragment).
 //
-// 🔴 `configured` is why this renders in BOTH states. It used to have a single call
-// site, inside the `!p.Available` branch, so once a path was saved the disclosure
-// never rendered again — while its own body promised "Change it any time from this
-// panel". This app has no settings page, so that made the ONE value deciding where
-// gigabytes land uncorrectable in-app: only by writing the config.yaml this whole
-// control exists to avoid, or by hand-editing SQLite. The flag only picks the
-// summary wording — a blocked install is being asked to do a setup step, a working
-// one is being offered a change.
-//
-// ⚠ That sentence used to read "an UNCONFIGURED install … a CONFIGURED one", and
-// that is the misreading this next paragraph exists to correct.
-//
-// ⚠ `configured` is fed from batchInstallPlan.Available — "can this server install
-// right now" — NOT from "is a path saved". Those come apart: a SAVED path whose
-// folder was deleted or unmounted fails comfyDownloadEligible's os.Stat, so the
-// blocked summary renders over a body that knows a folder is configured. The
-// blocked wording is therefore an INSTRUCTION ("choose …"), which is true for every
-// reason the action can be unavailable — no path, a non-loopback comfy_url, or a
-// path that has gone away. It used to assert "civitai-manager needs to know where
-// ComfyUI keeps its models", a claim about what the app knows that is simply false
-// once a path is saved, and that contradicted the body directly underneath it.
-//
-// It still NAMES what it needs rather than a config key — that is the point of the
-// control and TestRunFailurePrimaryActionDisabledWhenIneligible pins it.
-func comfySetupDisclosure(wfID int64, configured bool) g.Node {
-	summary := "Set up automatic install — choose where ComfyUI keeps its models"
-	if configured {
-		summary = "Change where civitai-manager installs model files"
-	}
+// The summary says "change", not "set up", because this call site is reached ONLY
+// from a batch CTA that is currently live — i.e. a folder is configured and working.
+// It names what it changes rather than a config key.
+func comfySetupDisclosure(wfID int64) g.Node {
+	const summary = "Change where civitai-manager installs model files"
 	return h.Details(
 		h.Class("mt-1"),
 		hx("get", "/workflows/"+strconv.FormatInt(wfID, 10)+"/comfy-setup"),
@@ -128,13 +111,13 @@ func (s *Server) handleComfySetupForm(w http.ResponseWriter, r *http.Request) {
 // as dead as before, which is the same class of lie this whole rework is removing.
 func (s *Server) comfySetupFragment(ctx context.Context, wfID int64, value, problem string) g.Node {
 	if !comfyURLIsLocal(s.cfg.ComfyURL) {
+		// Same two sentences the failure panel now renders WITHOUT a click when it
+		// knows this is the blocker (blockedInstallAction). Shared consts, one copy:
+		// this branch stays reachable from the working state's "change the folder"
+		// disclosure, where the user asked for it.
 		return h.Div(h.Class("space-y-1"),
-			h.P(h.Class("text-xs text-amber-400"),
-				g.Text("This server is not pointed at a ComfyUI on this machine, so it cannot install "+
-					"model files for you. Set comfy_url to your local ComfyUI (for example "+
-					"http://127.0.0.1:8188) and restart civitai-manager.")),
-			h.P(h.Class("text-xs text-slate-500"),
-				g.Text("Until then, use the per-file options below to download each model yourself.")),
+			h.P(h.Class("text-xs text-amber-400"), g.Text(installRemoteComfyReason)),
+			h.P(h.Class("text-xs text-slate-500"), g.Text(installRemoteComfyNextStep)),
 		)
 	}
 	// 🔴 A CONFIGURED install gets the form too, pre-filled with the saved path.
@@ -178,9 +161,16 @@ func (s *Server) comfySetupFragment(ctx context.Context, wfID int64, value, prob
 	var body []g.Node
 	switch {
 	case current == "":
+		// 🔴 IT MUST NOT REFER TO "THE BUTTON ABOVE". This sentence used to end "and the
+		// button above starts working", which was true while the blocked panel rendered a
+		// disabled CTA with this form in a disclosure BENEATH it. It is now false at the
+		// only call site that can reach this branch: the setup CTA targets #comfy-setup
+		// with innerHTML and this form REPLACES it, so at the moment the reader sees this
+		// sentence there is no button above — the nearest thing above is the failure
+		// headline. Caught live in a browser, not by any markup test.
 		body = append(body, h.P(h.Class("text-xs text-slate-400"),
 			g.Text("civitai-manager writes missing model files straight into ComfyUI's models folder. "+
-				"Tell it where that is and the button above starts working.")))
+				"Tell it where that is and it can install them for you.")))
 	case currentProblem != "":
 		body = append(body, h.P(g.Attr("role", "status"), h.Class("text-xs text-amber-400"),
 			g.Text("civitai-manager cannot use the folder it has saved ("+current+"): "+currentProblem+

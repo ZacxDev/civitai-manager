@@ -165,37 +165,348 @@ func TestRunFailureSingularCopy(t *testing.T) {
 	}
 }
 
-// TestRunFailurePrimaryActionDisabledWhenIneligible: a server that cannot install
-// files must still SHOW the action, disabled, with the reason — never a silent
-// omission, and never a POST target. AND the lead must not promise the install: "…
-// Install them and it should run" is false when the button is greyed out.
-func TestRunFailurePrimaryActionDisabledWhenIneligible(t *testing.T) {
+// TestRunFailureBlockedStateRendersNoDeadInstallButton is the guard for the defect
+// this change exists to remove, and it is the INVERSE of what used to be asserted
+// here (TestRunFailurePrimaryActionDisabledWhenIneligible, which required the
+// disabled button to be present).
+//
+// 🔴 MEASURED on the operator's install, workflow 590, with no comfy_model_path:
+// the disabled "Install 3 missing model files and run" rendered 278×36 at the TOP of
+// the panel carrying the primary fill rgb(25,113,194) at opacity 0.6 — the largest,
+// highest, primary-coloured control on the page, and completely inert. The setup
+// disclosure that would have made it work rendered underneath it at 16px tall in a
+// 12px font, and the panel's one genuinely working button (Install
+// ComfyUI_UltimateSDUpscale, 250×30, opacity 1) sat 233px further down. Rendering
+// the dead control "so the recovery path stays visible" cost more than it bought:
+// the recovery path IS the setup step, so that is what gets the primary control.
+//
+// The information the dead button carried is not lost — the count moves into the
+// setup CTA's own label, asserted below.
+func TestRunFailureBlockedStateRendersNoDeadInstallButton(t *testing.T) {
 	body := renderString(t, runStatusFragment(twoMissingSnapshot(), 7, "tok", false, fullMaturityRange()))
 
+	// PRECONDITION: this really is the blocked state, and it really did reach the
+	// batch-install render path (an unreachable branch would pass every assertion
+	// below by rendering nothing at all).
 	if strings.Contains(body, "install-missing-and-run") {
-		t.Errorf("ineligible failure state must not POST the batch install:\n%s", body)
+		t.Fatalf("precondition: the ineligible failure state must not POST the batch install:\n%s", body)
 	}
-	if !strings.Contains(body, "Install 2 missing model files and run") || !strings.Contains(body, "disabled") {
-		t.Errorf("expected a disabled primary action:\n%s", body)
+	if !strings.Contains(body, "Run failed — 2 model files missing") {
+		t.Fatalf("precondition: want the 2-missing-model failure panel:\n%s", body)
 	}
-	// "Explain itself" now means OFFER THE FIX, not name a config key: the disabled
-	// action carries the setup disclosure that makes it live.
+
+	// THE ASSERTION: no dead install-all button, in either of its two spellings.
+	if strings.Contains(body, "Install 2 missing model files and run") {
+		t.Errorf("the blocked panel must not render the install-all button at all — it "+
+			"cannot act, and it outranks every live control on the panel:\n%s", body)
+	}
+	if strings.Contains(body, "missing model files and run") {
+		t.Errorf("no variant of the dead install-all label may render while blocked:\n%s", body)
+	}
+
+	// The setup step is the primary action, and it carries the count the dead button
+	// used to carry.
 	if !strings.Contains(body, `hx-get="/workflows/7/comfy-setup"`) {
-		t.Errorf("disabled primary action must offer the setup step:\n%s", body)
+		t.Errorf("the blocked panel's primary action must be the setup step:\n%s", body)
+	}
+	if !strings.Contains(body, "Set up automatic install for 2 missing model files") {
+		t.Errorf("the setup CTA must carry how many files it unblocks:\n%s", body)
+	}
+	if !strings.Contains(body, `data-variant="filled"`) {
+		t.Errorf("the setup step must be styled as a real primary control:\n%s", body)
 	}
 	if !strings.Contains(body, "where ComfyUI keeps its models") {
 		t.Errorf("the setup step must say what it needs in plain words:\n%s", body)
 	}
-	// The lead is GATED on the CTA being able to deliver.
+	// The lead is GATED on the batch being able to deliver.
 	if strings.Contains(body, "Nothing is broken") || strings.Contains(body, "Install them and it should run") {
-		t.Errorf("lead must not promise an install the disabled CTA cannot perform:\n%s", body)
+		t.Errorf("lead must not promise an install this server cannot perform:\n%s", body)
 	}
 	// The lead used to say "this copy of civitai-manager cannot fetch them for you".
-	// That is now FALSE — the setup disclosure asserted above makes it able to — so
-	// the blocked state is deliberately lead-free, and the guard is INVERTED: a dead
-	// end must not be stated above a control that offers the way out.
+	// That is now FALSE — the setup step asserted above makes it able to — so the
+	// blocked state is deliberately lead-free, and the guard is INVERTED: a dead end
+	// must not be stated above a control that offers the way out.
 	if strings.Contains(body, "cannot fetch") {
 		t.Errorf("the blocked lead must not claim a dead end the setup step disproves:\n%s", body)
+	}
+}
+
+// TestRunFailureSingularSetupCTACopy: the setup CTA's generated label has to read
+// correctly for one file, since that is the count it most often carries.
+func TestRunFailureSingularSetupCTACopy(t *testing.T) {
+	snap := twoMissingSnapshot()
+	snap.Preflight = &comfy.PreflightReport{MissingModels: []string{"only-MISSING.safetensors"}}
+	snap.MissingModels = snap.MissingModels[:1]
+	body := renderString(t, runStatusFragment(snap, 7, "tok", false, fullMaturityRange()))
+
+	if !strings.Contains(body, "Set up automatic install for 1 missing model file") {
+		t.Errorf("want the singular setup CTA label:\n%s", body)
+	}
+	if strings.Contains(body, "1 missing model files") {
+		t.Errorf("plural leaked into the singular label:\n%s", body)
+	}
+}
+
+// TestRunFailureBlockedByARemoteComfyOffersNoSetupCTA is the other blocked state, and
+// it is the reason batchInstallPlan carries SetupCanHelp rather than just !Available.
+//
+// 🔴 When comfy_url points at a ComfyUI on another machine, NO folder choice unblocks
+// the install — comfyDownloadEligible requires a loopback comfy_url as well, and
+// comfySetupFragment's first branch refuses to offer the form at all. A prominent
+// "Set up automatic install" here would be the same dead end the disabled button was,
+// one click deeper: the user clicks a primary control and is told it cannot help.
+func TestRunFailureBlockedByARemoteComfyOffersNoSetupCTA(t *testing.T) {
+	snap := twoMissingSnapshot()
+	snap.ComfyRemote = true
+	body := renderString(t, runStatusFragment(snap, 7, "tok", false, fullMaturityRange()))
+
+	// PRECONDITION: the failure panel really rendered, so the assertions below are
+	// about a state that exists.
+	if !strings.Contains(body, "Run failed — 2 model files missing") {
+		t.Fatalf("precondition: want the failure panel:\n%s", body)
+	}
+	// PRECONDITION: the SAME snapshot with a local ComfyUI DOES offer the setup step,
+	// so this test discriminates on ComfyRemote and not on something incidental.
+	local := twoMissingSnapshot()
+	if !strings.Contains(renderString(t, runStatusFragment(local, 7, "tok", false, fullMaturityRange())),
+		"Set up automatic install") {
+		t.Fatal("precondition: a LOCAL blocked panel must offer the setup step")
+	}
+
+	if strings.Contains(body, "Set up automatic install") {
+		t.Errorf("a remote ComfyUI cannot be fixed by choosing a folder, so no setup CTA "+
+			"may be offered:\n%s", body)
+	}
+	if strings.Contains(body, "/comfy-setup") {
+		t.Errorf("no control may lead to a setup form that will refuse to help:\n%s", body)
+	}
+	if strings.Contains(body, "missing model files and run") {
+		t.Errorf("and still no dead install-all button:\n%s", body)
+	}
+	// 🔴 THE STRUCTURAL HALF. Everything above this line is spelled against a
+	// LABEL, and every other no-POST guard in the package exercises the
+	// SetupCanHelp branch — so this branch, which is new code, had no guard against
+	// the defect class the whole change is about. Planting a live "Install
+	// everything" civButton carrying hx-post=".../install-missing-and-run" inside
+	// blockedInstallAction's remote branch failed ZERO tests. It is not exploitable
+	// (handleInstallMissingAndRun refuses with installMissingUnavailable), but a
+	// server that cannot install must not render a control that POSTs the install,
+	// whatever the button happens to be called.
+	if strings.Contains(body, "install-missing-and-run") {
+		t.Errorf("a remote-blocked panel must render no control that POSTs the batch "+
+			"install, under any label:\n%s", body)
+	}
+	// It must say WHY, without a click, since there is nothing to click.
+	if !strings.Contains(body, "not pointed at a ComfyUI on this machine") {
+		t.Errorf("the remote-ComfyUI blocker must be stated in the panel itself:\n%s", body)
+	}
+	if !strings.Contains(body, "use the per-file options below") {
+		t.Errorf("and it must name the path that does still work:\n%s", body)
+	}
+}
+
+// deadControlAt reports the byte offset of the first `disabled` ATTRIBUTE in s, or
+// -1. htmx's `hx-disabled-elt` is deliberately excluded.
+//
+// 🔴 THAT EXCLUSION IS THE WHOLE POINT, and it is not fussiness: the fifth guard on
+// this panel (TestBlockedCTANeverPostsWhileThePathIsUnset) asserted
+// `Contains(body, "disabled")` and was GREEN ONLY because the live setup CTA emits
+// hx-disabled-elt="this". A bare substring cannot tell an inert control from an
+// htmx in-flight lockout, so a check written that way would either pass forever or
+// forbid the working button.
+func deadControlAt(s string) int {
+	for i := 0; ; {
+		j := strings.Index(s[i:], "disabled")
+		if j < 0 {
+			return -1
+		}
+		at := i + j
+		if !strings.HasPrefix(s[at:], "disabled-elt") {
+			return at
+		}
+		i = at + len("disabled")
+	}
+}
+
+// TestBlockedPanelRendersNoDeadControlAtAll is the STRUCTURAL half of "the blocked
+// panel offers no dead button". The POST axis is well guarded; the dead-control axis
+// was spelled, not structural — every assertion named the one label the removed
+// button carried.
+//
+// 🔴 MEASURED: re-adding a civButton("filled", "md", …, h.Disabled()) labelled
+// "Fetch all 2 files automatically" at the top of the blocked panel — a
+// primary-filled, inert, topmost control, i.e. the shipped defect restored in
+// substance — failed ZERO tests. A label is not an invariant.
+//
+// The assertion is scoped to installAllMissingAction's own fragment rather than the
+// whole page, because the per-file CivitAI card legitimately renders a DISABLED
+// "Install and run" beside its View-on-CivitAI link (run_resolve.go), and a
+// page-wide check would report that instead of the thing under guard.
+func TestBlockedPanelRendersNoDeadControlAtAll(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		remote       bool
+		wantSetupCTA bool
+	}{
+		{"local ComfyUI, no models folder", false, true},
+		{"comfy_url points somewhere else", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			models := twoMissingSnapshot().MissingModels
+			p := planBatchInstall(models, false /* dlEligible */, tc.remote)
+
+			// PRECONDITIONS: this really is the blocked branch of the state it names,
+			// and it really rendered something. A fragment that rendered nothing
+			// satisfies the assertion below perfectly.
+			if p.Available {
+				t.Fatalf("precondition: want a BLOCKED plan, got %+v", p)
+			}
+			if p.SetupCanHelp != tc.wantSetupCTA {
+				t.Fatalf("precondition: SetupCanHelp = %v, want %v", p.SetupCanHelp, tc.wantSetupCTA)
+			}
+			panel := renderString(t, installAllMissingAction(p, len(models), 7, "tok"))
+			if !strings.Contains(panel, "<") {
+				t.Fatalf("precondition: the blocked panel rendered nothing:\n%q", panel)
+			}
+			if got := strings.Contains(panel, "/comfy-setup"); got != tc.wantSetupCTA {
+				t.Fatalf("precondition: setup CTA present = %v, want %v:\n%s", got, tc.wantSetupCTA, panel)
+			}
+
+			// THE ASSERTION.
+			if at := deadControlAt(panel); at >= 0 {
+				lo := at - 120
+				if lo < 0 {
+					lo = 0
+				}
+				t.Errorf("the blocked panel renders a dead control — an inert button here "+
+					"outranks every live action on the page, which is the defect this "+
+					"change removed:\n…%s…\n\nfull panel:\n%s", panel[lo:at+8], panel)
+			}
+
+			// NEGATIVE CONTROL: deadControlAt must actually be able to fire, and must
+			// NOT fire on htmx's lockout attribute. Without this the assertion above is
+			// indistinguishable from a scanner wired to nothing.
+			if deadControlAt(`<button type="button" disabled>x</button>`) < 0 {
+				t.Fatal("deadControlAt cannot see a real disabled attribute — its verdict above is worthless")
+			}
+			if deadControlAt(`<button hx-disabled-elt="this">x</button>`) >= 0 {
+				t.Fatal("deadControlAt flags htmx's in-flight lockout, which would forbid the working setup CTA")
+			}
+		})
+	}
+}
+
+// blockedPanelPointer is a pointer-shaped phrase the failure panel's copy may use,
+// paired with the on-page marker that phrase PROMISES the reader will find. Copy
+// containing the phrase while the page lacks the marker is a dangling
+// cross-reference — the defect TestBlockedCardReasonHoldsInBothBlockedStates exists
+// to catch.
+type blockedPanelPointer struct{ phrase, marker, what string }
+
+var blockedPanelPointers = []blockedPanelPointer{
+	{"setup step", "/comfy-setup", "a setup control"},
+	{"per-file options below", "Missing model files", "the per-file missing-models panel"},
+}
+
+// danglingPointersIn returns every pointer in copy whose promised marker is absent
+// from page.
+func danglingPointersIn(copy, page string) []string {
+	var bad []string
+	for _, p := range blockedPanelPointers {
+		if strings.Contains(copy, p.phrase) && !strings.Contains(page, p.marker) {
+			bad = append(bad, fmt.Sprintf("%q points at %s (%q), which is not on the page", p.phrase, p.what, p.marker))
+		}
+	}
+	return bad
+}
+
+// TestBlockedCardReasonHoldsInBothBlockedStates is the guard cardInstallBlockedText's
+// header cites. It did not exist until this fix round: the header claimed to be
+// "pinned by TestBlockedCardPointsAtTheSetupStepThatIsAlwaysAboveIt", and a
+// repo-wide grep for that name returned exactly one hit — the comment itself.
+//
+// 🔴 THE BUG IT WOULD HAVE CAUGHT, measured on runStatusFragment with ComfyRemote
+// set and one resolved CivitAI match: cardInstallBlockedText rendered saying "use
+// the setup step at the top of this report" while NO setup CTA and no /comfy-setup
+// control existed anywhere on the page. The old copy was written when the blocked
+// batch action always rendered comfySetupDisclosure; splitting blockedInstallAction
+// into SetupCanHelp / remote-comfy branches left the remote branch with no setup
+// control and the sentence dangling. It is the ordinary failure page for any user
+// whose comfy_url is not local, since resolutions are computed at run settle.
+//
+// The invariant is deliberately about the PAGE, not about one const: copy on this
+// panel may only point at a control the page actually contains. Both blocked states
+// are rendered whole, and the scan is fed a known-bad sentence in the state where
+// the marker is genuinely absent, so a green here is a fact about the scan as well
+// as about the copy.
+func TestBlockedCardReasonHoldsInBothBlockedStates(t *testing.T) {
+	// Every copy const that can render on this panel. Ones absent from a given
+	// state's body are skipped — the check is about what the reader actually sees.
+	panelCopy := []struct{ name, text string }{
+		{"cardInstallBlockedText", cardInstallBlockedText},
+		{"installRemoteComfyReason", installRemoteComfyReason},
+		{"installRemoteComfyNextStep", installRemoteComfyNextStep},
+		{"comfySetupWhyText", comfySetupWhyText},
+	}
+
+	for _, tc := range []struct {
+		name      string
+		remote    bool
+		wantSetup bool
+	}{
+		{"local ComfyUI, no models folder", false, true},
+		{"comfy_url points somewhere else", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := twoMissingSnapshot()
+			snap.ComfyRemote = tc.remote
+			// A resolved CivitAI match is what makes the per-card Install-and-run
+			// render at all, and with dlEligible false it renders BLOCKED — which is
+			// the only state carrying cardInstallBlockedText.
+			snap.MissingResolved = map[string]missingResolution{
+				"dreamshaperXL-MISSING.safetensors": {Reached: true, Result: resolveResult("A Match")},
+			}
+			body := renderString(t, runStatusFragment(snap, 7, "tok", false, fullMaturityRange()))
+
+			// PRECONDITION: the fixture really reaches the blocked card. Without a
+			// resolved match no card renders and every check below is about nothing.
+			if !strings.Contains(body, cardInstallBlockedText) {
+				t.Fatalf("precondition: want the blocked per-card reason on the page:\n%s", body)
+			}
+			// PRECONDITION: the two states really differ on the thing under test.
+			if got := strings.Contains(body, "/comfy-setup"); got != tc.wantSetup {
+				t.Fatalf("precondition: setup control present = %v, want %v — this case does "+
+					"not exercise the state it names:\n%s", got, tc.wantSetup, body)
+			}
+
+			// THE ASSERTION: no rendered copy points at a control that is not here.
+			checked := 0
+			for _, c := range panelCopy {
+				if !strings.Contains(body, c.text) {
+					continue // not rendered in this state
+				}
+				checked++
+				for _, bad := range danglingPointersIn(c.text, body) {
+					t.Errorf("%s dangles: %s\n%s", c.name, bad, body)
+				}
+			}
+			if checked == 0 {
+				t.Fatal("no panel copy was scanned — the table has gone stale against the render")
+			}
+
+			// NEGATIVE CONTROL. A scan that cannot fire reports zero danglers whatever
+			// the copy says, which is exactly how the original defect stayed invisible.
+			// In the state with no setup control, the sentence this test exists to
+			// forbid MUST be detected.
+			if !tc.wantSetup {
+				if hits := danglingPointersIn(
+					"civitai-manager cannot install this file for you yet — use the setup step "+
+						"at the top of this report, or download it from CivitAI yourself.", body); len(hits) == 0 {
+					t.Fatal("the cross-reference scan is asleep: it did not flag the exact " +
+						"sentence that shipped dangling, so its verdict on the real copy is worthless")
+				}
+			}
+		})
 	}
 }
 
@@ -254,7 +565,7 @@ func TestBatchInstallCuratedHFFamilyIsNotFlagged(t *testing.T) {
 	if comfyTypeRoutable(detector.CivitaiType) {
 		t.Fatal("fixture invalid: the detector should have no routable CivitAI type")
 	}
-	p := planBatchInstall([]comfy.MissingModel{detector}, true)
+	p := planBatchInstall([]comfy.MissingModel{detector}, true, false)
 	if len(p.Installable) != 1 || !p.Available {
 		t.Fatalf("curated HF family must be installable: %+v", p)
 	}
@@ -324,18 +635,86 @@ func TestBatchInstallDisabledOnlyWhenServerCannotInstall(t *testing.T) {
 		body, "/workflows/7/install-missing-and-run") {
 		t.Errorf("uncertainty alone must not disable the batch:\n%s", body)
 	}
-	// Ineligible: disabled, and the reason names the config blocker the user can fix.
+	// Ineligible: NO install-all control of any kind, and the setup step in its place.
+	//
+	// ⚠ This half used to assert the opposite — that the CTA "must stay rendered and
+	// disabled" as a signpost. The invariant it was really protecting is that a server
+	// which cannot install must not offer a control that POSTs the install; asserting
+	// "it is disabled" was only one way to satisfy that, and it is the way that put an
+	// inert primary-coloured button above every live action on the panel. The
+	// assertion below is the stronger form: no POSTing control AND no dead control.
 	body := renderString(t, runStatusFragment(snap, 7, "tok", false, fullMaturityRange()))
 	if strings.Contains(body, "install-missing-and-run") {
 		t.Errorf("an ineligible server must not offer the POST:\n%s", body)
 	}
-	if !strings.Contains(body, `hx-get="/workflows/7/comfy-setup"`) {
-		t.Errorf("a blocked CTA must offer the setup step, not just name a config key:\n%s", body)
+	// 🔴 BOUND TO THE ELEMENT, not to the page. This was a page-wide conjunction —
+	// `Contains(body,"missing model file") && Contains(body," and run")` — and it was
+	// untethered in both directions. The first half is ALWAYS true in the blocked
+	// state (the setup CTA's own label contains it), so the guard reduced to a
+	// page-wide `!Contains(" and run")` bound to no element at all; and it FALSE-FIRES
+	// the moment a CivitAI match resolves, because " and run" then comes from the
+	// per-card "Install and run", not from any install-all button. It passed only
+	// because this fixture's MissingResolved is empty — see the resolved-match case
+	// pinned below.
+	blocked := renderString(t, installAllMissingAction(
+		planBatchInstall(snap.MissingModels, false /* dlEligible */, false), 1, 7, "tok"))
+	if strings.Contains(blocked, "missing model file") && strings.Contains(blocked, " and run") {
+		t.Errorf("an ineligible server must not render the install-all button at all, "+
+			"enabled or disabled:\n%s", blocked)
 	}
-	// The button is still THERE, disabled — hiding it would delete the signpost for
-	// the recovery path the disclosure unblocks.
-	if !strings.Contains(body, "Install 1 missing model file and run") {
-		t.Errorf("the blocked CTA must stay rendered and disabled:\n%s", body)
+	if !strings.Contains(body, `hx-get="/workflows/7/comfy-setup"`) {
+		t.Errorf("a blocked panel must offer the setup step, not just name a config key:\n%s", body)
+	}
+	if !strings.Contains(body, "Set up automatic install for 1 missing model file") {
+		t.Errorf("the setup step must carry what the removed button carried — how many "+
+			"files it unblocks:\n%s", body)
+	}
+}
+
+// TestBlockedInstallAllGuardSurvivesAResolvedMatch pins the FALSE-FIRE that the
+// guard above used to be one fixture away from.
+//
+// The old assertion was a page-wide conjunction, `Contains(body,"missing model
+// file") && Contains(body," and run")`, and it passed only because
+// TestBatchInstallDisabledOnlyWhenServerCannotInstall's fixture has an EMPTY
+// MissingResolved. Resolutions are computed automatically at run settle, so a
+// blocked failure page with a resolved CivitAI match is the ordinary case, not an
+// edge one — and on that page " and run" comes from the per-card "Install and run",
+// which is a correct, expected control that has nothing to do with the install-all
+// button.
+//
+// So this test asserts BOTH halves: the page-wide form would have fired (proving the
+// fixture really reaches the false-positive state, not that the state is
+// unreachable), and the element-bound form does not.
+func TestBlockedInstallAllGuardSurvivesAResolvedMatch(t *testing.T) {
+	snap := twoMissingSnapshot()
+	snap.MissingResolved = map[string]missingResolution{
+		"dreamshaperXL-MISSING.safetensors": {Reached: true, Result: resolveResult("A Match")},
+	}
+	body := renderString(t, runStatusFragment(snap, 7, "tok", false /* dlEligible */, fullMaturityRange()))
+
+	// PRECONDITION: this is the blocked panel, and the resolved card really rendered.
+	if strings.Contains(body, "install-missing-and-run") {
+		t.Fatalf("precondition: want the BLOCKED panel:\n%s", body)
+	}
+	if !strings.Contains(body, "Install and run") {
+		t.Fatalf("precondition: want the per-card CivitAI control, which is where the "+
+			"false-firing %q comes from:\n%s", " and run", body)
+	}
+
+	// The old page-wide form FIRES here — on a page carrying no install-all button at
+	// all. Without this half, "the bound form passes" would be equally true of a
+	// fixture that never reached the ambiguity.
+	if !(strings.Contains(body, "missing model file") && strings.Contains(body, " and run")) {
+		t.Fatal("precondition: the page-wide conjunction did NOT fire, so this fixture " +
+			"does not reproduce the false positive it exists to pin")
+	}
+
+	// THE ASSERTION: bound to the install-all element, the guard is silent.
+	blocked := renderString(t, installAllMissingAction(
+		planBatchInstall(snap.MissingModels, false, false), len(snap.MissingModels), 7, "tok"))
+	if strings.Contains(blocked, "missing model file") && strings.Contains(blocked, " and run") {
+		t.Errorf("the install-all element itself must carry no install-all button:\n%s", blocked)
 	}
 }
 
@@ -347,7 +726,7 @@ func TestPlanBatchInstallDeDupesAndCaps(t *testing.T) {
 		{Filename: "sub/dir/a.safetensors", CivitaiType: "Checkpoint"}, // same basename
 		{Filename: "b.safetensors", CivitaiType: "Checkpoint"},
 	}
-	p := planBatchInstall(dupes, true)
+	p := planBatchInstall(dupes, true, false)
 	if len(p.Installable) != 2 {
 		t.Errorf("duplicate references must collapse: got %d installable %v", len(p.Installable), p.Installable)
 	}
@@ -357,7 +736,7 @@ func TestPlanBatchInstallDeDupesAndCaps(t *testing.T) {
 		many = append(many, comfy.MissingModel{
 			Filename: fmt.Sprintf("m%02d.safetensors", i), CivitaiType: "Checkpoint"})
 	}
-	p = planBatchInstall(many, true)
+	p = planBatchInstall(many, true, false)
 	if len(p.Installable) != maxBatchInstallFiles || p.Overflow != 3 {
 		t.Errorf("cap not applied: installable=%d overflow=%d", len(p.Installable), p.Overflow)
 	}
@@ -382,7 +761,7 @@ func TestPlanBatchInstallKeepsDistinctFilesSharingABasename(t *testing.T) {
 		{Filename: "SDXL/model.safetensors", CivitaiType: "Checkpoint"},
 		{Filename: "flux/model.safetensors", CivitaiType: "LORA"},
 	}
-	p := planBatchInstall(models, true)
+	p := planBatchInstall(models, true, false)
 	if len(p.Installable) != 2 {
 		t.Fatalf("same basename + different destination = two installs, got %d: %+v",
 			len(p.Installable), p.Installable)
@@ -400,7 +779,7 @@ func TestPlanBatchInstallKeepsDistinctFilesSharingABasename(t *testing.T) {
 		{Filename: "a/x.safetensors", CivitaiType: "LORA"},
 		{Filename: "b/x.safetensors", CivitaiType: "LoCon"},
 	}
-	if got := len(planBatchInstall(same, true).Installable); got != 1 {
+	if got := len(planBatchInstall(same, true, false).Installable); got != 1 {
 		t.Errorf("same basename + same destination must collapse, got %d", got)
 	}
 	// Two same-named files with UN-ROUTABLE types are ONE install: neither has a
@@ -409,7 +788,7 @@ func TestPlanBatchInstallKeepsDistinctFilesSharingABasename(t *testing.T) {
 		{Filename: "x.bin", CivitaiType: ""},
 		{Filename: "x.bin", CivitaiType: "SomethingUnmapped"},
 	}
-	if got := len(planBatchInstall(odd, true).Installable); got != 1 {
+	if got := len(planBatchInstall(odd, true, false).Installable); got != 1 {
 		t.Errorf("same basename with no destination is one install, got %d", got)
 	}
 }
@@ -432,7 +811,7 @@ func TestInstallDedupeKeyIsCaseSensitiveLikeSafeModelDest(t *testing.T) {
 		{Filename: "Model.safetensors", CivitaiType: "Checkpoint"},
 		{Filename: "model.safetensors", CivitaiType: "Checkpoint"},
 	}
-	p := planBatchInstall(models, true)
+	p := planBatchInstall(models, true, false)
 	if len(p.Installable) != 2 {
 		t.Fatalf("two case-variant references are two installs, got %d: %+v", len(p.Installable), p.Installable)
 	}
@@ -1315,7 +1694,7 @@ func TestDetectorPrefixIsNotFlaggedUncertain(t *testing.T) {
 	if comfyTypeRoutable(civitaiTypeParam(custom.CivitaiType)) {
 		t.Fatal("fixture invalid: the ref must have no routable CivitAI type")
 	}
-	p := planBatchInstall([]comfy.MissingModel{custom}, true)
+	p := planBatchInstall([]comfy.MissingModel{custom}, true, false)
 	if len(p.Installable) != 1 || !p.Available {
 		t.Fatalf("a detector ref must be installable: %+v", p)
 	}
@@ -1323,7 +1702,7 @@ func TestDetectorPrefixIsNotFlaggedUncertain(t *testing.T) {
 		t.Errorf("a bbox/ detector ref must NOT be flagged uncertain: %+v", p.Uncertain)
 	}
 	plain := comfy.MissingModel{Filename: "mystery-MISSING.bin", CivitaiType: ""}
-	if got := planBatchInstall([]comfy.MissingModel{plain}, true); len(got.Uncertain) != 1 {
+	if got := planBatchInstall([]comfy.MissingModel{plain}, true, false); len(got.Uncertain) != 1 {
 		t.Errorf("a genuinely unroutable ref must stay flagged: %+v", got.Uncertain)
 	}
 }

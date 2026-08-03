@@ -1130,12 +1130,32 @@ func workflowDetailPage(wf *store.Workflow, csrf string, mr maturityRange, gener
 	// more of it. Nil (no card at all) for a workflow that has never produced output.
 	body = append(body, workflowOutputsStrip(wf.ID, recent))
 
-	// Referenced resources, as chips: have/missing at a glance, the absolute on-disk
-	// path on hover, and a source link for anything matched to a CivitAI model or
-	// downloaded from HuggingFace by this app.
+	// Referenced resources: a COUNT at a glance, the chips one click away — the
+	// absolute on-disk path on hover, and a source link for anything matched to a
+	// CivitAI model or downloaded from HuggingFace by this app.
+	//
+	// 🔴 THE CHIPS ARE COLLAPSED BECAUSE THIS CARD RESTATES THE RUN FAILURE. Measured
+	// on workflow 590: the failure panel is 804px tall in a 669px viewport, names 3
+	// missing model files, and this card follows it 77px later listing 9 chips — 6 of
+	// them ✗, including all 3 the panel just named. #60 labelled both surfaces, which
+	// made them honest but not non-redundant.
+	//
+	// The collapse is UNCONDITIONAL rather than "only while a failure panel shows",
+	// and that is a correctness argument, not a simplicity one: the run panel updates
+	// by htmx-swapping the innerHTML of #run-status, and this card lives OUTSIDE that
+	// container. A state-conditional card would therefore be right only on a full page
+	// load and stale from the moment a run fails in-page — which is the normal path,
+	// since the user clicks Generate rather than reloading. An unconditional collapse
+	// cannot go stale.
+	//
+	// 🔴 NOTHING IS DELETED. This card is the ONLY surface listing resources from
+	// switched-off pipelines (a template pack carries 15–31 optional groups), so the
+	// full chip list — and the scope sentence explaining why it out-counts any one run
+	// — is one click away, not gone. The summary states counts the chips only implied,
+	// so the collapsed card carries MORE information per pixel than the bare heading
+	// it replaces.
 	if len(wf.Resources) > 0 {
-		kids := []g.Node{
-			sectionTitle("Referenced resources"),
+		inner := []g.Node{
 			workflowResourceChips(wf.Resources, resolver),
 			// 🔴 SAY WHAT THIS COUNTS. This card and the pre-click readiness line above
 			// legitimately disagree — 6 chips here beside "a run needs 3 model files" was
@@ -1161,10 +1181,18 @@ func workflowDetailPage(wf *store.Workflow, csrf string, mr maturityRange, gener
 		// rather than only in a tooltip — someone driving this UI from a phone or
 		// another desktop would otherwise click it and see nothing happen.
 		if resolver.openFolder {
-			kids = append(kids, h.P(h.Class("text-xs text-slate-400 mt-2"),
+			inner = append(inner, h.P(h.Class("text-xs text-slate-400 mt-2"),
 				g.Text("The folder button opens a file-manager window on the computer running civitai-manager.")))
 		}
-		body = append(body, card(kids...))
+		body = append(body, card(
+			sectionTitle("Referenced resources"),
+			h.Details(
+				h.Summary(h.Class("cursor-pointer text-sm text-slate-300"),
+					g.Text(resourcesSummaryLine(len(wf.Resources),
+						countMissingResources(wf.Resources, resolver)))),
+				h.Div(h.Class("mt-2"), g.Group(inner)),
+			),
+		))
 	}
 
 	// Graph card — a server-rendered SVG for UI-format graphs (litegraph

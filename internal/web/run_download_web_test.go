@@ -507,7 +507,7 @@ func TestInstallAndRunEligibilityFallback(t *testing.T) {
 	if !strings.Contains(elig, "Install and run") || !strings.Contains(elig, "/download-and-run") {
 		t.Errorf("eligible popover missing an enabled Install-and-run posting to download-and-run:\n%s", elig)
 	}
-	if strings.Contains(elig, "Set comfy_model_path to install here") {
+	if strings.Contains(elig, cardInstallBlockedText) {
 		t.Errorf("eligible popover must NOT show the disabled reason:\n%s", elig)
 	}
 
@@ -515,8 +515,11 @@ func TestInstallAndRunEligibilityFallback(t *testing.T) {
 	if strings.Contains(inelig, "/download-and-run") {
 		t.Errorf("ineligible popover must NOT POST download-and-run:\n%s", inelig)
 	}
-	if !strings.Contains(inelig, "Install and run") || !strings.Contains(inelig, "Set comfy_model_path to install here") {
+	if !strings.Contains(inelig, "Install and run") || !strings.Contains(inelig, cardInstallBlockedText) {
 		t.Errorf("ineligible popover should show a DISABLED Install-and-run + reason:\n%s", inelig)
+	}
+	if strings.Contains(inelig, "comfy_model_path") {
+		t.Errorf("the blocked reason must not be config-file vocabulary:\n%s", inelig)
 	}
 	if !strings.Contains(inelig, "View on CivitAI") {
 		t.Errorf("ineligible popover should show a View-on-CivitAI link:\n%s", inelig)

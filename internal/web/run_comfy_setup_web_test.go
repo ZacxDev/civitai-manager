@@ -479,9 +479,24 @@ func TestSuggestionIsCorroboratedAgainstTheFilesystem(t *testing.T) {
 }
 
 // TestBlockedCTANeverPostsWhileThePathIsUnset is the standing guard behind the
-// state above: as long as no models folder is known, the primary action must NOT
-// render as something clickable. A CTA that POSTs with no destination configured
-// would resolve files and then fail at the write, after the network round-trips.
+// state above, and it asserts exactly what its name says: as long as no models
+// folder is known, nothing on this panel POSTs the batch install. A CTA that POSTs
+// with no destination configured would resolve files and then fail at the write,
+// after the network round-trips.
+//
+// 🔴 IT USED TO ALSO ASSERT `Contains(body, "disabled")`, and that assertion was
+// GREEN BY ACCIDENT — the fifth guard pinning the dead button this PR removed, and
+// the one missed when the other four were repointed. Nothing on the blocked panel
+// renders a `disabled` attribute any more; the substring was satisfied by the setup
+// CTA's `hx-disabled-elt="this"`, which is htmx's in-flight lockout and not a dead
+// control at all. Measured: deleting that one cosmetic hx attribute (build clean,
+// vet clean) made this test the ONLY failure in the package, reporting "the CTA must
+// render disabled" — i.e. instructing whoever hit the red to reintroduce the very
+// button this change removed. Do not restore it; a substring that a POSTing control
+// and an inert one satisfy identically cannot express this invariant.
+//
+// The POSITIVE CONTROL below is what the removed line was really buying: without it
+// a branch that rendered NOTHING would satisfy the no-POST assertion perfectly.
 func TestBlockedCTANeverPostsWhileThePathIsUnset(t *testing.T) {
 	srv := setupTestServer(t)
 	body := renderString(t, runStatusFragment(twoMissingSnapshot(), 7, "tok", srv.comfyDownloadEligible(), fullMaturityRange()))
@@ -489,11 +504,14 @@ func TestBlockedCTANeverPostsWhileThePathIsUnset(t *testing.T) {
 	if srv.comfyDownloadEligible() {
 		t.Fatal("precondition: an unset path must be ineligible")
 	}
+	// POSITIVE CONTROL: the blocked branch really rendered its action. An empty
+	// fragment passes the assertion below and proves nothing.
+	if !strings.Contains(body, `hx-get="/workflows/7/comfy-setup"`) {
+		t.Fatalf("precondition: want the blocked panel's setup action:\n%s", body)
+	}
+	// THE ASSERTION.
 	if strings.Contains(body, "install-missing-and-run") {
 		t.Fatalf("an unset models folder must not render a POSTing CTA:\n%s", body)
-	}
-	if !strings.Contains(body, "disabled") {
-		t.Fatalf("the CTA must render disabled:\n%s", body)
 	}
 }
 
@@ -607,22 +625,27 @@ func TestComfySetupFormIsChangeableWhenAlreadyConfigured(t *testing.T) {
 	}
 }
 
-// TestComfySetupDisclosureRendersInBothStates is the reachability half of the fix
-// above: a form nobody can open is the same dead end as no form at all.
+// TestComfySetupIsReachableInBothStates is the reachability half of the fix above: a
+// form nobody can open is the same dead end as no form at all.
 //
 // 🔴 comfySetupDisclosure had ONE call site, inside installAllMissingAction's
 // `!p.Available` branch, so the moment a path was saved the disclosure stopped
 // rendering anywhere in the app. This is the repo's documented recurring defect —
 // code that is correct and never runs — so the guard asserts the CALL SITES, through
 // the real action, in both states.
-func TestComfySetupDisclosureRendersInBothStates(t *testing.T) {
+//
+// ⚠ The two states now reach it through DIFFERENT controls, which is the point of
+// the current rework: blocked gets a real primary button (choosing the folder IS the
+// recovery action), working gets a collapsed disclosure (it is an afterthought there).
+// What must hold in both is that GET /workflows/{id}/comfy-setup is one click away.
+func TestComfySetupIsReachableInBothStates(t *testing.T) {
 	plan := batchInstallPlan{
 		Available:   true,
 		Installable: []comfy.MissingModel{{Filename: "upscaler.pth", CivitaiType: "Upscaler"}},
 	}
 	working := renderString(t, installAllMissingAction(plan, 1, 7, "tok"))
 	// PRECONDITION: this really is the WORKING state — a live submit button, not the
-	// disabled control the blocked branch renders.
+	// control the blocked branch renders.
 	if !strings.Contains(working, "install-missing-and-run") {
 		t.Fatalf("precondition: want the enabled install action:\n%s", working)
 	}
@@ -635,21 +658,79 @@ func TestComfySetupDisclosureRendersInBothStates(t *testing.T) {
 	}
 
 	plan.Available = false
+	plan.SetupCanHelp = true
 	blocked := renderString(t, installAllMissingAction(plan, 1, 7, "tok"))
 	if !strings.Contains(blocked, "/comfy-setup") {
 		t.Errorf("the blocked panel must still offer the setup step:\n%s", blocked)
 	}
 	if !strings.Contains(blocked, "Set up automatic install") {
-		t.Errorf("the unconfigured summary must read as a setup step:\n%s", blocked)
+		t.Errorf("the blocked state's primary action must read as a setup step:\n%s", blocked)
+	}
+}
+
+// TestBlockedSetupCTAIsReplacedByTheFormItLoads pins the shape of the blocked
+// state's primary action, and the copy consequence that shape has.
+//
+// 🔴 The CTA renders INSIDE #comfy-setup and targets it with innerHTML, so clicking
+// it replaces the button with the form. That is deliberate — it leaves no stale
+// control that has already been used, it needs no `once` trigger (which would render
+// the button permanently inert-looking), and a rejected save, which HX-Retargets to
+// #comfy-setup, lands in the container it came from.
+//
+// The copy consequence is what this test exists for and it shipped wrong: the form's
+// unconfigured branch said "Tell it where that is and THE BUTTON ABOVE starts
+// working". True while the form lived in a disclosure beneath a disabled CTA; false
+// the moment the form replaces that CTA. Caught by clicking it in a real browser —
+// no markup assertion in this package could see it, because both halves are correct
+// in isolation.
+func TestBlockedSetupCTAIsReplacedByTheFormItLoads(t *testing.T) {
+	plan := batchInstallPlan{
+		Installable:  []comfy.MissingModel{{Filename: "upscaler.pth", CivitaiType: "Upscaler"}},
+		SetupCanHelp: true,
+	}
+	blocked := renderString(t, installAllMissingAction(plan, 1, 7, "tok"))
+
+	// PRECONDITION: this is the blocked branch, and the CTA really is the trigger.
+	if !strings.Contains(blocked, `hx-get="/workflows/7/comfy-setup"`) {
+		t.Fatalf("precondition: want the setup CTA:\n%s", blocked)
+	}
+	// The trigger sits INSIDE the container it swaps, which is what makes the click
+	// replace it. Assert the ORDER of the two attributes' owners by extent, not by a
+	// bare Contains of both strings — they are both present either way.
+	ci := strings.Index(blocked, `id="`+comfySetupContainerID+`"`)
+	bi := strings.Index(blocked, `hx-get="/workflows/7/comfy-setup"`)
+	if ci < 0 || bi < 0 || ci > bi {
+		t.Errorf("the CTA must render INSIDE #%s so the loaded form replaces it "+
+			"(container at %d, button at %d):\n%s", comfySetupContainerID, ci, bi, blocked)
+	}
+	if !strings.Contains(blocked, `hx-swap="innerHTML"`) {
+		t.Errorf("the CTA must swap the container's innerHTML:\n%s", blocked)
+	}
+	// Exactly one container: a second id="comfy-setup" on the page would make the
+	// htmx target ambiguous and could nest one inside the other on every rejection.
+	if n := strings.Count(blocked, `id="`+comfySetupContainerID+`"`); n != 1 {
+		t.Errorf("want exactly one #%s container, got %d:\n%s", comfySetupContainerID, n, blocked)
+	}
+
+	// THE COPY CONSEQUENCE. The form that replaces the CTA must not point at a button
+	// that is, by then, gone.
+	srv := setupTestServer(t)
+	form := renderString(t, srv.comfySetupFragment(context.Background(), 7, "", ""))
+	if !strings.Contains(form, `name="model_path"`) {
+		t.Fatalf("precondition: want the unconfigured setup form:\n%s", form)
+	}
+	if strings.Contains(form, "button above") {
+		t.Errorf("the form replaces the button it would be referring to — it cannot tell "+
+			"the reader that 'the button above' starts working:\n%s", form)
 	}
 }
 
 // TestComfySetupDisclosureIsLazyAndAddsExactlyOneControl guards the measurement
-// this rework is judged on. The blocked panel must gain the setup step WITHOUT
-// eagerly rendering its form: the panel already carries ~123 hidden controls, and
-// making that worse is the opposite of the goal.
+// this rework is judged on. The working panel must carry the change-the-folder
+// affordance WITHOUT eagerly rendering its form: the panel already carries ~123
+// hidden controls, and making that worse is the opposite of the goal.
 func TestComfySetupDisclosureIsLazyAndAddsExactlyOneControl(t *testing.T) {
-	body := renderString(t, comfySetupDisclosure(7, false))
+	body := renderString(t, comfySetupDisclosure(7))
 
 	if strings.Contains(body, `name="model_path"`) || strings.Contains(body, "<form") {
 		t.Fatalf("the disclosure must NOT eagerly render the form:\n%s", body)
@@ -739,30 +820,41 @@ func TestVanishedModelFolderIsReportedInsteadOfClaimedAsInForce(t *testing.T) {
 	}
 }
 
-// TestBlockedSetupSummaryDoesNotDenyASavedFolder pins the OTHER half of the same
-// contradiction — the eagerly-rendered summary, which is all the user sees before
-// opening the disclosure.
+// TestBlockedSetupCTADoesNotDenyASavedFolder pins the OTHER half of the same
+// contradiction — the eagerly-rendered blocked control, which is all the user sees
+// before opening anything.
 //
-// `configured` is fed from batchInstallPlan.Available ("can this install run now"),
-// not from "is a path saved", so the blocked summary renders over a configured
-// install whenever the saved folder stops working. It may therefore not assert
-// anything about whether a folder is known.
-func TestBlockedSetupSummaryDoesNotDenyASavedFolder(t *testing.T) {
-	blocked := renderString(t, comfySetupDisclosure(7, false))
-	working := renderString(t, comfySetupDisclosure(7, true))
+// The blocked branch is chosen by batchInstallPlan.Available ("can this install run
+// now"), not by "is a path saved", so it renders over a CONFIGURED install whenever
+// the saved folder stops working — a deleted directory, an unmounted drive. It may
+// therefore not assert anything about whether a folder is known.
+//
+// ⚠ This used to test the blocked `<summary>`; the blocked state now renders a
+// primary button plus one explanatory line instead, so the guard follows the copy to
+// where it lives.
+func TestBlockedSetupCTADoesNotDenyASavedFolder(t *testing.T) {
+	plan := batchInstallPlan{
+		Installable:  []comfy.MissingModel{{Filename: "upscaler.pth", CivitaiType: "Upscaler"}},
+		SetupCanHelp: true,
+	}
+	blocked := renderString(t, installAllMissingAction(plan, 1, 7, "tok"))
+	working := renderString(t, installAllMissingAction(batchInstallPlan{
+		Available:   true,
+		Installable: plan.Installable,
+	}, 1, 7, "tok"))
 
-	// PRECONDITION: the two states really do render different summaries, or the
-	// assertion below is about a string that never varies.
+	// PRECONDITION: the two states really do render different copy, or the assertion
+	// below is about a string that never varies.
 	if blocked == working {
-		t.Fatalf("precondition: the blocked and working summaries must differ:\n%s", blocked)
+		t.Fatalf("precondition: the blocked and working states must differ:\n%s", blocked)
 	}
 	// It still reads as a setup step, and still names what it needs rather than a
-	// config key — both are the affordance the disabled CTA depends on.
+	// config key — both are the affordance the blocked state depends on.
 	if !strings.Contains(blocked, "Set up automatic install") {
-		t.Errorf("the blocked summary must still offer the setup step:\n%s", blocked)
+		t.Errorf("the blocked state must still offer the setup step:\n%s", blocked)
 	}
 	if !strings.Contains(blocked, "where ComfyUI keeps its models") {
-		t.Errorf("the blocked summary must still name what it needs:\n%s", blocked)
+		t.Errorf("the blocked state must still name what it needs:\n%s", blocked)
 	}
 	// THE ASSERTION: it must not claim the folder is UNKNOWN. It is reached with a
 	// folder saved-but-broken, where that is false.
@@ -770,14 +862,14 @@ func TestBlockedSetupSummaryDoesNotDenyASavedFolder(t *testing.T) {
 	// ⚠ Honest limit: this is a copy check, so it pins the two natural spellings of
 	// the claim that actually shipped, not a general property. A reworded assertion of
 	// ignorance would slip past it — the durable part is the comment on
-	// comfySetupDisclosure explaining WHY `configured` cannot be read as "a path is
+	// blockedInstallAction explaining WHY this branch cannot be read as "no path is
 	// saved".
 	for _, denial := range []string{
 		"needs to know where ComfyUI keeps its models",
 		"does not know where ComfyUI keeps its models",
 	} {
 		if strings.Contains(blocked, denial) {
-			t.Errorf("the blocked summary denies that a folder is saved (%q), but it also "+
+			t.Errorf("the blocked CTA denies that a folder is saved (%q), but it also "+
 				"renders when one IS saved and merely stopped working:\n%s", denial, blocked)
 		}
 	}

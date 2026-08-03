@@ -535,6 +535,44 @@ func civitaiMatchSection(mm comfy.MissingModel, res missingResolution, wfID int6
 	return h.Div(g.Group(body))
 }
 
+// cardInstallBlockedText is the reason under a blocked per-card "Install and run".
+//
+// 🔴 It names NO config key, and it carries no `title` tooltip. Both were live
+// defects: `title` is unreachable by keyboard and has already raced a CSS popover in
+// this repo, and "Set comfy_model_path to install here" tells a reader with no
+// config.yaml what is wrong in config-file vocabulary while offering nothing to do
+// about it — the same dead end blockedInstallAction removed one level up.
+//
+// 🔴 IT POINTS AT NO CONTROL ON THE PAGE, and that is the fix for a dangling
+// cross-reference this rework introduced. The sentence used to read "use the setup
+// step at the top of this report", justified by a comment claiming runFailure "has
+// already rendered the batch action, and therefore the setup CTA, above it". That
+// WAS true while the blocked batch action always rendered comfySetupDisclosure; it
+// stopped being true the moment blockedInstallAction split in two, because the
+// !SetupCanHelp (remote comfy_url) branch renders no setup control at all.
+// Measured on runStatusFragment with ComfyRemote plus one resolved CivitAI match:
+// the card text rendered, and neither the setup CTA nor any /comfy-setup control
+// was anywhere on the page. That is the ORDINARY failure page for anyone whose
+// comfy_url is not local — resolutions are computed automatically at run settle —
+// and it also read as a loop, since the remote branch's own next-step line says
+// "use the per-file options below" while the per-file option said "use the setup
+// step at the top".
+//
+// The fix follows badOptionInstallBlockedText (run_pages.go), which solved exactly
+// this problem by pointing at nothing: it says only what is true in EVERY state it
+// can render in and leans on the "View on CivitAI ↗" link rendered beside it. That
+// also suits where this text actually appears — inside a native <dialog> opened
+// with showModal(), so anything "at the top of this report" is behind the modal and
+// invisible while the reader is looking at this sentence.
+//
+// Pinned by TestBlockedCardReasonHoldsInBothBlockedStates, which renders the whole
+// failure panel in both blocked states and fails if this copy points at a control
+// the page does not contain. (The old comment cited
+// TestBlockedCardPointsAtTheSetupStepThatIsAlwaysAboveIt — a test that has never
+// existed in this repo. Grep before citing.)
+const cardInstallBlockedText = "civitai-manager is not set up to install this file for you, " +
+	"so download it from CivitAI yourself."
+
 // installAndRunButton renders the "Install and run" CTA for a resolved CivitAI
 // model card. When the download-and-run flow is eligible (comfy_model_path +
 // local ComfyUI + a routable type) it POSTs the (CSRF-carrying) download-and-run
@@ -557,12 +595,10 @@ func installAndRunButton(mm comfy.MissingModel, modelID int, dlEligible bool, wf
 			h.Div(h.Class("flex flex-wrap items-center gap-2"),
 				civButton("filled", "sm", []g.Node{
 					h.Type("button"), h.Disabled(),
-					g.Attr("title", "Set comfy_model_path to install here."),
 				}, g.Text("Install and run")),
 				viewOnCivitaiLink(civitaiModelURL(modelID)),
 			),
-			h.P(h.Class("text-xs text-slate-500"),
-				g.Text("Set comfy_model_path to install here.")),
+			h.P(h.Class("text-xs text-slate-500"), g.Text(cardInstallBlockedText)),
 		)
 	}
 	vals := map[string]string{"csrf_token": csrf, "filename": mm.Filename, "type": mm.CivitaiType}

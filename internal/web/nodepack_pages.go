@@ -437,6 +437,29 @@ func alternativesSummary(alts []rankedPack) string {
 // text (a scheme-validated external link at most — never a bare untrusted href),
 // which missing classes it provides, either an Install button or the plain reason
 // it cannot be installed, and always the manual command.
+//
+// 🔴 THE PROVENANCE COLLAPSES ONLY WHEN THERE IS AN INSTALL BUTTON TO COLLAPSE IT
+// BEHIND. Measured on the operator's real failure (workflow 590): the WINNING pack
+// rendered eight lines for one click — heading, name·version·Best match, Repository,
+// Provides, the scope line, Install, "Or install it by hand:", and the git clone
+// block. The runner-up was already collapsed by #60; this is the same treatment
+// applied to the pack the user is actually going to install.
+//
+// What stays visible is exactly what a decision needs: WHICH pack, WHAT ROLE
+// (contestLabel), and the button. Repository, provides-list, scope line and manual
+// command are evidence — they answer "is this ranking right?", which is a question
+// you ask only if you doubt the answer, so they go one click away.
+//
+// 🔴 The condition is `managerPresent && p.Installable` — i.e. is there an Install
+// button — NOT "is this pack needed". Get that wrong and you hide the ONLY actionable
+// thing on the card:
+//   - Manager absent → no install affordance renders at all, by design, and the
+//     `git clone` IS the answer (this file's header calls that state first-class).
+//   - a policy-blocked pack (16% are nightly-only, measured) → same, plus its reason.
+//
+// In both, collapsing the command would leave a card whose entire content is a name
+// and a disclosure triangle. The BLOCKED REASON is never collapsed either: it exists
+// to explain an absent button, so it must be readable without opening anything.
 func nodepackCard(rp rankedPack, managerPresent bool, wfID int64, csrf, comfyRoot string) g.Node {
 	p := rp.Pack
 	head := []g.Node{h.Span(h.Class("font-semibold"), g.Text(packDisplayTitle(p)))}
@@ -450,6 +473,13 @@ func nodepackCard(rp rankedPack, managerPresent bool, wfID int64, csrf, comfyRoo
 	body := []g.Node{
 		h.Class("rounded border border-slate-800 p-2 space-y-1"),
 		h.Div(h.Class("text-xs text-slate-300"), g.Group(head)),
+	}
+
+	// The evidence half: repository, what it provides, and why it ranked where it did.
+	// The scope line is the EVIDENCE for the ordering. Rendering the ranking without
+	// it leaves the user with an unexplained verdict; "1 of 4" versus "1 of 93" lets
+	// them check the reasoning and overrule it.
+	evidence := []g.Node{
 		repositoryLine(p.Repository),
 		h.Div(h.Class("text-xs text-slate-400"),
 			g.Text("Provides: "),
@@ -457,18 +487,12 @@ func nodepackCard(rp rankedPack, managerPresent bool, wfID int64, csrf, comfyRoo
 				g.Text(strings.Join(p.Classes, ", "))),
 		),
 	}
-	// The scope line is the EVIDENCE for the ordering. Rendering the ranking without
-	// it leaves the user with an unexplained verdict; "1 of 4" versus "1 of 93" lets
-	// them check the reasoning and overrule it.
 	if line := packScopeLine(p); line != "" {
-		body = append(body, h.Div(h.Class("text-xs text-slate-500"), g.Text(line)))
+		evidence = append(evidence, h.Div(h.Class("text-xs text-slate-500"), g.Text(line)))
 	}
 
-	switch {
-	case !managerPresent:
-		// No live Manager: no install affordance at all, by design. The manual
-		// command below is the whole answer.
-	case p.Installable:
+	installable := managerPresent && p.Installable
+	if installable {
 		// 🔴 A lower-ranked claimant of a contested class keeps a WORKING Install
 		// button, but not an equally loud one. Dropping it would make the ranking
 		// authoritative, which it is not; leaving it `filled` beside the best match is
@@ -481,13 +505,35 @@ func nodepackCard(rp rankedPack, managerPresent bool, wfID int64, csrf, comfyRoo
 		if !rp.needed() {
 			variant = "outline"
 		}
-		body = append(body, h.Div(h.Class("pt-1"), nodepackInstallButton(p, wfID, csrf, variant)))
-	default:
+		body = append(body,
+			h.Div(h.Class("pt-1"), nodepackInstallButton(p, wfID, csrf, variant)),
+			h.Details(h.Class("mt-1"),
+				h.Summary(h.Class("cursor-pointer text-xs text-slate-400"),
+					g.Text(packDetailsSummary)),
+				h.Div(h.Class("mt-1 space-y-1"),
+					g.Group(evidence),
+					manualInstallBlock(p, comfyRoot),
+				),
+			),
+		)
+		return h.Div(body...)
+	}
+
+	// No button: the evidence and the manual command are the whole card, so nothing
+	// collapses. The blocked reason sits with them because it is what explains the
+	// missing button.
+	body = append(body, evidence...)
+	if managerPresent {
 		body = append(body, h.P(h.Class("text-xs text-amber-400"), g.Text(packBlockedReason(p))))
 	}
 	body = append(body, manualInstallBlock(p, comfyRoot))
 	return h.Div(body...)
 }
+
+// packDetailsSummary names what is behind a pack card's disclosure. It lists the
+// contents rather than saying "Details", so a reader looking for the repository URL
+// or the git command knows without opening it.
+const packDetailsSummary = "Repository, node types and manual install command"
 
 // contestLabel is the short badge distinguishing the favoured claimant of a
 // contested class from the alternatives. Empty when nothing is contested, so an

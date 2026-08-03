@@ -163,40 +163,45 @@ func Views(app *App) []View {
 		// missing-models panel is reachable for the format 100% of real workflows use.
 		{Name: "run-missing-models-ui", Path: wfUIPath, Hero: true, Prep: heroRunPrep(runUISel)},
 		// The SAME failure panel on a server with comfy_model_path UNSET — a fresh
-		// install's actual state. It is not a duplicate of the two heroes above: the
-		// primary CTA is DISABLED here and the panel offers the comfy_model_path setup
-		// disclosure instead, a branch of installAllMissingAction the configured app
-		// can never render and which the walk therefore never loaded or axe-scanned.
+		// install's actual state. It is not a duplicate of the two heroes above: this
+		// is the blockedInstallAction branch, which the configured app can never render
+		// and which the walk therefore never loaded or axe-scanned.
+		//
+		// ⚠ THIS COMMENT USED TO DESCRIBE A DISABLED CTA BESIDE A COLLAPSED <details>.
+		// Both are gone. The blocked panel now renders a LIVE primary button ("Set up
+		// automatic install for N missing model files") inside the #comfy-setup
+		// container, and no install-all control at all — the disabled one was measured
+		// as the largest, highest, primary-coloured element on the panel while being
+		// completely inert.
 		//
 		// Deliberately NOT Hero: the centrepiece is the resolution panel itself, which
 		// the two heroes already pin. A capture failure here is still fatal (Walk errors
 		// on any view), so nothing is lost by leaving wantHeroes at 2.
 		//
 		// 🔴 SCOPE LIMIT — READ THIS BEFORE QUOTING THIS WALK'S VIOLATION COUNT.
-		// What this view captures is the disclosure's COLLAPSED state. The disclosure's
-		// BODY — the "Path to ComfyUI's models folder" text input (comfySetupInputID),
-		// its label and the "Save folder" button — is fetched by htmx on the details'
-		// first `toggle`, so on this capture it is not in the DOM at all and nothing
-		// axe-scanned it. "N captures, 0 violations" is therefore an honest statement
-		// about the collapsed panel and says NOTHING about those three controls.
+		// What this view captures is the setup step BEFORE its form is loaded. The
+		// form — the "Path to ComfyUI's models folder" text input (comfySetupInputID),
+		// its label and the "Save folder" button — arrives over an htmx GET fired by
+		// the button's own click, so on this capture it is not in the DOM at all and
+		// nothing axe-scanned it. "N captures, 0 violations" is therefore an honest
+		// statement about the un-clicked panel and says NOTHING about those three
+		// controls. That limit is UNCHANGED by the rework: what triggers the lazy GET
+		// moved from a <details> toggle to a button click, but it is still lazy.
 		//
 		// Measured 2026-08-03, not assumed, and NOT by the obvious grep: the artifacts
 		// store an accessibility TREE plus axe violations, never page text, so grepping
-		// them for a label proves nothing — the collapsed <summary>'s own text is absent
-		// from every payload too (a <summary> is not listed as interactive). The two
-		// signals that do carry it: this view's `form_controls` lists exactly four
-		// inputs — cm-dest-local, cm-dest-cloud, wf-model, wf-version — and none is
-		// comfy-model-path-input; and the screenshot shows the closed disclosure beside
-		// the disabled CTA it belongs to.
+		// them for a label proves nothing. The signal that does carry it: this view's
+		// `form_controls` lists exactly four inputs — cm-dest-local, cm-dest-cloud,
+		// wf-model, wf-version — and none is comfy-model-path-input.
 		//
 		// ⚠ Opening it here is NOT the one-line change it looks like, which is why it
-		// was left undone rather than done badly: the panel renders several <details>
-		// (alternatives, Technical details, the node-pack blocks), so the click needs a
-		// selector that can only hit THIS one; the body arrives over a lazy htmx GET, so
-		// it needs its own WaitVisible; and that GET runs suggestComfyModelPath, a
+		// was left undone rather than done badly: the body arrives over a lazy htmx GET,
+		// so it needs its own WaitVisible, and that GET runs suggestComfyModelPath, a
 		// ComfyUI round-trip with its own 5s timeout — a new flake surface on the one
-		// view whose whole job is to be reliably reachable. Do it deliberately, with its
-		// own before/after capture diff, or not at all.
+		// view whose whole job is to be reliably reachable. (One thing DID get easier:
+		// the trigger is now a uniquely-identifiable button rather than one <details>
+		// among several.) Do it deliberately, with its own before/after capture diff,
+		// or not at all.
 		{Name: "run-missing-models-setup", Path: wfPath, BaseURL: app.UnsetPathURL,
 			Prep: heroRunPrep(runSel)},
 		// Discover browse (workflows), served offline from the fake CivitAI reader.

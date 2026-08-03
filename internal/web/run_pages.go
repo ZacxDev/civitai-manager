@@ -521,7 +521,7 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mr m
 
 	// Triage the missing set ONCE: the lead, the headline and the CTA must agree about
 	// what this server can actually deliver (see batchInstallPlan).
-	batch := planBatchInstall(snap.MissingModels, dlEligible)
+	batch := planBatchInstall(snap.MissingModels, dlEligible, snap.ComfyRemote)
 	nm, nn := failureMissingCounts(snap, batch)
 
 	var detail []g.Node
@@ -654,10 +654,12 @@ func failureLead(snap runSnapshot, nm, nn int, canInstall bool) string {
 	switch {
 	case nm > 0 && !canInstall:
 		// Deliberately SILENT. The old copy here said "this copy of civitai-manager
-		// cannot fetch the model files for you", which is no longer true — the disabled
-		// CTA now carries a setup step that makes it able to. Repeating a dead end
+		// cannot fetch the model files for you", which is no longer true — the blocked
+		// state now leads with a setup step that makes it able to. Repeating a dead end
 		// directly above the control that offers the way out is worse than saying
-		// nothing, so the disabled button and its disclosure speak for themselves.
+		// nothing. The other blocked state (a remote comfy_url) renders its own reason
+		// in blockedInstallAction, one line below where this lead would have sat — so
+		// putting one here too would state the same thing twice.
 		//
 		// 🔴 The guard is `nm > 0 && !canInstall`, NOT `!canInstall`. canInstall is
 		// about MODEL files only (comfy_model_path + a local ComfyUI); a nodes-only
@@ -826,6 +828,21 @@ func badOptionGroup(idx int, bo comfy.BadOption, wfID int64, csrf string, dlElig
 	return h.Div(children...)
 }
 
+// badOptionInstallBlockedText is the reason under a blocked bad-option "Install <file>".
+//
+// 🔴 Unlike cardInstallBlockedText it must NOT point at the setup step, because an
+// incompatible-options failure is independent of missing models: a run can fail with
+// BadOptions and zero MissingModels, in which case runFailure renders no batch action
+// and no setup CTA at all, and "use the setup step above" would name a control that
+// is not on the page. So this says only what is true in every case it can render in,
+// and leans on the search link beside it, which always works.
+//
+// Honest residue: this surface still has no in-app way to supply the models folder.
+// Giving it one means a second id="comfy-setup" on the page whenever both sections
+// render, so it needs a shared single-instance setup control rather than a second
+// copy — deliberately not attempted here.
+const badOptionInstallBlockedText = "civitai-manager is not set up to install model files here, so fetch this one yourself."
+
 // badOptionInstallAction renders the "Install <basename>" control for a model-file
 // bad option. When installing is available (comfyDownloadEligible AND the value routes
 // to a known ComfyUI subdir) it POSTs to /install-option-and-run, hx-including the
@@ -843,12 +860,10 @@ func badOptionInstallAction(bo comfy.BadOption, wfID int64, csrf string, dlEligi
 			h.Div(h.Class("flex flex-wrap items-center gap-2"),
 				civButton("filled", "sm", []g.Node{
 					h.Type("button"), h.Disabled(),
-					g.Attr("title", "Set comfy_model_path (with a local ComfyUI) to install this file here."),
 				}, g.Text(label)),
 				resolveFallbackLink(comfy.CleanModelQuery(bo.Current)),
 			),
-			h.P(h.Class("text-xs text-slate-500"),
-				g.Text("Set comfy_model_path to install this file here, or fetch it manually.")),
+			h.P(h.Class("text-xs text-slate-500"), g.Text(badOptionInstallBlockedText)),
 		)
 	}
 	// hx-include pulls the section form's csrf_token + every opt_input/opt_old/opt_new
