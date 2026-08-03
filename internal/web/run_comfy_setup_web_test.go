@@ -479,9 +479,24 @@ func TestSuggestionIsCorroboratedAgainstTheFilesystem(t *testing.T) {
 }
 
 // TestBlockedCTANeverPostsWhileThePathIsUnset is the standing guard behind the
-// state above: as long as no models folder is known, the primary action must NOT
-// render as something clickable. A CTA that POSTs with no destination configured
-// would resolve files and then fail at the write, after the network round-trips.
+// state above, and it asserts exactly what its name says: as long as no models
+// folder is known, nothing on this panel POSTs the batch install. A CTA that POSTs
+// with no destination configured would resolve files and then fail at the write,
+// after the network round-trips.
+//
+// 🔴 IT USED TO ALSO ASSERT `Contains(body, "disabled")`, and that assertion was
+// GREEN BY ACCIDENT — the fifth guard pinning the dead button this PR removed, and
+// the one missed when the other four were repointed. Nothing on the blocked panel
+// renders a `disabled` attribute any more; the substring was satisfied by the setup
+// CTA's `hx-disabled-elt="this"`, which is htmx's in-flight lockout and not a dead
+// control at all. Measured: deleting that one cosmetic hx attribute (build clean,
+// vet clean) made this test the ONLY failure in the package, reporting "the CTA must
+// render disabled" — i.e. instructing whoever hit the red to reintroduce the very
+// button this change removed. Do not restore it; a substring that a POSTing control
+// and an inert one satisfy identically cannot express this invariant.
+//
+// The POSITIVE CONTROL below is what the removed line was really buying: without it
+// a branch that rendered NOTHING would satisfy the no-POST assertion perfectly.
 func TestBlockedCTANeverPostsWhileThePathIsUnset(t *testing.T) {
 	srv := setupTestServer(t)
 	body := renderString(t, runStatusFragment(twoMissingSnapshot(), 7, "tok", srv.comfyDownloadEligible(), fullMaturityRange()))
@@ -489,11 +504,14 @@ func TestBlockedCTANeverPostsWhileThePathIsUnset(t *testing.T) {
 	if srv.comfyDownloadEligible() {
 		t.Fatal("precondition: an unset path must be ineligible")
 	}
+	// POSITIVE CONTROL: the blocked branch really rendered its action. An empty
+	// fragment passes the assertion below and proves nothing.
+	if !strings.Contains(body, `hx-get="/workflows/7/comfy-setup"`) {
+		t.Fatalf("precondition: want the blocked panel's setup action:\n%s", body)
+	}
+	// THE ASSERTION.
 	if strings.Contains(body, "install-missing-and-run") {
 		t.Fatalf("an unset models folder must not render a POSTing CTA:\n%s", body)
-	}
-	if !strings.Contains(body, "disabled") {
-		t.Fatalf("the CTA must render disabled:\n%s", body)
 	}
 }
 
