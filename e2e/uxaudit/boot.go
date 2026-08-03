@@ -157,8 +157,13 @@ type App struct {
 	ScanDir      string // a seeded install dir the library scanner can walk offline
 	// UnsetPathURL is a SECOND server over the same store whose ComfyModelPath is
 	// empty. It exists so the walk can reach the run panel's unconfigured branch —
-	// the disabled batch CTA plus the comfy_model_path setup disclosure — which the
-	// primary app can never render. See Boot.
+	// blockedInstallAction, which renders NO install-all control and offers the
+	// models-folder setup step as the panel's primary action — which the primary app
+	// can never render. See Boot.
+	//
+	// ⚠ This used to read "the disabled batch CTA plus the setup disclosure". The
+	// disabled CTA is gone (it outranked every live control on the panel while doing
+	// nothing) and the disclosure became a real button.
 	UnsetPathURL string
 
 	ts      *httptest.Server
