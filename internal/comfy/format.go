@@ -3,6 +3,8 @@ package comfy
 import (
 	"encoding/json"
 	"errors"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -85,8 +87,29 @@ func usableAPINodes(nodes map[string]apiNode) int {
 // ExtractResources scans an api-format graph for referenced model filenames. It
 // looks at every node whose class_type is a loader (a known loader class OR any
 // class_type containing "Loader") and collects each string input value that ends
-// in a model extension. Results are de-duplicated with first-seen order
-// preserved.
+// in a model extension. Results are de-duplicated and returned in a DETERMINISTIC
+// order: ascending node id (numerically when both ids are numeric, which they are
+// for every graph ComfyUI emits; lexically otherwise), then ascending input name.
+//
+// 🔴 THE ORDER IS PART OF THE CONTRACT, because this list is PERSISTED and is read
+// back as a provenance claim. It reaches `workflows.resources` from the library scan
+// (internal/library/workflow_scan.go) and all three import paths, and
+// ExtractActiveResources feeds `ResourcesUsed` in internal/web/outputs_capture.go,
+// which answers "what did THIS RUN use". A record that changes between runs of the
+// same graph is not a record.
+//
+// ⚠ This comment used to claim "first-seen order preserved". That was FALSE on this
+// path and, worse, unachievable in its own terms: an api graph is a JSON OBJECT
+// decoded into a Go map, and Go randomises map iteration per process, so there is no
+// first-seen order left to preserve. Measured before the fix, on a 5-loader graph:
+// FIVE distinct orderings across 200 calls in one process. The ui path
+// (extractResourcesUI) really does preserve document order — it ranges a []uiNode
+// slice — which is why only this half was affected and why the claim looked true.
+//
+// Sorting rather than recovering document order is deliberate: recovering it means
+// streaming the object with json.Decoder to capture key order, and no consumer wants
+// "the order the exporter happened to write" over a stable, explainable one. What
+// every consumer needs is that two runs agree.
 //
 // It is deliberately permissive: unexpected shapes (non-object inputs, non-string
 // values, an unparseable graph) yield whatever could be recovered rather than an
@@ -100,13 +123,14 @@ func ExtractResources(apiGraph json.RawMessage) ([]string, error) {
 		out  []string
 		seen = map[string]bool{}
 	)
-	for _, n := range nodes {
+	for _, id := range sortedNodeIDs(nodes) {
+		n := nodes[id]
 		if !isLoaderClass(n.ClassType) {
 			continue
 		}
-		for _, rawVal := range n.Inputs {
+		for _, name := range sortedInputNames(n.Inputs) {
 			var s string
-			if err := json.Unmarshal(rawVal, &s); err != nil {
+			if err := json.Unmarshal(n.Inputs[name], &s); err != nil {
 				continue // not a string input (e.g. a link array or number)
 			}
 			if !hasModelExtension(s) {
@@ -119,6 +143,38 @@ func ExtractResources(apiGraph json.RawMessage) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// sortedNodeIDs orders api-graph node ids ascending, numerically when BOTH ids parse
+// as integers and lexically otherwise. Plain lexical sorting would order a real graph
+// "1", "10", "11", "2" — stable, but it scrambles the author's node numbering in a
+// list users read.
+func sortedNodeIDs(nodes map[string]apiNode) []string {
+	ids := make([]string, 0, len(nodes))
+	for id := range nodes {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(a, b int) bool {
+		na, erra := strconv.Atoi(ids[a])
+		nb, errb := strconv.Atoi(ids[b])
+		if erra == nil && errb == nil {
+			return na < nb
+		}
+		return ids[a] < ids[b]
+	})
+	return ids
+}
+
+// sortedInputNames orders a node's input names lexically. Inputs are a JSON object
+// too, so this is the second randomisation source — fixing only the node loop would
+// leave a node with two model-valued inputs still nondeterministic.
+func sortedInputNames(inputs map[string]json.RawMessage) []string {
+	names := make([]string, 0, len(inputs))
+	for name := range inputs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // uiNode is one node of a ui-format (editor "Save") graph: a class type and the
