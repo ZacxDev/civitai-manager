@@ -427,6 +427,46 @@ func TestUnclassifiedNoteOmitsAReasonWithNoMembers(t *testing.T) {
 	}
 }
 
+// TestUnclassifiedNoteUnderASourcePostScope covers the all-linked branch through
+// the REAL handler, which the hand-built structs above cannot do: they prove the
+// branch renders correctly, not that production can reach it.
+//
+// A ?model=<id> scope narrows to workflows imported from ONE CivitAI post, so
+// every workflow in view is linked BY CONSTRUCTION. That makes it the state where
+// the old sentence was not merely misleading but 100% false — it told the user
+// that every workflow in a view defined by having a CivitAI link had no CivitAI
+// link.
+func TestUnclassifiedNoteUnderASourcePostScope(t *testing.T) {
+	srv := newWorkflowServer(t)
+	seedFacetLibrary(t, srv)
+
+	// model 60 is wf-noisy: linked, and unclassified because its tags are all
+	// stopwords. The scope therefore holds exactly one workflow, and it is linked.
+	body := libraryWorkflowsBody(t, srv, "model=60")
+	unlinked, linked, text, ok := unclassifiedNote(body)
+	if !ok {
+		t.Fatalf("the Unclassified note did not render under a source-post scope")
+	}
+	// PRECONDITION: the scope really did narrow. Without this the test would still
+	// pass against an unscoped page that happened to render some note.
+	if unlinked != 0 || linked != 1 {
+		t.Fatalf("scope did not narrow to the single linked workflow: %d unlinked / %d linked "+
+			"(want 0 / 1) — ?model= must exclude wf-authored and wf-scanned", unlinked, linked)
+	}
+	for _, want := range []string{
+		"1 workflow has no use case",
+		"it is linked to a CivitAI model, but " + reasonLinked,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("scoped note is missing %q\ntext: %s", want, text)
+		}
+	}
+	if strings.Contains(text, reasonUnlinked) {
+		t.Errorf("under a source-post scope EVERY workflow is linked by construction, so the note "+
+			"must never claim a missing CivitAI link\ntext: %s", text)
+	}
+}
+
 func TestCountWorkflowFacetsCountsMultiMembershipInEveryBucket(t *testing.T) {
 	srv := newWorkflowServer(t)
 	seedFacetLibrary(t, srv)
