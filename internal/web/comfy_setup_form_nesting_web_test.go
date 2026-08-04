@@ -180,11 +180,43 @@ func TestClickedSetupFormDoesNotNestInsideTheOptionsForm(t *testing.T) {
 		t.Fatalf("precondition: the swapped-in form is not in the spliced markup:\n%s", clicked)
 	}
 
-	// 1. No form inside a form — `document.querySelector("form form")`.
-	if nested := findNode(doc, func(n *html.Node) bool {
-		return isElem(n, "form") && hasAncestor(n, func(p *html.Node) bool { return isElem(p, "form") })
-	}); nested != nil {
-		t.Errorf("clicking the setup CTA nested a <form> inside the options <form>:\n%s", clicked)
+	// 1. The setup form's FIELDS must not land in the options form.
+	//
+	// 🔴 The obvious assertion here — `findNode(form with a form ancestor)`, i.e.
+	// `document.querySelector("form form")` — IS VACUOUS AGAINST A PARSER and was
+	// caught being so: html.Parse implements the HTML5 form-pointer rule, so it DROPS
+	// a nested <form> start tag outright. There is then no nested form node to find and
+	// the check passes on the broken markup too. Measured: with the slot put back
+	// inside the form, that assertion stayed silent while the two below fired.
+	//
+	// The parser dropping the tag is not a reprieve, it is the hazard itself: the
+	// inner form's controls are re-parented into the OUTER form, so model_path, a
+	// second csrf_token and a type=submit "Save folder" become fields of the run
+	// request — at which point Save folder runs the workflow. Asserting the fields is
+	// therefore both the failure-capable check AND the one that names the real cost.
+	optFormEarly := findNode(doc, func(n *html.Node) bool {
+		return isElem(n, "form") && strings.Contains(attr(n, "hx-post"), "run-with-options")
+	})
+	if optFormEarly == nil {
+		t.Fatalf("precondition: the options form vanished from the spliced markup:\n%s", clicked)
+	}
+	if stray := findNode(optFormEarly, func(n *html.Node) bool {
+		return isElem(n, "input") && attr(n, "name") == "model_path"
+	}); stray != nil {
+		t.Errorf("the setup form's model_path field is inside the options form — the parser "+
+			"re-parented it, so a run POST now carries it:\n%s", clicked)
+	}
+	if n := countNodes(optFormEarly, func(k *html.Node) bool {
+		return isElem(k, "input") && attr(k, "name") == "csrf_token"
+	}); n != 1 {
+		t.Errorf("the options form carries %d csrf_token inputs, want exactly 1 — a second one "+
+			"means the setup form's fields were re-parented into it:\n%s", n, clicked)
+	}
+	if n := countNodes(optFormEarly, func(k *html.Node) bool {
+		return isElem(k, "button") && strings.EqualFold(attr(k, "type"), "submit")
+	}); n != 1 {
+		t.Errorf("the options form holds %d submit buttons, want exactly 1 — a second one is "+
+			"'Save folder', which would then run the workflow:\n%s", n, clicked)
 	}
 
 	// 2. hx-disabled-elt="find button[type='submit']" — htmx's `find` is ONE
