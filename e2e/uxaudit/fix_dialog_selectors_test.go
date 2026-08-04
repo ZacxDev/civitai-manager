@@ -216,6 +216,74 @@ func TestFixModelDialogSelectorsMatchTheServedApp(t *testing.T) {
 	}
 }
 
+// detailsOpenTagRe matches a <details> open tag so the guard below can tell a LAZY
+// disclosure (one that hx-gets its own body on toggle) from a static one.
+var detailsOpenTagRe = regexp.MustCompile(`(?s)<details([^>]*)>`)
+
+// TestRunPanelCarriesCollapsedDetails is the browserless ratchet behind the
+// run-missing-models-expanded view. The view's whole justification is that the panel
+// has collapsed content axe never sees; if that stops being true, the view is
+// screenshotting the heroes' state under a second name and quietly doubling the run
+// cost for nothing.
+//
+// It counts on the SERVED HTML rather than trusting the browser step, and it counts
+// STATIC and LAZY separately because expandStaticDetails deliberately skips the lazy
+// one — counting them together would let the static disclosures disappear while the
+// total stayed put.
+func TestRunPanelCarriesCollapsedDetails(t *testing.T) {
+	app := bootLabApp(t)
+	panel := runToTerminalPanel(t, app.URL, app.WorkflowID, RunPostPathAPI)
+
+	// Only disclosures OUTSIDE the fix dialogs count. Measured at 52cb872 the dialogs
+	// contain none at all, but stripping them keeps that from becoming a silent
+	// assumption: showModal() makes the rest of the document inert, so a <details>
+	// inside a dialog is not something this view can scan anyway.
+	stripped := panel
+	for {
+		i := strings.Index(stripped, `<dialog id="`+FixModelDialogIDPrefix)
+		if i < 0 {
+			break
+		}
+		j := strings.Index(stripped[i:], "</dialog>")
+		if j < 0 {
+			break
+		}
+		stripped = stripped[:i] + stripped[i+j+len("</dialog>"):]
+	}
+
+	var static, lazy int
+	for _, m := range detailsOpenTagRe.FindAllStringSubmatch(stripped, -1) {
+		if strings.Contains(m[1], "hx-get") {
+			lazy++
+		} else {
+			static++
+		}
+	}
+
+	// Fixture reached the interesting case: the panel really is the custom-node-carrying
+	// one. Without a missing NODE there is no attribution half and no disclosures at all,
+	// and this test would report a stale count when the truth is a thinned fixture.
+	if !strings.Contains(panel, "UltimateSDUpscale") {
+		t.Fatalf("the panel does not mention the fixture's missing custom node — the collapsed "+
+			"disclosures this view exists for come from the attribution half, so this is a broken "+
+			"FIXTURE, not a changed count (static=%d lazy=%d)", static, lazy)
+	}
+	if static != MinStaticDetailsOnRunPanel {
+		t.Errorf("the run panel carries %d static <details>, want %d — run-missing-models-expanded "+
+			"exists to scan exactly this collapsed content, so if it genuinely shrank to 0 the view "+
+			"should be deleted rather than left capturing the heroes' state twice; if it grew, take "+
+			"the win and raise MinStaticDetailsOnRunPanel", static, MinStaticDetailsOnRunPanel)
+	}
+	// The lazy one is asserted as PRESENT-AND-EXCLUDED, not merely absent from the static
+	// count: if it ever stopped carrying hx-get, expandStaticDetails would start opening
+	// it and fire suggestComfyModelPath's ComfyUI round-trip on every run capture.
+	if lazy != 1 {
+		t.Errorf("the run panel carries %d hx-get <details>, want 1 — expandStaticDetails skips "+
+			"exactly the lazy setup disclosure, and that skip is what keeps a 5s ComfyUI round-trip "+
+			"off this capture", lazy)
+	}
+}
+
 // TestFixModelDialogIsClosedUntilTheWalkOpensIt pins the premise of the whole change:
 // the dialog's markup is in the DOM the moment the panel renders, WITHOUT the `open`
 // attribute. That is why the prep waits on `[open]` and not on any text inside the
