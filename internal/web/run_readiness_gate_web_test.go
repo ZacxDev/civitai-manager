@@ -40,11 +40,18 @@ import (
 // reports for a spotless graph. That is the case a count-driven readiness decision
 // structurally cannot see.
 //
-// The format column matters: `format` is a free string on store.Workflow and
-// handleWorkflowImportPNG stores comfy.FormatAPI WITHOUT calling DetectFormat, so a
-// UI-shaped graph really does arrive here labelled api (and an unrecognised label
-// takes the same non-UI branch). That lax import is PRE-EXISTING and deliberately
-// out of scope; these cases are why the gate has to hold regardless of it.
+// The format column matters: `format` is a free string on store.Workflow with no DB
+// CHECK constraint, so a UI-shaped graph really can arrive here labelled api (and an
+// unrecognised label takes the same non-UI branch).
+//
+// ⚠ This paragraph used to name handleWorkflowImportPNG as the live source of such
+// rows — "stores comfy.FormatAPI WITHOUT calling DetectFormat … PRE-EXISTING and
+// deliberately out of scope". That import path was FIXED: it now classifies both
+// extracted chunks with comfy.DetectFormat and refuses what neither classifies (see
+// workflow_import_png_format_web_test.go). The cases below are unaffected and stay,
+// because the gate must hold for a mislabelled row whatever wrote it — every row
+// imported by that path before the fix is still in users' databases, and `format`
+// remains an unconstrained column.
 //
 // runWant is the substring the terminal run panel must carry. It is per-case on
 // purpose: it proves WHICH branch of the gate fired, so a case cannot pass by

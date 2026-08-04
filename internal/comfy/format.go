@@ -60,10 +60,14 @@ func DetectFormat(raw json.RawMessage) (string, error) {
 // graph at all" and Preflight's Nodes count are the SAME question, and they used to
 // answer it differently: DetectFormat required a non-empty class_type while
 // Preflight counted raw map entries. Anything that reached Preflight WITHOUT going
-// through DetectFormat — handleWorkflowImportPNG stores a prompt chunk as format=api
-// verbatim — could therefore present `{"a":{}}` or a `{"prompt": <graph>}` wrapper,
-// score Nodes=1, and be called a graph by the only signal that separates "not a
-// graph" from "a clean graph". See comfy.PreflightReport.Nodes.
+// through DetectFormat could therefore present `{"a":{}}` or a `{"prompt": <graph>}`
+// wrapper, score Nodes=1, and be called a graph by the only signal that separates
+// "not a graph" from "a clean graph". See comfy.PreflightReport.Nodes.
+//
+// ⚠ The live example named here used to be handleWorkflowImportPNG, which stored a
+// prompt chunk as format=api verbatim. That path now calls DetectFormat, so it is
+// history — but the shared rule stays load-bearing: `workflows.format` carries no DB
+// constraint, and every row that import wrote before the fix is still out there.
 //
 // Empty-but-present and whitespace-only both count as absent, matching ComfyUI:
 // execution.py's validate_prompt rejects a missing class_type outright, and a blank
