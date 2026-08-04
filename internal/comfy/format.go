@@ -3,6 +3,7 @@ package comfy
 import (
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 )
 
@@ -85,8 +86,36 @@ func usableAPINodes(nodes map[string]apiNode) int {
 // ExtractResources scans an api-format graph for referenced model filenames. It
 // looks at every node whose class_type is a loader (a known loader class OR any
 // class_type containing "Loader") and collects each string input value that ends
-// in a model extension. Results are de-duplicated with first-seen order
-// preserved.
+// in a model extension. Results are de-duplicated and returned in a DETERMINISTIC
+// order: node id per lessNodeKey (client.go) — every NUMERIC id first, ascending by
+// value with equal values tie-broken by string ("007" < "07" < "7"), then every
+// NON-NUMERIC id lexically — and within a node, ascending input name.
+//
+// ⚠ That partition is the point, and it is NOT "numeric if both parse, else
+// lexical". This comment stated that weaker rule for one round, and it is exactly
+// the intransitive comparison the fix replaced: on {"9","10","5abc"} it compares
+// "5abc" against "9" lexically and puts 5abc first, where lessNodeKey puts both
+// numerics ahead of it. Do not restate the rule here — read lessNodeKey.
+//
+// 🔴 THE ORDER IS PART OF THE CONTRACT, because this list is PERSISTED and is read
+// back as a provenance claim. It reaches `workflows.resources` from the library scan
+// (internal/library/workflow_scan.go) and all three import paths, and
+// ExtractActiveResources feeds `ResourcesUsed` in internal/web/outputs_capture.go,
+// which answers "what did THIS RUN use". A record that changes between runs of the
+// same graph is not a record.
+//
+// ⚠ This comment used to claim "first-seen order preserved". That was FALSE on this
+// path and, worse, unachievable in its own terms: an api graph is a JSON OBJECT
+// decoded into a Go map, and Go randomises map iteration per process, so there is no
+// first-seen order left to preserve. Measured before the fix, on a 5-loader graph:
+// FIVE distinct orderings across 200 calls in one process. The ui path
+// (extractResourcesUI) really does preserve document order — it ranges a []uiNode
+// slice — which is why only this half was affected and why the claim looked true.
+//
+// Sorting rather than recovering document order is deliberate: recovering it means
+// streaming the object with json.Decoder to capture key order, and no consumer wants
+// "the order the exporter happened to write" over a stable, explainable one. What
+// every consumer needs is that two runs agree.
 //
 // It is deliberately permissive: unexpected shapes (non-object inputs, non-string
 // values, an unparseable graph) yield whatever could be recovered rather than an
@@ -100,13 +129,14 @@ func ExtractResources(apiGraph json.RawMessage) ([]string, error) {
 		out  []string
 		seen = map[string]bool{}
 	)
-	for _, n := range nodes {
+	for _, id := range sortedNodeIDs(nodes) {
+		n := nodes[id]
 		if !isLoaderClass(n.ClassType) {
 			continue
 		}
-		for _, rawVal := range n.Inputs {
+		for _, name := range sortedInputNames(n.Inputs) {
 			var s string
-			if err := json.Unmarshal(rawVal, &s); err != nil {
+			if err := json.Unmarshal(n.Inputs[name], &s); err != nil {
 				continue // not a string input (e.g. a link array or number)
 			}
 			if !hasModelExtension(s) {
@@ -119,6 +149,49 @@ func ExtractResources(apiGraph json.RawMessage) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// sortedNodeIDs orders api-graph node ids ascending, numerically where possible.
+//
+// 🔴 IT MUST USE lessNodeKey (client.go) — DO NOT hand-roll the comparison here.
+// The obvious inline version ("numeric if both parse, else lexical") is NOT a strict
+// weak ordering and therefore does not sort at all. Witness {"9","10","5abc"}:
+// 9 < 10 numerically, "10" < "5abc" lexically, "5abc" < "9" lexically — a cycle.
+// `sort.Slice` on an intransitive comparator returns an ARBITRARY PERMUTATION OF ITS
+// INPUT, and the input here comes from a randomised map range — so the naive
+// comparator leaves this function exactly as nondeterministic as no sort at all.
+// Measured with that version in place: 5 distinct orderings across 500 calls on
+// {1,4,9,12,12:3,12:8}.
+//
+// That is not hypothetical. convert_subgraph.go mints interior node ids as
+// "<instance>:<interior>", so any UI workflow with a subgraph containing a loader
+// yields plain numeric ids alongside colon ids — convert_test.go pins a converted
+// graph keyed {"4","17","100:1"}. lessNodeKey also tie-breaks "07" vs "7" by string,
+// which a bare numeric compare leaves to `sort.Slice`'s instability.
+//
+// This package had already found, fixed and guarded this exact bug in AllImages
+// (see TestLessNodeKeyIsAStrictWeakOrdering, which names the same witness). It was
+// reintroduced here by a fix written 200 lines away from the solution — the
+// "one rule, one place" failure in its purest form.
+func sortedNodeIDs(nodes map[string]apiNode) []string {
+	ids := make([]string, 0, len(nodes))
+	for id := range nodes {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(a, b int) bool { return lessNodeKey(ids[a], ids[b]) })
+	return ids
+}
+
+// sortedInputNames orders a node's input names lexically. Inputs are a JSON object
+// too, so this is the second randomisation source — fixing only the node loop would
+// leave a node with two model-valued inputs still nondeterministic.
+func sortedInputNames(inputs map[string]json.RawMessage) []string {
+	names := make([]string, 0, len(inputs))
+	for name := range inputs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // uiNode is one node of a ui-format (editor "Save") graph: a class type and the
@@ -142,7 +215,13 @@ type uiGraph struct {
 // ExtractResourcesAny extracts referenced model filenames from a graph of either
 // format: the api path reuses ExtractResources (loader-node inputs); the ui path
 // is a heuristic — it scans EVERY node's widgets_values string entries and keeps
-// those ending in a model extension. Both dedup with first-seen order preserved.
+// those ending in a model extension.
+//
+// Both dedup, but they ORDER DIFFERENTLY and deliberately so: the ui path preserves
+// first-seen (document) order because it walks a []uiNode slice, while the api path
+// sorts by node id, because its graph is a JSON OBJECT and a map decode leaves no
+// document order to preserve. Both are deterministic; do not "unify" them by
+// reintroducing a map range on the api side.
 // An unrecognized format returns (nil, ErrUnknownFormat).
 func ExtractResourcesAny(format string, graph json.RawMessage) ([]string, error) {
 	switch format {
@@ -224,9 +303,19 @@ func extractResourcesUI(graph json.RawMessage, activeOnly bool) ([]string, error
 
 // PrimaryCheckpoint returns the primary checkpoint filename a graph loads, used to
 // pick the version a scanned workflow auto-links to. For api graphs it is the
-// ckpt_name input of the first CheckpointLoaderSimple/CheckpointLoader node; for
-// ui graphs it is the first model-extension string in the widgets_values of a node
-// whose type contains "Checkpoint". ok is false when no checkpoint is found.
+// ckpt_name input of the LOWEST-NODE-ID CheckpointLoaderSimple/CheckpointLoader
+// node; for ui graphs it is the first model-extension string in the widgets_values
+// of a node whose type contains "Checkpoint". ok is false when no checkpoint is
+// found.
+//
+// 🔴 "Lowest node id", not "first", is deliberate and load-bearing on the api path.
+// This used to range the node map directly and its doc said "the first" — but a JSON
+// object decoded into a Go map has no first, and Go randomises the iteration.
+// Measured on a 3-checkpoint graph: 3 distinct answers across 500 calls. That is
+// more consequential than the resource-list ordering it sits beside, because
+// autoLink (internal/library/workflow_scan.go) prepends this value to its candidate
+// list and takes the FIRST hit — so a random answer here randomises the persisted
+// model_id/version_id a re-scanned workflow acquires.
 func PrimaryCheckpoint(format string, graph json.RawMessage) (string, bool) {
 	switch format {
 	case FormatAPI:
@@ -243,7 +332,8 @@ func primaryCheckpointAPI(graph json.RawMessage) (string, bool) {
 	if err := json.Unmarshal(graph, &nodes); err != nil {
 		return "", false
 	}
-	for _, n := range nodes {
+	for _, id := range sortedNodeIDs(nodes) {
+		n := nodes[id]
 		if n.ClassType != "CheckpointLoaderSimple" && n.ClassType != "CheckpointLoader" {
 			continue
 		}

@@ -380,12 +380,17 @@ const MinStaticDetailsOnRunPanel = 3
 // page, which reached the workflow detail page's "Referenced resources" card. Two walks
 // of the same tree then differed on this view's PNG in a 316×23px box: the chips read
 // `detailer-MISSING · dreamshaperXL-MISSING` in one run and the reverse in the other.
-// The cause is upstream and real — comfy.ExtractResources ranges a
-// `map[string]apiNode`, so the order it returns (and therefore the order persisted into
-// workflows.resources at seed time) is randomised per process, while its own doc
-// comment claims "first-seen order preserved". That is an APP bug, not a harness one,
-// and it is invisible to the rest of the walk only because those chips sit inside a
-// collapsed <details> that nothing opens. Widening this scope re-imports it.
+// ⚠ THAT MEASURED CAUSE IS NOW FIXED, and this paragraph presented it as live.
+// comfy.ExtractResources ranged a `map[string]apiNode` and returned a per-process random
+// order (persisted into workflows.resources at seed time) while its own doc claimed
+// "first-seen order preserved". Both halves were true when written and both are false
+// now — it sorts via lessNodeKey, and the doc says so.
+//
+// 🔴 The scope stays narrow, but the decision must rest on the reasons that SURVIVE,
+// not on this one: opening every <details> also reaches the lazy hx-get disclosure,
+// which costs a ComfyUI round-trip per capture and carries its own flake surface. If
+// you widen it, do so for a stated reason and re-measure two walks of the same tree —
+// do not read the paragraph above as the standing argument.
 func expandStaticDetails(scopeSel string) chromedp.Action {
 	return chromedp.ActionFunc(func(ctx context.Context) error {
 		js := fmt.Sprintf(`(() => {
