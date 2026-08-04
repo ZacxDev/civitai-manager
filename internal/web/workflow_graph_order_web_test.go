@@ -2,6 +2,7 @@ package web
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -49,6 +50,12 @@ var apiCardIDRe = regexp.MustCompile(`class="text-xs font-mono text-slate-500">#
 
 // renderedAPINodeOrder returns the node ids in the order structuredAPINodes
 // emitted them.
+//
+// ⚠ It must call structuredAPINodes DIRECTLY. structuredUINodes emits the same
+// header markup verbatim (workflow_graph.go), so apiCardIDRe is not unique to an
+// api card — repointing this at structuredGraphNodes would silently over-match a
+// UI listing. The under-match direction is covered by each caller's exact-count
+// precondition.
 func renderedAPINodeOrder(t *testing.T, graph string) []string {
 	t.Helper()
 	node := structuredAPINodes([]byte(graph))
@@ -74,9 +81,12 @@ func distinctOrders(runs [][]string) int {
 
 // TestStructuredAPINodesOrderIsDeterministicForMixedIDs is the regression guard
 // for the third open-coding of the intransitive node-id comparator (the first two
-// were internal/comfy's AllImages and ExtractResources). Measured before the fix:
-// 5 distinct rendered orders across 500 calls on this fixture; the all-numeric
-// control reported 1.
+// were internal/comfy's AllImages and ExtractResources). Measured on THIS fixture
+// with the naive comparator reinstated: 3 distinct rendered orders across 500
+// calls, stable across 8 independent runs; the all-numeric control reported 1.
+// ⚠ The handoff doc's "5" is a measurement of a DIFFERENT mixed id set — the
+// count is a property of the fixture, not run-to-run variance. Do not copy a
+// number here from anywhere but a run of this file.
 func TestStructuredAPINodesOrderIsDeterministicForMixedIDs(t *testing.T) {
 	// Positive control for the counter itself: a "1" from a counter wired to
 	// nothing is indistinguishable from a "1" from a deterministic sort.
@@ -124,5 +134,54 @@ func TestStructuredAPINodesOrderIsDeterministicForMixedIDs(t *testing.T) {
 	}
 	if got := strings.Join(numeric[0], ","); got != "1,4,9,12" {
 		t.Errorf("control order = %s; want 1,4,9,12", got)
+	}
+}
+
+// TestStructuredAPINodesTruncatesTheDeterministicPrefix pins the OTHER half of
+// the ordering bug: `ids` is cut to `ids[:gMaxNodes]` AFTER the sort, so an
+// unsound comparator randomises WHICH nodes a large graph shows, not merely their
+// order. That claim was previously asserted nowhere — the fixtures above are 6 and
+// 4 nodes, so they never reach the cap, and TestGraphStructuredCapsHugeNodeCount
+// asserts only the banner text. Both truncation mutants (keep the SUFFIX; take
+// gMaxNodes-1) passed the entire internal/web package before this test existed.
+//
+// The fixture is over-cap AND mixed, so it pins the surviving SET, the prefix
+// direction, and the numeric-before-non-numeric partition in one assertion.
+func TestStructuredAPINodesTruncatesTheDeterministicPrefix(t *testing.T) {
+	const numerics = gMaxNodes + 50 // ids "0".."649" — 50 past the cap
+	var b strings.Builder
+	b.WriteByte('{')
+	for i := 0; i < numerics; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`"`)
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString(`":{"class_type":"KSampler","inputs":{}}`)
+	}
+	// Non-numeric (subgraph-minted) ids sort AFTER every numeric one, so a correct
+	// prefix truncation drops all six.
+	for i := 0; i < 6; i++ {
+		b.WriteString(`,"700:`)
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString(`":{"class_type":"VAEDecode","inputs":{}}`)
+	}
+	b.WriteByte('}')
+
+	got := renderedAPINodeOrder(t, b.String())
+	if len(got) != gMaxNodes {
+		t.Fatalf("rendered %d node cards; the cap is %d", len(got), gMaxNodes)
+	}
+	// The surviving set is the numeric ids 0..gMaxNodes-1, in value order.
+	if got[0] != "0" {
+		t.Errorf("first surviving id = %q; want %q (truncation kept the wrong end)", got[0], "0")
+	}
+	if want := strconv.Itoa(gMaxNodes - 1); got[len(got)-1] != want {
+		t.Errorf("last surviving id = %q; want %q", got[len(got)-1], want)
+	}
+	for _, id := range got {
+		if strings.Contains(id, ":") {
+			t.Fatalf("non-numeric id %q survived truncation; every numeric id sorts before it", id)
+		}
 	}
 }

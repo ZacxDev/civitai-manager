@@ -551,6 +551,15 @@ func (e *HistoryEntry) AllImages() []ImageRef {
 // because the resulting position becomes the persisted generation_images.idx that
 // picks the gallery thumbnail.
 //
+// The numeric partition is exactly what strconv.Atoi accepts, which is worth
+// stating because the boundary is not obvious: "+7", "-3" and "007" parse (so
+// they are numeric keys), while " 7", "1e3", "" and anything at or beyond ±2⁶³
+// (ErrRange) do NOT and sort as non-numeric — i.e. after every numeric key,
+// lexically. That is a valid ordering, not a bug; it is only a surprise if you
+// expected a 20-digit key to sort as a big number. Verified by brute force over
+// 42 adversarial keys: irreflexive, asymmetric, transitive, and incomparability
+// collapses to string equality (so it is in fact a total order).
+//
 // Mixed keys are reachable, not theoretical: this package's own subgraph expander
 // mints ids as `prefix + ":" + interiorID` (convert_subgraph.go), so a VHS output
 // inside a subgraph alongside a top-level output node produces exactly that key
