@@ -150,8 +150,19 @@ func parseTEXt(data []byte) (keyword, value string, ok bool) {
 }
 
 // looksLikeJSON reports whether s begins with a JSON object or array (after
-// leading whitespace). Cheap pre-filter so a stray non-JSON tEXt value under a
-// `prompt`/`workflow` key never becomes a stored "graph".
+// leading whitespace).
+//
+// 🔴 IT IS A PRE-FILTER, NOT A VALIDATOR, AND IT NEVER CLASSIFIES. It inspects one
+// byte: a truncated, wrapped or UI-shaped value under the `prompt` keyword passes
+// it just as readily as a real api graph. Deciding what a chunk actually IS is the
+// caller's job, through comfy.DetectFormat — handleWorkflowImportPNG used to skip
+// that step and store a `prompt` chunk as format=api on this check alone.
+//
+// It still earns its place, for a reason a stricter check would break: it is what
+// keeps ErrA1111Only and ErrNoWorkflow REACHABLE. A PNG carrying a junk `prompt`
+// value alongside a real `parameters` chunk must report "A1111 parameters, not a
+// comfy workflow"; without this filter APIGraph would be non-nil and that branch
+// could never fire, costing the user the accurate message.
 func looksLikeJSON(s string) bool {
 	for i := 0; i < len(s); i++ {
 		switch s[i] {
