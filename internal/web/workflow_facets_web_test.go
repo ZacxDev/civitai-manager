@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -194,15 +196,274 @@ func TestUnclassifiedBucketIsVisibleWithACorrectCount(t *testing.T) {
 	if !strings.Contains(body, "(3)") {
 		t.Errorf("the Unclassified use-case count (3) is not visible:\n%s", body[:min(len(body), 2500)])
 	}
-	// And the explanation of WHY, so the bucket does not look like a bug.
-	if !strings.Contains(body, "cannot have one") || !strings.Contains(body, "never hidden") {
-		t.Error("the panel must explain why tagless workflows have no use case")
+	// And the explanation of WHY, so the bucket does not look like a bug. This
+	// assertion is only PRESENCE — it used to grep for the phrase "cannot have
+	// one", which stayed green for the whole time that sentence was telling most
+	// users something false. TestUnclassifiedNoteSplitsTheCountByReason pins both
+	// the numbers and the sentence they appear in.
+	if _, _, _, ok := unclassifiedNote(body); !ok {
+		t.Error("the panel must explain why unclassified workflows have no use case")
 	}
 	// With NO facet selected every workflow is listed — including the unclassified.
 	for _, name := range []string{"wf-flux", "wf-illu", "wf-cross", "wf-authored", "wf-scanned", "wf-noisy"} {
 		if !strings.Contains(body, name) {
 			t.Errorf("unfiltered library must list %s — filtering is opt-in", name)
 		}
+	}
+}
+
+// unclassifiedNoteCounts extracts the Unclassified note's two per-reason counts
+// from rendered markup.
+//
+// It returns the note's VISIBLE TEXT alongside the attributes, and callers must
+// assert both. 🔴 The attributes alone are NOT sufficient and asserting only them
+// is the mistake this helper's callers exist to avoid: they are computed on a path
+// INDEPENDENT of the prose, so the sentence can say anything while they stay
+// correct. An audit landed four such mutations — including reinstating the
+// original false single-cause clause verbatim — and every one survived the whole
+// internal/web suite against an attributes-only guard.
+//
+// Both attributes are pulled from ONE matched <p …> open tag, so they cannot be
+// satisfied by different elements (this repo has shipped that bug, where a test
+// for " popover" was answered by another element's popovertarget). They are
+// matched independently of ORDER, so reordering the two g.Attr calls does not fail
+// with a message describing the wrong cause. The value pattern accepts a leading
+// "-" deliberately: a negative must surface as a wrong number, not as a non-match
+// that reads as "the note is missing".
+var (
+	unclassifiedNoteRe    = regexp.MustCompile(`<p([^>]*data-unclassified-[^>]*)>([^<]*)</p>`)
+	unclassifiedUnlinkedA = regexp.MustCompile(`\bdata-unclassified-unlinked="(-?\d+)"`)
+	unclassifiedLinkedA   = regexp.MustCompile(`\bdata-unclassified-linked="(-?\d+)"`)
+)
+
+func unclassifiedNote(body string) (unlinked, linked int, text string, ok bool) {
+	m := unclassifiedNoteRe.FindStringSubmatch(body)
+	if m == nil {
+		return 0, 0, "", false
+	}
+	attrs, text := m[1], m[2]
+	u := unclassifiedUnlinkedA.FindStringSubmatch(attrs)
+	l := unclassifiedLinkedA.FindStringSubmatch(attrs)
+	if u == nil || l == nil {
+		return 0, 0, text, false
+	}
+	unlinked, _ = strconv.Atoi(u[1])
+	linked, _ = strconv.Atoi(l[1])
+	return unlinked, linked, text, true
+}
+
+// The two reason phrases as the USER reads them. They are literals held here on
+// purpose — importing them from the production file would make expectation and
+// subject share a source, and no mutation could separate the two. Changing the
+// copy is meant to fail these and be updated deliberately.
+//
+// reasonUnlinked is NOT a substring of the linked clause ("linked to a CivitAI
+// model, but nothing we have locally matches…"), which is what lets each subtest
+// assert the ABSENCE of the reason that does not apply.
+const (
+	reasonUnlinked = "not linked to a CivitAI model"
+	reasonLinked   = "nothing we have locally matches a known use case"
+)
+
+// TestUnclassifiedNoteSplitsTheCountByReason guards the note's HONESTY.
+//
+// The note used to attribute the ENTIRE Unclassified use-case bucket to "no
+// CivitAI link". That is one of two reasons and — measured on a real
+// 71-workflow library — the MINORITY one: 58 unclassified, of which 39 were
+// linked, their model's tags simply matching no curated use case. The sentence
+// was false about two thirds of the number printed beside it.
+//
+// It asserts STATE (the two counts the note renders), never prose. The previous
+// assertion here grepped for the phrase "cannot have one" and stayed green for
+// the entire time that sentence was wrong — a wording check cannot see a lie
+// told in the right words.
+func TestUnclassifiedNoteSplitsTheCountByReason(t *testing.T) {
+	srv := newWorkflowServer(t)
+	seedFacetLibrary(t, srv)
+
+	// PRECONDITION — the fixture must genuinely contain BOTH reasons, or it
+	// cannot express the bug. A library whose unclassified workflows are ALL
+	// unlinked is precisely the case the old false sentence was TRUE for: such a
+	// fixture would pass forever, before and after the fix.
+	wfs, err := srv.store.ListWorkflows(context.Background())
+	if err != nil {
+		t.Fatalf("list workflows: %v", err)
+	}
+	c := countWorkflowFacets(classifyWorkflows(wfs, srv.workflowResolver()))
+	if c.UseNoneLinked == 0 {
+		t.Fatalf("fixture cannot express the bug: no LINKED workflow is unclassified "+
+			"(UseNone=%d, UseNoneLinked=%d) — wf-noisy must stay linked to stopword-only model 60",
+			c.UseNone, c.UseNoneLinked)
+	}
+	if c.useNoneUnlinked() == 0 {
+		t.Fatalf("fixture cannot discriminate the two reasons: no UNLINKED workflow is unclassified "+
+			"(UseNone=%d, UseNoneLinked=%d)", c.UseNone, c.UseNoneLinked)
+	}
+
+	// LITERALS, never derived from countWorkflowFacets: an expectation computed
+	// from the same source as its subject moves with it, and no mutation can
+	// separate the two. The two values are also deliberately DISTINCT (2 vs 1),
+	// so swapping the labels is detectable — equal values could not tell the
+	// attributes apart.
+	const (
+		wantUnlinked = 2 // wf-authored, wf-scanned — no CivitAI link at all
+		wantLinked   = 1 // wf-noisy — linked to model 60, whose tags are all stopwords
+		wantTotal    = 3
+	)
+
+	body := libraryWorkflowsBody(t, srv, "")
+	unlinked, linked, text, ok := unclassifiedNote(body)
+	if !ok {
+		t.Fatalf("the Unclassified note rendered without its per-reason counts")
+	}
+	if unlinked != wantUnlinked || linked != wantLinked {
+		t.Errorf("unclassified note = %d unlinked / %d linked, want %d / %d — a workflow that IS "+
+			"linked but matched no use case must not be reported as having no CivitAI link",
+			unlinked, linked, wantUnlinked, wantLinked)
+	}
+	if unlinked+linked != wantTotal {
+		t.Errorf("the note's two reasons sum to %d but the Unclassified bucket holds %d — every "+
+			"unclassified workflow must be accounted for by exactly one reason", unlinked+linked, wantTotal)
+	}
+
+	// 🔴 THE HALF THAT ACTUALLY GUARDS THE BUG. Everything above reads the two
+	// data-* attributes, which are computed on a path INDEPENDENT of the sentence
+	// the user reads — so they stay correct while the prose says anything at all.
+	// Measured: with only the assertions above, reinstating the original false
+	// clause ("N workflows with no CivitAI link cannot have one") passed the entire
+	// internal/web suite, as did swapping the two reasons' numbers.
+	//
+	// So pin each number BESIDE ITS OWN REASON PHRASE in the visible text. Pairing
+	// is the property; either number alone, or either phrase alone, is satisfied by
+	// the swapped rendering.
+	wantClauses := []string{
+		strconv.Itoa(wantUnlinked) + " " + reasonUnlinked,        // "2 not linked to a CivitAI model"
+		strconv.Itoa(wantLinked) + " linked but " + reasonLinked, // "1 linked but nothing we have locally…"
+	}
+	for _, want := range wantClauses {
+		if !strings.Contains(text, want) {
+			t.Errorf("the note's visible text is missing the clause %q — each count must be rendered "+
+				"beside the reason it describes.\ntext: %s", want, text)
+		}
+	}
+	// The headline must agree with the Unclassified chip beside it; it is a third
+	// independent number and nothing above constrains it.
+	if headline := strconv.Itoa(wantTotal) + " workflow"; !strings.Contains(text, headline) {
+		t.Errorf("the note's headline count is not %q — it must equal the Unclassified bucket size "+
+			"shown on the chip directly above it.\ntext: %s", headline, text)
+	}
+}
+
+// TestUnclassifiedNoteOmitsAReasonWithNoMembers — when every unclassified
+// workflow shares ONE reason, the other reason must not be rendered as a "0"
+// clause, and an empty bucket must render no note at all.
+func TestUnclassifiedNoteOmitsAReasonWithNoMembers(t *testing.T) {
+	if unclassifiedUseCaseNote(workflowFacetCounts{}) != nil {
+		t.Error("an empty Unclassified bucket must render no note at all")
+	}
+	// wantText / notWantText pin the VISIBLE sentence. Without them this table
+	// asserts only the two data-* attributes, which are computed independently of
+	// the prose — measured: swapping the two single-reason branch bodies (so an
+	// all-LINKED library reads "they are not linked to a CivitAI model") passed the
+	// whole internal/web suite, and so did deleting the singular-agreement branch.
+	for _, tc := range []struct {
+		name                     string
+		counts                   workflowFacetCounts
+		wantUnlinked, wantLinked int
+		wantText                 []string
+		notWantText              string
+	}{
+		{
+			name:   "every unclassified workflow is unlinked",
+			counts: workflowFacetCounts{UseNone: 4}, wantUnlinked: 4, wantLinked: 0,
+			wantText:    []string{"4 workflows have no use case", "they are " + reasonUnlinked},
+			notWantText: reasonLinked,
+		},
+		{
+			name:   "every unclassified workflow is linked",
+			counts: workflowFacetCounts{UseNone: 4, UseNoneLinked: 4}, wantUnlinked: 0, wantLinked: 4,
+			wantText:    []string{"4 workflows have no use case", "they are linked to a CivitAI model, but " + reasonLinked},
+			notWantText: reasonUnlinked,
+		},
+		{
+			// Singular agreement is a named property of this note; before this case
+			// carried text assertions, deleting the whole branch left the suite green
+			// while rendering "1 workflow have no use case … they are not linked".
+			name: "a single unclassified workflow", counts: workflowFacetCounts{UseNone: 1},
+			wantUnlinked: 1, wantLinked: 0,
+			wantText: []string{
+				"1 workflow has no use case",
+				"it is " + reasonUnlinked,
+				"It is listed under Unclassified",
+			},
+			notWantText: reasonLinked,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := renderString(t, unclassifiedUseCaseNote(tc.counts))
+			unlinked, linked, text, ok := unclassifiedNote(out)
+			if !ok {
+				t.Fatalf("note rendered without its counts: %s", out)
+			}
+			if unlinked != tc.wantUnlinked || linked != tc.wantLinked {
+				t.Errorf("counts = %d unlinked / %d linked, want %d / %d",
+					unlinked, linked, tc.wantUnlinked, tc.wantLinked)
+			}
+			for _, want := range tc.wantText {
+				if !strings.Contains(text, want) {
+					t.Errorf("the note's visible text is missing %q\ntext: %s", want, text)
+				}
+			}
+			// The reason with NO members must not be described at all.
+			if strings.Contains(text, tc.notWantText) {
+				t.Errorf("the note describes a reason with no members (%q)\ntext: %s", tc.notWantText, text)
+			}
+			// …nor rendered as a zero-count clause. Attribute values render as ="0",
+			// so this can only match prose.
+			if strings.Contains(text, " 0 ") {
+				t.Errorf("a reason with no members must not be rendered as a 0 clause: %s", text)
+			}
+		})
+	}
+}
+
+// TestUnclassifiedNoteUnderASourcePostScope covers the all-linked branch through
+// the REAL handler, which the hand-built structs above cannot do: they prove the
+// branch renders correctly, not that production can reach it.
+//
+// A ?model=<id> scope narrows to workflows imported from ONE CivitAI post, so
+// every workflow in view is linked BY CONSTRUCTION. That makes it the state where
+// the old sentence was not merely misleading but 100% false — it told the user
+// that every workflow in a view defined by having a CivitAI link had no CivitAI
+// link.
+func TestUnclassifiedNoteUnderASourcePostScope(t *testing.T) {
+	srv := newWorkflowServer(t)
+	seedFacetLibrary(t, srv)
+
+	// model 60 is wf-noisy: linked, and unclassified because its tags are all
+	// stopwords. The scope therefore holds exactly one workflow, and it is linked.
+	body := libraryWorkflowsBody(t, srv, "model=60")
+	unlinked, linked, text, ok := unclassifiedNote(body)
+	if !ok {
+		t.Fatalf("the Unclassified note did not render under a source-post scope")
+	}
+	// PRECONDITION: the scope really did narrow. Without this the test would still
+	// pass against an unscoped page that happened to render some note.
+	if unlinked != 0 || linked != 1 {
+		t.Fatalf("scope did not narrow to the single linked workflow: %d unlinked / %d linked "+
+			"(want 0 / 1) — ?model= must exclude wf-authored and wf-scanned", unlinked, linked)
+	}
+	for _, want := range []string{
+		"1 workflow has no use case",
+		"it is linked to a CivitAI model, but " + reasonLinked,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("scoped note is missing %q\ntext: %s", want, text)
+		}
+	}
+	if strings.Contains(text, reasonUnlinked) {
+		t.Errorf("under a source-post scope EVERY workflow is linked by construction, so the note "+
+			"must never claim a missing CivitAI link\ntext: %s", text)
 	}
 }
 
