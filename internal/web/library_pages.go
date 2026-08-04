@@ -1369,8 +1369,10 @@ func trashTable(batches []batchView, csrf string) g.Node {
 			h.Td(h.Class("px-3 py-2 text-right"), action),
 		))
 	}
-	return h.Div(
-		h.Class("overflow-x-auto"),
+	// Scrollable region: a batch list whose every entry is already restored renders
+	// "restored" badges instead of Restore buttons, leaving nothing focusable in the
+	// region at all. See scrollTable.
+	return scrollTable("Trash batches",
 		h.Table(
 			h.Class("min-w-full text-sm"),
 			h.THead(h.Tr(
