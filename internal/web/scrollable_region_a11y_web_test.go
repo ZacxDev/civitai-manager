@@ -61,10 +61,23 @@ func (m scrollMech) String() string {
 	return "viaFocusableContent"
 }
 
-// hasClassToken reports whether n carries the exact class token cls. Token-wise, not
+// 🔴 EVERY package-level helper in this file is `a11y`-prefixed, and that is not
+// stylistic. This file originally declared a bare `attr(*html.Node, string)` — which
+// (a) DUPLICATED the long-standing a11yAttr/a11yHasAttr pair in
+// run_preset_a11y_web_test.go, and (b) collided with an `attr` a concurrently-developed
+// test file introduced, breaking the MERGED tree while both branches were individually
+// green. `go build ./...` still passed (the clash is in _test.go) and `gh` reported the
+// PR MERGEABLE/CLEAN, because the two files never touch the same lines — the conflict is
+// semantic, and only `go vet ./internal/web/` or `go test` surfaces it.
+//
+// So: reuse the a11y* helpers rather than adding a generic one, and prefix anything
+// genuinely new. A bare `isFocusable` or `findNode` in this package is a collision
+// waiting for the next a11y test.
+
+// a11yHasClassToken reports whether n carries the exact class token cls. Token-wise, not
 // a substring: "overflow-x-auto" must not be matched by some future
 // "overflow-x-auto-md".
-func hasClassToken(n *html.Node, cls string) bool {
+func a11yHasClassToken(n *html.Node, cls string) bool {
 	for _, a := range n.Attr {
 		if a.Key != "class" {
 			continue
@@ -78,60 +91,52 @@ func hasClassToken(n *html.Node, cls string) bool {
 	return false
 }
 
-func attr(n *html.Node, key string) (string, bool) {
-	for _, a := range n.Attr {
-		if a.Key == key {
-			return a.Val, true
-		}
-	}
-	return "", false
-}
-
-// isFocusable mirrors axe's notion of a focusable element closely enough for these
+// a11yIsFocusable mirrors axe's notion of a focusable element closely enough for these
 // fragments: an explicit non-negative tabindex, or a natively focusable control that
 // is not disabled. A bare <a> with no href is NOT focusable, which is why the href
 // check is here rather than matching on tag name alone.
-func isFocusable(n *html.Node) bool {
+//
+// It uses a11yHasAttr wherever ABSENT must be distinguished from EMPTY (tabindex,
+// disabled, href) and a11yAttr where "" is a correct answer — an <input> with no type
+// is a text input, and so focusable.
+func a11yIsFocusable(n *html.Node) bool {
 	if n.Type != html.ElementNode {
 		return false
 	}
-	if v, ok := attr(n, "tabindex"); ok && !strings.HasPrefix(strings.TrimSpace(v), "-") {
+	if a11yHasAttr(n, "tabindex") &&
+		!strings.HasPrefix(strings.TrimSpace(a11yAttr(n, "tabindex")), "-") {
 		return true
 	}
-	if _, disabled := attr(n, "disabled"); disabled {
+	if a11yHasAttr(n, "disabled") {
 		return false
 	}
 	switch n.Data {
 	case "button", "select", "textarea":
 		return true
 	case "a":
-		_, ok := attr(n, "href")
-		return ok
+		return a11yHasAttr(n, "href")
 	case "input":
-		if t, ok := attr(n, "type"); ok && strings.EqualFold(t, "hidden") {
-			return false
-		}
-		return true
+		return !strings.EqualFold(a11yAttr(n, "type"), "hidden")
 	}
 	return false
 }
 
-// hasFocusableDescendant implements axe's "focusable-content" check.
-func hasFocusableDescendant(n *html.Node) bool {
+// a11yHasFocusableDescendant implements axe's "focusable-content" check.
+func a11yHasFocusableDescendant(n *html.Node) bool {
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		if isFocusable(c) || hasFocusableDescendant(c) {
+		if a11yIsFocusable(c) || a11yHasFocusableDescendant(c) {
 			return true
 		}
 	}
 	return false
 }
 
-// findScrollRegions collects every overflow-x-auto element in a parsed fragment.
-func findScrollRegions(n *html.Node) []*html.Node {
+// a11yFindScrollRegions collects every overflow-x-auto element in a parsed fragment.
+func a11yFindScrollRegions(n *html.Node) []*html.Node {
 	var out []*html.Node
 	var walk func(*html.Node)
 	walk = func(x *html.Node) {
-		if x.Type == html.ElementNode && hasClassToken(x, "overflow-x-auto") {
+		if x.Type == html.ElementNode && a11yHasClassToken(x, "overflow-x-auto") {
 			out = append(out, x)
 		}
 		for c := x.FirstChild; c != nil; c = c.NextSibling {
@@ -210,7 +215,7 @@ func TestEveryScrollableRegionIsKeyboardReachable(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse: %v", err)
 			}
-			regions := findScrollRegions(doc)
+			regions := a11yFindScrollRegions(doc)
 			// PRECONDITION: a fixture that renders no scrollable region at all cannot
 			// express this invariant, and would pass silently forever.
 			if len(regions) != 1 {
@@ -219,8 +224,8 @@ func TestEveryScrollableRegionIsKeyboardReachable(t *testing.T) {
 			}
 			r := regions[0]
 
-			selfFocusable := isFocusable(r)
-			contentFocusable := hasFocusableDescendant(r)
+			selfFocusable := a11yIsFocusable(r)
+			contentFocusable := a11yHasFocusableDescendant(r)
 
 			// The rule itself: any:["focusable-content","focusable-element"].
 			if !selfFocusable && !contentFocusable {
@@ -262,12 +267,12 @@ func TestScrollTableRegionsAreNamed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	regions := findScrollRegions(doc)
+	regions := a11yFindScrollRegions(doc)
 	if len(regions) != 1 {
 		t.Fatalf("precondition: want exactly 1 region, got %d", len(regions))
 	}
-	role, _ := attr(regions[0], "role")
-	label, _ := attr(regions[0], "aria-label")
+	role := a11yAttr(regions[0], "role")
+	label := a11yAttr(regions[0], "aria-label")
 	if role != "region" {
 		t.Errorf(`want role="region" on the scroll container, got %q`, role)
 	}
