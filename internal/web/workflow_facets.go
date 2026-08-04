@@ -53,11 +53,16 @@ type workflowClassification struct {
 	// whether a use case was ever POSSIBLE for it. It is the difference between
 	// "we had nothing to classify" and "we looked and nothing matched", which is
 	// the only honest way to explain the Unclassified bucket (see
-	// unclassifiedUseCaseNote). It is NOT "we have the model's tags": a linked
-	// workflow whose model is not in the local cache is Linked with no tags, and
-	// is deliberately counted in the same bucket — from the user's side both mean
-	// "no known use case matched", and splitting a third way would put a number on
-	// screen that was 0 on every library measured.
+	// unclassifiedUseCaseNote).
+	//
+	// 🔴 It is NOT "we have the model's tags". A linked workflow whose model is
+	// absent from model_cache is Linked with NO tags — routine for a workflow
+	// auto-linked by a library scan, which never populates that cache. Both land in
+	// the same bucket on purpose; the note's wording is hedged to stay true for it.
+	//
+	// ⚠ Not the same "linked" as workflow_scan_handlers.go's, which means "auto-
+	// linked to a model version during THIS scan". This one is a property of the
+	// stored row, not of a scan run.
 	Linked bool
 }
 
@@ -216,7 +221,13 @@ type workflowFacetCounts struct {
 
 // useNoneUnlinked is the complement of UseNoneLinked. It is DERIVED rather than
 // counted separately so the two halves can never disagree with UseNone.
-func (c workflowFacetCounts) useNoneUnlinked() int { return c.UseNone - c.UseNoneLinked }
+//
+// The floor is for HAND-BUILT structs only: countWorkflowFacets increments
+// UseNoneLinked strictly inside the UseNone increment, so UseNoneLinked <= UseNone
+// holds by construction and production can never go negative. Tests do construct
+// these values directly, and without the floor an inverted pair renders "-3 not
+// linked to a CivitAI model" into user-visible copy.
+func (c workflowFacetCounts) useNoneUnlinked() int { return max(0, c.UseNone-c.UseNoneLinked) }
 
 // countWorkflowFacets tallies every bucket. A workflow in two ecosystems counts
 // in BOTH — that is the correct answer to "how many Flux workflows do I have",
@@ -508,14 +519,26 @@ func workflowFacetBar(counts workflowFacetCounts, f libraryWorkflowFacets) g.Nod
 // 🔴 EVERY NUMBER IS COMPUTED AND NO TAG IS NAMED. The copy must survive an edit
 // to internal/civitai/taxonomy.go — adding a use case or a stopword moves these
 // counts, and a sentence that spelled a tag, a vocabulary word, or a fixed count
-// would silently start lying. "No known use case matched" is true whatever the
-// table says, which is the property being protected here. It also holds for a
-// linked workflow whose model is not in the local cache: nothing matched because
-// there was nothing to match (see workflowClassification.Linked).
+// would silently start lying.
 //
-// The two counts are also exposed as data attributes. They are the assertable
-// STATE of this note — prose is not, because any wording a guard greps for is a
-// word some other feature is free to emit.
+// 🔴 "NOTHING WE HAVE LOCALLY MATCHES" IS DELIBERATELY HEDGED — do not sharpen it
+// to "its tags don't match". The linked bucket also holds a workflow whose model
+// is NOT in the local model_cache, and in that case we never had its tags at all:
+// model_cache has exactly one writer (cachedModelDetail), reached from
+// model-detail/card renders and the Discover-workflows import, so a workflow
+// auto-linked by a LIBRARY SCAN is linked with nothing cached. An earlier version
+// of this comment claimed that case was "0 on every library measured" — that was
+// measured on the one install where every relevant model had been browsed, and it
+// is NOT generally true. The hedge is what keeps the sentence honest there; a
+// third counter would put a usually-zero number on screen instead.
+//
+// 🔴 THE TWO data-* ATTRIBUTES ARE NOT THE GUARD'S ONLY SUBJECT. They are computed
+// on a path INDEPENDENT of the prose above, so a test reading only them is green
+// while the sentence says anything at all — an audit landed four mutations that
+// did exactly that, including reinstating the original false clause verbatim.
+// Whatever asserts this function must pin the VISIBLE TEXT (each number beside its
+// own reason phrase) as well as the attributes. See
+// TestUnclassifiedNoteSplitsTheCountByReason.
 func unclassifiedUseCaseNote(counts workflowFacetCounts) g.Node {
 	if counts.UseNone == 0 {
 		return nil
@@ -537,10 +560,10 @@ func unclassifiedUseCaseNote(counts workflowFacetCounts) g.Node {
 	case linked == 0:
 		why = " — " + they + " not linked to a CivitAI model."
 	case unlinked == 0:
-		why = " — " + they + " linked to a CivitAI model, but no known use case matched."
+		why = " — " + they + " linked to a CivitAI model, but nothing we have locally matches a known use case."
 	default:
 		why = ": " + strconv.Itoa(unlinked) + " not linked to a CivitAI model, " +
-			strconv.Itoa(linked) + " linked but no known use case matched."
+			strconv.Itoa(linked) + " linked but nothing we have locally matches a known use case."
 	}
 
 	return h.P(

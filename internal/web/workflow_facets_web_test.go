@@ -196,12 +196,12 @@ func TestUnclassifiedBucketIsVisibleWithACorrectCount(t *testing.T) {
 	if !strings.Contains(body, "(3)") {
 		t.Errorf("the Unclassified use-case count (3) is not visible:\n%s", body[:min(len(body), 2500)])
 	}
-	// And the explanation of WHY, so the bucket does not look like a bug. Asserted
-	// as the note's STATE (its per-reason counts), not as prose: this assertion
-	// used to grep for the phrase "cannot have one", which stayed green for the
-	// whole time that sentence was telling most users something false.
-	// TestUnclassifiedNoteSplitsTheCountByReason pins the numbers.
-	if _, _, ok := unclassifiedNoteCounts(body); !ok {
+	// And the explanation of WHY, so the bucket does not look like a bug. This
+	// assertion is only PRESENCE — it used to grep for the phrase "cannot have
+	// one", which stayed green for the whole time that sentence was telling most
+	// users something false. TestUnclassifiedNoteSplitsTheCountByReason pins both
+	// the numbers and the sentence they appear in.
+	if _, _, _, ok := unclassifiedNote(body); !ok {
 		t.Error("the panel must explain why unclassified workflows have no use case")
 	}
 	// With NO facet selected every workflow is listed — including the unclassified.
@@ -215,22 +215,55 @@ func TestUnclassifiedBucketIsVisibleWithACorrectCount(t *testing.T) {
 // unclassifiedNoteCounts extracts the Unclassified note's two per-reason counts
 // from rendered markup.
 //
-// It requires BOTH attributes inside ONE <p …> open tag. That is deliberate:
-// checking the two substrings independently would pass when they landed on
-// DIFFERENT elements — this repo has already shipped exactly that bug, where a
-// test for " popover" was satisfied by another element's popovertarget.
-var unclassifiedNoteRe = regexp.MustCompile(
-	`<p[^>]*\sdata-unclassified-unlinked="(\d+)"[^>]*\sdata-unclassified-linked="(\d+)"[^>]*>`)
+// It returns the note's VISIBLE TEXT alongside the attributes, and callers must
+// assert both. 🔴 The attributes alone are NOT sufficient and asserting only them
+// is the mistake this helper's callers exist to avoid: they are computed on a path
+// INDEPENDENT of the prose, so the sentence can say anything while they stay
+// correct. An audit landed four such mutations — including reinstating the
+// original false single-cause clause verbatim — and every one survived the whole
+// internal/web suite against an attributes-only guard.
+//
+// Both attributes are pulled from ONE matched <p …> open tag, so they cannot be
+// satisfied by different elements (this repo has shipped that bug, where a test
+// for " popover" was answered by another element's popovertarget). They are
+// matched independently of ORDER, so reordering the two g.Attr calls does not fail
+// with a message describing the wrong cause. The value pattern accepts a leading
+// "-" deliberately: a negative must surface as a wrong number, not as a non-match
+// that reads as "the note is missing".
+var (
+	unclassifiedNoteRe    = regexp.MustCompile(`<p([^>]*data-unclassified-[^>]*)>([^<]*)</p>`)
+	unclassifiedUnlinkedA = regexp.MustCompile(`\bdata-unclassified-unlinked="(-?\d+)"`)
+	unclassifiedLinkedA   = regexp.MustCompile(`\bdata-unclassified-linked="(-?\d+)"`)
+)
 
-func unclassifiedNoteCounts(body string) (unlinked, linked int, ok bool) {
+func unclassifiedNote(body string) (unlinked, linked int, text string, ok bool) {
 	m := unclassifiedNoteRe.FindStringSubmatch(body)
 	if m == nil {
-		return 0, 0, false
+		return 0, 0, "", false
 	}
-	unlinked, _ = strconv.Atoi(m[1])
-	linked, _ = strconv.Atoi(m[2])
-	return unlinked, linked, true
+	attrs, text := m[1], m[2]
+	u := unclassifiedUnlinkedA.FindStringSubmatch(attrs)
+	l := unclassifiedLinkedA.FindStringSubmatch(attrs)
+	if u == nil || l == nil {
+		return 0, 0, text, false
+	}
+	unlinked, _ = strconv.Atoi(u[1])
+	linked, _ = strconv.Atoi(l[1])
+	return unlinked, linked, text, true
 }
+
+// The two reason phrases as the USER reads them. They are literals held here on
+// purpose — importing them from the production file would make expectation and
+// subject share a source, and no mutation could separate the two. Changing the
+// copy is meant to fail these and be updated deliberately.
+//
+// reasonUnlinked is NOT a substring of the linked clause ("linked to a CivitAI
+// model, but nothing we have locally matches…"), which is what lets each subtest
+// assert the ABSENCE of the reason that does not apply.
+const (
+	reasonUnlinked = "not linked to a CivitAI model"
+	reasonLinked   = "nothing we have locally matches a known use case"
+)
 
 // TestUnclassifiedNoteSplitsTheCountByReason guards the note's HONESTY.
 //
@@ -279,7 +312,7 @@ func TestUnclassifiedNoteSplitsTheCountByReason(t *testing.T) {
 	)
 
 	body := libraryWorkflowsBody(t, srv, "")
-	unlinked, linked, ok := unclassifiedNoteCounts(body)
+	unlinked, linked, text, ok := unclassifiedNote(body)
 	if !ok {
 		t.Fatalf("the Unclassified note rendered without its per-reason counts")
 	}
@@ -292,6 +325,33 @@ func TestUnclassifiedNoteSplitsTheCountByReason(t *testing.T) {
 		t.Errorf("the note's two reasons sum to %d but the Unclassified bucket holds %d — every "+
 			"unclassified workflow must be accounted for by exactly one reason", unlinked+linked, wantTotal)
 	}
+
+	// 🔴 THE HALF THAT ACTUALLY GUARDS THE BUG. Everything above reads the two
+	// data-* attributes, which are computed on a path INDEPENDENT of the sentence
+	// the user reads — so they stay correct while the prose says anything at all.
+	// Measured: with only the assertions above, reinstating the original false
+	// clause ("N workflows with no CivitAI link cannot have one") passed the entire
+	// internal/web suite, as did swapping the two reasons' numbers.
+	//
+	// So pin each number BESIDE ITS OWN REASON PHRASE in the visible text. Pairing
+	// is the property; either number alone, or either phrase alone, is satisfied by
+	// the swapped rendering.
+	wantClauses := []string{
+		strconv.Itoa(wantUnlinked) + " " + reasonUnlinked,        // "2 not linked to a CivitAI model"
+		strconv.Itoa(wantLinked) + " linked but " + reasonLinked, // "1 linked but nothing we have locally…"
+	}
+	for _, want := range wantClauses {
+		if !strings.Contains(text, want) {
+			t.Errorf("the note's visible text is missing the clause %q — each count must be rendered "+
+				"beside the reason it describes.\ntext: %s", want, text)
+		}
+	}
+	// The headline must agree with the Unclassified chip beside it; it is a third
+	// independent number and nothing above constrains it.
+	if headline := strconv.Itoa(wantTotal) + " workflow"; !strings.Contains(text, headline) {
+		t.Errorf("the note's headline count is not %q — it must equal the Unclassified bucket size "+
+			"shown on the chip directly above it.\ntext: %s", headline, text)
+	}
 }
 
 // TestUnclassifiedNoteOmitsAReasonWithNoMembers — when every unclassified
@@ -301,18 +361,47 @@ func TestUnclassifiedNoteOmitsAReasonWithNoMembers(t *testing.T) {
 	if unclassifiedUseCaseNote(workflowFacetCounts{}) != nil {
 		t.Error("an empty Unclassified bucket must render no note at all")
 	}
+	// wantText / notWantText pin the VISIBLE sentence. Without them this table
+	// asserts only the two data-* attributes, which are computed independently of
+	// the prose — measured: swapping the two single-reason branch bodies (so an
+	// all-LINKED library reads "they are not linked to a CivitAI model") passed the
+	// whole internal/web suite, and so did deleting the singular-agreement branch.
 	for _, tc := range []struct {
 		name                     string
 		counts                   workflowFacetCounts
 		wantUnlinked, wantLinked int
+		wantText                 []string
+		notWantText              string
 	}{
-		{"every unclassified workflow is unlinked", workflowFacetCounts{UseNone: 4}, 4, 0},
-		{"every unclassified workflow is linked", workflowFacetCounts{UseNone: 4, UseNoneLinked: 4}, 0, 4},
-		{"a single unclassified workflow", workflowFacetCounts{UseNone: 1}, 1, 0},
+		{
+			name:   "every unclassified workflow is unlinked",
+			counts: workflowFacetCounts{UseNone: 4}, wantUnlinked: 4, wantLinked: 0,
+			wantText:    []string{"4 workflows have no use case", "they are " + reasonUnlinked},
+			notWantText: reasonLinked,
+		},
+		{
+			name:   "every unclassified workflow is linked",
+			counts: workflowFacetCounts{UseNone: 4, UseNoneLinked: 4}, wantUnlinked: 0, wantLinked: 4,
+			wantText:    []string{"4 workflows have no use case", "they are linked to a CivitAI model, but " + reasonLinked},
+			notWantText: reasonUnlinked,
+		},
+		{
+			// Singular agreement is a named property of this note; before this case
+			// carried text assertions, deleting the whole branch left the suite green
+			// while rendering "1 workflow have no use case … they are not linked".
+			name: "a single unclassified workflow", counts: workflowFacetCounts{UseNone: 1},
+			wantUnlinked: 1, wantLinked: 0,
+			wantText: []string{
+				"1 workflow has no use case",
+				"it is " + reasonUnlinked,
+				"It is listed under Unclassified",
+			},
+			notWantText: reasonLinked,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := renderString(t, unclassifiedUseCaseNote(tc.counts))
-			unlinked, linked, ok := unclassifiedNoteCounts(out)
+			unlinked, linked, text, ok := unclassifiedNote(out)
 			if !ok {
 				t.Fatalf("note rendered without its counts: %s", out)
 			}
@@ -320,10 +409,19 @@ func TestUnclassifiedNoteOmitsAReasonWithNoMembers(t *testing.T) {
 				t.Errorf("counts = %d unlinked / %d linked, want %d / %d",
 					unlinked, linked, tc.wantUnlinked, tc.wantLinked)
 			}
-			// The visible sentence must carry no zero-count clause. Attribute values
-			// render as ="0", so this can only match prose.
-			if strings.Contains(out, " 0 ") {
-				t.Errorf("a reason with no members must not be rendered as a 0 clause: %s", out)
+			for _, want := range tc.wantText {
+				if !strings.Contains(text, want) {
+					t.Errorf("the note's visible text is missing %q\ntext: %s", want, text)
+				}
+			}
+			// The reason with NO members must not be described at all.
+			if strings.Contains(text, tc.notWantText) {
+				t.Errorf("the note describes a reason with no members (%q)\ntext: %s", tc.notWantText, text)
+			}
+			// …nor rendered as a zero-count clause. Attribute values render as ="0",
+			// so this can only match prose.
+			if strings.Contains(text, " 0 ") {
+				t.Errorf("a reason with no members must not be rendered as a 0 clause: %s", text)
 			}
 		})
 	}
