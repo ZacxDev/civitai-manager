@@ -34,7 +34,7 @@ var wildcardBadOption = comfy.BadOption{
 // pick-only (no Install button). Eligible server (comfy_model_path set).
 func TestBadOptionInstallActionRenders(t *testing.T) {
 	section := renderString(t, incompatibleOptionsSection(
-		[]comfy.BadOption{detectorBadOption, wildcardBadOption}, 7, "csrf-tok", true))
+		[]comfy.BadOption{detectorBadOption, wildcardBadOption}, 7, "csrf-tok", true, false, false))
 
 	for _, want := range []string{
 		"Install face_yolov9c.pt",             // the install CTA (basename)
@@ -68,7 +68,7 @@ func TestBadOptionInstallActionRenders(t *testing.T) {
 // Install action (pick-only, unchanged behavior).
 func TestBadOptionInstallInertOnly(t *testing.T) {
 	section := renderString(t, incompatibleOptionsSection(
-		[]comfy.BadOption{wildcardBadOption}, 7, "csrf-tok", true))
+		[]comfy.BadOption{wildcardBadOption}, 7, "csrf-tok", true, false, false))
 	if strings.Contains(section, "install-option-and-run") || strings.Contains(section, "Install ") {
 		t.Errorf("an inert-only section must have NO Install action:\n%s", section)
 	}
@@ -80,17 +80,36 @@ func TestBadOptionInstallInertOnly(t *testing.T) {
 // TestBadOptionInstallIneligibleFallback: with comfy_model_path unset (dlEligible
 // false), the Install button is DISABLED with a reason and a "Search CivitAI" link
 // (never hidden), and it does NOT POST install-option-and-run.
+//
+// ⚠ REWRITTEN, NOT WEAKENED. It asserted badOptionInstallBlockedText, the single
+// sentence that covered all three blocked states and pointed at nothing. The state it
+// exercises — a LOCAL ComfyUI with no models folder — is the one a setup control can
+// clear, so it now pins the local variant AND the pointer's target. The ownsSetup
+// argument is the real production value for this state (failureSetupOwner hands the
+// slot to this section when the missing-models section did not render), which is what
+// makes "use the setup step above" true in the markup this test reads.
 func TestBadOptionInstallIneligibleFallback(t *testing.T) {
 	section := renderString(t, incompatibleOptionsSection(
-		[]comfy.BadOption{detectorBadOption}, 7, "csrf-tok", false))
+		[]comfy.BadOption{detectorBadOption}, 7, "csrf-tok", false, false, true))
 	if strings.Contains(section, "install-option-and-run") {
 		t.Errorf("ineligible section must NOT POST install-option-and-run:\n%s", section)
 	}
 	if !strings.Contains(section, "Install face_yolov9c.pt") || !strings.Contains(section, "disabled") {
 		t.Errorf("ineligible section should show a DISABLED Install action:\n%s", section)
 	}
-	if !strings.Contains(section, badOptionInstallBlockedText) {
+	if !strings.Contains(section, badOptionNeedsSetupText) {
 		t.Errorf("ineligible section should explain why:\n%s", section)
+	}
+	// The pointer's target, in the same render: the sentence says "use the setup step
+	// above", so the setup step has to be here, exactly once, and above it.
+	if n := strings.Count(section, `id="`+comfySetupContainerID+`"`); n != 1 {
+		t.Errorf("want exactly one #%s for the reason to point at, got %d:\n%s",
+			comfySetupContainerID, n, section)
+	}
+	if ci, ri := strings.Index(section, `id="`+comfySetupContainerID+`"`),
+		strings.Index(section, badOptionNeedsSetupText); ci < 0 || ri < 0 || ci > ri {
+		t.Errorf("the setup step must render ABOVE the reason naming it "+
+			"(container at %d, reason at %d):\n%s", ci, ri, section)
 	}
 	// 🔴 Plain language, and no native tooltip. See cardInstallBlockedText — this
 	// surface carried the same two defects, plus a `title` that duplicated the
@@ -100,7 +119,7 @@ func TestBadOptionInstallIneligibleFallback(t *testing.T) {
 	}
 	// Scoped to the CONTROL: a panel-wide `title=` check reports decorative icon
 	// tooltips elsewhere in the report instead of the thing under guard.
-	btn := renderString(t, badOptionInstallAction(detectorBadOption, 7, "csrf-tok", false))
+	btn := renderString(t, badOptionInstallAction(detectorBadOption, 7, "csrf-tok", false, false))
 	if !strings.Contains(btn, "disabled") {
 		t.Fatalf("precondition: want the blocked control:\n%s", btn)
 	}
@@ -120,7 +139,7 @@ func TestBadOptionInstallUnroutableFallback(t *testing.T) {
 		ClassType: "UpscaleModelLoader", InputName: "model_name",
 		Current: "RealESRGAN_x4plus.pth", Choices: []string{"other.pth"},
 	}
-	section := renderString(t, incompatibleOptionsSection([]comfy.BadOption{unroutable}, 7, "csrf", true))
+	section := renderString(t, incompatibleOptionsSection([]comfy.BadOption{unroutable}, 7, "csrf", true, false, false))
 	if strings.Contains(section, "install-option-and-run") {
 		t.Errorf("an unroutable model-file option must NOT offer an auto-install:\n%s", section)
 	}
@@ -136,7 +155,7 @@ func TestBadOptionInstallActionEscapesUntrusted(t *testing.T) {
 		ClassType: "CheckpointLoaderSimple", InputName: "ckpt_name",
 		Current: `evil"<script>alert(1)</script>.safetensors`, Choices: []string{"a.safetensors"},
 	}
-	section := renderString(t, incompatibleOptionsSection([]comfy.BadOption{evil}, 7, "csrf", true))
+	section := renderString(t, incompatibleOptionsSection([]comfy.BadOption{evil}, 7, "csrf", true, false, false))
 	if strings.Contains(section, "<script>alert(1)</script>") {
 		t.Errorf("untrusted Current value must be escaped:\n%s", section)
 	}

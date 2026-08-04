@@ -280,30 +280,76 @@ func installAllMissingAction(p batchInstallPlan, total int, wfID int64, csrf str
 //     work beats a prominent button that opens a panel explaining it cannot help.
 func blockedInstallAction(p batchInstallPlan, total int, wfID int64) g.Node {
 	if !p.SetupCanHelp {
-		return h.Div(h.Class("mt-3 space-y-1"),
-			h.P(g.Attr("role", "status"), h.Class("text-xs text-amber-400"), g.Text(installRemoteComfyReason)),
-			h.P(h.Class("text-xs text-slate-500"), g.Text(installRemoteComfyNextStep)),
-		)
+		return remoteComfyExplanation()
 	}
-	// The CTA lives INSIDE #comfy-setup and targets it with innerHTML, so the first
-	// click REPLACES the button and its explanation with the setup form. That shape is
-	// deliberate: it leaves no stale control that has already been used, it needs no
-	// `once` trigger (which would render the button permanently inert-looking), and a
-	// rejected save — which retargets #comfy-setup — lands in the same container it
-	// came from. The body is still fetched lazily, so the ComfyUI probe stays off the
-	// panel's render path exactly as before.
 	return h.Div(h.Class("mt-3"),
-		h.Div(h.ID(comfySetupContainerID), h.Class("space-y-1"),
-			civButton("filled", "md", []g.Node{
-				h.Type("button"),
-				hx("get", "/workflows/"+strconv.FormatInt(wfID, 10)+"/comfy-setup"),
-				hx("target", "#"+comfySetupContainerID),
-				hx("swap", "innerHTML"),
-				hx("disabled-elt", "this"),
-				g.Attr("aria-describedby", comfySetupWhyID),
-			}, g.Text(fmt.Sprintf("Set up automatic install for %d missing model file%s", total, plural(total)))),
-			h.P(h.ID(comfySetupWhyID), h.Class("text-xs text-slate-400"), g.Text(comfySetupWhyText)),
-		),
+		comfySetupCTA(wfID, fmt.Sprintf("Set up automatic install for %d missing model file%s",
+			total, plural(total))),
+	)
+}
+
+// comfySetupCTA is THE setup control: the primary button that loads the
+// models-folder form, plus the sentence explaining what supplying it buys.
+//
+// 🔴 IT RENDERS AN id="comfy-setup" CONTAINER — and so does comfySetupDisclosure — so
+// at most ONE of them may run per rendered page.
+//
+// ⚠ This line used to say it renders "THE APP'S ONLY" one. That is false:
+// comfySetupDisclosure carries the same id for the working state. The panel-level
+// invariant still holds, but not for the reason that wording implied — it holds
+// because failureSetupOwner picks one section, AND because the disclosure and this
+// CTA are mutually exclusive by construction (Available ⟹ dlEligible ⟹
+// blockedModelFileOptions == 0). That second half is a real coupling, not a
+// coincidence: weaken blockedModelFileOptions' dlEligible early return and a
+// configured install with both sections renders two containers.
+//
+// None of it is left to a reader's care — TestFailurePanelHasAtMostOneComfySetupContainer
+// asserts the exact COUNT over every state combination rather than mere presence.
+//
+// It was extracted from blockedInstallAction so the incompatible-options section can
+// reach the same single instance: a run can fail with BadOptions and ZERO
+// MissingModels, and that surface used to render no setup affordance at all (measured
+// on 52cb872: 0 containers, 0 links) while its per-option Install buttons sat
+// disabled. Copying the markup instead would have put two elements of this id on any
+// page where both sections render, making htmx's target ambiguous.
+//
+// The CTA lives INSIDE the container and targets it with innerHTML, so the first
+// click REPLACES the button and its explanation with the setup form. That shape is
+// deliberate: it leaves no stale control that has already been used, it needs no
+// `once` trigger (which would render the button permanently inert-looking), and a
+// rejected save — which HX-Retargets #comfy-setup — lands in the same container it
+// came from. The body is still fetched lazily, so the ComfyUI probe stays off the
+// panel's render path.
+//
+// label is the caller's, because the COUNT it carries differs by section (missing
+// model files vs. blocked bad-option files) and a reader deciding whether to bother
+// needs the number for the section they are looking at. The why-line does not vary:
+// it states the same precondition either way.
+func comfySetupCTA(wfID int64, label string) g.Node {
+	return h.Div(h.ID(comfySetupContainerID), h.Class("space-y-1"),
+		civButton("filled", "md", []g.Node{
+			h.Type("button"),
+			hx("get", "/workflows/"+strconv.FormatInt(wfID, 10)+"/comfy-setup"),
+			hx("target", "#"+comfySetupContainerID),
+			hx("swap", "innerHTML"),
+			hx("disabled-elt", "this"),
+			g.Attr("aria-describedby", comfySetupWhyID),
+		}, g.Text(label)),
+		h.P(h.ID(comfySetupWhyID), h.Class("text-xs text-slate-400"), g.Text(comfySetupWhyText)),
+	)
+}
+
+// remoteComfyExplanation is the blocked state with NO answer on this page: comfy_url
+// points at a ComfyUI somewhere else, so no folder choice can unblock anything.
+//
+// Extracted alongside comfySetupCTA and gated by the same owner decision. It is the
+// OTHER thing a section can carry in the setup slot, and rendering it twice would
+// state the same dead end twice on one panel — noise rather than a duplicate-id bug,
+// but noise directly above the per-file paths that do work.
+func remoteComfyExplanation() g.Node {
+	return h.Div(h.Class("mt-3 space-y-1"),
+		h.P(g.Attr("role", "status"), h.Class("text-xs text-amber-400"), g.Text(installRemoteComfyReason)),
+		h.P(h.Class("text-xs text-slate-500"), g.Text(installRemoteComfyNextStep)),
 	)
 }
 
