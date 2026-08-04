@@ -3,11 +3,11 @@
 _Durable conventions and lessons live in the repo `CLAUDE.md` — **read it first**. This
 doc is OPEN THREADS and the commands that tell you where things stand._
 
-🔴 **This file has been rewritten three times in one session because it kept enumerating
-facts that expire.** The rule for editing it: **if a line will be false next week, delete
-it or turn it into a command the reader runs.** A PR number, a commit sha, a "currently in
-flight" list and a release version are all facts that expire — `gh pr list` and `git log`
-do not. Prefer being *less* specific and *still true*.
+🔴 **The rule for editing this file: if a line will be false next week, delete it or turn
+it into a command the reader runs.** A PR number, a commit sha, a "currently in flight"
+list and a release version are all facts that expire — `gh pr list` and `git log` do not.
+Prefer being *less* specific and *still true*. (This survived a session that rewrote it
+three times for exactly that reason.)
 
 ## ⏭️ Kickoff (paste to start next session)
 
@@ -16,14 +16,16 @@ do not. Prefer being *less* specific and *still true*.
 > orientation block in the handoff to see where things actually stand — do not trust
 > numbers written in the doc. **GOPRIVATE is NOT needed.** Standing OK to push+tag+release
 > without asking — run the real gate (`go build ./... && go vet ./... && go test ./... &&
-> gofmt -l ./internal/ ./e2e/ ./*.go`, **plus `build`/`vet`/`test` again inside the NESTED
-> `e2e/uxaudit` module**, which a root `go test ./...` never compiles), plus `/audit-pr`
-> scaled to blast radius and **a delta re-audit after EVERY fix round**; then **push `main`
-> BEFORE tagging**, verify the tarball, refresh the `:8972` dogfood (kill by `pgrep -x cm` +
+> go test -race ./internal/web/... && gofmt -l ./internal/ ./e2e/ ./*.go`, **plus
+> `build`/`vet`/`test` again inside the NESTED `e2e/uxaudit` module**, which a root
+> `go test ./...` never compiles, **plus `.github/deadcode.sh` under `nix-shell -p go_1_26`**),
+> plus `/audit-pr` scaled to blast radius and **a delta re-audit after EVERY fix round**;
+> then **push `main` BEFORE tagging**, verify the tarball (checksum + attestation **with a
+> negative control**), refresh the `:8972` dogfood (kill by `pgrep -x cm` +
 > `/proc/<pid>/exe`, wait until NO cm process remains — **a free port is not a released
 > binary** — then verify the served build by pid + `--version`). If `go.mod` changes at all,
 > re-run `nix build .` for `vendorHash`. **You CAN drive a real browser** — it has found a
-> real bug in every visual branch across seven sessions. Loop: feedback → recon → clarifying
+> real bug in every visual branch across eight sessions. Loop: feedback → recon → clarifying
 > Qs + recommend → worktree-isolated subagent(s) → real gate → audit → delta re-audit → ship
 > → verify tarball → refresh dogfood.
 
@@ -43,137 +45,148 @@ grep -vc '^\s*#\|^\s*$' .github/deadcode-allow.txt  # size of the tier-B debt le
 ⚠ **Agents are often in flight while you read this.** `gh pr list` can be empty and work can
 still be happening in a worktree — cross-check `git worktree list` for non-stale entries.
 
-**Housekeeping that is safe whenever you see it:** stale merged worktrees under
-`.claude/worktrees/` accumulate (about a dozen at the time of writing) — prune them.
-`~/.config/civitai-manager/` holds several ~23 MB `.pre-*` DB backups; the pre-0017 and
-pre-0018 ones are long superseded.
-
 ## Open threads (ranked)
 
-1. **Proposal C — preflight on the workflow page, before the Run click.** "Needs 1 node
-   pack + 3 models" shown *before* the user commits to a run. A and B already shipped
-   (`preflightFailureResult` reports missing nodes AND models in one pass). C was blocked on
-   a caching policy so the **4.66 MB** `/object_info` is not refetched per render — which is
-   what migration `0019` + `internal/web/comfy_model_cache.go` exist for. **The
-   node-origin work has now landed, so C is unblocked**; it touches the same workflow page,
-   so check nothing else is editing it first.
-2. **Orphan route `GET /workflows/run/resolve-model`** — registered in `server.go`,
-   loopback-gated, makes outbound egress, and **nothing links to it**. ~8 tests exercise it,
-   reading as coverage of the missing-model resolve feature; production renders
-   `resolveModelFragmentWithReason` instead. Delete it, or document it as a debug endpoint.
-   🚧 **In progress** — a sibling agent was working this at the time of writing. Confirm
-   against `gh pr list` / `git log` before starting; its fate depends on that PR.
-3. **3 dead `.cm-*` CSS rules**: `.cm-crumb-name`, `.cm-vstatus-date`, `.cm-gen-sep`. Plus
-   **`Server.attributeFn`** — a test seam nothing sets, in production or in any test.
-   🚧 **In progress** — same sibling agent as (2), same caveat.
-4. **Two systematic guards** that would have caught most of this class mechanically: a
-   **route-emitter check** (diff registered `mux.Handle*` paths against emitted `hx-*`/`href`
-   literals, with an allowlist; ~60 lines) and a **reverse class-coverage test** (~30 lines)
-   for CSS rules nothing emits. The `deadcode` CI gate covers Go functions only — these are
-   the routing and CSS equivalents, and `class_coverage_web_test.go` is explicitly
-   one-directional (see `CLAUDE.md`).
-5. **Work the tier-B `deadcode` ledger down.** The entries were **measured, not
-   investigated** — none has been checked for whether it should be deleted or wired up.
-   Spot-checks found **superseded wrappers, not dropped features** (e.g. `runModesPanel` is
-   a 2-line delegate while production calls `runModesPanelSelected`, and the live page
-   renders both panels) — cleanup debt, *not* a user-visible regression. `internal/web`
-   carries about half the list. The ledger is **asserted**: the gate fails when it grows
-   *and* when it shrinks, so a stale entry is a win to take, not a line to keep.
-6. **The "why is this tag not shown" affordance was never built.** `StopwordTags`' comment
-   described it as existing; it does not. `internal/web/workflow_facets.go` drops stopword
-   tags silently with no on-screen explanation. (The function that carried the false comment
-   is now deleted; the gap it described is not.)
+1. **`handleWorkflowImportPNG` stores a `prompt` chunk as `format=api` without calling
+   `DetectFormat`.** `internal/web/workflow_handlers.go`; the only validation is
+   `looksLikeJSON` (first non-whitespace byte is `{` or `[`, `internal/comfy/pnginfo.go`).
+   Drag in a PNG carrying a truncated or UI-shaped graph and you get a row the app calls
+   api-format. The **consequence** is closed — the run gate now refuses unusable graphs and
+   the readiness line says `unknown` — but the **cause** is open, and it is the one path
+   that skips format detection.
+
+2. **`cardInstallBlockedText` has never been axe-scanned, in any wording.** It renders
+   inside a `<dialog>` opened with `showModal()`, and the walk never opens it — the
+   `"Choose a model…"` trigger row is in every run-failure accessibility tree, the dialog's
+   subtree in none. Reaching it means teaching the walk to open a dialog. Same class:
+   content newly collapsed behind `<details>` is now scanned only in its **collapsed**
+   state (it passed expanded before it was collapsed).
+
+3. **`library-sources` is a permanently flaky axe capture** — it differs between two runs
+   of the **same tree**. Cause is known and is *not* what was previously assumed: the
+   harness's randomized boot dir renders as the selected-scan-directory label
+   (`/tmp/uxaudit-walk-<random>/models`), not disk-usage figures. Useless as a visual
+   baseline until the dir is stabilised or the path masked. **A capture that varies without
+   a code change quietly erodes the baseline everything else is measured against.**
+
+4. **Five `overflow-x-auto` regions still lack `tabindex`** (`cloud_pages.go`,
+   `library_pages.go` ×3, `pages.go`, `layout.go`). One instance of this class was fixed
+   (a *serious* `scrollable-region-focusable` on the `git clone` block); these are unflagged
+   only because they do not overflow with the lab fixture's data.
+
+5. **The bad-option surface has no in-app setup affordance.** It renders with zero missing
+   models and zero `#comfy-setup` containers, so its copy correctly names no control — but
+   a user blocked there still has no one-click path. Needs a **shared single-instance**
+   control; a second `id="comfy-setup"` would be a duplicate-id bug.
+
+6. **Work the tier-B `deadcode` ledger down.** Entries were **measured, not investigated**.
+   Spot-checked ones are *superseded wrappers*, not dropped features. Cleanup debt, not a
+   user-visible regression — and the ledger is asserted, so it cannot grow silently.
+
+7. **The "why is this tag not shown" affordance was never built.** `StopwordTags`' comment
+   described it as existing; it never did. `internal/web/workflow_facets.go` drops stopword
+   tags silently with no on-screen explanation. (That function is now deleted; the gap is not.)
+
+8. **Two unexamined stale worktrees**: `civitai-manager-breadcrumbs` (`feat/breadcrumbs`)
+   and `civitai-manager-copy-reduction` (`fix/copy-reduction`). ⚠ `feat/comfy-model-cache`
+   proved a branch can be **fully superseded** — every claim independently reimplemented on
+   `main`, and porting it would have shipped two live bugs. Evaluate before porting *or*
+   deleting; `claudedocs/BRANCH-EVAL-comfy-model-cache.md` is the template.
 
 ## Live diagnosis state (durable findings, not status)
 
-### The custom-node detector is authoritative — with two known staleness windows
-`comfy.NodeOrigins` (`internal/comfy/node_origin.go`) classifies on the registering
-`python_module` from `/object_info`, as a **deny-list on `custom_nodes.*`** — measured to
-yield exactly **790** built-ins, where the obvious allow-list (`comfy_extras.*` + `nodes`)
-yields 566 and silently reclassifies all 224 bundled `comfy_api_nodes` types as custom. It
-replaced a ~50-entry hand-written table that called a real built-in custom in **44 of 70**
-workflows. Full reasoning, including why `coreNodeClasses` is **kept** as the cold-cache
-fallback (`PrimitiveNode`/`Note`/`Reroute` are frontend-only LiteGraph nodes absent from
-every `/object_info`, so deleting it would call them custom), is in `CLAUDE.md`.
+### The operator has NO `config.yaml`, and that is the state the run-failure work targets
 
-Two staleness windows, **both accepted, neither a bug**:
-- Installing a custom node does not invalidate the `0019` cache until the next local run.
-- A library **scan deletes the cache row** (`internal/web/scan_handlers.go`), so for
-  **API-format** workflows — where the cache is the only origin source — the old table's
-  false positives return until the next local run. UI-format workflows re-fetch in-request
-  and are barely affected, which is why this is accepted rather than fixed. **Do not
-  redesign invalidation as a drive-by**; the coupling reasoning is in
-  `comfy_model_cache.go`'s `invalidateComfyModelCache` comment.
+`comfy_model_path` is unset; their ComfyUI answers 200 on `127.0.0.1:8188`. That combination
+is what made the panel's primary CTA dead for so long. There is now an in-panel setup flow
+that infers the models root from ComfyUI's `/internal/folder_paths` (parent of the most
+categories — a category lists several roots in `extra_model_paths.yaml` order, which is
+**not** a preference order) and stores it as a **settings row**, not a config file.
 
-⚠ **Caution about that PR's performance claim — it was revised three times by successively
-better measurement** (~21–34 ms → ~6–8 ms on a scaled synthetic → **~3–5 ms** against the
-real 4.66 MB payload), because each earlier figure measured something adjacent to the thing
-that changed. Only the SQLite **read** is avoided; the parse is still paid either way. The
-correctness half is the load-bearing one and is untouched by the smaller number. **Quote
-the measured ranges from `CLAUDE.md`, never a figure derived from them.**
+🔴 **Do not "fix" this by writing them a `config.yaml`.** The unset state is the case under
+test, and creating that file is a surprising side effect on their machine.
+
+Fail direction: absent endpoint, timeout, a genuine tie, or a suggestion that fails
+re-validation all degrade to the same type-it-yourself form; a non-local `comfy_url` gets no
+form at all. Hostile-payload hardening requires ≥2 agreeing categories **and** that the
+winning root already contains a reported category directory.
+
+### The readiness line and the run-failure panel are coupled — do not edit one alone
+
+They answer the same question on either side of the Generate click, and shipping them in
+consecutive releases put **both on screen at once, 0px apart**. The rule now: *a run for this
+workflow exists ⇒ the readiness line yields*, in **every** terminal state — after a
+**successful** run the line is not merely redundant, it is **false**, because the panel's
+CTAs install things.
+
+Enforced by one predicate read by the fragment **and** every handler writing into
+`#run-status`, each answering with an out-of-band clear. 🔴 **A new writer that forgets the
+OOB clear reproduces the bug.** Guarded structurally (an AST check pinning who may call the
+raw fragment, against an asserted two-entry ledger) *plus* a behavioural table for the case
+the structural check type-checks straight past.
+
+### The custom-node detector is authoritative, with two staleness windows
+
+It reads `python_module` from a cached `/object_info` (deny-list on `custom_nodes.*`), with
+the old hand-written table as the cold-cache fallback — deleting that table is **unsafe**,
+since `PrimitiveNode`/`Note`/`Reroute` are frontend-only and absent from every
+`/object_info`. Two accepted windows: installing a custom node does not invalidate the cache
+until the next run, and a **library scan deletes the cache row**, so for API-format
+workflows the old table's false positives return until the next local run.
 
 ### `web_scan_timeout`: live, with an upgrade hazard
-Inert for **89 releases** (v0.1.13 → v0.1.101). Now enforced, default **6h** — the value
-`scanJobBudget` already imposed, so unset behaviour is unchanged.
-🔴 **`docs/configuration.md` shipped `web_scan_timeout: "2m"` in its annotated sample config
-for that whole period**, and no code path writes the key — so hand-copying the docs was the
-ONLY way to hold an explicit value. Anyone who copied it now has an enforced 2m. **And a
-deadline firing during the HASH phase persists ZERO rows** — hashing is phase 1,
-`local_files` are written in phase 3; measured, a 150 ms deadline against a 12 × 200 MB
-fixture saved nothing. For a large library that is a total loss, every time.
-`docs/configuration.md` carries the upgrade warning; **a release note would be kind.**
+
+🔴 `docs/configuration.md` shipped `web_scan_timeout: "2m"` in its annotated sample for ~89
+releases while nothing read the key — so hand-copying the docs was the only way to hold an
+explicit value, and those users now have an enforced 2m. **A deadline firing during the HASH
+phase persists ZERO rows** (hashing is phase 1, `local_files` are written in phase 3).
+A release note would be kind.
 
 ### The ComfyUI model cache repopulates on use; empty is a designed state
-`cacheComfyObjectInfo` is wired in `run_handlers.go` and `cloud_handlers.go`, with
-invalidation after a library scan. Proven end-to-end on the real DB: a **4,661,987-byte**
-row with an RFC3339 `updated_at` appeared during dogfooding. Until it populates, the ◎
-("in ComfyUI") chip state cannot render and chips correctly fall back to ✓/✗.
 
-### `feat/comfy-model-cache` is retired — do not re-evaluate it
-All seven of its claims landed on `main` independently, and where the two differ main's
-version fixed a bug the branch still contains (a descendant-selector popover that opens
-*every* chip at once, and a Safe-mode button that **fails OPEN** to the full maturity
-range). Its tip `46a10ed` is recoverable via
-`git push origin 46a10ed:refs/heads/feat/comfy-model-cache` if ever wanted.
+Written by the local-run and cloud-panel paths, invalidated after a library scan. Until it
+populates, the ◎ ("in ComfyUI") chip state cannot render and chips correctly fall back to
+✓/✗. Scan invalidation is a heuristic — a scan means *our* file set changed, not ComfyUI's.
 
 ## How to verify a release
 
 ```sh
-V=$(git describe --tags --abbrev=0 origin/main); V=${V#v}
-gh release download "v$V" -R ZacxDev/civitai-manager \
-  -p "civitai-manager_${V}_linux_amd64.tar.gz" -p checksums.txt
-sha256sum -c --ignore-missing checksums.txt          # must print OK
-tar xzf "civitai-manager_${V}_linux_amd64.tar.gz" && ./civitai-manager --version
-gh attestation verify "civitai-manager_${V}_linux_amd64.tar.gz" -R ZacxDev/civitai-manager
+gh release download "$(git describe --tags --abbrev=0)" -R ZacxDev/civitai-manager \
+  -p '*_linux_amd64.tar.gz' -p 'checksums.txt'
+sha256sum -c --ignore-missing checksums.txt      # must print OK
+tar xzf ./*_linux_amd64.tar.gz && ./civitai-manager --version
+gh attestation verify ./*_linux_amd64.tar.gz -R ZacxDev/civitai-manager
 AUDITLOOP_CHROMIUM=/run/current-system/sw/bin/brave make ux-audit
 ```
 
-🔴 **The axe walk must report 24 captures / 0 violations.** A different **capture count**
-means the walk changed shape; **0 captures** means it regressed to the API-format fixture no
-real workflow uses — the failure that let it certify a dead surface for four releases. Count
-the PNGs (`ls e2e/uxaudit/artifacts/*.png | wc -l`) rather than trusting the exit code.
+🔴 **The axe walk must report 26 captures / 0 violations.** A different **capture count**
+means the walk changed shape. Count from `*.axe.json` (**not** `*.a11y.json`, which has no
+`violations` key at all), with an explicit `is None` check, and assert **zero payloads
+lacking the key** — an empty violations list is falsy, and `x or y` on it silently skips
+healthy captures and prints "0 captures", which reads as a regression.
 
 `gh attestation verify` is **silent on success** in some shells. Do not read a quiet `rc=0`
-as proof without a negative control — append one byte to a copy and confirm `rc=1`.
+as proof — append one byte to a copy and confirm it gives non-zero.
 
 ## Corrections, so they are not re-derived
 
-- **`git tag --contains` in a worktree returns the same count as the base clone.** Worktrees
-  share the ref store; an earlier claim that it differs was wrong.
-- **The `e2e/uxaudit` CI blind spot is closed** — a dedicated `uxaudit` job compiles the
-  nested module. Only the *local* root-module exclusion still bites, so run that second
-  invocation yourself.
-- **`pickFileFromModelRaw` never lived in `internal/comfy/download_target.go`.** The
+- **`git tag --contains` in a worktree returns the same count as the base clone** — worktrees
+  share the ref store.
+- **The `e2e/uxaudit` CI blind spot is closed** — a dedicated job compiles the nested module.
+  Only the *local* root-module exclusion still bites.
+- **`pickFileFromModelRaw` never lived in `internal/comfy/download_target.go`** — the
   offer-don't-perform behaviour is `pickFileFromModel` + `renderSubstituteOffer` in
   `internal/web/run_download.go`; `TypeSubdir` is the part that really is in
   `download_target.go`.
-- **"Nothing tests the `canQueue` agreement" was wrong.** Three of four drift directions
-  were already caught; only the button-falls-back-to-single-run direction survived.
 - **The `deadcode` allowlist "dead UI" scare was wrong** — superseded wrappers, not dropped
   features.
-- **`e2e/uxaudit/fakes.go` no longer claims `realRun` returns early on conversion
-  warnings.** That mechanism was deleted when the never-submit gate moved *after*
-  `comfy.Preflight`; the `input_order` requirement it justified still holds, but for the
-  opposite reason — measured, not reasoned. See the comment itself for the numbers, and
-  note that the obvious single-entry probe is **under-powered** and would have argued for
-  deleting a requirement that is real.
+- **`e2e/uxaudit/fakes.go` no longer claims `realRun` returns early on conversion warnings** —
+  it does not, and the `input_order` requirement holds for the *opposite* reason. Settled by
+  a measured probe, not by reasoning.
+- 🔴 **A probe can be vacuous the way a test can.** Stripping `input_order` from ONE loader
+  leaves a second loader independently holding `report.OK` false, so the result is identical
+  under both hypotheses — and it was paired with a decision rule that would have deleted a
+  correct 🔴 block. Strip **both** loaders. An experiment needs a positive control too.
+- **A perf figure was revised three times** (~21–34 ms → ~6–8 ms scaled from a synthetic →
+  **~3–5 ms** against the real payload). Only a SQLite read is avoided; the ~21 ms parse is
+  still paid. Do not quote a derived ratio from that comment.
