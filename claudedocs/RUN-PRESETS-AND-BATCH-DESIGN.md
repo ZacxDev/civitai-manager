@@ -829,7 +829,7 @@ card "Run"
 │           [drift banner — alert("warning", …), only when something drifted]
 │           [csrf_token] [preset_id]
 │           [name input]
-│           …the existing runParamField() controls, UNCHANGED…
+│           …the existing runParamFieldValue() controls, UNCHANGED…
 │           [Run once] [Queue ×N: 2 4 8 16 + number] [Save] [Delete]
 └── #run-status         ← STABLE. the ONLY polled container.       (unchanged)
 ```

@@ -383,7 +383,7 @@ we own the bytes now):
   `POST /outputs/{id}/rerun` that: loads the generation, reconstructs
   `runOptions{Substitute, OptionFixes}` from the saved `params`, verifies
   `workflow_id` is non-null and the workflow still exists, and calls
-  `s.startRun(wf, opts)` — then redirects/HX-swaps to the workflow's run panel.
+  `s.startRunWithMessage(wf, opts, msg)` — then redirects/HX-swaps to the workflow's run panel.
   **Disabled (with a tooltip) when `workflow_id` is null** ("source workflow was
   deleted"). This is the deterministic reuse of the existing run path — no new run
   logic.

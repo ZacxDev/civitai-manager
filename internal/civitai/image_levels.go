@@ -28,8 +28,8 @@ type LeveledImage struct {
 	BrowsingLevel int `json:"browsingLevel"`
 }
 
-// LeveledImageSearchResult is DecodeLeveledImageSearch's result: the same items
-// DecodeImageSearch would produce, each carrying its numeric browsingLevel.
+// LeveledImageSearchResult is DecodeLeveledImageSearch's result: the /api/v1/images
+// items, each carrying its numeric browsingLevel.
 type LeveledImageSearchResult struct {
 	Items []LeveledImage `json:"items"`
 	// Raw is the body it was decoded from, preserved so a caller that fetched it

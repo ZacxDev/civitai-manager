@@ -304,29 +304,24 @@ func TestRegistryNotFoundIsNormal(t *testing.T) {
 	}
 }
 
-// TestRegistryPacksFanOut covers the N-request fan-out: mixed hits/misses, a
-// capped concurrency, deterministic output, and per-class errors that do not
-// abort the rest.
+// TestRegistryPacksFanOut covers the N-request fan-out: mixed hits/misses,
+// deterministic output, and per-class errors that do not abort the rest.
 //
 // It drives NodePackResolver.RegistryPacks — the PRODUCTION fan-out, and the only
 // one. (It used to drive RegistryClient.LookupClasses, a second, cache-less copy of
 // the same loop that no production path called; deleting it moved these properties
 // onto the live path rather than losing them.) The resolver is built with a nil
-// cache so every class goes to the network, which is what the request counting and
-// the concurrency cap need to observe.
+// cache so every class goes to the network, which is what the request counting
+// needs to observe.
+//
+// ⚠ It does NOT cover the concurrency cap, and this comment used to claim it did.
+// The claim was false in a way no timing could expose: the fixture below issues 5
+// requests against a cap of registryConcurrency (6), so an "in-flight never exceeds
+// the cap" assertion could not fail even with the semaphore deleted. The cap has its
+// own test now — TestRegistryPacksCapsConcurrentRequests — which forces real overlap
+// instead of hoping for it.
 func TestRegistryPacksFanOut(t *testing.T) {
-	var inflight, maxInflight int64
-	var mu sync.Mutex
-
 	srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := atomic.AddInt64(&inflight, 1)
-		mu.Lock()
-		if n > maxInflight {
-			maxInflight = n
-		}
-		mu.Unlock()
-		defer atomic.AddInt64(&inflight, -1)
-
 		switch {
 		case strings.Contains(r.URL.Path, "Boom"):
 			http.Error(w, "upstream exploded", http.StatusInternalServerError)
@@ -359,8 +354,99 @@ func TestRegistryPacksFanOut(t *testing.T) {
 	if fmt.Sprint(unresolved) != fmt.Sprint(wantUnresolved) {
 		t.Errorf("unresolved = %v, want %v (sorted, including the errored class)", unresolved, wantUnresolved)
 	}
-	if maxInflight > registryConcurrency {
-		t.Errorf("max in-flight = %d, exceeds the cap of %d", maxInflight, registryConcurrency)
+}
+
+// TestRegistryPacksCapsConcurrentRequests is the REAL guard on registryConcurrency.
+// The Comfy Registry has no batch endpoint, so a workflow with N missing classes
+// costs N requests; the semaphore in RegistryPacks is the only thing keeping that
+// civil against a third party.
+//
+// 🔴 Its predecessor was VACUOUS and shipped that way for a long time: it issued 5
+// requests against a cap of 6 and asserted "max in-flight never exceeded the cap",
+// which cannot fail at any timing. Deleting the semaphore left it green. So this one
+// is built to fail, not to pass:
+//
+//   - It issues 2x the cap, so the surplus MUST queue behind the semaphore.
+//   - Every handler BLOCKS until the test releases it, holding the window open
+//     deterministically instead of relying on scheduling luck to make requests
+//     overlap.
+//   - Waiting for exactly registryConcurrency arrivals is the harness's POSITIVE
+//     CONTROL: it proves the counter observes real simultaneity before any assertion
+//     is read. A counter wired to nothing (or a fan-out that is secretly serial)
+//     never reaches the count and fails HERE, loudly, rather than reporting a
+//     reassuring "max in-flight = 1".
+//   - The peak is read while every handler is still blocked, so it is the true
+//     simultaneous maximum and not a sample.
+//
+// The assertion is two-sided: above the cap means the semaphore is gone, below it
+// means the fan-out stopped being concurrent.
+func TestRegistryPacksCapsConcurrentRequests(t *testing.T) {
+	const want = registryConcurrency
+	const total = registryConcurrency * 2 // the surplus has to queue
+
+	var inflight, maxInflight int64
+	var mu sync.Mutex
+	release := make(chan struct{})
+	arrived := make(chan struct{}, total) // buffered: a handler must never block here
+
+	srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := atomic.AddInt64(&inflight, 1)
+		mu.Lock()
+		if n > maxInflight {
+			maxInflight = n
+		}
+		mu.Unlock()
+		arrived <- struct{}{}
+		<-release // hold: nothing completes until the peak has been read
+		atomic.AddInt64(&inflight, -1)
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"","message":"No node found containing the specified ComfyUI node name"}`))
+	}))
+
+	classes := make([]string, total)
+	for i := range classes {
+		classes[i] = fmt.Sprintf("CapClass%02d", i)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _, _ = resolverWith(srv, nil, time.Now()).RegistryPacks(context.Background(), classes)
+	}()
+
+	// POSITIVE CONTROL: block until the cap's worth of requests are genuinely
+	// simultaneous. Reaching this proves the harness can observe overlap at all.
+	for i := 0; i < want; i++ {
+		select {
+		case <-arrived:
+		case <-time.After(30 * time.Second):
+			close(release)
+			<-done
+			t.Fatalf("only %d of %d requests were ever simultaneously in flight — the "+
+				"fan-out is not concurrent (or the cap was lowered below %d), so this "+
+				"test cannot say anything about the cap", i, want, want)
+		}
+	}
+
+	// Every handler is still blocked, so anything the cap wrongly admitted has had a
+	// wide, quiet window to arrive and be counted. With the semaphore in place the
+	// surplus cannot move at all; without it the remaining requests are already in
+	// flight from goroutines that were spawned in a tight loop.
+	time.Sleep(250 * time.Millisecond)
+
+	mu.Lock()
+	peak := maxInflight
+	mu.Unlock()
+
+	close(release)
+	<-done
+
+	if peak != want {
+		t.Errorf("peak simultaneous Registry requests = %d, want exactly %d "+
+			"(registryConcurrency). Above the cap means the semaphore in "+
+			"RegistryPacks is gone and %d classes would hit the Registry at once; "+
+			"below it means the fan-out is no longer concurrent.",
+			peak, want, total)
 	}
 }
 

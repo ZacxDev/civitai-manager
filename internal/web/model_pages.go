@@ -826,7 +826,7 @@ func isAre(n int) string {
 
 // showcaseCard renders the selected version's showcase carousel (moved out of the
 // header into the version region so it re-renders on a version change). The
-// carousel tiles route through galleryTile → the thumbnail helper + NSFW handling
+// carousel tiles route through galleryTileW → the thumbnail helper + NSFW handling
 // and share the page lightbox.
 func showcaseCard(modelID int, images []galleryImage, mr maturityRange) g.Node {
 	return card(
@@ -1640,7 +1640,7 @@ func downloadFeedback(modelID, versionID, fileID int, msg string, ok bool) g.Nod
 	return h.Span(h.ID(downloadFileID(modelID, versionID, fileID)), h.Class(cls), g.Text(msg))
 }
 
-// galleryTile renders one showcase image. Clicking it opens the lightbox.
+// galleryTileW renders one showcase image. Clicking it opens the lightbox.
 //
 // There is NO blur/reveal path any more: an image the user's maturity range does
 // not cover is never handed to this function at all (the carousel omits it

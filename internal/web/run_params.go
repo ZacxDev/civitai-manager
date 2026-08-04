@@ -198,7 +198,7 @@ func runParamFieldValue(idx int, ri comfy.RunInput, value string) g.Node {
 	// must not be three identical boxes; the sizing itself lives in .cm-param-* in
 	// app.css.
 	//
-	// 🔴 PRESENTATION ONLY. parseWidgetOverrides pairs the parallel
+	// 🔴 PRESENTATION ONLY. parseWidgetOverridesForModes pairs the parallel
 	// wp_node/wp_widget/wp_value arrays BY DOM POSITION, so a class may change which
 	// grid track a field OCCUPIES but must never change the order fields are emitted
 	// in. CSS grid auto-placement follows source order, so the submitted form is
