@@ -49,6 +49,16 @@ type workflowClassification struct {
 	BaseModels []string
 	// Tags is the linked model's tags with stopwords removed.
 	Tags []string
+	// Linked reports whether the workflow carries a CivitAI model id at all — i.e.
+	// whether a use case was ever POSSIBLE for it. It is the difference between
+	// "we had nothing to classify" and "we looked and nothing matched", which is
+	// the only honest way to explain the Unclassified bucket (see
+	// unclassifiedUseCaseNote). It is NOT "we have the model's tags": a linked
+	// workflow whose model is not in the local cache is Linked with no tags, and
+	// is deliberately counted in the same bucket — from the user's side both mean
+	// "no known use case matched", and splitting a third way would put a number on
+	// screen that was 0 on every library measured.
+	Linked bool
 }
 
 func (c workflowClassification) inEcosystem(slug string) bool {
@@ -151,6 +161,7 @@ func (c *workflowClassifier) classify(wf store.Workflow) workflowClassification 
 		cl.BaseModels = append(cl.BaseModels, bm)
 	}
 	if wf.ModelID != nil {
+		cl.Linked = true
 		src := c.modelSource(*wf.ModelID)
 		cl.Tags = src.tags
 		if wf.VersionID != nil {
@@ -191,8 +202,21 @@ type workflowFacetCounts struct {
 	Use     map[string]int
 	EcoNone int
 	UseNone int
-	Total   int
+	// UseNoneLinked is the part of UseNone that IS linked to a CivitAI model —
+	// i.e. the workflows for which a use case was possible and none matched. The
+	// remainder (UseNone - UseNoneLinked) never had a link at all.
+	//
+	// The split exists because the note used to attribute ALL of UseNone to "no
+	// CivitAI link". Measured on a real 71-workflow library: 58 unclassified, of
+	// which 39 WERE linked — the stated reason was wrong for two thirds of the
+	// number printed beside it.
+	UseNoneLinked int
+	Total         int
 }
+
+// useNoneUnlinked is the complement of UseNoneLinked. It is DERIVED rather than
+// counted separately so the two halves can never disagree with UseNone.
+func (c workflowFacetCounts) useNoneUnlinked() int { return c.UseNone - c.UseNoneLinked }
 
 // countWorkflowFacets tallies every bucket. A workflow in two ecosystems counts
 // in BOTH — that is the correct answer to "how many Flux workflows do I have",
@@ -208,6 +232,9 @@ func countWorkflowFacets(cls []workflowClassification) workflowFacetCounts {
 		}
 		if len(cl.UseCases) == 0 {
 			c.UseNone++
+			if cl.Linked {
+				c.UseNoneLinked++
+			}
 		}
 		for _, u := range cl.UseCases {
 			c.Use[u.Slug]++
@@ -456,13 +483,7 @@ func workflowFacetBar(counts workflowFacetCounts, f libraryWorkflowFacets) g.Nod
 	}
 
 	// The honest note about what Unclassified means, shown only when it applies.
-	var note g.Node
-	if counts.UseNone > 0 {
-		note = h.P(h.Class("text-xs text-slate-500"),
-			g.Text("Use cases come from a linked CivitAI model's tags, so "+
-				strconv.Itoa(counts.UseNone)+" workflow"+plural(counts.UseNone)+
-				" with no CivitAI link cannot have one. They are listed under Unclassified, never hidden."))
-	}
+	note := unclassifiedUseCaseNote(counts)
 
 	// A plain block, NOT a card: the bar now lives in the browse surface's controls
 	// slot, and a card here would paint a second border inside that one surface.
@@ -472,6 +493,64 @@ func workflowFacetBar(counts workflowFacetCounts, f libraryWorkflowFacets) g.Nod
 		facetChipRow("Ecosystem", ecoChips),
 		facetChipRow("Use case", useChips),
 		note,
+	)
+}
+
+// unclassifiedUseCaseNote explains WHY the Unclassified use-case bucket has the
+// size it does, SPLIT BY REASON. Returns nil when the bucket is empty.
+//
+// 🔴 WHY THIS IS SPLIT. The single-sentence version attributed the whole bucket
+// to "no CivitAI link". That is one of two reasons, and on a real 71-workflow
+// library it was the MINORITY one: 58 unclassified, only 19 unlinked — the note
+// stated a cause that was false for 39 of the 58 it counted. A user with a
+// linked, tagged workflow was told it had no link.
+//
+// 🔴 EVERY NUMBER IS COMPUTED AND NO TAG IS NAMED. The copy must survive an edit
+// to internal/civitai/taxonomy.go — adding a use case or a stopword moves these
+// counts, and a sentence that spelled a tag, a vocabulary word, or a fixed count
+// would silently start lying. "No known use case matched" is true whatever the
+// table says, which is the property being protected here. It also holds for a
+// linked workflow whose model is not in the local cache: nothing matched because
+// there was nothing to match (see workflowClassification.Linked).
+//
+// The two counts are also exposed as data attributes. They are the assertable
+// STATE of this note — prose is not, because any wording a guard greps for is a
+// word some other feature is free to emit.
+func unclassifiedUseCaseNote(counts workflowFacetCounts) g.Node {
+	if counts.UseNone == 0 {
+		return nil
+	}
+	unlinked, linked := counts.useNoneUnlinked(), counts.UseNoneLinked
+
+	// A clause is emitted only when its count is non-zero: a library where every
+	// unclassified workflow shares one reason must not read "… ; 0 are linked".
+	// Subject-verb agreement: plural() covers the noun, not the verb, and a
+	// one-workflow library rendering "1 workflow have no use case" is the kind of
+	// small wrongness that makes a user distrust the numbers beside it.
+	have, they, listed := "have", "they are", "They are"
+	if counts.UseNone == 1 {
+		have, they, listed = "has", "it is", "It is"
+	}
+
+	var why string
+	switch {
+	case linked == 0:
+		why = " — " + they + " not linked to a CivitAI model."
+	case unlinked == 0:
+		why = " — " + they + " linked to a CivitAI model, but no known use case matched."
+	default:
+		why = ": " + strconv.Itoa(unlinked) + " not linked to a CivitAI model, " +
+			strconv.Itoa(linked) + " linked but no known use case matched."
+	}
+
+	return h.P(
+		h.Class("text-xs text-slate-500"),
+		g.Attr("data-unclassified-unlinked", strconv.Itoa(unlinked)),
+		g.Attr("data-unclassified-linked", strconv.Itoa(linked)),
+		g.Text("Use cases come from a linked CivitAI model's tags. "+
+			strconv.Itoa(counts.UseNone)+" workflow"+plural(counts.UseNone)+
+			" "+have+" no use case"+why+
+			" "+listed+" listed under Unclassified, never hidden."),
 	)
 }
 
