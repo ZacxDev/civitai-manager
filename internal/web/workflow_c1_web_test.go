@@ -671,9 +671,10 @@ func TestRunParamFieldsAreSizedByKind(t *testing.T) {
 		{comfy.RunInputKind("something-new"), "cm-param cm-param-other", `type="text"`},
 	} {
 		t.Run(string(tc.kind), func(t *testing.T) {
-			field := renderString(t, runParamField(0, comfy.RunInput{
+			ri := comfy.RunInput{
 				NodeID: "1", Kind: tc.kind, Label: "same label everywhere", Current: "v",
-			}))
+			}
+			field := renderString(t, runParamFieldValue(0, ri, ri.Current))
 			if !strings.Contains(field, `class="`+tc.wantClass+`"`) {
 				t.Errorf("field for kind %q is missing its sizing class %q:\n%s",
 					tc.kind, tc.wantClass, field)
@@ -736,7 +737,7 @@ func TestRunParamOverrideParsingIsUnchangedByTheLayout(t *testing.T) {
 		form["wp_widget"] = append(form["wp_widget"], strconv.Itoa(ri.WidgetIndex))
 		form["wp_value"] = append(form["wp_value"], "edited")
 	}
-	out := parseWidgetOverrides(form, wf)
+	out := parseWidgetOverridesForModes(form, wf, nil)
 	if len(out) != len(inputs) {
 		t.Errorf("parsed %d overrides for %d detected inputs — the allow-list changed",
 			len(out), len(inputs))

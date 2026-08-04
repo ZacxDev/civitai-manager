@@ -184,7 +184,7 @@ func wpTriples(t *testing.T, html string) url.Values {
 // TestAdvancedSplitKeepsWidgetPairing is the guard the split's doc comment points
 // at, and the reason it is safe to partition the fields at all.
 //
-// parseWidgetOverrides pairs the three parallel arrays BY POSITION. That survives a
+// parseWidgetOverridesForModes pairs the three parallel arrays BY POSITION. That survives a
 // partition only because each control emits exactly ONE entry in each array, so a
 // permutation permutes all three identically. This test does not take that on
 // faith: it reads the arrays out of the rendered DOM in document order — what a

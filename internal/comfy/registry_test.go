@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // --- guard unit tests (mirrors internal/hf/client_test.go) ---
@@ -172,7 +173,7 @@ func TestRegistryEndToEndRedirectToPrivateIPBlocked(t *testing.T) {
 	}))
 	c := hardenedRegistryTestClient(srv.URL, true)
 
-	_, err := c.LookupClass(context.Background(), "AnyClass")
+	_, err := c.LookupClassRaw(context.Background(), "AnyClass")
 	if err == nil {
 		t.Fatal("expected the redirect to the metadata IP to be refused")
 	}
@@ -194,7 +195,7 @@ func TestRegistryEndToEndPlainHTTPRedirectBlocked(t *testing.T) {
 	}))
 	c := hardenedRegistryTestClient(srv.URL, true)
 
-	if _, err := c.LookupClass(context.Background(), "AnyClass"); err == nil {
+	if _, err := c.LookupClassRaw(context.Background(), "AnyClass"); err == nil {
 		t.Fatal("expected the https->http downgrade to be refused")
 	}
 }
@@ -220,9 +221,13 @@ func TestRegistryLookupClassDecodesRealBody(t *testing.T) {
 	}))
 	c := hardenedRegistryTestClient(srv.URL, true)
 
-	pack, err := c.LookupClass(context.Background(), "MMAudioSampler")
+	raw, err := c.LookupClassRaw(context.Background(), "MMAudioSampler")
 	if err != nil {
-		t.Fatalf("LookupClass: %v", err)
+		t.Fatalf("LookupClassRaw: %v", err)
+	}
+	pack, err := DecodeRegistryPack(raw, "MMAudioSampler")
+	if err != nil {
+		t.Fatalf("DecodeRegistryPack: %v", err)
 	}
 	if gotPath != "/comfy-nodes/MMAudioSampler/node" {
 		t.Errorf("path = %q", gotPath)
@@ -270,8 +275,8 @@ func TestRegistryClassPathEscaping(t *testing.T) {
 				_, _ = w.Write([]byte(`{"id":"p","name":"P"}`))
 			}))
 			c := hardenedRegistryTestClient(srv.URL, true)
-			if _, err := c.LookupClass(context.Background(), tc.class); err != nil {
-				t.Fatalf("LookupClass: %v", err)
+			if _, err := c.LookupClassRaw(context.Background(), tc.class); err != nil {
+				t.Fatalf("LookupClassRaw: %v", err)
 			}
 			if gotPath != tc.wantPath {
 				t.Errorf("escaped path = %q, want %q", gotPath, tc.wantPath)
@@ -293,28 +298,30 @@ func TestRegistryNotFoundIsNormal(t *testing.T) {
 	}))
 	c := hardenedRegistryTestClient(srv.URL, true)
 
-	_, err := c.LookupClass(context.Background(), "ZZZ_unrelated_class_9f3")
+	_, err := c.LookupClassRaw(context.Background(), "ZZZ_unrelated_class_9f3")
 	if !errors.Is(err, ErrRegistryNotFound) {
 		t.Fatalf("err = %v, want ErrRegistryNotFound", err)
 	}
 }
 
-// TestRegistryLookupClasses covers the N-request fan-out: mixed hits/misses, a
-// capped concurrency, deterministic output, and per-class errors that do not
-// abort the rest.
-func TestRegistryLookupClasses(t *testing.T) {
-	var inflight, maxInflight int64
-	var mu sync.Mutex
-
+// TestRegistryPacksFanOut covers the N-request fan-out: mixed hits/misses,
+// deterministic output, and per-class errors that do not abort the rest.
+//
+// It drives NodePackResolver.RegistryPacks — the PRODUCTION fan-out, and the only
+// one. (It used to drive RegistryClient.LookupClasses, a second, cache-less copy of
+// the same loop that no production path called; deleting it moved these properties
+// onto the live path rather than losing them.) The resolver is built with a nil
+// cache so every class goes to the network, which is what the request counting
+// needs to observe.
+//
+// ⚠ It does NOT cover the concurrency cap, and this comment used to claim it did.
+// The claim was false in a way no timing could expose: the fixture below issues 5
+// requests against a cap of registryConcurrency (6), so an "in-flight never exceeds
+// the cap" assertion could not fail even with the semaphore deleted. The cap has its
+// own test now — TestRegistryPacksCapsConcurrentRequests — which forces real overlap
+// instead of hoping for it.
+func TestRegistryPacksFanOut(t *testing.T) {
 	srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := atomic.AddInt64(&inflight, 1)
-		mu.Lock()
-		if n > maxInflight {
-			maxInflight = n
-		}
-		mu.Unlock()
-		defer atomic.AddInt64(&inflight, -1)
-
 		switch {
 		case strings.Contains(r.URL.Path, "Boom"):
 			http.Error(w, "upstream exploded", http.StatusInternalServerError)
@@ -325,10 +332,10 @@ func TestRegistryLookupClasses(t *testing.T) {
 			_, _ = w.Write([]byte(`{"error":"","message":"No node found containing the specified ComfyUI node name"}`))
 		}
 	}))
-	c := hardenedRegistryTestClient(srv.URL, true)
+	r := resolverWith(srv, nil, time.Now())
 
 	classes := []string{"MMAudioSampler", "MMAudioModelLoader", "Boom", "Note Plus (mtb)", "Label (rgthree)"}
-	packs, unresolved, errs := c.LookupClasses(context.Background(), classes)
+	packs, unresolved, errs := r.RegistryPacks(context.Background(), classes)
 
 	// Both MMAudio classes map to ONE pack, unioned.
 	if len(packs) != 1 {
@@ -337,7 +344,9 @@ func TestRegistryLookupClasses(t *testing.T) {
 	if len(packs[0].Classes) != 2 {
 		t.Errorf("Classes = %v, want both MMAudio classes", packs[0].Classes)
 	}
-	// A 500 on one class must not lose the others.
+	// A 500 on one class must not lose the others. The error names the class through
+	// the request URL it carries ("…/comfy-nodes/Boom/node"), which is the only place
+	// RegistryPacks records which class failed.
 	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "Boom") {
 		t.Errorf("errs = %v, want exactly the Boom failure", errs)
 	}
@@ -345,24 +354,156 @@ func TestRegistryLookupClasses(t *testing.T) {
 	if fmt.Sprint(unresolved) != fmt.Sprint(wantUnresolved) {
 		t.Errorf("unresolved = %v, want %v (sorted, including the errored class)", unresolved, wantUnresolved)
 	}
-	if maxInflight > registryConcurrency {
-		t.Errorf("max in-flight = %d, exceeds the cap of %d", maxInflight, registryConcurrency)
+}
+
+// TestRegistryPacksCapsConcurrentRequests is the REAL guard on registryConcurrency.
+// The Comfy Registry has no batch endpoint, so a workflow with N missing classes
+// costs N requests; the semaphore in RegistryPacks is the only thing keeping that
+// civil against a third party.
+//
+// 🔴 Its predecessor was VACUOUS and shipped that way for a long time: it issued 5
+// requests against a cap of 6 and asserted "max in-flight never exceeded the cap",
+// which cannot fail at any timing. Deleting the semaphore left it green. So this one
+// is built to fail, not to pass:
+//
+//   - It issues 2x the cap, so the surplus MUST queue behind the semaphore.
+//   - Every handler BLOCKS until the test releases it, holding the window open
+//     deterministically instead of relying on scheduling luck to make requests
+//     overlap.
+//   - Waiting for exactly registryConcurrency arrivals is the harness's POSITIVE
+//     CONTROL: it proves the counter observes real simultaneity before any assertion
+//     is read. A counter wired to nothing (or a fan-out that is secretly serial)
+//     never reaches the count and fails HERE, loudly, rather than reporting a
+//     reassuring "max in-flight = 1".
+//   - The peak is read while every handler is still blocked, so it is the true
+//     simultaneous maximum and not a sample.
+//
+// The two failure directions land in DIFFERENT places, which is worth knowing when
+// you read a red: "fewer than the cap were ever simultaneous" fails at the positive
+// control above, and "more than the cap were simultaneous" fails at the assertion at
+// the bottom. By the time that assertion runs the control has already proved
+// maxInflight >= want, so it is really a one-sided `peak > want` check — do not read
+// its message as covering the serial case.
+// awaitResolve waits for the RegistryPacks goroutine, BOUNDED. An unbounded <-done
+// would convert one hung fan-out into `panic: test timed out`, which kills the whole
+// internal/comfy binary and truncates every test after this one — turning a single
+// local failure into an unreadable package-wide one. Unreachable in practice (both
+// call sites are after close(release), and the client carries its own timeout), which
+// is exactly why it is cheap to bound.
+func awaitResolve(t *testing.T, done <-chan struct{}, where string) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatalf("RegistryPacks did not return within 60s (%s); failing this test alone "+
+			"rather than letting the package time out", where)
 	}
 }
 
-// TestRegistryLookupClassesIsDeterministic: the fan-out is concurrent, so the
-// output must be re-sorted rather than arriving in completion order.
-func TestRegistryLookupClassesIsDeterministic(t *testing.T) {
+func TestRegistryPacksCapsConcurrentRequests(t *testing.T) {
+	// 🔴 CALIBRATION GUARD. Both `want` and `total` derive from registryConcurrency,
+	// so the expectation and the subject move together — the "calibrated to its own
+	// constant" mode. Mutating registryConcurrency to 1 left this test GREEN while
+	// making it meaningless: `want` becomes 1, the positive control degenerates to
+	// "wait for a single arrival" (which proves no simultaneity at all), and `total`
+	// drops to 2. Any value below 2 cannot express a concurrency contest, so refuse
+	// to report a verdict instead of reporting a vacuous pass.
+	//
+	// This does NOT make the test immune to the shared derivation — a cap of 3 or 4
+	// would still move both sides — but it does close the one value at which the test
+	// stops being about concurrency. The hazard the test exists for (the semaphore
+	// deleted, every class hitting the Registry at once) is caught at any cap >= 2,
+	// and the blind direction is more-civil-not-less.
+	if registryConcurrency < 2 {
+		t.Fatalf("registryConcurrency = %d: this test derives both its barrier and its "+
+			"expectation from that constant, so below 2 it cannot observe simultaneity "+
+			"and its pass would mean nothing. Re-express the fixture with a literal "+
+			"before lowering the cap.", registryConcurrency)
+	}
+
+	const want = registryConcurrency
+	const total = registryConcurrency * 2 // the surplus has to queue
+
+	var inflight, maxInflight int64
+	var mu sync.Mutex
+	release := make(chan struct{})
+	arrived := make(chan struct{}, total) // buffered: a handler must never block here
+
+	srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := atomic.AddInt64(&inflight, 1)
+		mu.Lock()
+		if n > maxInflight {
+			maxInflight = n
+		}
+		mu.Unlock()
+		arrived <- struct{}{}
+		<-release // hold: nothing completes until the peak has been read
+		atomic.AddInt64(&inflight, -1)
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"","message":"No node found containing the specified ComfyUI node name"}`))
+	}))
+
+	classes := make([]string, total)
+	for i := range classes {
+		classes[i] = fmt.Sprintf("CapClass%02d", i)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _, _ = resolverWith(srv, nil, time.Now()).RegistryPacks(context.Background(), classes)
+	}()
+
+	// POSITIVE CONTROL: block until the cap's worth of requests are genuinely
+	// simultaneous. Reaching this proves the harness can observe overlap at all.
+	for i := 0; i < want; i++ {
+		select {
+		case <-arrived:
+		case <-time.After(30 * time.Second):
+			close(release)
+			awaitResolve(t, done, "after the positive control timed out")
+			t.Fatalf("only %d of %d requests were ever simultaneously in flight — the "+
+				"fan-out is not concurrent (or the cap was lowered below %d), so this "+
+				"test cannot say anything about the cap", i, want, want)
+		}
+	}
+
+	// Every handler is still blocked, so anything the cap wrongly admitted has had a
+	// wide, quiet window to arrive and be counted. With the semaphore in place the
+	// surplus cannot move at all; without it the remaining requests are already in
+	// flight from goroutines that were spawned in a tight loop.
+	time.Sleep(250 * time.Millisecond)
+
+	mu.Lock()
+	peak := maxInflight
+	mu.Unlock()
+
+	close(release)
+	awaitResolve(t, done, "after the peak was read")
+
+	if peak != want {
+		t.Errorf("peak simultaneous Registry requests = %d, want exactly %d "+
+			"(registryConcurrency): the semaphore in RegistryPacks is gone, so all %d "+
+			"classes would hit the Comfy Registry at once. (A peak BELOW the cap cannot "+
+			"reach this line — the positive control above has already proved at least %d "+
+			"were simultaneous — so this only ever reports the cap being exceeded.)",
+			peak, want, total, want)
+	}
+}
+
+// TestRegistryPacksAreDeterministic: the fan-out is concurrent, so the output must
+// be re-sorted rather than arriving in completion order.
+func TestRegistryPacksAreDeterministic(t *testing.T) {
 	srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seg := strings.Split(strings.Trim(r.URL.EscapedPath(), "/"), "/")
 		_, _ = fmt.Fprintf(w, `{"id":%q,"name":%q}`, seg[1], seg[1])
 	}))
-	c := hardenedRegistryTestClient(srv.URL, true)
+	r := resolverWith(srv, nil, time.Now())
 
 	in := []string{"Delta", "Alpha", "Charlie", "Bravo", "Echo"}
 	var want string
 	for i := 0; i < 6; i++ {
-		packs, unresolved, _ := c.LookupClasses(context.Background(), in)
+		packs, unresolved, _ := r.RegistryPacks(context.Background(), in)
 		b, _ := json.Marshal(struct {
 			P []Pack
 			U []string
@@ -377,15 +518,18 @@ func TestRegistryLookupClassesIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestRegistryLookupClassesEmpty: no classes, no requests.
-func TestRegistryLookupClassesEmpty(t *testing.T) {
+// TestRegistryPacksBlankClassesIssueNoRequest: a class list that is entirely blank
+// after trimming resolves to nothing WITHOUT touching the network. (Distinct from
+// TestRegistryPacksEmptyInput, which passes a nil slice — this one proves the blanks
+// are stripped rather than requested as empty path segments.)
+func TestRegistryPacksBlankClassesIssueNoRequest(t *testing.T) {
 	var hits int64
 	srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt64(&hits, 1)
 		w.WriteHeader(http.StatusNotFound)
 	}))
-	c := hardenedRegistryTestClient(srv.URL, true)
-	packs, unresolved, errs := c.LookupClasses(context.Background(), []string{"", "   "})
+	r := resolverWith(srv, nil, time.Now())
+	packs, unresolved, errs := r.RegistryPacks(context.Background(), []string{"", "   "})
 	if len(packs) != 0 || len(unresolved) != 0 || len(errs) != 0 {
 		t.Errorf("packs=%v unresolved=%v errs=%v", packs, unresolved, errs)
 	}
@@ -518,7 +662,7 @@ func TestRegistryBodyIsBounded(t *testing.T) {
 		}
 	}))
 	c := hardenedRegistryTestClient(srv.URL, true)
-	_, err := c.LookupClass(context.Background(), "Huge")
+	_, err := c.LookupClassRaw(context.Background(), "Huge")
 	if err == nil {
 		t.Fatal("expected an oversized-body error")
 	}

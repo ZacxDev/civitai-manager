@@ -870,7 +870,7 @@ func modelCardError(id, fileCount int, total int64, msg string) g.Node {
 // modelCardCarousel renders the model's showcase images as a horizontal
 // scroll-snap carousel, honoring the app-wide maturity RANGE exactly as the model
 // page does: an image whose level falls outside the band is OMITTED — its URL is
-// never emitted — and everything inside renders plain. Each tile reuses galleryTile
+// never emitted — and everything inside renders plain. Each tile reuses galleryTileW
 // (and thus the shared lightbox on the results page) with a per-model-namespaced
 // meta id so multiple carousels don't collide.
 func modelCardCarousel(modelID int, images []galleryImage, mr maturityRange) g.Node {

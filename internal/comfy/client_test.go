@@ -111,13 +111,13 @@ func TestClientObjectInfoAndIsWidget(t *testing.T) {
 		t.Fatal("Sampler schema missing")
 	}
 	req := sch.Input.Required
-	if IsWidget(req["model"]) {
+	if req["model"].IsWidget() {
 		t.Error("model (MODEL) should be a link input, not a widget")
 	}
-	if !IsWidget(req["steps"]) {
+	if !req["steps"].IsWidget() {
 		t.Error("steps (INT) should be a widget")
 	}
-	if !IsWidget(req["sampler"]) {
+	if !req["sampler"].IsWidget() {
 		t.Error("sampler (combo list) should be a widget")
 	}
 	if !req["seed"].ControlAfterGenerate() {

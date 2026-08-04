@@ -64,24 +64,20 @@ func (s *Server) handleWorkflowRunWithParams(w http.ResponseWriter, r *http.Requ
 	s.renderRunStatus(w, id, s.startRunNotice(wf, opts))
 }
 
-// parseWidgetOverrides reads the parallel wp_node / wp_widget / wp_value form arrays
-// (one triple per Parameters field, index-aligned in DOM order) into an override
-// map keyed by (node id, widgets_values index). It keeps ONLY keys that
+// parseWidgetOverridesForModes reads the parallel wp_node / wp_widget / wp_value form
+// arrays (one triple per Parameters field, index-aligned in DOM order) into an
+// override map keyed by (node id, widgets_values index). It keeps ONLY keys that
 // DetectRunInputs surfaces for THIS workflow, so a caller can never target a widget
 // outside the curated, editable set. The values are applied by
 // comfy.ApplyUIWidgetOverrides, which additionally refuses to add slots or rewrite a
 // non-scalar one — so this is a lenient parse backed by a structural guarantee
 // downstream.
-func parseWidgetOverrides(form url.Values, wf *store.Workflow) map[comfy.UIWidgetKey]string {
-	return parseWidgetOverridesForModes(form, wf, nil)
-}
-
-// parseWidgetOverridesForModes is parseWidgetOverrides against the graph the run
-// will ACTUALLY convert. For a multi-mode template the stored graph has every
-// pipeline bypassed, and DetectRunInputs (correctly) surfaces nothing from a
-// bypassed node — so the allow-list has to be derived from the mode-applied copy,
-// exactly the graph the panel was rendered from. An empty choice set is the stored
-// graph, so ordinary workflows are byte-for-byte unaffected.
+//
+// The allow-list is derived against the graph the run will ACTUALLY convert. For a
+// multi-mode template the stored graph has every pipeline bypassed, and
+// DetectRunInputs (correctly) surfaces nothing from a bypassed node — so modes has to
+// carry the mode selection, exactly the graph the panel was rendered from. An empty
+// choice set is the stored graph, so ordinary workflows are byte-for-byte unaffected.
 func parseWidgetOverridesForModes(form url.Values, wf *store.Workflow, modes map[string]string) map[comfy.UIWidgetKey]string {
 	graph := []byte(wf.Graph)
 	if len(modes) > 0 && wf.Format == store.WorkflowFormatUI {
@@ -138,46 +134,22 @@ func parseWidgetOverridesAgainst(form url.Values, graph []byte) map[comfy.UIWidg
 	return out
 }
 
-// runParametersPanel renders the run "Parameters" panel for a workflow with NO
-// preset context: the IMPLICIT tab, seeded from the graph's current values.
-//
-// It is a thin wrapper over runPresetPanel — the SAME renderer production uses —
-// deliberately, so a test asserting this markup is asserting live markup. A second,
-// parallel renderer would be exactly the "green tests over a dead production path"
-// trap this repo keeps paying for.
-//
-// It returns nil when the graph exposes no editable inputs (an api-format graph, or
-// a UI graph with none of the curated nodes) so the panel is simply absent.
-//
-// Sampler/scheduler render as free-text inputs here: choices come from /object_info,
-// which the render path does not fetch (offline/no slow network in render), so they
-// degrade to text — an invalid enum is caught by preflight's existing
-// incompatible-options flow. DetectRunInputs still accepts object_info elsewhere, so
-// object_info-backed selects can be added without changing the wiring.
-func runParametersPanel(wf *store.Workflow, csrf string) g.Node {
-	return runPresetPanel(wf, csrf, implicitPresetView(wf, nil))
-}
-
-// runParamField renders one Parameters control, preceded by the hidden wp_node /
+// runParamFieldValue renders one Parameters control, preceded by the hidden wp_node /
 // wp_widget fields that pair (index-aligned in DOM order) with the wp_value control —
-// the same parallel-array shape parseWidgetOverrides reads. Every pre-filled value is
-// escaped (g.Text for textareas, attribute escaping for value=).
+// the same parallel-array shape parseWidgetOverridesForModes reads. Every pre-filled
+// value is escaped (g.Text for textareas, attribute escaping for value=).
 //
 // The three parallel arrays are paired BY POSITION, which holds only because every
 // control here always submits exactly one wp_value (all five kinds are a single
 // input/textarea/select). A future control that can submit zero values (an unchecked
 // checkbox) or several would shift the alignment — such a control must carry its key
 // in the value itself (or use indexed field names) rather than rely on this pairing.
-func runParamField(idx int, ri comfy.RunInput) g.Node {
-	return runParamFieldValue(idx, ri, ri.Current)
-}
-
-// runParamFieldValue is runParamField with the pre-filled value supplied, so a run
-// PRESET can show its saved value while every other property of the control (label,
-// kind, choices, origin note) still comes from the LIVE graph. Keeping the live
-// RunInput authoritative for everything except the value is what makes a
-// retargeted slot visible: the user sees the graph's current label beside the
-// value, not the label the preset remembered.
+//
+// value is supplied by the caller so a run PRESET can show its saved value while
+// every other property of the control (label, kind, choices, origin note) still comes
+// from the LIVE graph. Keeping the live RunInput authoritative for everything except
+// the value is what makes a retargeted slot visible: the user sees the graph's
+// current label beside the value, not the label the preset remembered.
 func runParamFieldValue(idx int, ri comfy.RunInput, value string) g.Node {
 	fid := "cm-param-" + strconv.Itoa(idx)
 	hidden := []g.Node{
@@ -226,7 +198,7 @@ func runParamFieldValue(idx int, ri comfy.RunInput, value string) g.Node {
 	// must not be three identical boxes; the sizing itself lives in .cm-param-* in
 	// app.css.
 	//
-	// 🔴 PRESENTATION ONLY. parseWidgetOverrides pairs the parallel
+	// 🔴 PRESENTATION ONLY. parseWidgetOverridesForModes pairs the parallel
 	// wp_node/wp_widget/wp_value arrays BY DOM POSITION, so a class may change which
 	// grid track a field OCCUPIES but must never change the order fields are emitted
 	// in. CSS grid auto-placement follows source order, so the submitted form is

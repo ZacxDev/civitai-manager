@@ -92,21 +92,21 @@ func TestRunParametersPanelRendersOneFieldPerSharedWidget(t *testing.T) {
 func TestParseWidgetOverridesRejectsConflictingDuplicateKeys(t *testing.T) {
 	wf := &store.Workflow{ID: 7, Format: store.WorkflowFormatUI, Graph: sharedPrimitiveUIGraph}
 
-	conflicting := parseWidgetOverrides(url.Values{
+	conflicting := parseWidgetOverridesForModes(url.Values{
 		"wp_node":   {"2", "2"},
 		"wp_widget": {"0", "0"},
 		"wp_value":  {"50", "33"},
-	}, wf)
+	}, wf, nil)
 	if _, ok := conflicting[comfy.UIWidgetKey{NodeID: "2", Widget: 0}]; ok {
 		t.Errorf("conflicting duplicate keys must be dropped, got %+v", conflicting)
 	}
 
 	// Identical repeats are not a conflict — they carry one unambiguous value.
-	agreeing := parseWidgetOverrides(url.Values{
+	agreeing := parseWidgetOverridesForModes(url.Values{
 		"wp_node":   {"2", "2"},
 		"wp_widget": {"0", "0"},
 		"wp_value":  {"50", "50"},
-	}, wf)
+	}, wf, nil)
 	if agreeing[comfy.UIWidgetKey{NodeID: "2", Widget: 0}] != "50" {
 		t.Errorf("agreeing duplicates should apply, got %+v", agreeing)
 	}
@@ -123,7 +123,7 @@ func TestRunParametersPanelAbsentForAPIGraph(t *testing.T) {
 }
 
 // TestRunWithParamsAppliesOverrides drives the endpoint end-to-end through a
-// recording runFn: the parsed overrides reach startRun, curated keys are kept, and a
+// recording runFn: the parsed overrides reach startRunWithMessage, curated keys are kept, and a
 // non-curated (link) input is dropped by the allowlist.
 func TestRunWithParamsAppliesOverrides(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())
