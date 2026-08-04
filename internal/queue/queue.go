@@ -100,7 +100,24 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 // ProcessOne claims and processes a single queued item, returning false when the
-// queue was empty. Exposed for the one-shot `check` path and for tests.
+// queue was empty.
+//
+// ⚠ TEST SEAM. This comment used to say "exposed for the one-shot `check` path and
+// for tests" — the `check` half is FALSE and has been for a long time: `check
+// --download` goes through drainDownloads -> DrainAll (internal/cli/commands.go),
+// and the other one-shot paths through DrainSubscription / DrainItems. Production
+// has NO single-step caller, which is why .github/deadcode-allow.txt lists this
+// function; the entry is deliberate and the reason is here.
+//
+// It stays exported because it is the only way to advance the queue by EXACTLY one
+// item, which ~22 call sites across internal/queue and internal/integration depend
+// on to assert per-item state (claim ordering, retry/interrupt handling, sidecar
+// writes) between steps. DrainAll is not a substitute for those: it calls
+// RequeueInterrupted first and then drains to empty, so it destroys the very
+// intermediate states they exist to observe.
+//
+// If a production single-step caller ever appears, delete the allowlist line — a
+// stale entry fails the gate in its own right.
 func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 	item, err := w.store.ClaimNextQueued()
 	if err != nil {

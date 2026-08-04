@@ -12,27 +12,48 @@
 # dead — delete the line and take the win). Adding a line to turn a red build
 # green is a last resort, and the commit message has to say why it must stay.
 #
-# ⚠ HONEST SCOPE, so nobody reads this as an audit. These 15 were MEASURED, not
-# investigated. No entry has been checked for whether it ought to be deleted,
-# wired up, or is a deliberate test seam. The file exists so the set cannot GROW
-# silently; working the list down is separate work. Several look worth a look —
-# internal/web alone carries eight, and `Server.startRun` is shadowed in
-# production by `startRunWithMessage`, which every real call site uses.
+# ⚠ THIS HEADER USED TO SAY "these 15 were MEASURED, not investigated" and that
+# no entry had been checked. That sweep is DONE. All 15 were investigated; 14 are
+# resolved and the one that remains carries its reason below.
+#
+#   - 12 were SUPERSEDED WRAPPERS, not dropped features: a no-argument form of a
+#     function whose explicit-argument sibling is what production calls
+#     (galleryTile/galleryTileW, startRun/startRunWithMessage,
+#     parseWidgetOverrides/…ForModes, runModesPanel/…Selected,
+#     runParamField/…Value, tileThumbWidth/…W, comfy.IsWidget vs the method,
+#     RegistryClient.LookupClass{,es} vs LookupClassRaw + NodePackResolver, and
+#     civitai.DecodeImageSearch vs DecodeLeveledImageSearch). All deleted, with
+#     `go build ./...` at exit 0 as the proof and every test repointed at the LIVE
+#     entry point — including the three LookupClasses tests, which now pin the
+#     concurrency cap / determinism / blank-class properties on RegistryPacks.
+#   - 2 (web.runParametersPanel, web.implicitPresetView) were genuine test
+#     scaffolding sitting in production files. They moved to
+#     internal/web/run_implicit_view_test.go, where the tier-B analysis (which
+#     never loads test files) correctly stops seeing them — with
+#     TestImplicitPresetViewMatchesTheProductionNoPresetView + its positive
+#     control pinning them against the production builder so the "second parallel
+#     renderer" risk cannot go quiet.
+#
+# The one KEPT entry, and why it must stay:
+#
+#   queue.Worker.ProcessOne — the only way to advance the download queue by
+#   EXACTLY one item. ~22 call sites across internal/queue and
+#   internal/integration depend on that to assert per-item state between steps.
+#   Production genuinely has no single-step caller (Run loops; `check --download`
+#   and the backfills go through DrainAll / DrainSubscription / DrainItems), and
+#   DrainAll is not a substitute for the tests — it calls RequeueInterrupted and
+#   then drains to empty, destroying the intermediate states they observe. The
+#   function's own doc comment now says this; it previously claimed a
+#   "one-shot `check` path" caller that does not exist.
+#
+# What this sweep did NOT cover, so nobody reads a short ledger as "everything
+# runs": deadcode proves unreachable-from-a-root only. It cannot see a REACHABLE
+# function behind a condition the app never satisfies, a fixture that picks the
+# wrong branch, or a registered route nothing links to (that last one has its own
+# guard, TestEveryRegisteredRouteIsEmitted). It also reports only FUNCTIONS —
+# store.NodePackSourceExtensionNodeMap, for instance, is an exported const with no
+# production reader, mirroring a key internal/comfy owns, and no tier reports it.
 #
 # Regenerate with:  .github/deadcode.sh --print
 
-github.com/ZacxDev/civitai-manager/internal/civitai.DecodeImageSearch
-github.com/ZacxDev/civitai-manager/internal/comfy.IsWidget
-github.com/ZacxDev/civitai-manager/internal/comfy.RegistryClient.LookupClass
-github.com/ZacxDev/civitai-manager/internal/comfy.RegistryClient.LookupClasses
-github.com/ZacxDev/civitai-manager/internal/comfy.isJSONObjectNonEmpty
 github.com/ZacxDev/civitai-manager/internal/queue.Worker.ProcessOne
-github.com/ZacxDev/civitai-manager/internal/store.NodePackSourceRegistryClass
-github.com/ZacxDev/civitai-manager/internal/web.Server.startRun
-github.com/ZacxDev/civitai-manager/internal/web.galleryTile
-github.com/ZacxDev/civitai-manager/internal/web.implicitPresetView
-github.com/ZacxDev/civitai-manager/internal/web.parseWidgetOverrides
-github.com/ZacxDev/civitai-manager/internal/web.runModesPanel
-github.com/ZacxDev/civitai-manager/internal/web.runParamField
-github.com/ZacxDev/civitai-manager/internal/web.runParametersPanel
-github.com/ZacxDev/civitai-manager/internal/web.tileThumbWidth
