@@ -48,9 +48,6 @@ func TestNodePackRawAdapter(t *testing.T) {
 	if NodePackSourceExtensionNodeMap != "extension-node-map" {
 		t.Errorf("static-index key drifted: %q", NodePackSourceExtensionNodeMap)
 	}
-	if got := NodePackSourceRegistryClass("MMAudioSampler"); got != "registry:MMAudioSampler" {
-		t.Errorf("registry key drifted: %q", got)
-	}
 }
 
 func TestNodePackCacheMissThenHit(t *testing.T) {
@@ -84,7 +81,7 @@ func TestNodePackCacheMissThenHit(t *testing.T) {
 		t.Fatal("fetched_at should be set")
 	}
 	// A different source is a distinct key (miss).
-	if other, err := st.GetNodePackCache(NodePackSourceRegistryClass("MMAudioSampler")); err != nil || other != nil {
+	if other, err := st.GetNodePackCache(registryKey("MMAudioSampler")); err != nil || other != nil {
 		t.Fatalf("expected a miss for a different source, got (%v,%v)", other, err)
 	}
 }
@@ -96,7 +93,7 @@ func TestNodePackCacheUpsertReplaces(t *testing.T) {
 	}
 	defer st.Close()
 
-	src := NodePackSourceRegistryClass("MMAudioSampler")
+	src := registryKey("MMAudioSampler")
 	if err := st.PutNodePackCache(src, []byte(`{"id":"old"}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -129,12 +126,12 @@ func TestNodePackCacheRegistryKeys(t *testing.T) {
 	}
 	for i, cls := range classes {
 		body := []byte(`{"n":` + string(rune('0'+i)) + `}`)
-		if err := st.PutNodePackCache(NodePackSourceRegistryClass(cls), body); err != nil {
+		if err := st.PutNodePackCache(registryKey(cls), body); err != nil {
 			t.Fatalf("put %q: %v", cls, err)
 		}
 	}
 	for i, cls := range classes {
-		got, err := st.GetNodePackCache(NodePackSourceRegistryClass(cls))
+		got, err := st.GetNodePackCache(registryKey(cls))
 		if err != nil || got == nil {
 			t.Fatalf("get %q: %v %v", cls, got, err)
 		}
@@ -158,7 +155,7 @@ func TestNodePackCacheStoresAMiss(t *testing.T) {
 	}
 	defer st.Close()
 
-	src := NodePackSourceRegistryClass("ZZZ_unrelated_class_9f3")
+	src := registryKey("ZZZ_unrelated_class_9f3")
 	if err := st.PutNodePackCache(src, []byte(`null`)); err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +206,7 @@ func TestNodePackCachePrunesToCap(t *testing.T) {
 	defer func() { nodePackCacheMaxRows = orig }()
 
 	for i := 1; i <= 12; i++ {
-		src := NodePackSourceRegistryClass(string(rune('a'+i)) + "Class")
+		src := registryKey(string(rune('a'+i)) + "Class")
 		if err := st.PutNodePackCache(src, []byte(`{"id":"p"}`)); err != nil {
 			t.Fatalf("put %d: %v", i, err)
 		}
@@ -223,10 +220,19 @@ func TestNodePackCachePrunesToCap(t *testing.T) {
 		t.Fatalf("row count = %d, want cap %d", n, nodePackCacheMaxRows)
 	}
 	// The most recently written entry survives; an early one is pruned.
-	if got, _ := st.GetNodePackCache(NodePackSourceRegistryClass("mClass")); got == nil {
+	if got, _ := st.GetNodePackCache(registryKey("mClass")); got == nil {
 		t.Error("the newest entry was pruned")
 	}
-	if got, _ := st.GetNodePackCache(NodePackSourceRegistryClass("bClass")); got != nil {
+	if got, _ := st.GetNodePackCache(registryKey("bClass")); got != nil {
 		t.Error("the oldest entry should have been pruned")
 	}
 }
+
+// registryKey mirrors the per-class Comfy Registry cache key that internal/comfy's
+// resolver writes (cacheSourceRegistryPrefix + class). This package deliberately
+// does NOT export a constructor for it — comfy owns that key space, because the
+// dependency runs comfy -> store, and a second constructor here had no production
+// caller. These tests only need a source string distinct from the static-index key
+// to prove the table keys per source, so the spelling is reproduced locally rather
+// than re-exported.
+func registryKey(class string) string { return "registry:" + class }

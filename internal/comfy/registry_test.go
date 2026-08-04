@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // --- guard unit tests (mirrors internal/hf/client_test.go) ---
@@ -172,7 +173,7 @@ func TestRegistryEndToEndRedirectToPrivateIPBlocked(t *testing.T) {
 	}))
 	c := hardenedRegistryTestClient(srv.URL, true)
 
-	_, err := c.LookupClass(context.Background(), "AnyClass")
+	_, err := c.LookupClassRaw(context.Background(), "AnyClass")
 	if err == nil {
 		t.Fatal("expected the redirect to the metadata IP to be refused")
 	}
@@ -194,7 +195,7 @@ func TestRegistryEndToEndPlainHTTPRedirectBlocked(t *testing.T) {
 	}))
 	c := hardenedRegistryTestClient(srv.URL, true)
 
-	if _, err := c.LookupClass(context.Background(), "AnyClass"); err == nil {
+	if _, err := c.LookupClassRaw(context.Background(), "AnyClass"); err == nil {
 		t.Fatal("expected the https->http downgrade to be refused")
 	}
 }
@@ -220,9 +221,13 @@ func TestRegistryLookupClassDecodesRealBody(t *testing.T) {
 	}))
 	c := hardenedRegistryTestClient(srv.URL, true)
 
-	pack, err := c.LookupClass(context.Background(), "MMAudioSampler")
+	raw, err := c.LookupClassRaw(context.Background(), "MMAudioSampler")
 	if err != nil {
-		t.Fatalf("LookupClass: %v", err)
+		t.Fatalf("LookupClassRaw: %v", err)
+	}
+	pack, err := DecodeRegistryPack(raw, "MMAudioSampler")
+	if err != nil {
+		t.Fatalf("DecodeRegistryPack: %v", err)
 	}
 	if gotPath != "/comfy-nodes/MMAudioSampler/node" {
 		t.Errorf("path = %q", gotPath)
@@ -270,8 +275,8 @@ func TestRegistryClassPathEscaping(t *testing.T) {
 				_, _ = w.Write([]byte(`{"id":"p","name":"P"}`))
 			}))
 			c := hardenedRegistryTestClient(srv.URL, true)
-			if _, err := c.LookupClass(context.Background(), tc.class); err != nil {
-				t.Fatalf("LookupClass: %v", err)
+			if _, err := c.LookupClassRaw(context.Background(), tc.class); err != nil {
+				t.Fatalf("LookupClassRaw: %v", err)
 			}
 			if gotPath != tc.wantPath {
 				t.Errorf("escaped path = %q, want %q", gotPath, tc.wantPath)
@@ -293,16 +298,23 @@ func TestRegistryNotFoundIsNormal(t *testing.T) {
 	}))
 	c := hardenedRegistryTestClient(srv.URL, true)
 
-	_, err := c.LookupClass(context.Background(), "ZZZ_unrelated_class_9f3")
+	_, err := c.LookupClassRaw(context.Background(), "ZZZ_unrelated_class_9f3")
 	if !errors.Is(err, ErrRegistryNotFound) {
 		t.Fatalf("err = %v, want ErrRegistryNotFound", err)
 	}
 }
 
-// TestRegistryLookupClasses covers the N-request fan-out: mixed hits/misses, a
+// TestRegistryPacksFanOut covers the N-request fan-out: mixed hits/misses, a
 // capped concurrency, deterministic output, and per-class errors that do not
 // abort the rest.
-func TestRegistryLookupClasses(t *testing.T) {
+//
+// It drives NodePackResolver.RegistryPacks — the PRODUCTION fan-out, and the only
+// one. (It used to drive RegistryClient.LookupClasses, a second, cache-less copy of
+// the same loop that no production path called; deleting it moved these properties
+// onto the live path rather than losing them.) The resolver is built with a nil
+// cache so every class goes to the network, which is what the request counting and
+// the concurrency cap need to observe.
+func TestRegistryPacksFanOut(t *testing.T) {
 	var inflight, maxInflight int64
 	var mu sync.Mutex
 
@@ -325,10 +337,10 @@ func TestRegistryLookupClasses(t *testing.T) {
 			_, _ = w.Write([]byte(`{"error":"","message":"No node found containing the specified ComfyUI node name"}`))
 		}
 	}))
-	c := hardenedRegistryTestClient(srv.URL, true)
+	r := resolverWith(srv, nil, time.Now())
 
 	classes := []string{"MMAudioSampler", "MMAudioModelLoader", "Boom", "Note Plus (mtb)", "Label (rgthree)"}
-	packs, unresolved, errs := c.LookupClasses(context.Background(), classes)
+	packs, unresolved, errs := r.RegistryPacks(context.Background(), classes)
 
 	// Both MMAudio classes map to ONE pack, unioned.
 	if len(packs) != 1 {
@@ -337,7 +349,9 @@ func TestRegistryLookupClasses(t *testing.T) {
 	if len(packs[0].Classes) != 2 {
 		t.Errorf("Classes = %v, want both MMAudio classes", packs[0].Classes)
 	}
-	// A 500 on one class must not lose the others.
+	// A 500 on one class must not lose the others. The error names the class through
+	// the request URL it carries ("…/comfy-nodes/Boom/node"), which is the only place
+	// RegistryPacks records which class failed.
 	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "Boom") {
 		t.Errorf("errs = %v, want exactly the Boom failure", errs)
 	}
@@ -350,19 +364,19 @@ func TestRegistryLookupClasses(t *testing.T) {
 	}
 }
 
-// TestRegistryLookupClassesIsDeterministic: the fan-out is concurrent, so the
-// output must be re-sorted rather than arriving in completion order.
-func TestRegistryLookupClassesIsDeterministic(t *testing.T) {
+// TestRegistryPacksAreDeterministic: the fan-out is concurrent, so the output must
+// be re-sorted rather than arriving in completion order.
+func TestRegistryPacksAreDeterministic(t *testing.T) {
 	srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seg := strings.Split(strings.Trim(r.URL.EscapedPath(), "/"), "/")
 		_, _ = fmt.Fprintf(w, `{"id":%q,"name":%q}`, seg[1], seg[1])
 	}))
-	c := hardenedRegistryTestClient(srv.URL, true)
+	r := resolverWith(srv, nil, time.Now())
 
 	in := []string{"Delta", "Alpha", "Charlie", "Bravo", "Echo"}
 	var want string
 	for i := 0; i < 6; i++ {
-		packs, unresolved, _ := c.LookupClasses(context.Background(), in)
+		packs, unresolved, _ := r.RegistryPacks(context.Background(), in)
 		b, _ := json.Marshal(struct {
 			P []Pack
 			U []string
@@ -377,15 +391,18 @@ func TestRegistryLookupClassesIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestRegistryLookupClassesEmpty: no classes, no requests.
-func TestRegistryLookupClassesEmpty(t *testing.T) {
+// TestRegistryPacksBlankClassesIssueNoRequest: a class list that is entirely blank
+// after trimming resolves to nothing WITHOUT touching the network. (Distinct from
+// TestRegistryPacksEmptyInput, which passes a nil slice — this one proves the blanks
+// are stripped rather than requested as empty path segments.)
+func TestRegistryPacksBlankClassesIssueNoRequest(t *testing.T) {
 	var hits int64
 	srv := newTLSRegistryHarness(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt64(&hits, 1)
 		w.WriteHeader(http.StatusNotFound)
 	}))
-	c := hardenedRegistryTestClient(srv.URL, true)
-	packs, unresolved, errs := c.LookupClasses(context.Background(), []string{"", "   "})
+	r := resolverWith(srv, nil, time.Now())
+	packs, unresolved, errs := r.RegistryPacks(context.Background(), []string{"", "   "})
 	if len(packs) != 0 || len(unresolved) != 0 || len(errs) != 0 {
 		t.Errorf("packs=%v unresolved=%v errs=%v", packs, unresolved, errs)
 	}
@@ -518,7 +535,7 @@ func TestRegistryBodyIsBounded(t *testing.T) {
 		}
 	}))
 	c := hardenedRegistryTestClient(srv.URL, true)
-	_, err := c.LookupClass(context.Background(), "Huge")
+	_, err := c.LookupClassRaw(context.Background(), "Huge")
 	if err == nil {
 		t.Fatal("expected an oversized-body error")
 	}

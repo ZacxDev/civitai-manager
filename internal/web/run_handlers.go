@@ -240,14 +240,6 @@ func (s *Server) comfy() comfyClient {
 	return comfy.NewClient(s.cfg.ComfyURL, s.cfg.ComfyToken)
 }
 
-// startRun launches a background run for wf unless one is already running
-// (idempotent — a re-click while a run is in flight starts no second goroutine).
-// The run derives its context from the server base context (so shutdown cancels it)
-// with the runaway-backstop budget.
-func (s *Server) startRun(wf *store.Workflow, opts runOptions) bool {
-	return s.startRunWithMessage(wf, opts, "Starting run…")
-}
-
 // startRunNotice starts a single run and returns the line to render ABOVE the status
 // fragment: "" when it started, and the refusal otherwise.
 //
@@ -273,10 +265,15 @@ func (s *Server) renderRunStatus(w http.ResponseWriter, wfID int64, notice strin
 	}))
 }
 
-// startRunWithMessage is startRun with the job's OPENING status line supplied, so a
-// caller that reached the run by a notable route (e.g. "the file was already installed,
-// nothing was downloaded") can say so instead of showing an indistinguishable
-// "Starting run…". msg is server-authored text, never reflected request input.
+// startRunWithMessage launches a background run for wf unless one is already running
+// (idempotent — a re-click while a run is in flight starts no second goroutine). The
+// run derives its context from the server base context (so shutdown cancels it) with
+// the runaway-backstop budget.
+//
+// msg is the job's OPENING status line, supplied by the caller so one that reached the
+// run by a notable route (e.g. "the file was already installed, nothing was
+// downloaded") can say so instead of showing an indistinguishable "Starting run…".
+// msg is server-authored text, never reflected request input.
 //
 // It reports whether the job actually STARTED. false means the one-run-at-a-time
 // guard discarded this call — a caller that already did visible work for this click

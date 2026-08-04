@@ -78,13 +78,13 @@ func TestCivitaiThumbURL(t *testing.T) {
 }
 
 func TestTileThumbWidthNoUpscale(t *testing.T) {
-	if w := tileThumbWidth(galleryImage{Width: 0}); w != thumbnailWidth {
+	if w := tileThumbWidthW(galleryImage{Width: 0}, thumbnailWidth); w != thumbnailWidth {
 		t.Fatalf("unknown width should request %d, got %d", thumbnailWidth, w)
 	}
-	if w := tileThumbWidth(galleryImage{Width: 4096}); w != thumbnailWidth {
+	if w := tileThumbWidthW(galleryImage{Width: 4096}, thumbnailWidth); w != thumbnailWidth {
 		t.Fatalf("large image should be downscaled to %d, got %d", thumbnailWidth, w)
 	}
-	if w := tileThumbWidth(galleryImage{Width: 200}); w != 200 {
+	if w := tileThumbWidthW(galleryImage{Width: 200}, thumbnailWidth); w != 200 {
 		t.Fatalf("small original should not be upscaled; want 200 got %d", w)
 	}
 }
@@ -94,7 +94,7 @@ func TestTileThumbWidthNoUpscale(t *testing.T) {
 // full-resolution original.
 func TestGalleryTileUsesThumbForSrcOriginalForLightbox(t *testing.T) {
 	orig := "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/ad0eb2e0-c228-4131-956d-ca01b95552d3/Krea2upscale_00942_.jpeg"
-	html := renderString(t, galleryTile(galleryImage{URL: orig, Width: 1024}, "cm-meta-0"))
+	html := renderString(t, galleryTileW(galleryImage{URL: orig, Width: 1024}, "cm-meta-0", thumbnailWidth))
 
 	wantThumb := "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/ad0eb2e0-c228-4131-956d-ca01b95552d3/anim=false,width=450,optimized=true/Krea2upscale_00942_.jpeg"
 	if !strings.Contains(html, `src="`+wantThumb+`"`) {

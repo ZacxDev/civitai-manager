@@ -394,7 +394,7 @@ func TestStartRunCapturePanicSwallowed(t *testing.T) {
 	}
 
 	wf := &store.Workflow{ID: 1, Name: "wf", Format: store.WorkflowFormatAPI}
-	srv.startRun(wf, runOptions{})
+	srv.startRunWithMessage(wf, runOptions{}, "Starting run…")
 
 	// Wait for the capture seam to have been reached.
 	select {

@@ -1034,7 +1034,7 @@ func assertScalarOrLinkRef(t *testing.T, nodeID, name string, raw json.RawMessag
 		return
 	}
 	// Otherwise it must be a JSON scalar (string/number/bool/null) — not an object.
-	if isJSONObjectNonEmpty(raw) || strings.HasPrefix(strings.TrimSpace(string(raw)), "{") {
+	if strings.HasPrefix(strings.TrimSpace(string(raw)), "{") {
 		t.Errorf("node %s input %s: value is a JSON object, expected scalar or link ref: %s", nodeID, name, raw)
 	}
 }

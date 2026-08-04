@@ -48,7 +48,7 @@ func TestSubgraphScopedKeySurvivesTheFormAndParamsRoundTrip(t *testing.T) {
 		"wp_widget": {"0", "0", "0"},
 		"wp_value":  {"777", "888", "666"},
 	}
-	got := parseWidgetOverrides(form, wf)
+	got := parseWidgetOverridesForModes(form, wf, nil)
 	if got[comfy.UIWidgetKey{NodeID: "3", Widget: 0}] != "777" {
 		t.Errorf("top-level key rejected by the allow-list: %+v", got)
 	}

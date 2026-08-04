@@ -3,7 +3,6 @@ package store
 import (
 	"database/sql"
 	"errors"
-	"strings"
 	"time"
 )
 
@@ -21,17 +20,14 @@ const (
 	// NodePackSourceExtensionNodeMap is the static extension-node-map fallback
 	// index (one row, refetched on staleness).
 	NodePackSourceExtensionNodeMap = "extension-node-map"
-	// nodePackSourceRegistryPrefix namespaces per-class Comfy Registry lookups.
-	nodePackSourceRegistryPrefix = "registry:"
 )
 
-// NodePackSourceRegistryClass is the cache key for one Comfy Registry class
-// lookup. The Registry has NO batch endpoint, so a workflow with N missing
-// classes costs N requests; caching each answer — including a miss — is what
-// keeps re-rendering a report from re-hitting the network N times.
-func NodePackSourceRegistryClass(class string) string {
-	return nodePackSourceRegistryPrefix + strings.TrimSpace(class)
-}
+// ⚠ The per-class Comfy Registry keys ("registry:<class>") are NOT built here.
+// internal/comfy owns that key space (cacheSourceRegistryPrefix in
+// nodepack_resolver.go) because the dependency deliberately runs comfy → store, not
+// the other way round: the resolver reaches this table through the
+// GetNodePackRaw/PutNodePackRaw adapter below. A second constructor on this side had
+// no production caller and was one more place for the two spellings to drift.
 
 // GetNodePackCache returns the cached index for source, or (nil, nil) when there
 // is no cached entry. The caller decides whether the entry is fresh enough (via

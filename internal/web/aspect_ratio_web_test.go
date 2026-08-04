@@ -11,9 +11,9 @@ import (
 // real W/H (an inline aspect-ratio style) and falls back to aspect-square when the
 // dimensions are missing/zero — never panicking on absent dims.
 func TestGalleryTileAspectRatio(t *testing.T) {
-	withDims := renderString(t, galleryTile(galleryImage{
+	withDims := renderString(t, galleryTileW(galleryImage{
 		URL: "https://image.civitai.com/a.jpeg", Width: 16, Height: 9,
-	}, "cm-meta-x"))
+	}, "cm-meta-x", thumbnailWidth))
 	if !strings.Contains(withDims, "aspect-ratio: 16/9") {
 		t.Errorf("tile should carry the image's aspect-ratio style:\n%s", withDims)
 	}
@@ -21,9 +21,9 @@ func TestGalleryTileAspectRatio(t *testing.T) {
 		t.Error("a tile with real dims should NOT use the aspect-square fallback")
 	}
 
-	noDims := renderString(t, galleryTile(galleryImage{
+	noDims := renderString(t, galleryTileW(galleryImage{
 		URL: "https://image.civitai.com/b.jpeg", Width: 0, Height: 0,
-	}, "cm-meta-y"))
+	}, "cm-meta-y", thumbnailWidth))
 	if !strings.Contains(noDims, "aspect-square") {
 		t.Error("a tile with missing dims should fall back to aspect-square")
 	}

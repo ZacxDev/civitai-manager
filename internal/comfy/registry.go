@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 )
@@ -225,7 +224,9 @@ type registryNode struct {
 	} `json:"latest_version"`
 }
 
-// LookupClass asks the Comfy Registry which pack provides a node class.
+// LookupClassRaw asks the Comfy Registry which pack provides a node class and
+// returns the exact response body, so the caller can persist it in the node-pack
+// cache and re-decode it later (with DecodeRegistryPack) without a second request.
 //
 // The class goes in a PATH SEGMENT and MUST be URL-escaped: "CR Float To Integer"
 // becomes "CR%20Float%20To%20Integer" and "+" becomes "%2B" (url.PathEscape leaves
@@ -233,21 +234,6 @@ type registryNode struct {
 // Matching is CASE-SENSITIVE.
 //
 // A 404 is ErrRegistryNotFound — a normal "unattributed", not a failure.
-func (c *RegistryClient) LookupClass(ctx context.Context, class string) (Pack, error) {
-	class = strings.TrimSpace(class)
-	if class == "" {
-		return Pack{}, ErrRegistryNotFound
-	}
-	raw, err := c.LookupClassRaw(ctx, class)
-	if err != nil {
-		return Pack{}, err
-	}
-	return DecodeRegistryPack(raw, class)
-}
-
-// LookupClassRaw is LookupClass returning the exact response body, so a caller
-// can persist it in the node-pack cache and re-decode it later without a second
-// request. A 404 is ErrRegistryNotFound.
 func (c *RegistryClient) LookupClassRaw(ctx context.Context, class string) ([]byte, error) {
 	class = strings.TrimSpace(class)
 	if class == "" {
@@ -284,67 +270,6 @@ func DecodeRegistryPack(raw []byte, class string) (Pack, error) {
 		// the Manager-backed entry when both rungs found the same pack.
 		Reason: "ComfyUI-Manager's node-pack list did not confirm a registry release for this pack, so it cannot be installed automatically. Install it by hand from the repository URL.",
 	}, nil
-}
-
-// LookupClasses resolves many classes concurrently (capped), returning the packs
-// it found and the classes it did not.
-//
-// There is NO batch endpoint, so this is N requests — the concurrency cap and the
-// caller's cache are what keep that civil. A per-class failure that is not a 404
-// is reported in errs but never aborts the others: partial attribution beats none.
-func (c *RegistryClient) LookupClasses(ctx context.Context, classes []string) (packs []Pack, unresolved []string, errs []error) {
-	classes = sortedUnique(classes)
-	if len(classes) == 0 {
-		return nil, nil, nil
-	}
-	type result struct {
-		pack Pack
-		ok   bool
-		err  error
-	}
-	results := make([]result, len(classes))
-
-	sem := make(chan struct{}, registryConcurrency)
-	var wg sync.WaitGroup
-	for i, cls := range classes {
-		wg.Add(1)
-		go func(i int, cls string) {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				results[i] = result{err: ctx.Err()}
-				return
-			}
-			defer func() { <-sem }()
-
-			p, err := c.LookupClass(ctx, cls)
-			switch {
-			case err == nil:
-				results[i] = result{pack: p, ok: true}
-			case errors.Is(err, ErrRegistryNotFound):
-				results[i] = result{} // a clean miss
-			default:
-				results[i] = result{err: err}
-			}
-		}(i, cls)
-	}
-	wg.Wait()
-
-	// Collect in the sorted class order so the output is deterministic.
-	for i, r := range results {
-		switch {
-		case r.ok:
-			packs = append(packs, r.pack)
-		case r.err != nil:
-			errs = append(errs, fmt.Errorf("%s: %w", classes[i], r.err))
-			unresolved = append(unresolved, classes[i])
-		default:
-			unresolved = append(unresolved, classes[i])
-		}
-	}
-	// Fold duplicate packs (several classes routinely map to one pack).
-	return MergePacks(packs), unresolved, errs
 }
 
 // FetchExtensionNodeMap fetches the static extension-node-map index — the

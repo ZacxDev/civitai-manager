@@ -136,7 +136,7 @@ func TestSingleRunPersistsNoBatchIdentity(t *testing.T) {
 	var calls int32
 	srv.runFn = batchRunFnDistinctPrompts(&calls)
 
-	if !srv.startRun(wf, runOptions{}) {
+	if !srv.startRunWithMessage(wf, runOptions{}, "Starting run…") {
 		t.Fatal("run did not start")
 	}
 	waitBatchDone(t, srv)

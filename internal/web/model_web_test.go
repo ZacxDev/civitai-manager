@@ -78,13 +78,18 @@ func (f fakeReader) SearchImages(_ context.Context, q url.Values) (*civitai.Imag
 		return nil, f.communityErr
 	}
 	if f.communityRaw != nil {
-		res, err := civitai.DecodeImageSearch(f.communityRaw)
-		if err != nil {
+		// Mirror what the real SearchImages does with a response body: decode it and
+		// preserve the exact bytes on .Raw, which is what the community-feed path
+		// hands to the cache and re-decodes (with civitai.DecodeLeveledImageSearch —
+		// the ONLY decode production uses, because the string nsfwLevel is lossy).
+		var res civitai.ImageSearchResult
+		if err := json.Unmarshal(f.communityRaw, &res); err != nil {
 			// A malformed fixture body is a test bug, not a scenario — surface it as
 			// the reader error rather than silently rendering nothing.
 			return nil, err
 		}
-		return res, nil
+		res.Raw = f.communityRaw
+		return &res, nil
 	}
 	return nil, errors.New("SearchImages must not be called from the model page path")
 }

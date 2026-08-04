@@ -339,9 +339,6 @@ func (s InputSpec) IsWidget() bool {
 	return primitiveWidgetTypes[strings.ToUpper(strings.TrimSpace(s.TypeName))]
 }
 
-// IsWidget is the package-level form of InputSpec.IsWidget, per ComfyUI's rule.
-func IsWidget(s InputSpec) bool { return s.IsWidget() }
-
 // ControlAfterGenerate reports whether this widget carries a control_after_generate
 // companion (seed/noise_seed widgets), which in a UI graph's widgets_values
 // consumes an EXTRA slot (the fixed/increment/randomize control) that has no schema

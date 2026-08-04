@@ -64,24 +64,20 @@ func (s *Server) handleWorkflowRunWithParams(w http.ResponseWriter, r *http.Requ
 	s.renderRunStatus(w, id, s.startRunNotice(wf, opts))
 }
 
-// parseWidgetOverrides reads the parallel wp_node / wp_widget / wp_value form arrays
-// (one triple per Parameters field, index-aligned in DOM order) into an override
-// map keyed by (node id, widgets_values index). It keeps ONLY keys that
+// parseWidgetOverridesForModes reads the parallel wp_node / wp_widget / wp_value form
+// arrays (one triple per Parameters field, index-aligned in DOM order) into an
+// override map keyed by (node id, widgets_values index). It keeps ONLY keys that
 // DetectRunInputs surfaces for THIS workflow, so a caller can never target a widget
 // outside the curated, editable set. The values are applied by
 // comfy.ApplyUIWidgetOverrides, which additionally refuses to add slots or rewrite a
 // non-scalar one — so this is a lenient parse backed by a structural guarantee
 // downstream.
-func parseWidgetOverrides(form url.Values, wf *store.Workflow) map[comfy.UIWidgetKey]string {
-	return parseWidgetOverridesForModes(form, wf, nil)
-}
-
-// parseWidgetOverridesForModes is parseWidgetOverrides against the graph the run
-// will ACTUALLY convert. For a multi-mode template the stored graph has every
-// pipeline bypassed, and DetectRunInputs (correctly) surfaces nothing from a
-// bypassed node — so the allow-list has to be derived from the mode-applied copy,
-// exactly the graph the panel was rendered from. An empty choice set is the stored
-// graph, so ordinary workflows are byte-for-byte unaffected.
+//
+// The allow-list is derived against the graph the run will ACTUALLY convert. For a
+// multi-mode template the stored graph has every pipeline bypassed, and
+// DetectRunInputs (correctly) surfaces nothing from a bypassed node — so modes has to
+// carry the mode selection, exactly the graph the panel was rendered from. An empty
+// choice set is the stored graph, so ordinary workflows are byte-for-byte unaffected.
 func parseWidgetOverridesForModes(form url.Values, wf *store.Workflow, modes map[string]string) map[comfy.UIWidgetKey]string {
 	graph := []byte(wf.Graph)
 	if len(modes) > 0 && wf.Format == store.WorkflowFormatUI {
@@ -158,26 +154,22 @@ func runParametersPanel(wf *store.Workflow, csrf string) g.Node {
 	return runPresetPanel(wf, csrf, implicitPresetView(wf, nil))
 }
 
-// runParamField renders one Parameters control, preceded by the hidden wp_node /
+// runParamFieldValue renders one Parameters control, preceded by the hidden wp_node /
 // wp_widget fields that pair (index-aligned in DOM order) with the wp_value control —
-// the same parallel-array shape parseWidgetOverrides reads. Every pre-filled value is
-// escaped (g.Text for textareas, attribute escaping for value=).
+// the same parallel-array shape parseWidgetOverridesForModes reads. Every pre-filled
+// value is escaped (g.Text for textareas, attribute escaping for value=).
 //
 // The three parallel arrays are paired BY POSITION, which holds only because every
 // control here always submits exactly one wp_value (all five kinds are a single
 // input/textarea/select). A future control that can submit zero values (an unchecked
 // checkbox) or several would shift the alignment — such a control must carry its key
 // in the value itself (or use indexed field names) rather than rely on this pairing.
-func runParamField(idx int, ri comfy.RunInput) g.Node {
-	return runParamFieldValue(idx, ri, ri.Current)
-}
-
-// runParamFieldValue is runParamField with the pre-filled value supplied, so a run
-// PRESET can show its saved value while every other property of the control (label,
-// kind, choices, origin note) still comes from the LIVE graph. Keeping the live
-// RunInput authoritative for everything except the value is what makes a
-// retargeted slot visible: the user sees the graph's current label beside the
-// value, not the label the preset remembered.
+//
+// value is supplied by the caller so a run PRESET can show its saved value while
+// every other property of the control (label, kind, choices, origin note) still comes
+// from the LIVE graph. Keeping the live RunInput authoritative for everything except
+// the value is what makes a retargeted slot visible: the user sees the graph's
+// current label beside the value, not the label the preset remembered.
 func runParamFieldValue(idx int, ri comfy.RunInput, value string) g.Node {
 	fid := "cm-param-" + strconv.Itoa(idx)
 	hidden := []g.Node{

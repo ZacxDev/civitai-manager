@@ -292,7 +292,7 @@ func TestRunModesIncludeStillDeliversTheModePicker(t *testing.T) {
 		t.Fatalf("read fixture: %v", err)
 	}
 	wf := &store.Workflow{ID: 42, Format: store.WorkflowFormatUI, Graph: string(b)}
-	page := renderString(t, runModesPanel(wf, "tok"))
+	page := renderString(t, runModesPanelSelected(wf, "tok", nil))
 
 	doc, err := html.Parse(strings.NewReader(page))
 	if err != nil {

@@ -688,7 +688,7 @@ func TestSingleRunCapturesNoBatchIdentity(t *testing.T) {
 		got = opts
 		mu.Unlock()
 	}
-	if !srv.startRun(wf, runOptions{}) {
+	if !srv.startRunWithMessage(wf, runOptions{}, "Starting run…") {
 		t.Fatal("run did not start")
 	}
 	waitBatchDone(t, srv)
