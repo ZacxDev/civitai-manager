@@ -7,10 +7,18 @@ import (
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
 )
 
-// The setup slot is a WHOLE-PANEL SINGLETON. comfySetupCTA renders the app's only
-// id="comfy-setup", and the failure panel has two sections that can want it: the
-// missing-models batch action and the incompatible-options form. failureSetupOwner
-// decides between them; these tests are what make that decision checkable.
+// The setup slot is a WHOLE-PANEL SINGLETON, and the failure panel has two sections
+// that can want it: the missing-models batch action and the incompatible-options
+// form. failureSetupOwner decides between them; these tests are what make that
+// decision checkable.
+//
+// ⚠ This comment used to say comfySetupCTA renders "the app's only id=comfy-setup".
+// TWO renderers carry that id — comfySetupCTA (run_install_all.go) and
+// comfySetupDisclosure (run_comfy_setup.go) — so the singleton is a property the
+// panel has to be GIVEN, not one it has for free. The two can never both be reached
+// (the disclosure renders only when Available, and Available ⟹ dlEligible ⟹
+// blockedModelFileOptions == 0), which is precisely the kind of load-bearing coupling
+// the "only renderer" wording would let a future reader assume away.
 //
 // 🔴 NONE of them may assert `strings.Contains(out, "disabled")`. Measured on
 // 52cb872, that substring is TRUE on a fully-working panel — every section form
@@ -65,6 +73,13 @@ var (
 	routableNonFileBadOption = comfy.BadOption{
 		NodeIDs: []string{"7"}, ClassType: "UltralyticsDetectorProvider", InputName: "model_name",
 		Current: "Select a detector", Choices: []string{"bbox/face_yolov8m.pt"},
+	}
+	// A SECOND routable non-file. It exists so the two dropped-filter mutants produce
+	// DIFFERENT counts: with one of each shape both yield 2 and a failure message
+	// cannot say which filter went. See TestSetupCTALabelCountsOnlyUnblockableFiles.
+	routableNonFileBadOption2 = comfy.BadOption{
+		NodeIDs: []string{"8"}, ClassType: "UltralyticsDetectorProvider", InputName: "model_name",
+		Current: "pick one", Choices: []string{"bbox/hand_yolov8s.pt"},
 	}
 )
 
@@ -198,31 +213,46 @@ func TestBlockedModelFileOptionsCountsOnlyUnblockableFiles(t *testing.T) {
 // automatic install for 3 model files" when exactly one gets unblocked — which is the
 // harm blockedModelFileOptions' own comment exists to prevent.
 func TestSetupCTALabelCountsOnlyUnblockableFiles(t *testing.T) {
-	// One of each shape: only routableFileBadOption is unblockable by a models folder.
-	section := renderString(t, incompatibleOptionsSection(
-		[]comfy.BadOption{routableFileBadOption, routableNonFileBadOption,
-			unroutableFileBadOption, inertBadOption},
-		7, "tok", false, false, true))
+	// 🔴 THE FIXTURE SET IS CHOSEN SO EACH MUTANT PRODUCES A DISTINCT COUNT. With one
+	// option of each shape, dropping the model-file filter and dropping the routable
+	// filter BOTH yield 2, so the failure message cannot say which one went — the
+	// diagnostic would name a filter at random and send the reader to the wrong line.
+	// A second routable non-file separates them:
+	//
+	//	shape                 modelFile  routable   counted by…
+	//	routableFile              yes       yes     every variant   (the ONLY correct one)
+	//	routableNonFile  ×2        no       yes     model-file filter dropped
+	//	unroutableFile           yes        no      routable filter dropped
+	//	inert                     no        no      len(bad) only
+	//
+	// → correct 1 · model-file dropped 3 · routable dropped 2 · len(bad) 5. All distinct.
+	bad := []comfy.BadOption{routableFileBadOption, routableNonFileBadOption,
+		routableNonFileBadOption2, unroutableFileBadOption, inertBadOption}
+	section := renderString(t, incompatibleOptionsSection(bad, 7, "tok", false, false, true))
 
-	// PRECONDITIONS. All four groups rendered, and only TWO of them carry an Install
-	// control at all — so the count is being taken over a section that can actually
-	// tell the three wrong answers apart (4 = len(bad), 2 = Install controls,
-	// 1 = correct).
-	if n := strings.Count(section, `name="opt_input"`); n != 4 {
-		t.Fatalf("precondition: want 4 rendered groups, got %d:\n%s", n, section)
+	// PRECONDITIONS. All five groups rendered, and exactly the two MODEL-FILE options
+	// carry an Install control (that is what IsModelFileValue gates in badOptionGroup).
+	// ⚠ That 2 is NOT the "routable filter dropped" answer — the two numbers coincide
+	// only because both sets happen to have size 2 here. An earlier version of this
+	// comment presented it as the mutant's signature, which is a coincidence, not a
+	// mechanism.
+	if n := strings.Count(section, `name="opt_input"`); n != len(bad) {
+		t.Fatalf("precondition: want %d rendered groups, got %d:\n%s", len(bad), n, section)
 	}
 	if n := strings.Count(section, ">Install "); n != 2 {
 		t.Fatalf("precondition: want 2 Install controls (the two model-file options), got %d:\n%s",
 			n, section)
 	}
 	if !strings.Contains(section, "Set up automatic install for 1 model file<") {
-		t.Errorf("the CTA must count only the files a models folder unblocks (1 of 4):\n%s", section)
+		t.Errorf("the CTA must count only the files a models folder unblocks (1 of %d):\n%s",
+			len(bad), section)
 	}
-	// Each wrong count corresponds to a specific dropped filter, so name them.
+	// Each wrong count now maps to exactly ONE dropped filter, so the message points at
+	// the right line.
 	for _, wrong := range []struct{ text, mutant string }{
-		{"for 2 model file", "the routable filter was dropped"},
-		{"for 3 model file", "the model-file filter was dropped"},
-		{"for 4 model file", "the count became len(bad)"},
+		{"for 2 model file", "the ROUTABLE filter was dropped (it counted the two model files)"},
+		{"for 3 model file", "the MODEL-FILE filter was dropped (it counted the three routable options)"},
+		{"for 5 model file", "the count became len(bad)"},
 	} {
 		if strings.Contains(section, wrong.text) {
 			t.Errorf("the CTA over-promises (%q) — %s:\n%s", wrong.text, wrong.mutant, section)

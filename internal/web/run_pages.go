@@ -613,12 +613,20 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mr m
 // affordance — the setup CTA when a folder choice can unblock something, the
 // remote-comfy explanation when nothing on this page can.
 //
-// 🔴 It exists because that affordance is a WHOLE-PANEL SINGLETON: comfySetupCTA
-// renders the app's only id="comfy-setup", and two of them make htmx's target
-// ambiguous (a rejected save HX-Retargets #comfy-setup and would land in whichever
-// the browser matched first, nesting a second container inside the first on every
-// rejection). Deciding ownership once, here, is what makes "at most one" a property
-// of the panel rather than a rule each section is trusted to remember.
+// 🔴 It exists because that affordance is a WHOLE-PANEL SINGLETON, and two of them
+// make htmx's target ambiguous: a rejected save HX-Retargets #comfy-setup and would
+// land in whichever the browser matched first, nesting a second container inside the
+// first on every rejection. Deciding ownership once, here, is what makes "at most one"
+// a property of the panel rather than a rule each section is trusted to remember.
+//
+// ⚠ This paragraph used to say comfySetupCTA "renders the app's only
+// id=comfy-setup". It is not the only one — comfySetupDisclosure renders that id too
+// (run_comfy_setup.go), which is exactly why ownership needs deciding rather than
+// assuming. The two are mutually exclusive by construction, since the disclosure
+// renders only when Available, and Available ⟹ dlEligible ⟹
+// blockedModelFileOptions == 0. That is a real coupling, not a coincidence: weaken
+// blockedModelFileOptions' dlEligible early return and a configured install with both
+// sections renders two containers.
 type failureSetupSlot int
 
 const (
@@ -904,11 +912,24 @@ func incompatibleOptionsSection(bad []comfy.BadOption, wfID int64, csrf string,
 	//     in-flight guard disabled the wrong control, on the exact surface this slot
 	//     exists to serve.
 	//
-	// Nested forms are also invalid HTML: any innerHTML re-parse of this region drops
-	// the inner <form> tag under the parser's form-pointer rule, which would promote
-	// model_path, a second csrf_token and a type=submit "Save folder" into THIS form —
-	// at which point Save folder runs the workflow. Nothing re-parses it today (no
-	// hx-boost, no hx-push-url), so that half is latent, not live.
+	// Nested forms are also invalid HTML, and the re-parse consequence is WORSE than
+	// promotion alone. Any innerHTML re-parse of this region drops the inner <form>
+	// start tag under the parser's form-pointer rule, so the inner form's closing
+	// </form> closes THIS one instead. Two things follow, and an earlier version of
+	// this comment named only the first:
+	//
+	//   - model_path, a second csrf_token and a type=submit "Save folder" are promoted
+	//     INTO this form — at which point Save folder runs the workflow;
+	//   - everything after that point — every option group's opt_input/opt_old/opt_new
+	//     AND the "Run with selected options" button — is EJECTED from the form. A run
+	//     would then carry none of the user's picks, and the section's submit is no
+	//     longer even in the form it submits.
+	//
+	// Nothing re-parses it today (no hx-boost, no hx-push-url), so this half is latent
+	// rather than live. Both consequences are pinned by
+	// TestClickedSetupFormDoesNotNestInsideTheOptionsForm — the ejection assertion
+	// exists because the obvious "count the submit buttons" check CANNOT fail here:
+	// after the ejection this form holds exactly one submit, "Save folder".
 	//
 	// installAllMissingAction has the same shape at its own call site: the disclosure
 	// is a sibling of the form, not a child.
