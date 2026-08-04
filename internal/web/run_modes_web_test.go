@@ -81,7 +81,7 @@ func TestRunModesPickerRendersOnRealTemplate(t *testing.T) {
 		t.Fatalf("read fixture: %v", err)
 	}
 	wf := &store.Workflow{ID: 42, Format: store.WorkflowFormatUI, Graph: string(b)}
-	body := renderString(t, runModesPanel(wf, "csrf-tok"))
+	body := renderString(t, runModesPanelSelected(wf, "csrf-tok", nil))
 
 	for _, want := range []string{
 		`id="run-modes"`,            // the STABLE hx-include container
@@ -121,14 +121,14 @@ func TestRunModesBlurbMatchesTheGraph(t *testing.T) {
 		t.Fatalf("read fixture: %v", err)
 	}
 
-	off := renderString(t, runModesPanel(
-		&store.Workflow{ID: 1, Format: store.WorkflowFormatUI, Graph: string(allOff)}, "tok"))
+	off := renderString(t, runModesPanelSelected(
+		&store.Workflow{ID: 1, Format: store.WorkflowFormatUI, Graph: string(allOff)}, "tok", nil))
 	if !strings.Contains(off, "ships with all of them switched off") {
 		t.Errorf("581 (every pipeline bypassed) should say so:\n%s", off)
 	}
 
-	live := renderString(t, runModesPanel(
-		&store.Workflow{ID: 2, Format: store.WorkflowFormatUI, Graph: string(onLive)}, "tok"))
+	live := renderString(t, runModesPanelSelected(
+		&store.Workflow{ID: 2, Format: store.WorkflowFormatUI, Graph: string(onLive)}, "tok", nil))
 	if strings.Contains(live, "ships with all of them switched off") {
 		t.Errorf("588 ships 'Diffusion Model' ENABLED — the blurb must not claim otherwise:\n%s", live)
 	}
@@ -152,7 +152,7 @@ func TestRunModesPickerAbsentForOrdinaryWorkflow(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			wf := &store.Workflow{ID: 7, Format: tc.format, Graph: tc.graph}
-			body := renderString(t, runModesPanel(wf, "csrf-tok"))
+			body := renderString(t, runModesPanelSelected(wf, "csrf-tok", nil))
 			if body != `<div id="run-modes"></div>` {
 				t.Errorf("want an empty stable container, got:\n%s", body)
 			}

@@ -288,7 +288,7 @@ func TestModePickerDisablesTheParamsPanelWhileItRefetches(t *testing.T) {
 	srv := newTestServer(t)
 	wf := seedPresetWorkflow(t, srv, "tmpl", presetModeUIGraph)
 
-	got := renderString(t, runModesPanel(wf, "tok"))
+	got := renderString(t, runModesPanelSelected(wf, "tok", nil))
 	want := `hx-disabled-elt="#` + runParamsContainerID + `, #` + runParamsContainerID + ` button"`
 	if !strings.Contains(got, want) {
 		t.Errorf("the mode picker must disable the parameter panel while it refetches "+
@@ -312,7 +312,7 @@ func TestModePickerNeverDisablesItself(t *testing.T) {
 	srv := newTestServer(t)
 	wf := seedPresetWorkflow(t, srv, "tmpl", presetModeUIGraph)
 
-	got := renderString(t, runModesPanel(wf, "tok"))
+	got := renderString(t, runModesPanelSelected(wf, "tok", nil))
 	sel := disabledEltOf(t, got)
 	for _, forbidden := range []string{"this", "select", "#" + runModesContainerID, "cm-mode-"} {
 		if strings.Contains(sel, forbidden) {
@@ -366,7 +366,7 @@ func TestModePickerDisabledSelectorAlwaysMatches(t *testing.T) {
 		t.Fatalf("fixture: the empty panel is supposed to have no buttons:\n%s", body)
 	}
 
-	sel := disabledEltOf(t, renderString(t, runModesPanel(wf, "tok")))
+	sel := disabledEltOf(t, renderString(t, runModesPanelSelected(wf, "tok", nil)))
 	if !strings.Contains(sel, "#"+runParamsContainerID+",") &&
 		!strings.HasSuffix(sel, "#"+runParamsContainerID) {
 		t.Errorf("hx-disabled-elt %q must name the always-present #%s container, or it "+

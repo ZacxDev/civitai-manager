@@ -240,14 +240,6 @@ func (s *Server) comfy() comfyClient {
 	return comfy.NewClient(s.cfg.ComfyURL, s.cfg.ComfyToken)
 }
 
-// startRun launches a background run for wf unless one is already running
-// (idempotent — a re-click while a run is in flight starts no second goroutine).
-// The run derives its context from the server base context (so shutdown cancels it)
-// with the runaway-backstop budget.
-func (s *Server) startRun(wf *store.Workflow, opts runOptions) bool {
-	return s.startRunWithMessage(wf, opts, "Starting run…")
-}
-
 // startRunNotice starts a single run and returns the line to render ABOVE the status
 // fragment: "" when it started, and the refusal otherwise.
 //
@@ -273,10 +265,15 @@ func (s *Server) renderRunStatus(w http.ResponseWriter, wfID int64, notice strin
 	}))
 }
 
-// startRunWithMessage is startRun with the job's OPENING status line supplied, so a
-// caller that reached the run by a notable route (e.g. "the file was already installed,
-// nothing was downloaded") can say so instead of showing an indistinguishable
-// "Starting run…". msg is server-authored text, never reflected request input.
+// startRunWithMessage launches a background run for wf unless one is already running
+// (idempotent — a re-click while a run is in flight starts no second goroutine). The
+// run derives its context from the server base context (so shutdown cancels it) with
+// the runaway-backstop budget.
+//
+// msg is the job's OPENING status line, supplied by the caller so one that reached the
+// run by a notable route (e.g. "the file was already installed, nothing was
+// downloaded") can say so instead of showing an indistinguishable "Starting run…".
+// msg is server-authored text, never reflected request input.
 //
 // It reports whether the job actually STARTED. false means the one-run-at-a-time
 // guard discarded this call — a caller that already did visible work for this click
@@ -329,7 +326,7 @@ func (s *Server) settleAndCapture(job *runJob, wf *store.Workflow, opts runOptio
 }
 
 // newRunUpdater builds the runUpdater that streams a run's phase transitions into
-// job under runMu. Shared by startRun and startDownloadAndRun.
+// job under runMu. Shared by startRunWithMessage and startDownloadAndRun.
 func (s *Server) newRunUpdater(job *runJob) runUpdater {
 	return runUpdater{
 		setPhase: func(phase, msg string, pos int) {
@@ -365,7 +362,7 @@ func (s *Server) applyRunOutcomeLocked(job *runJob, res *runResult, err error) {
 //
 // 🔴 IT DELIBERATELY DOES NOT TOUCH job.running.
 // Between the items of a batch the run singleton MUST stay held. If this cleared
-// `running`, a concurrent startRun would slip in through the gap between item i's
+// `running`, a concurrent startRunWithMessage would slip in through the gap between item i's
 // settle and item i+1's submit, and two runs would be submitting into ComfyUI at
 // once — a nondeterministic, load-dependent failure, the hardest kind to catch
 // after the fact. Clearing it is applyBatchOutcomeLocked's job and happens exactly

@@ -30,6 +30,7 @@ The app is a single-binary, loopback-by-default, single-user local library manag
 **Why the existing guards don't save it:**
 - `ConvertUIToAPI`/`flattenSubgraphs`/`expand` take **no `context.Context`** and never check `ctx.Err()`, so the 30-minute `runJobBudget` (a context timeout) cannot interrupt the pure-CPU recursion.
 - The per-run `recover()` in `startRun`/`startDownloadAndRun` (`run_handlers.go:171`) catches a *panic*, not a multi-minute CPU spin or an OOM (OOM kills the whole process).
+  > **Editorial note, added later:** `startRun` was deleted as an unreachable wrapper; its work is now done by `startRunWithMessage`. The sentence above is left verbatim because this file is a **point-in-time record of v0.1.64**, when `startRun` really did exist — rewriting a versioned audit would falsify the record. This note exists so a reader grepping for the symbol is not left stranded. Nothing about the finding changes.
 
 **Impact:** the single run goroutine hangs indefinitely and allocates without bound → server process hang / OOM crash. Blast radius is the user's own instance (loopback, single-user), but a workflow shared on CivitAI and imported via Discover is a realistic hostile carrier — this is exactly threat-model (d) "untrusted imported ComfyUI graphs."
 

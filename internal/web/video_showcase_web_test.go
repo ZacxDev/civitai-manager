@@ -42,7 +42,7 @@ func TestGalleryTileVideoMarkers(t *testing.T) {
 	const uuid = "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/ad0eb2e0-c228-4131-956d-ca01b95552d3"
 	vidURL := uuid + "/clip.mp4"
 
-	vidHTML := renderString(t, galleryTile(galleryImage{URL: vidURL, Width: 1024, Type: "video"}, "cm-meta-v"))
+	vidHTML := renderString(t, galleryTileW(galleryImage{URL: vidURL, Width: 1024, Type: "video"}, "cm-meta-v", thumbnailWidth))
 	if !strings.Contains(vidHTML, `data-video="1"`) {
 		t.Errorf("video tile should carry data-video=\"1\"; html:\n%s", vidHTML)
 	}
@@ -59,7 +59,7 @@ func TestGalleryTileVideoMarkers(t *testing.T) {
 		t.Errorf("video tile src should be the anim=false poster; html:\n%s", vidHTML)
 	}
 
-	imgHTML := renderString(t, galleryTile(galleryImage{URL: uuid + "/pic.jpeg", Width: 1024, Type: "image"}, "cm-meta-i"))
+	imgHTML := renderString(t, galleryTileW(galleryImage{URL: uuid + "/pic.jpeg", Width: 1024, Type: "image"}, "cm-meta-i", thumbnailWidth))
 	if strings.Contains(imgHTML, "data-video") {
 		t.Errorf("image tile must NOT carry data-video; html:\n%s", imgHTML)
 	}

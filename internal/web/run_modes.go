@@ -97,9 +97,9 @@ func parseModeChoices(form url.Values, wf *store.Workflow) map[string]string {
 	return out
 }
 
-// runModesPanel renders the multi-mode picker for a template workflow that carries
-// one or more mutually-exclusive rgthree group switches. It returns an EMPTY stable
-// container for an ordinary workflow — the container still exists so the
+// runModesPanelSelected renders the multi-mode picker for a template workflow that
+// carries one or more mutually-exclusive rgthree group switches. It returns an EMPTY
+// stable container for an ordinary workflow — the container still exists so the
 // hx-include selector is uniform, but nothing is shown and nothing is submitted.
 //
 // The picker is deliberately NOT a submit: the run controls (Run, Run again, Run
@@ -107,13 +107,10 @@ func parseModeChoices(form url.Values, wf *store.Workflow) map[string]string {
 // selects, so a pick applies to whichever run the user starts next. Changing a pick
 // re-fetches the Parameters panel, because which parameters exist depends on which
 // pipeline is enabled.
-func runModesPanel(wf *store.Workflow, csrf string) g.Node {
-	return runModesPanelWith(wf, csrf, nil, false)
-}
-
-// runModesPanelSelected is runModesPanel with the pre-selected pick OVERRIDDEN,
-// used when opening a run-preset tab: the preset's stored mode pre-selects the
-// picker, after which the picker is authoritative again.
+//
+// selected OVERRIDES the pre-selected pick, used when opening a run-preset tab: the
+// preset's stored mode pre-selects the picker, after which the picker is
+// authoritative again. A nil selected keeps the graph's own current pick.
 func runModesPanelSelected(wf *store.Workflow, csrf string, selected map[string]string) g.Node {
 	return runModesPanelWith(wf, csrf, selected, false)
 }

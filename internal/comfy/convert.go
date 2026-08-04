@@ -706,16 +706,3 @@ func asJSONArray(raw json.RawMessage) ([]json.RawMessage, bool) {
 	}
 	return arr, true
 }
-
-// isJSONObjectNonEmpty reports whether raw is a JSON object with at least one key.
-func isJSONObjectNonEmpty(raw json.RawMessage) bool {
-	trimmed := strings.TrimSpace(string(raw))
-	if !strings.HasPrefix(trimmed, "{") {
-		return false
-	}
-	var m map[string]json.RawMessage
-	if json.Unmarshal(raw, &m) != nil {
-		return false
-	}
-	return len(m) > 0
-}

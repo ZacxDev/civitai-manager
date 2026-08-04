@@ -757,13 +757,38 @@ live: all three drop out of the three-way intersection.)
 **`.github/deadcode-allow.txt` is a DEBT LEDGER, asserted — not an exemption list.**
 Same discipline as `contrast_web_test.go`'s 25 accepted light-theme entries: the gate
 fails when the set **grows** *and* when it **shrinks** (a stale entry means the function
-is live again — delete the line and take the win). Its 15 entries were **measured, not
-audited**: none has been checked for whether it should be deleted or wired up. Working
-the list down is open work; `internal/web` alone carries eight.
+is live again — delete the line and take the win).
+⚠ **This block used to say the ledger held 15 entries that were "measured, not audited",
+that `internal/web` "alone carries eight", and that working the list down was open
+work. That sweep is DONE** — the same staleness the release-version and
+migration-number warnings above exist to prevent, so **do not restate a count here**:
+read the file. What is durable is the *shape* of the answer that sweep found — **12 of
+the 15 were SUPERSEDED**, i.e. something else in the tree already did the job. ⚠ That
+gloss first read "superseded WRAPPERS (a no-argument form of a function whose
+explicit-argument sibling is what production calls)", which over-narrows: read off the
+deletion diff, only about half were that shape. The rest were a **second full
+implementation** (`RegistryClient.LookupClasses`, a cache-less copy of
+`NodePackResolver.RegistryPacks`' loop), a **subsumed disjunct**
+(`isJSONObjectNonEmpty`, whose one call site was `x || HasPrefix(…,"{")`), a
+**cross-package key-builder mirror** (`store.NodePackSourceRegistryClass`, duplicating a
+prefix `internal/comfy` owns because the dependency runs comfy → store), and a
+**same-arity composing wrapper** (`LookupClass` = `LookupClassRaw` +
+`DecodeRegistryPack`). So look for a survivor doing the work, in any shape — not
+specifically for a defaulted-argument twin. **2 were test scaffolding sitting
+in a production file** (moved into a `_test.go`, where tier B — which never loads test
+files — correctly stops seeing them, with a guard pinning them against the production
+builder so the second-renderer risk cannot go quiet), and **1 is a real, deliberate
+test seam** whose reason is recorded in the ledger AND in its own doc comment. Expect
+that distribution again; **an entry is almost never a dropped feature.**
 That non-empty expectation is also the harness's **negative control** — a silently
-broken analysis reports all 15 as "no longer dead" and goes red, which is what makes
-tier A's zero mean anything. (Verified: a fake tool exiting **0** with empty output
-fails the gate.)
+broken analysis reports every entry as "no longer dead" and goes red, which is what
+makes tier A's zero mean anything. 🔴 **That control gets WEAKER as the ledger
+shrinks, and it is now down to ONE entry**, so re-verify it rather than assuming: point
+`DEADCODE_BIN` at a fake tool that exits **0** with empty output and watch the gate go
+RED. (Verified at 15 entries, and re-verified at 1.) **If the last entry is ever
+resolved the control is GONE** — an empty expected set makes a broken analysis
+indistinguishable from a clean repo, and tier A's zero stops meaning anything. Do not
+let the ledger reach zero without replacing that control with something else.
 
 **`e2e/uxaudit` is covered by tier A only, and that is structural, not an omission.**
 Measured: `deadcode ./...` inside that module prints **`deadcode: no main packages`** —

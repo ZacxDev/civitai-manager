@@ -172,7 +172,7 @@ subscribe/download.
   `q.Set("type","Workflows")`. This inherits the NSFW egress posture, the sort/period
   dropdowns, and pagination (`--cursor`/`--page`) for free.
 - **Cards:** reuse the existing search-card renderer + `parseSearchImages`
-  (`internal/web/model_pages.go:164`) + `galleryTile`/carousel (`:988`) + the
+  (`internal/web/model_pages.go:164`) + `galleryTileW`/carousel (`:988`) + the
   "Updated X ago" popover (`newestVersionInfoByModel`, `:421`). Workflows results carry
   images/videos, so cards look identical to model cards. Swap the card's primary action
   from Subscribe/Download to **"Import workflow(s)"** (§3.3).
@@ -330,7 +330,7 @@ real value (getting workflows into the library); D3 is the honest-approximation 
   `:111 SelectFile` (file-type pref); SDK `pkg/civitai/models.go:23 ModelListItem`,
   `:60 Raw`, `:64 SearchModels`.
 - **Card/image parse + render:** `internal/web/model_pages.go:164 parseSearchImages`,
-  `:421 newestVersionInfoByModel`, `:988 galleryTile`, `:625 communityFeedContainer`;
+  `:421 newestVersionInfoByModel`, `:988 galleryTileW`, `:625 communityFeedContainer`;
   community feed handler `internal/web/handlers.go:437 handleModelCommunity`.
 - **Workflow store:** `internal/store/workflows.go:86 InsertWorkflow`,
   `:117 UpsertWorkflowByPath`, `:317 AttachWorkflow`, `:340 SetGolden`;

@@ -228,7 +228,7 @@ func resolveFallbackLink(query string) g.Node {
 // missing model reference swapped for a chosen installed substitute — the stored
 // workflow is never modified. CSRF-protected + loopback-gated (it reaches
 // ComfyUI). It respects the one-run-at-a-time invariant (a second call while a
-// run is in flight is a no-op via startRun).
+// run is in flight is a no-op via startRunWithMessage).
 func (s *Server) handleWorkflowRunSubstitute(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
@@ -270,7 +270,7 @@ func (s *Server) handleWorkflowRunSubstitute(w http.ResponseWriter, r *http.Requ
 // incompatible-option fixes applied — each combo's saved (invalid) value swapped for
 // a user-picked valid choice — leaving the stored workflow untouched. CSRF-protected
 // + loopback-gated (it reaches ComfyUI). It respects the one-run-at-a-time invariant
-// (a second call while a run is in flight is a no-op via startRun). The chosen values
+// (a second call while a run is in flight is a no-op via startRunWithMessage). The chosen values
 // are re-validated against the live object_info's real choices inside the run (an
 // off-list value is refused there), so this handler only parses the form.
 func (s *Server) handleWorkflowRunWithOptions(w http.ResponseWriter, r *http.Request) {

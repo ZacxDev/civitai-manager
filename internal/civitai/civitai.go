@@ -147,24 +147,6 @@ func ParseModelRef(ref string) (int, error) {
 	return 0, fmt.Errorf("could not parse a model id from %q (expected a number or a civitai.com/models/<id> URL)", ref)
 }
 
-// DecodeImageSearch re-hydrates an ImageSearchResult from a raw /api/v1/images
-// response body (the bytes SearchImages stores on ImageSearchResult.Raw). It is
-// used to serve a cached community-image feed WITHOUT a network call. The raw
-// bytes are preserved on the returned Raw field. A nil/empty or malformed body
-// yields an error; callers treat that as a cache miss (defensive — a corrupt
-// cache row must never panic or serve garbage).
-func DecodeImageSearch(raw []byte) (*ImageSearchResult, error) {
-	if len(raw) == 0 {
-		return nil, errors.New("empty image-search body")
-	}
-	var res ImageSearchResult
-	if err := json.Unmarshal(raw, &res); err != nil {
-		return nil, err
-	}
-	res.Raw = raw
-	return &res, nil
-}
-
 // FirstImageURL best-effort extracts the first image URL from a raw
 // model-version JSON body (the []byte returned by GetModelVersion). The typed
 // ModelVersionDetail does not carry images, but the raw payload does under

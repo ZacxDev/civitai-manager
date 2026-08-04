@@ -84,7 +84,7 @@ func runPresetTabPanel(wfID, csrf string, v presetTabView) g.Node {
 // you type every run.
 //
 // 🔴 RELATIVE ORDER IS PRESERVED WITHIN EACH HALF, AND EVERY FIELD LANDS IN EXACTLY
-// ONE HALF. parseWidgetOverrides pairs the parallel wp_node / wp_widget / wp_value
+// ONE HALF. parseWidgetOverridesForModes pairs the parallel wp_node / wp_widget / wp_value
 // arrays BY POSITION, which survives this because each control emits exactly one
 // entry in each of the three arrays — so partitioning permutes all three
 // identically and index i still names the same widget. What would break it is a
@@ -288,7 +288,7 @@ func runPresetForm(wfID, csrf string, v presetTabView) g.Node {
 	// The parameter controls live in a responsive grid so each field can be sized to
 	// the length of its value (see runParamKindClass / .cm-param-* in app.css).
 	// ⚠ Grid auto-placement preserves DOM order, and DOM order is what pairs the
-	// parallel wp_node/wp_widget/wp_value arrays in parseWidgetOverrides — so a
+	// parallel wp_node/wp_widget/wp_value arrays in parseWidgetOverridesForModes — so a
 	// wrapper must never SPLIT a single field's three hidden/visible inputs apart.
 	// Partitioning WHOLE fields between the two grids below is safe for exactly that
 	// reason; see runParamFieldSplit.

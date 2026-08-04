@@ -376,7 +376,7 @@ func TestDownloadAndRunFailureCapturesNothing(t *testing.T) {
 	}
 }
 
-// TestStartRunCaptureBestEffortDoesNotAffectOutcome drives the FULL startRun
+// TestStartRunCaptureBestEffortDoesNotAffectOutcome drives the FULL startRunWithMessage
 // goroutine with an injected runFn returning images, and asserts (a) the run
 // settles to done and (b) a capture PANIC is swallowed — the run outcome is
 // unchanged and nothing crashes.
@@ -394,7 +394,7 @@ func TestStartRunCapturePanicSwallowed(t *testing.T) {
 	}
 
 	wf := &store.Workflow{ID: 1, Name: "wf", Format: store.WorkflowFormatAPI}
-	srv.startRun(wf, runOptions{})
+	srv.startRunWithMessage(wf, runOptions{}, "Starting run…")
 
 	// Wait for the capture seam to have been reached.
 	select {

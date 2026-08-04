@@ -826,7 +826,7 @@ func isAre(n int) string {
 
 // showcaseCard renders the selected version's showcase carousel (moved out of the
 // header into the version region so it re-renders on a version change). The
-// carousel tiles route through galleryTile → the thumbnail helper + NSFW handling
+// carousel tiles route through galleryTileW → the thumbnail helper + NSFW handling
 // and share the page lightbox.
 func showcaseCard(modelID int, images []galleryImage, mr maturityRange) g.Node {
 	return card(
@@ -1640,7 +1640,7 @@ func downloadFeedback(modelID, versionID, fileID int, msg string, ok bool) g.Nod
 	return h.Span(h.ID(downloadFileID(modelID, versionID, fileID)), h.Class(cls), g.Text(msg))
 }
 
-// galleryTile renders one showcase image. Clicking it opens the lightbox.
+// galleryTileW renders one showcase image. Clicking it opens the lightbox.
 //
 // There is NO blur/reveal path any more: an image the user's maturity range does
 // not cover is never handed to this function at all (the carousel omits it
@@ -1661,14 +1661,10 @@ const thumbnailWidth = 450
 // (thumbnailWidth) — only the detail showcase threads this width in.
 const detailThumbnailWidth = 800
 
-// tileThumbWidth is the width to request for one tile: the thumbnail target,
-// capped to the image's own width so we never upscale a small original.
-func tileThumbWidth(im galleryImage) int {
-	return tileThumbWidthW(im, thumbnailWidth)
-}
-
-// tileThumbWidthW is tileThumbWidth with an explicit target width, so the detail
-// showcase can request a larger rendition than the shared card default.
+// tileThumbWidthW is the width to request for one tile: the caller's thumbnail
+// target (thumbnailWidth for the shared cards, detailThumbnailWidth for the
+// detail showcase), capped to the image's own width so we never upscale a small
+// original.
 func tileThumbWidthW(im galleryImage, target int) int {
 	if im.Width > 0 && im.Width < target {
 		return im.Width
@@ -1710,14 +1706,11 @@ func civitaiThumbURL(rawURL string, width int) string {
 	return u.Scheme + "://" + u.Host + "/" + strings.Join(segs, "/")
 }
 
-func galleryTile(im galleryImage, metaID string) g.Node {
-	return galleryTileW(im, metaID, thumbnailWidth)
-}
-
-// galleryTileW is galleryTile with an explicit thumbnail target width, so the
-// detail showcase can request a larger rendition (detailThumbnailWidth) while the
-// shared card carousel keeps the 450px default. Only the requested thumbnail
-// width differs — the ORIGINAL (data-full / lightbox) is untouched.
+// galleryTileW takes the thumbnail target width explicitly, so the detail
+// showcase can request a larger rendition (detailThumbnailWidth) while the
+// shared card carousel keeps the 450px default (thumbnailWidth). Only the
+// requested thumbnail width differs — the ORIGINAL (data-full / lightbox) is
+// untouched.
 func galleryTileW(im galleryImage, metaID string, thumbW int) g.Node {
 	imgClass := "h-full w-full cursor-zoom-in object-cover transition"
 
