@@ -33,9 +33,23 @@ import (
 //
 // Regression baseline: red at 52cb872 (the commit before the fix), green at HEAD,
 // with `go build ./...` passing under the revert — so the red is an assertion
-// failure and not a compiler-caught false red. The two "unchanged" cases are the
-// POSITIVE CONTROL: they are green on both sides, which is what proves the harness
-// can observe a successful import at all rather than merely counting zeros.
+// failure and not a compiler-caught false red. Six of the seven cases are red at
+// 52cb872.
+//
+// The seventh — "api graph under the prompt keyword (unchanged)" — is the POSITIVE
+// CONTROL and is green on BOTH sides. That is what proves the harness can observe a
+// successful import at all, rather than merely counting zeros: the two refusal cases
+// assert `0 rows`, and a zero is indistinguishable from a handler that stopped
+// importing anything.
+//
+// ⚠ There is deliberately only ONE such control, and the reason is worth recording
+// because the mutation run is what found it. "ui graph under the workflow keyword"
+// was written as a second unchanged control and went RED under the revert: the old
+// code stored that graph with the right format by coincidence of keyword and shape,
+// but extracted NO resources, because resource extraction was hard-wired to the api
+// branch. Keying it off the detected format is a real behaviour change on that path,
+// so the case is a regression, not a control. Labelling it otherwise would have
+// asserted the opposite of what it measures.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // pngUIGraph is a UI-format (editor "Save") graph: a top-level `nodes` array. Its
@@ -193,10 +207,10 @@ var pngImportCases = []pngImportCase{
 		wantResources:   []string{"sdxl.safetensors"},
 		regression:      true,
 	},
-	// POSITIVE CONTROL. A genuine api graph under `prompt` must import EXACTLY as it
-	// did before — same format, same graph, same resources. Green on both sides of
-	// the revert: without it, every assertion above could be satisfied by an import
-	// path that had simply stopped working.
+	// 🔴 THE POSITIVE CONTROL, and the only case green on both sides of the revert. A
+	// genuine api graph under `prompt` must import EXACTLY as it did before — same
+	// format, same graph, same resources. Without it, the two `wantFormat: ""` cases
+	// above would be satisfied by an import path that had simply stopped working.
 	{
 		name:             "api graph under the prompt keyword (unchanged)",
 		texts:            [][2]string{{"prompt", testAPIGraph}},
@@ -207,10 +221,12 @@ var pngImportCases = []pngImportCase{
 		wantGraph:        testAPIGraph,
 		wantResources:    []string{"sdxl.safetensors"},
 	},
-	// POSITIVE CONTROL, ui half. A genuine ui graph under `workflow` — the branch the
-	// old code got right by coincidence of the keyword matching the shape.
+	// NOT a control — a regression, for the resources column only. The old code got
+	// this row's FORMAT right by coincidence (keyword and shape agreed) but extracted
+	// no resources, because extraction was hard-wired to the api branch. Keying it off
+	// the detected format is what changes here.
 	{
-		name:            "ui graph under the workflow keyword (unchanged)",
+		name:            "ui graph under the workflow keyword",
 		texts:           [][2]string{{"workflow", pngUIGraph}},
 		wantExtractedUI: true,
 		probeGraph:      pngUIGraph,
@@ -218,7 +234,37 @@ var pngImportCases = []pngImportCase{
 		wantFormat:      store.WorkflowFormatUI,
 		wantGraph:       pngUIGraph,
 		wantResources:   []string{"ui_only.safetensors"},
+		regression:      true,
 	},
+}
+
+// The table's own shape, as LITERALS — never counted off pngImportCases, or the
+// expectation and the subject would move together and no deletion could separate
+// them. They exist so the positive control cannot be quietly dropped (leaving a
+// suite that only ever asserts zeros) and so a shrinking table is a failure rather
+// than a silently smaller claim.
+const (
+	wantPNGImportControls   = 1
+	wantPNGImportRegression = 6
+)
+
+// TestPNGImportTableKeepsItsPositiveControl is the table's negative control.
+func TestPNGImportTableKeepsItsPositiveControl(t *testing.T) {
+	var controls, regressions int
+	for _, tc := range pngImportCases {
+		if tc.regression {
+			regressions++
+			continue
+		}
+		controls++
+	}
+	if controls != wantPNGImportControls {
+		t.Errorf("positive controls = %d, want %d — a table of regression cases alone "+
+			"cannot tell a fixed import from a broken one", controls, wantPNGImportControls)
+	}
+	if regressions != wantPNGImportRegression {
+		t.Errorf("regression cases = %d, want %d", regressions, wantPNGImportRegression)
+	}
 }
 
 // TestWorkflowImportPNGStoresTheDetectedFormat runs the table. Preconditions first,
