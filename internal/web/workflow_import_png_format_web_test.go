@@ -31,25 +31,29 @@ import (
 // row an import writes, DetectFormat over that row's own graph must return that
 // row's own format. A future case added to the table inherits the check.
 //
-// Regression baseline: red at 52cb872 (the commit before the fix), green at HEAD,
-// with `go build ./...` passing under the revert — so the red is an assertion
-// failure and not a compiler-caught false red. Six of the seven cases are red at
-// 52cb872.
+// 🔴 THE THREE KINDS OF ROW ARE NOT INTERCHANGEABLE EVIDENCE — see caseKind. Six
+// REGRESSION cases are red at 52cb872 (the commit before the fix) and green at HEAD,
+// with `go build ./...` passing under the revert, so each red is an assertion failure
+// and not a compiler-caught false red.
 //
-// The seventh — "api graph under the prompt keyword (unchanged)" — is the POSITIVE
-// CONTROL and is green on BOTH sides. That is what proves the harness can observe a
-// successful import at all, rather than merely counting zeros: the two refusal cases
-// assert `0 rows`, and a zero is indistinguishable from a handler that stopped
-// importing anything.
+// One POSITIVE CONTROL ("api graph under the prompt keyword") is green on BOTH sides.
+// That is what proves the harness can observe a successful import at all, rather than
+// merely counting zeros: two cases assert `0 rows`, and a zero is indistinguishable
+// from a handler that stopped importing anything.
 //
-// ⚠ There is deliberately only ONE such control, and the reason is worth recording
-// because the mutation run is what found it. "ui graph under the workflow keyword"
-// was written as a second unchanged control and went RED under the revert: the old
-// code stored that graph with the right format by coincidence of keyword and shape,
-// but extracted NO resources, because resource extraction was hard-wired to the api
-// branch. Keying it off the detected format is a real behaviour change on that path,
-// so the case is a regression, not a control. Labelling it otherwise would have
-// asserted the opposite of what it measures.
+// One INVARIANT GUARD ("both chunks classify — api wins") is also green on both
+// sides, and it is the only row that constrains the api-then-ui preference order —
+// the shape of a REAL ComfyUI PNG, which carries both chunks. Two mutants (swapping
+// the slice operands; deleting the loop's `break`) survived the entire suite before
+// it existed.
+//
+// ⚠ Two rows were reclassified after the mutation run contradicted their labels, and
+// both corrections are worth recording. "ui graph under the workflow keyword" was
+// written as a second control and went RED under the revert — the old code got that
+// row's format right by coincidence of keyword and shape but extracted no resources —
+// so it is a regression. And "both chunks classify" is deliberately NOT counted as a
+// second control: it is green on both sides, but what it protects is a line the fix
+// had to preserve, not evidence that the fix did anything.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // pngUIGraph is a UI-format (editor "Save") graph: a top-level `nodes` array. Its
@@ -131,16 +135,46 @@ type pngImportCase struct {
 	// wantExtractedUI are what comfy.ExtractFromPNG must hand the handler — i.e.
 	// which candidate slots are populated — and wantDetected is what DetectFormat
 	// says about the chunk that is supposed to win ("" = it must reject it).
-	wantExtractedAPI bool
-	wantExtractedUI  bool
-	probeGraph       string
-	wantDetected     string
+	//
+	// probeLoser / wantLoserDetected cover the case where BOTH chunks classify: the
+	// contest is only real if the loser classifies too, and to a DIFFERENT format.
+	// Without that, "api won" could be true merely because the ui chunk was junk, and
+	// the preference order would be untested — the over-determined-fixture trap.
+	wantExtractedAPI  bool
+	wantExtractedUI   bool
+	probeGraph        string
+	wantDetected      string
+	probeLoser        string
+	wantLoserDetected string
 
 	wantFormat    string
 	wantGraph     string
 	wantResources []string
-	regression    bool // false = unchanged-behaviour positive control
+	kind          caseKind
 }
+
+// caseKind labels what each row's green actually proves. Kept explicit because the
+// three are NOT interchangeable evidence: only a regression case proves the fix did
+// something, only a control proves the harness can see a success, and an invariant
+// guard pins behaviour the fix had to PRESERVE — counting one as another is how a
+// suite comes to look better-evidenced than it is.
+type caseKind int
+
+const (
+	// caseUnset is the ZERO VALUE ON PURPOSE, and it is invalid. If the zero value were
+	// a real category, a row that forgot to declare one would be silently counted as
+	// that category — the classic "the fixture never populated the signal" failure. The
+	// counter t.Fatals on it instead.
+	caseUnset caseKind = iota
+	// caseRegression — red at 52cb872, green at HEAD.
+	caseRegression
+	// caseControl — green on BOTH sides. Proves a successful import still happens, so
+	// the refusal cases' zeros mean something.
+	caseControl
+	// caseInvariant — green on both sides, but its subject is a line the fix could
+	// have broken and no other case constrains (the api-then-ui preference order).
+	caseInvariant
+)
 
 var pngImportCases = []pngImportCase{
 	// 🔴 THE DEFECT. A UI graph under the `prompt` keyword: ExtractFromPNG puts it in
@@ -157,7 +191,7 @@ var pngImportCases = []pngImportCase{
 		// api extractor would return nothing here, so a non-empty list is positive
 		// evidence the ui path ran.
 		wantResources: []string{"ui_only.safetensors"},
-		regression:    true,
+		kind:          caseRegression,
 	},
 	// 🔴 Truncated: valid first byte, unparseable body. No row may exist afterwards.
 	{
@@ -167,7 +201,7 @@ var pngImportCases = []pngImportCase{
 		probeGraph:       pngTruncatedGraph,
 		wantDetected:     "",
 		wantFormat:       "",
-		regression:       true,
+		kind:             caseRegression,
 	},
 	// 🔴 Parses, decodes to a one-entry map, and is still not a graph — the wrapper
 	// case the run-gate table already documents as reaching production this way.
@@ -178,7 +212,7 @@ var pngImportCases = []pngImportCase{
 		probeGraph:       pngWrappedGraph,
 		wantDetected:     "",
 		wantFormat:       "",
-		regression:       true,
+		kind:             caseRegression,
 	},
 	// The fall-through the fix adds: the good `workflow` chunk is no longer dropped
 	// on the floor because the `prompt` chunk beside it is corrupt.
@@ -192,7 +226,7 @@ var pngImportCases = []pngImportCase{
 		wantFormat:       store.WorkflowFormatUI,
 		wantGraph:        pngUIGraph,
 		wantResources:    []string{"ui_only.safetensors"},
-		regression:       true,
+		kind:             caseRegression,
 	},
 	// The mirror of the defect on the other keyword: an api graph saved under
 	// `workflow` used to be stored as ui.
@@ -205,12 +239,42 @@ var pngImportCases = []pngImportCase{
 		wantFormat:      store.WorkflowFormatAPI,
 		wantGraph:       testAPIGraph,
 		wantResources:   []string{"sdxl.safetensors"},
-		regression:      true,
+		kind:            caseRegression,
 	},
-	// 🔴 THE POSITIVE CONTROL, and the only case green on both sides of the revert. A
-	// genuine api graph under `prompt` must import EXACTLY as it did before — same
-	// format, same graph, same resources. Without it, the two `wantFormat: ""` cases
-	// above would be satisfied by an import path that had simply stopped working.
+	// 🔴 THE PREFERENCE-ORDER GUARD, and the case that matches what ComfyUI ACTUALLY
+	// writes: a real PNG carries BOTH a `prompt` and a `workflow` chunk, and both
+	// classify. Every other case here populates one slot or leaves the first
+	// unclassifiable, so none of them can tell api-then-ui from ui-then-api.
+	//
+	// Two mutants survived the WHOLE suite before this row existed — measured, not
+	// assumed: swapping the operands of the `[]json.RawMessage{ex.APIGraph,
+	// ex.UIGraph}` literal, and deleting the loop's `break` (last classifiable chunk
+	// wins). Both left `go build ./...` clean and `go test ./internal/web/
+	// ./internal/comfy/` reporting ok. Both silently reclassify EVERY real ComfyUI
+	// import from api to ui, which changes store.Workflow.Runnable, canQueueWorkflow,
+	// the run zone and the editor hand-off gate with no error anywhere.
+	//
+	// It is also a second case green on BOTH sides of the 52cb872 revert — the old
+	// code reached the same answer through `if ex.APIGraph != nil`. That is the point:
+	// it guards an invariant the fix had to PRESERVE, not one it changed.
+	{
+		name:              "both chunks classify — api wins",
+		texts:             [][2]string{{"prompt", testAPIGraph}, {"workflow", pngUIGraph}},
+		wantExtractedAPI:  true,
+		wantExtractedUI:   true,
+		probeGraph:        testAPIGraph,
+		wantDetected:      comfy.FormatAPI,
+		probeLoser:        pngUIGraph,
+		wantLoserDetected: comfy.FormatUI,
+		wantFormat:        store.WorkflowFormatAPI,
+		wantGraph:         testAPIGraph,
+		wantResources:     []string{"sdxl.safetensors"},
+		kind:              caseInvariant,
+	},
+	// 🔴 THE POSITIVE CONTROL. A genuine api graph under `prompt` must import EXACTLY
+	// as it did before — same format, same graph, same resources. Without it, the two
+	// `wantFormat: ""` cases above would be satisfied by an import path that had
+	// simply stopped working.
 	{
 		name:             "api graph under the prompt keyword (unchanged)",
 		texts:            [][2]string{{"prompt", testAPIGraph}},
@@ -220,6 +284,7 @@ var pngImportCases = []pngImportCase{
 		wantFormat:       store.WorkflowFormatAPI,
 		wantGraph:        testAPIGraph,
 		wantResources:    []string{"sdxl.safetensors"},
+		kind:             caseControl,
 	},
 	// NOT a control — a regression, for the resources column only. The old code got
 	// this row's FORMAT right by coincidence (keyword and shape agreed) but extracted
@@ -234,33 +299,46 @@ var pngImportCases = []pngImportCase{
 		wantFormat:      store.WorkflowFormatUI,
 		wantGraph:       pngUIGraph,
 		wantResources:   []string{"ui_only.safetensors"},
-		regression:      true,
+		kind:            caseRegression,
 	},
 }
 
 // The table's own shape, as LITERALS — never counted off pngImportCases, or the
 // expectation and the subject would move together and no deletion could separate
-// them. They exist so the positive control cannot be quietly dropped (leaving a
-// suite that only ever asserts zeros) and so a shrinking table is a failure rather
-// than a silently smaller claim.
+// them. They exist so a case of one KIND cannot be quietly dropped or silently
+// reclassified as another: each kind is different evidence, and the counts are the
+// only thing that notices when one disappears.
 const (
 	wantPNGImportControls   = 1
+	wantPNGImportInvariant  = 1
 	wantPNGImportRegression = 6
 )
 
-// TestPNGImportTableKeepsItsPositiveControl is the table's negative control.
-func TestPNGImportTableKeepsItsPositiveControl(t *testing.T) {
-	var controls, regressions int
+// TestPNGImportTableKeepsItsEvidenceMix guards the table's shape. It is NOT a
+// behavioural test — it exists because the three kinds prove different things and
+// the counts are the only structural record of the mix.
+func TestPNGImportTableKeepsItsEvidenceMix(t *testing.T) {
+	var controls, invariants, regressions int
 	for _, tc := range pngImportCases {
-		if tc.regression {
+		switch tc.kind {
+		case caseRegression:
 			regressions++
-			continue
+		case caseControl:
+			controls++
+		case caseInvariant:
+			invariants++
+		default:
+			t.Fatalf("case %q declares no kind — an undeclared row would otherwise be "+
+				"counted as whichever category the zero value names", tc.name)
 		}
-		controls++
 	}
 	if controls != wantPNGImportControls {
 		t.Errorf("positive controls = %d, want %d — a table of regression cases alone "+
 			"cannot tell a fixed import from a broken one", controls, wantPNGImportControls)
+	}
+	if invariants != wantPNGImportInvariant {
+		t.Errorf("invariant guards = %d, want %d — dropping the dual-chunk case leaves "+
+			"the api-then-ui preference order pinned by nothing", invariants, wantPNGImportInvariant)
 	}
 	if regressions != wantPNGImportRegression {
 		t.Errorf("regression cases = %d, want %d", regressions, wantPNGImportRegression)
@@ -302,6 +380,24 @@ func TestWorkflowImportPNGStoresTheDetectedFormat(t *testing.T) {
 				if derr != nil || gotFmt != tc.wantDetected {
 					t.Fatalf("precondition: DetectFormat(probe) = (%q, %v), want %q",
 						gotFmt, derr, tc.wantDetected)
+				}
+			}
+
+			// ── PRECONDITION 3 (dual-chunk cases only): the LOSER must classify too,
+			// and to a DIFFERENT format. Without this the preference order is untested
+			// — "api won" would be equally true if the ui chunk were junk, and the
+			// fixture would be over-determined rather than discriminating.
+			if tc.probeLoser != "" {
+				loserFmt, lerr := comfy.DetectFormat([]byte(tc.probeLoser))
+				if lerr != nil || loserFmt != tc.wantLoserDetected {
+					t.Fatalf("precondition: DetectFormat(loser) = (%q, %v), want %q — "+
+						"a loser that does not classify cannot contest the winner",
+						loserFmt, lerr, tc.wantLoserDetected)
+				}
+				if loserFmt == gotFmt {
+					t.Fatalf("precondition: both chunks classify as %q — the two signals "+
+						"agree, so the outcome proves nothing about the preference order",
+						gotFmt)
 				}
 			}
 
