@@ -41,7 +41,179 @@ var (
 		NodeIDs: []string{"3"}, ClassType: "ImpactWildcardProcessor", InputName: "Select to add Wildcard",
 		Current: "Select Wildcard", Choices: []string{"Select the Wildcard to add to the text"},
 	}
+	// A SECOND inert option, distinct from the first so a section can hold two of them
+	// without the grouping key collapsing them.
+	inertBadOption2 = comfy.BadOption{
+		NodeIDs: []string{"4"}, ClassType: "ImpactWildcardEncode", InputName: "populated_text",
+		Current: "a gone preset", Choices: []string{"another preset"},
+	}
 )
+
+// TestBadOptionFixturesAreDiscriminating is the PRECONDITION for every test below
+// that reasons about these three shapes.
+//
+// 🔴 It exists because two of this file's rows were OVER-DETERMINED. The
+// `inertBadOption` row expecting 0 containers passed with blockedModelFileOptions'
+// comfy.IsModelFileValue filter DELETED — because the inert fixture also fails
+// InferBadOptionInstall, so both signals said "no" and the row proved nothing about
+// the filter it appeared to guard. Asserting the two signals SEPARATELY, and pinning
+// that they disagree where they must, is what makes a fixture able to discriminate.
+func TestBadOptionFixturesAreDiscriminating(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		bo             comfy.BadOption
+		wantModelFile  bool
+		wantRoutable   bool
+		discriminating string
+	}{
+		{"routable", routableFileBadOption, true, true,
+			"the only shape a models folder unblocks"},
+		{"unroutable", unroutableFileBadOption, true, false,
+			"a MODEL FILE that is NOT routable — separates the two filters"},
+		{"inert", inertBadOption, false, false, "neither signal"},
+		{"inert2", inertBadOption2, false, false, "neither signal"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := comfy.IsModelFileValue(tc.bo.Current); got != tc.wantModelFile {
+				t.Errorf("IsModelFileValue(%q) = %v, want %v (%s)",
+					tc.bo.Current, got, tc.wantModelFile, tc.discriminating)
+			}
+			_, _, routable := comfy.InferBadOptionInstall(tc.bo.ClassType, tc.bo.InputName, tc.bo.Current)
+			if routable != tc.wantRoutable {
+				t.Errorf("InferBadOptionInstall(%q,%q,%q) routable = %v, want %v (%s)",
+					tc.bo.ClassType, tc.bo.InputName, tc.bo.Current, routable, tc.wantRoutable,
+					tc.discriminating)
+			}
+		})
+	}
+	// The discrimination that matters: at least one fixture on which the two filters
+	// DISAGREE. Without it, deleting either filter is undetectable.
+	_, _, unroutableRoutable := comfy.InferBadOptionInstall(
+		unroutableFileBadOption.ClassType, unroutableFileBadOption.InputName, unroutableFileBadOption.Current)
+	if !comfy.IsModelFileValue(unroutableFileBadOption.Current) || unroutableRoutable {
+		t.Fatalf("no fixture separates the model-file filter from the routable filter, so " +
+			"every test below is over-determined and would pass with either one deleted")
+	}
+}
+
+// TestBlockedModelFileOptionsCountsOnlyUnblockableFiles pins the COUNT itself, over
+// fixtures that are pairwise distinct on the dimension under test.
+//
+// 🔴 Two surviving mutants lived here. Deleting the comfy.IsModelFileValue filter
+// survived the whole suite, and so did replacing the call with len(bad) at the CTA's
+// label. Both survived for the same reason: every existing fixture had ONE bad option,
+// where "count the unblockable ones", "count the model files" and "count everything"
+// all produce 1. A mixed section is what separates them.
+func TestBlockedModelFileOptionsCountsOnlyUnblockableFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		bad        []comfy.BadOption
+		dlEligible bool
+		want       int
+		why        string
+	}{
+		{"one routable", []comfy.BadOption{routableFileBadOption}, false, 1, "the ground case"},
+		{
+			name: "one routable among two inert",
+			bad:  []comfy.BadOption{routableFileBadOption, inertBadOption, inertBadOption2},
+			want: 1,
+			why:  "len(bad) would say 3 and the label would over-promise by two files",
+		}, {
+			name: "one routable, one unroutable",
+			bad:  []comfy.BadOption{routableFileBadOption, unroutableFileBadOption},
+			want: 1,
+			why:  "dropping the routable filter would say 2; the folder cannot place the second",
+		}, {
+			name: "unroutable and inert only",
+			bad:  []comfy.BadOption{unroutableFileBadOption, inertBadOption},
+			want: 0,
+			why:  "nothing here a models folder unblocks",
+		}, {
+			name: "two inert only",
+			bad:  []comfy.BadOption{inertBadOption, inertBadOption2},
+			want: 0,
+			why:  "dropping the model-file filter would say 2 — the mutant that survived",
+		}, {
+			name: "routable but already configured", bad: []comfy.BadOption{routableFileBadOption},
+			dlEligible: true, want: 0, why: "every Install button already works",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := blockedModelFileOptions(tc.bad, tc.dlEligible); got != tc.want {
+				t.Errorf("blockedModelFileOptions = %d, want %d — %s", got, tc.want, tc.why)
+			}
+		})
+	}
+}
+
+// TestSetupCTALabelCountsOnlyUnblockableFiles is the same discrimination at the
+// RENDER layer: the number the user reads.
+//
+// The consuming cost of getting this wrong is a specific over-promise — "Set up
+// automatic install for 3 model files" when exactly one gets unblocked — which is the
+// harm blockedModelFileOptions' own comment exists to prevent.
+func TestSetupCTALabelCountsOnlyUnblockableFiles(t *testing.T) {
+	section := renderString(t, incompatibleOptionsSection(
+		[]comfy.BadOption{routableFileBadOption, inertBadOption, inertBadOption2},
+		7, "tok", false, false, true))
+
+	// PRECONDITION: all three groups really rendered, so the count is being taken over
+	// a section that genuinely holds three options.
+	if n := strings.Count(section, `name="opt_input"`); n != 3 {
+		t.Fatalf("precondition: want 3 rendered groups, got %d:\n%s", n, section)
+	}
+	if !strings.Contains(section, "Set up automatic install for 1 model file<") {
+		t.Errorf("the CTA must count only the files a models folder unblocks (1 of 3):\n%s", section)
+	}
+	for _, wrong := range []string{"for 2 model file", "for 3 model file"} {
+		if strings.Contains(section, wrong) {
+			t.Errorf("the CTA over-promises (%q) — it must not count options the folder "+
+				"cannot unblock:\n%s", wrong, section)
+		}
+	}
+}
+
+// TestBadOptionBlockedReasonOrderIsLoadBearing pins badOptionBlockedReason over ALL
+// FOUR (routable, comfyRemote) combinations.
+//
+// 🔴 Swapping the function's first two branches survived the whole suite, while its
+// comment says "ORDER IS LOAD-BEARING" and spells out the harm. It survived because
+// no fixture was `!routable && comfyRemote` — the one input on which the two orders
+// differ. A comment asserting an invariant that nothing tests is the shape this repo
+// keeps finding; the missing row is here.
+func TestBadOptionBlockedReasonOrderIsLoadBearing(t *testing.T) {
+	for _, tc := range []struct {
+		routable, comfyRemote bool
+		want                  string
+		why                   string
+	}{
+		{true, false, badOptionNeedsSetupText, "local ComfyUI, no folder: the page can fix it"},
+		{true, true, badOptionRemoteComfyText, "remote comfy_url: the folder is not the blocker"},
+		{false, false, badOptionUnroutableText, "no destination for this file"},
+		{
+			routable: false, comfyRemote: true, want: badOptionUnroutableText,
+			why: "THE DISCRIMINATING ROW: unroutable survives fixing comfy_url, so it wins. " +
+				"Reversed, the reader is sent to change comfy_url and comes back to the same " +
+				"disabled button",
+		},
+	} {
+		got := badOptionBlockedReason(tc.routable, tc.comfyRemote)
+		if got != tc.want {
+			t.Errorf("badOptionBlockedReason(routable=%v, comfyRemote=%v) = %q, want %q — %s",
+				tc.routable, tc.comfyRemote, got, tc.want, tc.why)
+		}
+	}
+	// The three strings must stay pairwise distinct, or the table above cannot tell
+	// which branch answered and every row is satisfiable by one shared sentence.
+	seen := map[string]bool{}
+	for _, s := range []string{badOptionNeedsSetupText, badOptionRemoteComfyText, badOptionUnroutableText} {
+		if seen[s] {
+			t.Fatalf("two blocked reasons are byte-identical, so the table above cannot "+
+				"discriminate between their branches: %q", s)
+		}
+		seen[s] = true
+	}
+}
 
 // installableMissing is a missing reference installDedupeKey accepts.
 func installableMissing() []comfy.MissingModel {
