@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ZacxDev/civitai-manager/internal/comfy"
 	g "maragu.dev/gomponents"
 	h "maragu.dev/gomponents/html"
 )
@@ -875,7 +876,12 @@ func structuredAPINodes(graph []byte) g.Node {
 	for id := range m {
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(i, j int) bool { return lessNumericID(ids[i], ids[j]) })
+	// 🔴 comfy.LessNodeKey, NOT a local numeric-else-lexical compare. `ids` is a
+	// randomised map range, and the naive rule is INTRANSITIVE on mixed ids
+	// ({"12:3"<"9"<"12"<"12:3"}), so sort.Slice returns an arbitrary permutation
+	// — randomising both the render order and which nodes survive gMaxNodes.
+	// Read LessNodeKey's doc; do not restate or re-open-code the rule here.
+	sort.Slice(ids, func(i, j int) bool { return comfy.LessNodeKey(ids[i], ids[j]) })
 
 	cards := make([]g.Node, 0, len(ids))
 	if len(ids) > gMaxNodes {
@@ -1055,16 +1061,6 @@ func widgetScalars(raw json.RawMessage, max int) []string {
 		}
 	}
 	return out
-}
-
-// lessNumericID orders ids numerically when both are integers, else lexically.
-func lessNumericID(a, b string) bool {
-	ai, aerr := strconv.Atoi(a)
-	bi, berr := strconv.Atoi(b)
-	if aerr == nil && berr == nil {
-		return ai < bi
-	}
-	return a < b
 }
 
 // truncate shortens s to n runes with an ellipsis (rune-safe).

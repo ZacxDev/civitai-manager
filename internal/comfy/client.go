@@ -512,10 +512,13 @@ func (c *Client) History(ctx context.Context, promptID string) (*HistoryEntry, e
 // "node-key-sorted" while the body ranged over e.Outputs, a Go map, whose iteration
 // order is deliberately randomized. With one output node nobody noticed; with two
 // the gallery's first thumbnail — and the capture's idx numbering, which is
-// persisted — flipped between runs of the SAME prompt. Node keys are numeric
-// strings in every real graph, so they are compared numerically when both parse
-// (otherwise "10" sorts before "9"), falling back to a plain string compare so the
-// order is total and deterministic for any key ComfyUI might invent.
+// persisted — flipped between runs of the SAME prompt. The keys are ordered by
+// LessNodeKey (below), which is a strict weak ordering for ANY key set ComfyUI
+// might invent — including the mixed numeric/non-numeric sets this package's own
+// subgraph expander produces. ⚠ This comment used to describe the ordering as
+// "numerically when both parse, else a plain string compare", which is the
+// INTRANSITIVE rule LessNodeKey exists to replace; do not restate the rule here,
+// read it there.
 func (e *HistoryEntry) AllImages() []ImageRef {
 	if e == nil {
 		return nil
@@ -524,7 +527,7 @@ func (e *HistoryEntry) AllImages() []ImageRef {
 	for k := range e.Outputs {
 		keys = append(keys, k)
 	}
-	sort.Slice(keys, func(i, j int) bool { return lessNodeKey(keys[i], keys[j]) })
+	sort.Slice(keys, func(i, j int) bool { return LessNodeKey(keys[i], keys[j]) })
 
 	var out []ImageRef
 	for _, k := range keys {
@@ -535,7 +538,7 @@ func (e *HistoryEntry) AllImages() []ImageRef {
 	return out
 }
 
-// lessNodeKey orders two ComfyUI node keys: all-numeric keys first, by value, then
+// LessNodeKey orders two ComfyUI node keys: all-numeric keys first, by value, then
 // every other key lexically.
 //
 // 🔴 THE PARTITION IS NOT COSMETIC — it is what makes this a STRICT WEAK ORDERING.
@@ -552,7 +555,7 @@ func (e *HistoryEntry) AllImages() []ImageRef {
 // mints ids as `prefix + ":" + interiorID` (convert_subgraph.go), so a VHS output
 // inside a subgraph alongside a top-level output node produces exactly that key
 // set. Pinned by TestAllImagesIsDeterministicAcrossNodes.
-func lessNodeKey(a, b string) bool {
+func LessNodeKey(a, b string) bool {
 	ai, aerr := strconv.Atoi(a)
 	bi, berr := strconv.Atoi(b)
 	switch {
