@@ -347,9 +347,11 @@ func subscriptionsTable(subs []store.Subscription, errMsg, csrf string) g.Node {
 			rows = append(rows, subscriptionRow(s, csrf))
 		}
 	}
-	return h.Div(
+	// Scrollable region: in the EMPTY state (the branch above) the whole region is
+	// six plain <th>s and one text <td> — nothing focusable — so it needs its own
+	// tab stop. See scrollTable.
+	return scrollTable("Subscriptions",
 		h.ID("subscriptions-table"),
-		h.Class("overflow-x-auto"),
 		g.If(errMsg != "",
 			h.Div(h.Class("mb-3"), alert("error", "", g.Text(errMsg))),
 		),
@@ -364,6 +366,41 @@ func subscriptionsTable(subs []store.Subscription, errMsg, csrf string) g.Node {
 			h.TBody(g.Group(rows)),
 		),
 	)
+}
+
+// scrollTable wraps a wide table in a horizontally scrollable region that is
+// reachable and operable from the KEYBOARD (arrow keys / PageUp / PageDown scroll a
+// focused scrollable region natively).
+//
+// 🔴 tabindex="0" is an ACCESSIBILITY REQUIREMENT here, not decoration — the same
+// rule commandBlock (nodepack_pages.go) exists to satisfy. Read axe-core's actual
+// rule definition before changing this: `scrollable-region-focusable` (impact:
+// serious, wcag2a/wcag211/wcag213) is `any:["focusable-content","focusable-element"]`,
+// so a scrollable region may be unfocusable ONLY while it CONTAINS something
+// focusable. That is why this helper is NOT applied to every overflow-x-auto region
+// in the package — see scrollableRegionLedger in the guard test for the ones that
+// legitimately pass on focusable content instead, and why.
+//
+// Each caller below has a REACHABLE state containing nothing focusable at all, where
+// the content past the right edge is unreachable without a pointer:
+//   - subscriptionsTable: the empty state is plain <th>s + one text <td>.
+//   - trashTable: a batch list whose every entry is already restored renders badges,
+//     not Restore buttons.
+//   - cloudResourceTable: text and badges only, in EVERY state.
+//
+// role+aria-label follow the workflow_graph.go precedent rather than commandBlock's
+// bare tabindex: a named region announces WHAT the new tab stop is instead of
+// dropping a screen-reader user onto an anonymous one.
+//
+// It is ONE helper because the fix has to hold at every call site, and a predicate
+// duplicated per call site regenerates the same bug at each of them.
+func scrollTable(label string, kids ...g.Node) g.Node {
+	return h.Div(append([]g.Node{
+		h.Class("overflow-x-auto"),
+		g.Attr("tabindex", "0"),
+		g.Attr("role", "region"),
+		g.Attr("aria-label", label),
+	}, kids...)...)
 }
 
 func th(text string) g.Node {

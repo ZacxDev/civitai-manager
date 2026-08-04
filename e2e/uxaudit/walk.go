@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -89,6 +90,41 @@ func ImportTriggerSelector() string {
 	return fmt.Sprintf(`button[title^=%q]`, ImportTriggerTitlePrefix)
 }
 
+// FixModelDialogIDPrefix + FixModelDialogID mirror internal/web's fixModelDialogID:
+// each missing model file gets its own native <dialog> named by its INDEX in the
+// panel. A rename there is invisible to this module until a browser hangs on
+// WaitVisible, so it is pinned browserlessly like ImportDialogID.
+const FixModelDialogIDPrefix = "fix-model-"
+
+// FixModelDialogIdx is the missing-file row the walk opens. 0 is the first row, and
+// the lab's preflight reports exactly two missing models, so it always exists.
+const FixModelDialogIdx = 0
+
+// FixModelDialogID is the id of the idx-th missing file's Fix dialog.
+func FixModelDialogID(idx int) string { return FixModelDialogIDPrefix + strconv.Itoa(idx) }
+
+// FixModelOpenerJS is the substring of the trigger's inline onclick that names THIS
+// row's dialog. internal/web's fixModelRow renders
+// `onclick="document.getElementById('fix-model-0').showModal()"` — there is no id, no
+// class and no data attribute on that button, so the onclick is the only thing tying
+// a trigger to the dialog it opens. Selecting on it is deliberate: it pins the
+// RELATIONSHIP (click the button that opens the dialog we then wait for) instead of
+// picking whichever "Choose a model…" button happens to come first in the DOM.
+func FixModelOpenerJS(idx int) string {
+	return "getElementById('" + FixModelDialogID(idx) + "')"
+}
+
+// FixModelTriggerSelector matches the trigger that opens the idx-th Fix dialog.
+//
+// ⚠ The selector matches the DECODED attribute value. The served HTML carries
+// `&#39;` where this has `'` — a browser decodes it before matching, a browserless
+// guard reading the raw body does not, which is why
+// TestFixModelDialogSelectorsMatchTheServedApp decodes each button's open tag rather
+// than comparing against this string directly.
+func FixModelTriggerSelector(idx int) string {
+	return fmt.Sprintf(`button[onclick*=%q]`, FixModelOpenerJS(idx))
+}
+
 // RunCountGroupID is the id of the batch count segment's stable container — a second
 // copy of internal/web's runCountGroupID. It is rendered ONLY for a UI-format
 // workflow (runZone's canQueue), which is exactly why it is worth pinning: it is the
@@ -162,6 +198,15 @@ func Views(app *App) []View {
 		// comfy.Preflight) if that conversion warns, so only this view proves the
 		// missing-models panel is reachable for the format 100% of real workflows use.
 		{Name: "run-missing-models-ui", Path: wfUIPath, Hero: true, Prep: heroRunPrep(runUISel)},
+		// The SAME panel with its collapsed disclosures EXPANDED. Content inside a closed
+		// <details> is hidden, so axe skips it — the two heroes above scan the panel only
+		// in the state it arrives in, and the custom-node half's repository/node-type
+		// detail, its "Other pack claiming the same node" alternate (which carries its own
+		// install button) and the technical-details block have never been scanned in any
+		// wording. It is a separate view rather than a change to the heroes on purpose:
+		// the heroes are the stable "what the user first sees" capture, and mutating them
+		// would move a baseline instead of adding one.
+		{Name: "run-missing-models-expanded", Path: wfPath, Prep: expandedRunPrep(runSel)},
 		// The SAME failure panel on a server with comfy_model_path UNSET — a fresh
 		// install's actual state. It is not a duplicate of the two heroes above: this
 		// is the blockedInstallAction branch, which the configured app can never render
@@ -204,6 +249,22 @@ func Views(app *App) []View {
 		// or not at all.
 		{Name: "run-missing-models-setup", Path: wfPath, BaseURL: app.UnsetPathURL,
 			Prep: heroRunPrep(runSel)},
+		// The per-file Fix <dialog>, OPEN. Everything inside fixModelDialog — the
+		// "Use matched model from CivitAI" section, the primary + alternate model cards,
+		// the "Install and run" CTAs, the library-substitute section and the ✕ close
+		// control — sits behind a native showModal() that nothing in the walk ever
+		// clicked, so it was closed in every capture and axe (which excludes hidden and
+		// inert content) had never scanned a byte of it.
+		{Name: "run-fix-model", Path: wfPath, Prep: fixModelDialogPrep(runSel, FixModelDialogIdx)},
+		// The SAME dialog on the comfy_model_path-UNSET server. This is the view that
+		// closes the cardInstallBlockedText gap specifically: that copy renders only from
+		// installAndRunButton's !dlEligible branch, which the configured app can never
+		// take. Measured browserlessly on the lab at 52cb872 — each dialog carries THREE
+		// occurrences (primary card + two alternates) on the unset server and ZERO on the
+		// configured one, so this view is not a duplicate of the one above, it is the
+		// only one where that sentence exists at all.
+		{Name: "run-fix-model-blocked", Path: wfPath, BaseURL: app.UnsetPathURL,
+			Prep: fixModelDialogPrep(runSel, FixModelDialogIdx)},
 		// Discover browse (workflows), served offline from the fake CivitAI reader.
 		{Name: "discover-workflows", Path: "/workflows/discover"},
 		// Library "Scan for model files" entry (the Sources tab lists the seeded dir).
@@ -250,7 +311,7 @@ func heroRunPrep(runSel string) func(*App) []chromedp.Action {
 			// a run is scoped to its workflow. Adding the second hero therefore created
 			// no new need for the seq gate; the gate was already load-bearing on main
 			// with one hero, for the reason above.
-			readRunSeq("#run-status", &preSeq),
+			readRunSeq(RunStatusContainerSelector, &preSeq),
 			chromedp.Click(runSel, chromedp.ByQuery),
 			// Condition-based (not window-based) re-pin: wait until #run-status shows a
 			// run whose data-run-seq > preSeq (proves it is the run this click started,
@@ -261,9 +322,124 @@ func heroRunPrep(runSel string) func(*App) []chromedp.Action {
 			// preflight failure + the +1s self-poll could miss the ephemeral window and
 			// time out step 1). The seq gate keeps the re-pin guarantee the old chain
 			// gave: the asserted panel provably belongs to this run, not a leftover.
-			waitForNewRunPanel("#run-status", HeroMarker, &preSeq, 60*time.Second),
+			waitForNewRunPanel(RunStatusContainerSelector, HeroMarker, &preSeq, 60*time.Second),
 			chromedp.Sleep(300 * time.Millisecond),
 		}
+	}
+}
+
+// RunStatusContainerID / RunStatusContainerSelector name the stable container the run
+// fragment is swapped into — a second copy of internal/web's runStatusContainerID. It
+// is the anchor for BOTH halves of the hero chain (readRunSeq / waitForNewRunPanel) and
+// the scope expandStaticDetails is confined to, so it is a const rather than three
+// string literals. TestHeroRunStatusContainerExists asserts the app still emits it.
+const (
+	RunStatusContainerID       = "run-status"
+	RunStatusContainerSelector = "#" + RunStatusContainerID
+)
+
+// expandedRunPrep drives the terminal missing-models panel and then opens its
+// non-lazy disclosures, so their bodies are in the tree axe scans.
+func expandedRunPrep(runSel string) func(*App) []chromedp.Action {
+	run := heroRunPrep(runSel)
+	return func(app *App) []chromedp.Action {
+		return append(run(app),
+			expandStaticDetails(RunStatusContainerSelector),
+			chromedp.Sleep(300*time.Millisecond),
+		)
+	}
+}
+
+// MinStaticDetailsOnRunPanel is the number of NON-LAZY <details> the terminal
+// missing-models panel is expected to carry. Measured browserlessly on the lab at
+// 52cb872 — the custom-node half's "Repository, node types and manual install
+// command", the "Other pack claiming the same node: …" alternate, and "Technical
+// details". Pinned by TestRunPanelCarriesCollapsedDetails so the number cannot drift
+// silently; the browser step below only insists it opened at least one, because a
+// hard count there would abort the whole walk on ordinary UI churn.
+const MinStaticDetailsOnRunPanel = 3
+
+// expandStaticDetails opens every non-LAZY <details> INSIDE scopeSel, and fails if it
+// opened none.
+//
+// 🔴 The failure is the point. A step that silently opens zero elements is
+// indistinguishable from one that works, and this repo has shipped several "0
+// violations" numbers that were really "the surface was never loaded". Returning an
+// error makes a no-op expansion abort the capture instead of producing a plausible
+// screenshot.
+//
+// 🔴 hx-get carriers are SKIPPED deliberately, not overlooked. The setup disclosure
+// ("Change where civitai-manager installs model files") loads its body over an htmx GET
+// fired by its own toggle, and that GET runs suggestComfyModelPath — a ComfyUI
+// round-trip with its own 5s timeout. Opening it would put a new flake surface on the
+// run panel for one extra collapsed body; the repo's own note on the setup view says to
+// do that deliberately with its own before/after capture diff, or not at all.
+//
+// 🔴 THE SCOPE IS NOT TIDINESS — it is what keeps this capture STABLE, and it was
+// MEASURED, not assumed. The first version of this action opened every <details> on the
+// page, which reached the workflow detail page's "Referenced resources" card. Two walks
+// of the same tree then differed on this view's PNG in a 316×23px box: the chips read
+// `detailer-MISSING · dreamshaperXL-MISSING` in one run and the reverse in the other.
+// The cause is upstream and real — comfy.ExtractResources ranges a
+// `map[string]apiNode`, so the order it returns (and therefore the order persisted into
+// workflows.resources at seed time) is randomised per process, while its own doc
+// comment claims "first-seen order preserved". That is an APP bug, not a harness one,
+// and it is invisible to the rest of the walk only because those chips sit inside a
+// collapsed <details> that nothing opens. Widening this scope re-imports it.
+func expandStaticDetails(scopeSel string) chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		js := fmt.Sprintf(`(() => {
+  const root = document.querySelector(%q);
+  if (!root) return -1;
+  let n = 0;
+  for (const d of root.querySelectorAll('details')) {
+    if (d.hasAttribute('hx-get')) continue;
+    if (!d.open) { d.open = true; n++; }
+  }
+  return n;
+})()`, scopeSel)
+		var opened int
+		if err := chromedp.Evaluate(js, &opened).Do(ctx); err != nil {
+			return err
+		}
+		if opened < 0 {
+			return fmt.Errorf("expandStaticDetails: no element matches %q — the scope container is "+
+				"gone, so nothing was expanded and this view is a duplicate of the hero", scopeSel)
+		}
+		if opened == 0 {
+			return fmt.Errorf("expandStaticDetails opened NO <details> inside %q — the collapsed "+
+				"content this view exists to scan is not there, so its axe result would be a fact "+
+				"about a surface that was never loaded", scopeSel)
+		}
+		return nil
+	})
+}
+
+// fixModelDialogPrep drives a workflow detail page into its terminal missing-models
+// panel (heroRunPrep) and then one step FURTHER: it clicks the idx-th missing file's
+// "Choose a model…" trigger and waits for that file's native <dialog> to be [open].
+//
+// 🔴 The wait is on `[open]`, not on any text inside the dialog. fixModelDialog's
+// markup is in the DOM from the moment the panel renders — closed, but present — so a
+// text wait would be satisfied instantly by content the browser is not displaying and
+// axe would not scan, and the capture would silently be of the closed state again.
+// `[open]` is the attribute showModal() sets, so it is the one signal that
+// distinguishes "rendered" from "shown".
+//
+// ⚠ Honest scope limit worth knowing before quoting this view's numbers: showModal()
+// makes the rest of the document inert, so these two views' axe results are about the
+// DIALOG, not about the run panel behind it. They ADD the dialog subtree to the audit;
+// they are not a second scan of the panel the heroes already cover.
+func fixModelDialogPrep(runSel string, idx int) func(*App) []chromedp.Action {
+	run := heroRunPrep(runSel)
+	return func(app *App) []chromedp.Action {
+		trigger := FixModelTriggerSelector(idx)
+		return append(run(app),
+			chromedp.WaitVisible(trigger, chromedp.ByQuery),
+			chromedp.Click(trigger, chromedp.ByQuery),
+			chromedp.WaitVisible("#"+FixModelDialogID(idx)+"[open]", chromedp.ByQuery),
+			chromedp.Sleep(300*time.Millisecond),
+		)
 	}
 }
 
@@ -302,11 +478,11 @@ func Walk(ctx context.Context, execPath, outDir, label string) (*WalkResult, err
 		return nil, fmt.Errorf("create out dir: %w", err)
 	}
 
-	workDir, err := os.MkdirTemp("", "uxaudit-walk-")
+	workDir, releaseWorkDir, err := acquireWorkDir()
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(workDir)
+	defer releaseWorkDir()
 
 	app, err := Boot(workDir)
 	if err != nil {

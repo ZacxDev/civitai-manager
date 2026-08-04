@@ -347,7 +347,14 @@ func TestWalkViewPathsAreServable(t *testing.T) {
 	// it in the same commit as the view is the whole point of a ratchet: left at 12, the
 	// one view covering that branch could be deleted again and this test would still
 	// pass — which is precisely how the branch went uncaptured in the first place.
-	const minViews = 13
+	//
+	// 13 → 16 with run-fix-model + run-fix-model-blocked (the per-file Fix <dialog>,
+	// opened) and run-missing-models-expanded (the panel's collapsed <details>, opened).
+	// The first two are the ONLY views that scan anything inside fixModelDialog —
+	// showModal() means the subtree is hidden/inert in every other capture — so leaving
+	// the floor at 13 would let the one view carrying cardInstallBlockedText be deleted
+	// with nothing going red. The third is the only one that scans a <details> body.
+	const minViews = 16
 	if n := len(Views(app)); n < minViews {
 		t.Errorf("Views() returned %d views, want at least %d — the walk's coverage shrank; "+
 			"if a view was deliberately removed, lower this floor in the same commit", n, minViews)
@@ -395,7 +402,7 @@ func TestHeroRunStatusContainerExists(t *testing.T) {
 		if !strings.Contains(body, "SDXL Portrait") {
 			t.Fatalf("GET %s did not render the seeded hero workflow", path)
 		}
-		if !strings.Contains(body, `id="run-status"`) {
+		if !strings.Contains(body, `id="`+RunStatusContainerID+`"`) {
 			t.Errorf(`workflow detail page %s has no id="run-status" container — `+
 				`readRunSeq/waitForNewRunPanel would never see a run and the hero capture would time out`, path)
 		}

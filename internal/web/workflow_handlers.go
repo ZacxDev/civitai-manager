@@ -179,19 +179,76 @@ func (s *Server) handleWorkflowImportPNG(w http.ResponseWriter, r *http.Request)
 	}
 
 	name := defaultWorkflowName(header.Filename)
+
+	// 🔴 THE CHUNK KEYWORD IS A HINT, NEVER THE ANSWER. ComfyUI writes the api graph
+	// under `prompt` and the editor graph under `workflow`, but the only check
+	// comfy.ExtractFromPNG applies is looksLikeJSON — a first-byte pre-filter, not a
+	// parse — so a truncated, wrapped or UI-shaped `prompt` chunk used to be stored
+	// VERBATIM as format=api. This was the ONE import path that skipped
+	// classification: handleWorkflowImport (above), importOneArchive
+	// (discover_workflow_import.go) and the library workflow scan all run
+	// comfy.DetectFormat and act on what it says.
+	//
+	// Both chunks now go through DetectFormat, in the same api-then-ui preference
+	// order as before, and the DETECTED format is what gets stored. Trying the second
+	// chunk when the first does not classify is deliberately MORE permissive than the
+	// old code: a PNG whose `prompt` chunk is truncated but whose `workflow` chunk is
+	// intact used to yield an unusable api-labelled row and silently drop the good
+	// graph; it now imports the ui graph.
+	//
+	// 🔴 THE ORDER OF THIS SLICE AND THE `break` ARE BOTH LOAD-BEARING, and neither is
+	// visible in any type. A normal ComfyUI PNG carries BOTH chunks (see
+	// comfy.ExtractFromPNG), and both classify, so swapping the two operands — or
+	// dropping the break, which makes the LAST classifiable chunk win — silently
+	// reclassifies every real ComfyUI import from api to ui. Nothing errors: `format`
+	// then drives store.Workflow.Runnable, canQueueWorkflow, the editor hand-off gate
+	// and the run zone, all of which simply render a different app. Both mutants
+	// survived the entire suite until
+	// TestWorkflowImportPNGStoresTheDetectedFormat's "both chunks classify" case
+	// existed — it is the ONLY thing pinning this line.
 	var (
 		graph  string
 		format string
-		res    []string
 	)
-	if ex.APIGraph != nil {
-		graph, format = string(ex.APIGraph), comfy.FormatAPI
-		if r, rerr := comfy.ExtractResources(ex.APIGraph); rerr == nil {
-			res = r
+	// A nil candidate needs no guard: DetectFormat(nil) fails to unmarshal and returns
+	// ErrUnknownFormat, so an absent chunk takes the same `continue` as a junk one.
+	for _, cand := range []json.RawMessage{ex.APIGraph, ex.UIGraph} {
+		f, derr := comfy.DetectFormat(cand)
+		if derr != nil {
+			continue // absent, or not a graph we can classify — try the other chunk.
 		}
-	} else {
-		graph, format = string(ex.UIGraph), comfy.FormatUI
+		graph, format = string(cand), f
+		break
 	}
+	// Nothing in the PNG classified. REFUSING is the fail-CLOSED answer. Storing it
+	// under an invented third format string would only move the mislabelling one name
+	// over — `format` is a free TEXT column and every downstream switch treats an
+	// unrecognised value as the non-ui branch, i.e. as api — so a refusal the user
+	// reads beats a row they believe imported.
+	//
+	// ⚠ Nearly all of what this refuses is material the app could not use anyway (the
+	// run gate refuses it, readiness reports "unknown", ExtractResourcesAny and
+	// PrimaryCheckpoint answer nothing). But DO NOT read that as "the reject set costs
+	// no capability", because DetectFormat is NARROWER than "is there a usable node
+	// map": it decodes the WHOLE document into map[string]apiNode, so ONE sibling key
+	// whose value is a non-null scalar or array sinks an otherwise-fine graph.
+	// Measured against the shipped function — `{"3":{"class_type":"KSampler"}}` → api,
+	// but the same map plus `"version":1` or `"order":[1,2]` → ErrUnknownFormat, while
+	// a `null` or object-valued sibling still → api. Such a PNG previously produced an
+	// api row and is now refused unless an intact `workflow` chunk rescues it. Core
+	// ComfyUI's prompt serialisation emits only object values, so this is not believed
+	// to be live — but it is a real narrowing, not a null one, and if a third-party
+	// producer turns up the fix belongs in DetectFormat, not here.
+	if format == "" {
+		s.redirectWorkflows(w, r,
+			"That PNG's ComfyUI metadata is not a workflow graph this app can read "+
+				"(it may be truncated or from an unsupported version).", "error")
+		return
+	}
+	// Keyed off the DETECTED format, so a ui graph found under the `prompt` keyword is
+	// scanned as a ui graph instead of yielding nothing — the same call the archive
+	// import and the library scan make.
+	res, _ := comfy.ExtractResourcesAny(format, json.RawMessage(graph))
 
 	wf := &store.Workflow{
 		Name:      name,
