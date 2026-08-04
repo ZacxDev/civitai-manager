@@ -30,8 +30,14 @@ func TestWalkWorkDirPathIsDeterministic(t *testing.T) {
 	// one the walk actually takes — without touching the ambient environment.
 	t.Setenv(WorkDirEnv, "")
 
-	first := workDirPath()
-	second := workDirPath()
+	first, err := workDirPath()
+	if err != nil {
+		t.Fatalf("workDirPath: %v", err)
+	}
+	second, err := workDirPath()
+	if err != nil {
+		t.Fatalf("workDirPath (second call): %v", err)
+	}
 	if first != second {
 		t.Fatalf("workDirPath() returned %q then %q — the walk's work dir is not deterministic, "+
 			"so the library-sources capture embeds a different path on every run and cannot be "+
@@ -52,7 +58,11 @@ func TestWalkWorkDirPathIsDeterministic(t *testing.T) {
 func TestWalkWorkDirEnvOverrideWins(t *testing.T) {
 	custom := filepath.Join(t.TempDir(), "elsewhere")
 	t.Setenv(WorkDirEnv, custom)
-	if got := workDirPath(); got != custom {
+	got, err := workDirPath()
+	if err != nil {
+		t.Fatalf("workDirPath: %v", err)
+	}
+	if got != custom {
 		t.Fatalf("workDirPath() = %q, want the %s override %q — without a working override there "+
 			"is no way to run two walks at once, and the lock below would be a hard block rather "+
 			"than a redirect", got, WorkDirEnv, custom)
@@ -104,6 +114,180 @@ func TestWalkWorkDirRefusesAConcurrentRun(t *testing.T) {
 		t.Fatalf("acquireWorkDir after release: %v — release() did not free the lock", err3)
 	}
 	release2()
+}
+
+// TestWalkWorkDirRefusesToWipeADirectoryItDoesNotOwn is the guard for the deletion
+// hazard a FIXED path buys and MkdirTemp structurally could not have: this file wipes
+// its work dir twice per run, and the path now comes from an operator-supplied env var
+// that the lock's own refusal message tells them to set.
+//
+// Verified as a real hazard, not a hypothetical: before requireOwnedWorkDir existed,
+// pointing UXAUDIT_WORKDIR at a directory containing a file DELETED that file at
+// acquire time.
+func TestWalkWorkDirRefusesToWipeADirectoryItDoesNotOwn(t *testing.T) {
+	victim := filepath.Join(t.TempDir(), "not-ours")
+	if err := os.MkdirAll(victim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	precious := filepath.Join(victim, "thesis.txt")
+	if err := os.WriteFile(precious, []byte("years of work"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(WorkDirEnv, victim)
+
+	_, release, err := acquireWorkDir()
+	if err == nil {
+		release()
+		t.Fatal("acquireWorkDir ACCEPTED a directory it did not create — it wipes that directory " +
+			"twice per run, so this is operator data loss")
+	}
+	// The refusal must name the marker, or the operator cannot tell what would make the
+	// directory acceptable.
+	if !strings.Contains(err.Error(), workDirMarker) {
+		t.Errorf("the refusal does not name the %s marker: %v", workDirMarker, err)
+	}
+
+	// 🔴 The assertion that matters: the file is STILL THERE. "It returned an error" is
+	// not the property under test — "it deleted nothing" is.
+	if b, rerr := os.ReadFile(precious); rerr != nil || string(b) != "years of work" {
+		t.Fatalf("acquireWorkDir destroyed operator data it refused to accept: %v / %q", rerr, b)
+	}
+	// And it must not have left a lock file behind for a run it refused to start.
+	if _, lerr := os.Stat(victim + ".lock"); !os.IsNotExist(lerr) {
+		t.Errorf("a refused acquire left its lock file at %s — the next run would report a "+
+			"phantom concurrent walk", victim+".lock")
+	}
+}
+
+// TestWalkWorkDirAcceptsAnEmptyOrOwnedDirectory is the other half: the refusal above
+// must not be so broad that the harness cannot run. Without this, "refuses everything"
+// would satisfy the guard above and the walk would never start.
+func TestWalkWorkDirAcceptsAnEmptyOrOwnedDirectory(t *testing.T) {
+	base := t.TempDir()
+
+	t.Run("does not exist", func(t *testing.T) {
+		t.Setenv(WorkDirEnv, filepath.Join(base, "fresh"))
+		_, release, err := acquireWorkDir()
+		if err != nil {
+			t.Fatalf("a non-existent work dir was refused: %v", err)
+		}
+		release()
+	})
+
+	t.Run("exists and is empty", func(t *testing.T) {
+		empty := filepath.Join(base, "empty")
+		if err := os.MkdirAll(empty, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(WorkDirEnv, empty)
+		_, release, err := acquireWorkDir()
+		if err != nil {
+			t.Fatalf("an empty work dir was refused — that is what an operator improvising a "+
+				"second concurrent walk actually creates: %v", err)
+		}
+		release()
+	})
+
+	t.Run("carries our marker and real content", func(t *testing.T) {
+		owned := filepath.Join(base, "owned")
+		if err := os.MkdirAll(owned, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// A crashed run's leftovers: our marker plus a stale DB.
+		if err := os.WriteFile(filepath.Join(owned, workDirMarker), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		stale := filepath.Join(owned, "uxaudit.db")
+		if err := os.WriteFile(stale, []byte("stale"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(WorkDirEnv, owned)
+		dir, release, err := acquireWorkDir()
+		if err != nil {
+			t.Fatalf("a marked work dir left by a crashed run was refused: %v", err)
+		}
+		defer release()
+		// Fixture reached the interesting case: the stale DB really was cleared, which is
+		// the whole reason acquire wipes rather than reuses.
+		if _, serr := os.Stat(stale); !os.IsNotExist(serr) {
+			t.Errorf("the stale %s survived acquire — a second copy of every fixture would be "+
+				"seeded on top of it", stale)
+		}
+		// And the fresh dir carries a marker, or the NEXT run would refuse it.
+		if _, merr := os.Stat(filepath.Join(dir, workDirMarker)); merr != nil {
+			t.Errorf("acquire did not write the %s marker, so the next run would refuse this "+
+				"directory as foreign: %v", workDirMarker, merr)
+		}
+	})
+}
+
+// TestWalkWorkDirPathRejectsUnsafeShapes pins the second half of the deletion guard:
+// the path itself. A relative path means a different directory depending on where the
+// walk was started (`make ux-audit` cds into e2e/uxaudit), and a filesystem root is
+// never a work dir.
+func TestWalkWorkDirPathRejectsUnsafeShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		val  string
+	}{
+		{"relative", "scratch"},
+		{"relative dot-slash", "./scratch"},
+		{"parent-relative", "../scratch"},
+		{"bare dot", "."},
+		{"filesystem root", "/"},
+		{"root via traversal", "/tmp/.."},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(WorkDirEnv, tc.val)
+			got, err := workDirPath()
+			if err == nil {
+				t.Fatalf("%s=%q was ACCEPTED, resolving to %q — this harness wipes that path twice "+
+					"per run", WorkDirEnv, tc.val, got)
+			}
+		})
+	}
+}
+
+// TestWalkWorkDirLockIsASiblingNotAChild is the guard for the trailing-slash escape.
+//
+// The lock path is derived by appending ".lock" to the work dir. If the work dir were
+// not cleaned first, UXAUDIT_WORKDIR=/path/wd/ would put the lock at /path/wd/.lock —
+// INSIDE the tree acquireWorkDir wipes three lines later — so the lock would delete
+// itself and a second concurrent walk would be admitted. That is exactly the
+// two-walks-share-one-SQLite-file hazard the lock exists to prevent, reachable through
+// the one escape hatch the lock's own error message advertises.
+//
+// The fixture carries the trailing slash deliberately: without it this test passes
+// against the broken implementation.
+func TestWalkWorkDirLockIsASiblingNotAChild(t *testing.T) {
+	base := t.TempDir()
+	withSlash := filepath.Join(base, "wd") + string(os.PathSeparator)
+	t.Setenv(WorkDirEnv, withSlash)
+
+	dir, release, err := acquireWorkDir()
+	if err != nil {
+		t.Fatalf("acquireWorkDir with a trailing slash: %v", err)
+	}
+	defer release()
+
+	// The lock must not live inside the work dir.
+	if _, serr := os.Stat(filepath.Join(dir, ".lock")); serr == nil {
+		t.Errorf("the lock landed INSIDE the work dir (%s) — acquire's RemoveAll deletes it, so "+
+			"the lock cannot hold", filepath.Join(dir, ".lock"))
+	}
+	if _, serr := os.Stat(dir + ".lock"); serr != nil {
+		t.Errorf("no sibling lock at %s: %v", dir+".lock", serr)
+	}
+
+	// 🔴 The behavioural half, and the one that actually fails on the broken version: a
+	// second acquire must still be refused.
+	if _, release2, err2 := acquireWorkDir(); err2 == nil {
+		release2()
+		t.Error("a SECOND acquireWorkDir succeeded for a work dir given with a trailing slash — " +
+			"the lock was wiped by its own work-dir cleanup, so two walks would share one " +
+			"SQLite file")
+	}
 }
 
 // TestWalkAcquiresTheDeterministicWorkDir closes the SEAM the two tests above cannot
