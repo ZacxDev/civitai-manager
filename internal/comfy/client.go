@@ -553,12 +553,18 @@ func (e *HistoryEntry) AllImages() []ImageRef {
 //
 // The numeric partition is exactly what strconv.Atoi accepts, which is worth
 // stating because the boundary is not obvious: "+7", "-3" and "007" parse (so
-// they are numeric keys), while " 7", "1e3", "" and anything at or beyond ±2⁶³
-// (ErrRange) do NOT and sort as non-numeric — i.e. after every numeric key,
-// lexically. That is a valid ordering, not a bug; it is only a surprise if you
-// expected a 20-digit key to sort as a big number. Verified by brute force over
-// 42 adversarial keys: irreflexive, asymmetric, transitive, and incomparability
-// collapses to string equality (so it is in fact a total order).
+// they are numeric keys), while " 7", "1e3", "" and anything OUTSIDE int64 do
+// NOT and sort as non-numeric — i.e. after every numeric key, lexically. That is
+// a valid ordering, not a bug; it is only a surprise if you expected a 20-digit
+// key to sort as a big number.
+// ⚠ The range boundary is ASYMMETRIC and this comment got it wrong once by
+// writing "±2⁶³": int64 is [-2⁶³, 2⁶³-1], so "-9223372036854775808" PARSES and is
+// a numeric key, while "9223372036854775808" is ErrRange and is not.
+// TestLessNodeKeyIsAStrictWeakOrdering is the in-tree guard. Two ad-hoc sweeps
+// over ~40 adversarial keys each (both int64 boundaries, "+7", "7 ", "0x10",
+// Arabic-Indic digits, ":", "::") separately confirmed irreflexivity, asymmetry,
+// transitivity, and that incomparability collapses to string equality — so it is
+// in fact a total order. Those sweeps left no artifact; only the test did.
 //
 // Mixed keys are reachable, not theoretical: this package's own subgraph expander
 // mints ids as `prefix + ":" + interiorID` (convert_subgraph.go), so a VHS output

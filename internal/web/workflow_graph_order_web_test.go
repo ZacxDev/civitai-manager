@@ -149,10 +149,18 @@ func TestStructuredAPINodesOrderIsDeterministicForMixedIDs(t *testing.T) {
 // direction, and the numeric-before-non-numeric partition. Mutation-measured:
 // keep-the-suffix RED, gMaxNodes-1 RED, LessNodeKey's partition inverted RED.
 //
-// ⚠ It does NOT observe comparator INTRANSITIVITY — with the naive comparator
-// reinstated it was green 20/20, because one call cannot see a randomised
-// permutation. That is the job of the 500-call test above; this one owns the
-// truncation direction only. Do not read a green here as "the ordering is sound".
+// ⚠ It observes comparator INTRANSITIVITY only PROBABILISTICALLY, so it is not a
+// detector for it: with the naive comparator reinstated it fails ~1.3% of calls
+// (measured 13/1000, and 12/1000 by an independent re-measurement). The 500-call
+// test above is what owns that direction; this one owns the truncation direction.
+// Two consequences, opposite in direction and both load-bearing:
+//   - Do NOT read a green here as "the ordering is sound" — at p≈0.013 a 20-run
+//     sample is green ~77% of the time. An earlier version of this comment said
+//     flatly that it "does NOT observe intransitivity", generalising from exactly
+//     such a 20/20 run; that was a false claim from an underpowered sample.
+//   - Do NOT dismiss a RED here as a flake. The shipped comparator is
+//     deterministic (measured 1000/1000 green), so an intermittent failure means
+//     an unsound comparator is back, not a bad day on the host.
 func TestStructuredAPINodesTruncatesTheDeterministicPrefix(t *testing.T) {
 	const numerics = gMaxNodes + 50 // ids "0".."649" — 50 past the cap
 	var b strings.Builder

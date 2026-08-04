@@ -80,7 +80,8 @@ Next steps) — were both resolved by #79.
 - **Blast radius today:** reachable only on **api-format** workflows, and the operator's DB is
   `ui|71` — **zero** api-format rows. So it is latent for this user and live for anyone who
   imports an api graph.
-- **Next probe (verbatim):**
+- ~~**Next probe (verbatim)**~~ — **spent; both greps now return zero hits.** Kept only to show
+  what the probe was:
   ```sh
   git grep -n 'lessNumericID\|func lessNodeKey' -- internal/
   # then reproduce, in a scratch _test.go inside internal/web:
