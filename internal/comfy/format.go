@@ -87,15 +87,15 @@ func usableAPINodes(nodes map[string]apiNode) int {
 // looks at every node whose class_type is a loader (a known loader class OR any
 // class_type containing "Loader") and collects each string input value that ends
 // in a model extension. Results are de-duplicated and returned in a DETERMINISTIC
-// order: node id per lessNodeKey (client.go) — every NUMERIC id first, ascending by
+// order: node id per LessNodeKey (client.go) — every NUMERIC id first, ascending by
 // value with equal values tie-broken by string ("007" < "07" < "7"), then every
 // NON-NUMERIC id lexically — and within a node, ascending input name.
 //
 // ⚠ That partition is the point, and it is NOT "numeric if both parse, else
 // lexical". This comment stated that weaker rule for one round, and it is exactly
 // the intransitive comparison the fix replaced: on {"9","10","5abc"} it compares
-// "5abc" against "9" lexically and puts 5abc first, where lessNodeKey puts both
-// numerics ahead of it. Do not restate the rule here — read lessNodeKey.
+// "5abc" against "9" lexically and puts 5abc first, where LessNodeKey puts both
+// numerics ahead of it. Do not restate the rule here — read LessNodeKey.
 //
 // 🔴 THE ORDER IS PART OF THE CONTRACT, because this list is PERSISTED and is read
 // back as a provenance claim. It reaches `workflows.resources` from the library scan
@@ -153,7 +153,7 @@ func ExtractResources(apiGraph json.RawMessage) ([]string, error) {
 
 // sortedNodeIDs orders api-graph node ids ascending, numerically where possible.
 //
-// 🔴 IT MUST USE lessNodeKey (client.go) — DO NOT hand-roll the comparison here.
+// 🔴 IT MUST USE LessNodeKey (client.go) — DO NOT hand-roll the comparison here.
 // The obvious inline version ("numeric if both parse, else lexical") is NOT a strict
 // weak ordering and therefore does not sort at all. Witness {"9","10","5abc"}:
 // 9 < 10 numerically, "10" < "5abc" lexically, "5abc" < "9" lexically — a cycle.
@@ -166,7 +166,7 @@ func ExtractResources(apiGraph json.RawMessage) ([]string, error) {
 // That is not hypothetical. convert_subgraph.go mints interior node ids as
 // "<instance>:<interior>", so any UI workflow with a subgraph containing a loader
 // yields plain numeric ids alongside colon ids — convert_test.go pins a converted
-// graph keyed {"4","17","100:1"}. lessNodeKey also tie-breaks "07" vs "7" by string,
+// graph keyed {"4","17","100:1"}. LessNodeKey also tie-breaks "07" vs "7" by string,
 // which a bare numeric compare leaves to `sort.Slice`'s instability.
 //
 // This package had already found, fixed and guarded this exact bug in AllImages
@@ -178,7 +178,7 @@ func sortedNodeIDs(nodes map[string]apiNode) []string {
 	for id := range nodes {
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(a, b int) bool { return lessNodeKey(ids[a], ids[b]) })
+	sort.Slice(ids, func(a, b int) bool { return LessNodeKey(ids[a], ids[b]) })
 	return ids
 }
 

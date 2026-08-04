@@ -38,9 +38,25 @@ follow-ups.
 
 ## Open investigations — live diagnosis state
 
-### `lessNumericID` is a THIRD live open-coding of the intransitive comparator — measured, unfixed
+### ✅ CLOSED (PR #79) — `lessNumericID` was a THIRD live open-coding of the intransitive comparator
 
-- **Symptom + exact repro:** `internal/web/workflow_graph.go:1061` defines `lessNumericID`,
+🔴 **Fixed. Do not re-derive this.** `lessNumericID` is **deleted**; `internal/comfy`'s
+`lessNodeKey` is now **exported as `comfy.LessNodeKey`** and `structuredAPINodes` calls it —
+one rule, one place, no fourth copy. Guarded by
+`TestStructuredAPINodesOrderIsDeterministicForMixedIDs` (500 calls, mixed fixture, all-numeric
+control, positive control on the counter itself) and
+`TestStructuredAPINodesTruncatesTheDeterministicPrefix` (the truncation half). Both
+mutation-verified with `go build` confirmed green for every mutant.
+
+⚠ **The "5 distinct orders" below is this doc's number for the #75 auditor's own fixture.** The
+committed guard measures **3** on ITS fixture, stable across 8 runs — the count is a property
+of the id set, not run-to-run variance. Quote whichever fixture you actually ran.
+
+The diagnosis below is kept as the worked record; the two stale claims in it — that
+`lessNodeKey` is unexported, and that the `AllImages` doc comment is uncorrected (item 5 in
+Next steps) — were both resolved by #79.
+
+- **Symptom + exact repro (as diagnosed):** `internal/web/workflow_graph.go:1061` defined `lessNumericID`,
   byte-for-byte the naive comparator (`numeric if both parse, else lexical`). It is fed a
   randomised map range at `internal/web/workflow_graph.go:878` inside `structuredAPINodes`.
   Reproduce by calling `structuredAPINodes` repeatedly on an api graph with **mixed** node ids
@@ -56,15 +72,16 @@ follow-ups.
   process. *"mixed ids are theoretical"* — no: `internal/comfy/convert_subgraph.go` mints
   interior ids as `"<instance>:<interior>"`, and `internal/comfy/convert_test.go:632` pins a
   converted api graph keyed `{"4","17","100:1"}`.
-- **Leading hypothesis:** identical defect and identical fix to #75 — replace the comparator
-  body with `lessNodeKey`. It is in `internal/comfy` (`client.go:555`) and `internal/web`
-  imports `internal/comfy`, so it is directly callable; `lessNodeKey` is currently unexported,
-  so this needs either an exported wrapper or a small duplicate-free arrangement — **decide
-  that deliberately, do not hand-roll a third copy.**
+- **Leading hypothesis (CONFIRMED, and what #79 did):** identical defect and identical fix to
+  #75 — route the comparison through the canonical comparator. It was unexported at the time;
+  the decision taken was to **export it** (`comfy.LessNodeKey`) rather than add a wrapper,
+  since `internal/web` already imports `internal/comfy` in 83 files and the dependency
+  direction is comfy ← web.
 - **Blast radius today:** reachable only on **api-format** workflows, and the operator's DB is
   `ui|71` — **zero** api-format rows. So it is latent for this user and live for anyone who
   imports an api graph.
-- **Next probe (verbatim):**
+- ~~**Next probe (verbatim)**~~ — **spent; both greps now return zero hits.** Kept only to show
+  what the probe was:
   ```sh
   git grep -n 'lessNumericID\|func lessNodeKey' -- internal/
   # then reproduce, in a scratch _test.go inside internal/web:
@@ -109,10 +126,10 @@ follow-ups.
 
 ## Next steps (ranked)
 
-1. **Fix `lessNumericID`** (`internal/web/workflow_graph.go:1061`) — the one measured, unfixed
-   bug. Same class as #75, one-line fix once the export decision is made. Add a **mixed-id**
-   fixture with an all-numeric control; an all-one-kind set is internally a total order and
-   **cannot** observe the defect.
+1. ~~**Fix `lessNumericID`**~~ — ✅ **DONE, PR #79.** See the CLOSED section above. The fixture
+   lesson survives and generalises: an all-one-kind id set is internally a total order and
+   **cannot** observe an intransitive comparator, so a mixed fixture plus a same-kind control
+   is the only shape that measures anything.
 2. **Restart the dogfood from v0.1.107** — now trivial, nothing to kill:
    build → copy to a scratchpad dir → `serve` on `:8972` against the real DB → verify by pid +
    `/proc/<pid>/exe` + `--version`. (A free port is not a released binary; wait on the
@@ -123,10 +140,13 @@ follow-ups.
    during the hash phase persists ZERO rows** (hashing is phase 1; `local_files` are written in
    phase 3). This is the one upgrade hazard in 0.1.107.
 4. **Own the two `-race` flakes** — fix the timing dependency rather than re-running until green.
-5. **Two stale comments the #75 auditor found, out of that PR's scope:**
-   `internal/comfy/client.go:516` still describes `AllImages` by the old broken rule, ~20 lines
-   above `lessNodeKey`'s corrected doc; `internal/comfy/missing.go:148` uses plain `sort.Strings`
-   on node ids (deterministic, but orders `"1","10","2"` — a fourth spelling of the concern).
+5. **One of the two stale comments the #75 auditor found is still open.** ✅ The `AllImages`
+   doc comment (`internal/comfy/client.go`) was corrected in #79 — it described the ordering by
+   the old intransitive rule ~20 lines above the corrected doc. ⬜ Still open:
+   `internal/comfy/missing.go:148` uses plain `sort.Strings` on node ids. It is a **total
+   order**, so deterministic and not a bug — but it is a *different rule*, emitting
+   `"1","10","2"` where the api listing emits `"1","2","10"`. Two surfaces of one graph
+   disagree on node order; decide whether that is worth unifying.
 6. **devrc#330** — three sibling paths in `resume-state.sh` still print the clean DRIFT line
    having reconciled nothing.
 

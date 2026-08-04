@@ -163,8 +163,15 @@ A release note would be kind.
 The **ui** path preserves document order because it walks a `[]uiNode` **slice**. The **api**
 path sorts by node id, because its graph is a JSON **object** and a map decode leaves no
 document order to preserve. Both are deterministic. 🔴 **Any api-side node-id comparison must
-go through `lessNodeKey` (`internal/comfy/client.go`)** — see the lesson below for why
+go through `comfy.LessNodeKey` (`internal/comfy/client.go`)** — see the lesson below for why
 hand-rolling it does not merely order differently, it fails to sort at all.
+⚠ It was `lessNodeKey`, unexported, until PR #79; this instruction named a symbol
+`internal/web` could not actually call, and is now exported precisely so it can.
+⚠ An earlier wording added *"the third open-coding existed because it could not"* —
+**false, and checked too late**: `lessNumericID` landed 2026-07-24 (`a66ba19`) and
+`lessNodeKey` 2026-07-31 (`da5d164`), so the open-coding predates the canonical
+comparator by a week. It was never a workaround for the export; it was simply
+never consolidated.
 
 ## How to verify a release
 

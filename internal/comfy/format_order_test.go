@@ -206,7 +206,7 @@ func TestExtractResourcesIsDeterministicWithMixedNodeIDs(t *testing.T) {
 			"arbitrary permutation of the randomised map range", n)
 	}
 
-	// lessNodeKey puts every numeric id before every non-numeric one, then lexical.
+	// LessNodeKey puts every numeric id before every non-numeric one, then lexical.
 	want := "aaa.safetensors,bbb.safetensors,ccc.safetensors,ddd.safetensors,eee.safetensors,fff.safetensors"
 	if strings.Join(got, ",") != want {
 		t.Errorf("wrong mixed-id order\n got: %v\nwant: %s", got, want)
@@ -216,7 +216,7 @@ func TestExtractResourcesIsDeterministicWithMixedNodeIDs(t *testing.T) {
 // TestExtractResourcesIsDeterministicWithLeadingZeroIDs covers the other tie the
 // naive comparator lost: "7", "07" and "007" all Atoi to 7, so a bare `na < nb`
 // returns false both ways and `sort.Slice` — which is NOT stable — resolves the tie
-// from the randomised input. lessNodeKey tie-breaks equal values by string.
+// from the randomised input. LessNodeKey tie-breaks equal values by string.
 func TestExtractResourcesIsDeterministicWithLeadingZeroIDs(t *testing.T) {
 	graph := json.RawMessage(`{
 	  "7":   {"class_type":"VAELoader","inputs":{"vae_name":"ccc.safetensors"}},
@@ -236,7 +236,7 @@ func TestExtractResourcesIsDeterministicWithLeadingZeroIDs(t *testing.T) {
 			"500 calls — sort.Slice is unstable, so an untie-broken equal pair is "+
 			"resolved by the randomised input", n)
 	}
-	// "007" < "07" < "7" by string, which is how lessNodeKey breaks the tie.
+	// "007" < "07" < "7" by string, which is how LessNodeKey breaks the tie.
 	want := "aaa.safetensors,bbb.safetensors,ccc.safetensors"
 	if strings.Join(got, ",") != want {
 		t.Errorf("wrong equal-value order\n got: %v\nwant: %s", got, want)

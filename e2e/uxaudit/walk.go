@@ -384,7 +384,7 @@ const MinStaticDetailsOnRunPanel = 3
 // comfy.ExtractResources ranged a `map[string]apiNode` and returned a per-process random
 // order (persisted into workflows.resources at seed time) while its own doc claimed
 // "first-seen order preserved". Both halves were true when written and both are false
-// now — it sorts via lessNodeKey, and the doc says so.
+// now — it sorts via LessNodeKey, and the doc says so.
 //
 // 🔴 The scope stays narrow, but the decision must rest on the reasons that SURVIVE,
 // not on this one: opening every <details> also reaches the lazy hx-get disclosure,
