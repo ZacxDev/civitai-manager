@@ -182,6 +182,13 @@ func (b *Browser) CaptureWith(pageURL string, vp Viewport, prep []chromedp.Actio
 		return nil
 	}))
 
+	// Freeze animation, then confirm quiescence, then shoot. Both steps run AFTER axe and
+	// the digest so those two scan the page exactly as it renders for a user.
+	tasks = append(tasks,
+		chromedp.Evaluate(freezeAnimationScript, nil),
+		waitForTransitionsToSettle(transitionSettleTimeout),
+	)
+
 	tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
 		b, err := page.CaptureScreenshot().
 			WithFormat(page.CaptureScreenshotFormatPng).
@@ -241,6 +248,110 @@ func (b *Browser) CaptureWith(pageURL string, vp Viewport, prep []chromedp.Actio
 	out.NetworkJSON, _ = json.Marshal(netEvents)
 
 	return out, nil
+}
+
+// freezeAnimationScript collapses every CSS transition and animation to zero duration
+// immediately before the screenshot, so any in-flight transition jumps to its FINAL
+// value and no new one can start.
+//
+// 🔴 This is the fix; waitForTransitionsToSettle below is only a confirmation. Waiting
+// alone was measured and is NOT sufficient: it cut the observed instability from 4-in-24
+// to 1-in-30, but could not remove it, because a transition can begin AFTER the last
+// poll — including during CaptureScreenshot itself, which with captureBeyondViewport is
+// not instantaneous. No pre-shot check can close that window; removing the source can.
+//
+// It does not doctor the artifact. The settled value is what a user sees once the
+// 120ms elapses, and it is exactly what a prefers-reduced-motion user sees at all
+// times; only the intermediate frames are eliminated. It runs AFTER axe and the a11y
+// digest so neither is measured against a modified page.
+//
+// `animation-play-state: paused` is deliberately NOT used: it freezes an infinite
+// animation at whatever frame it reached, which is nondeterministic. Zero duration
+// pins it at its final/first frame instead.
+const freezeAnimationScript = `(() => {
+  const id = 'uxaudit-freeze-animation';
+  if (document.getElementById(id)) return true;
+  const st = document.createElement('style');
+  st.id = id;
+  st.textContent = '*, *::before, *::after {' +
+    'transition-duration: 0s !important;' +
+    'transition-delay: 0s !important;' +
+    'animation-duration: 0s !important;' +
+    'animation-delay: 0s !important;' +
+    'animation-iteration-count: 1 !important;' +
+  '}';
+  (document.head || document.documentElement).appendChild(st);
+  return true;
+})()`
+
+// transitionSettleTimeout bounds the wait below. It is a BACKSTOP, not a patience
+// setting: the transitions in question are 120ms, so anything still running after this
+// is not going to settle and the capture proceeds rather than failing the walk.
+const transitionSettleTimeout = 2 * time.Second
+
+// runningTransitionsScript counts CSS TRANSITIONS currently running in the page.
+//
+// 🔴 Transitions ONLY — deliberately not every animation. A CSS animation can be
+// `infinite` (a spinner), so waiting on getAnimations() as a whole would burn the
+// timeout on every capture of any page with one. A transition always terminates, which
+// is what makes waiting on it bounded by construction rather than by the deadline.
+const runningTransitionsScript = `(() => {
+  if (typeof document.getAnimations !== 'function') return 0;
+  if (typeof CSSTransition === 'undefined') return 0;
+  return document.getAnimations().filter(
+    a => a instanceof CSSTransition && a.playState === 'running').length;
+})()`
+
+// waitForTransitionsToSettle blocks until no CSS transition is running, then confirms
+// it once more after a short gap. With freezeAnimationScript applied first this is
+// normally satisfied on the first poll; it stays as the confirmation that the freeze
+// actually took.
+//
+// 🔴 WHY ANY OF THIS EXISTS, measured rather than assumed. Without it the
+// run-missing-models-expanded capture was intermittently nondeterministic: 24 captures
+// of the SAME view on the same tree produced 3 DISTINCT screenshots (20/3/1), differing
+// only in a 99x36px box at (64,337) — the "Generate" button, whose fill read
+// rgb(24,100,171) settled and rgb(24,103,176) mid-transition. The rule is
+// `transition: background-color 120ms ease` on .civitai-button
+// (internal/web/assets/civitai-components.css:43).
+//
+// ⚠ `prefers-reduced-motion: reduce` would NOT have fixed it, which is worth recording
+// because it is the obvious first move: the app's reduced-motion blocks all live in
+// app.css, while that transition is in the VENDORED civitai-components.css and is not
+// covered by any of them. Emulating reduced motion would also change what every capture
+// renders; waiting changes only WHEN the shot is taken.
+//
+// The second confirmation after a gap is the cheap defence against sampling the one
+// instant between two chained transitions, where a single poll reads zero.
+func waitForTransitionsToSettle(timeout time.Duration) chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		deadline := time.Now().Add(timeout)
+		quiet := 0
+		for {
+			var running int
+			if err := chromedp.Evaluate(runningTransitionsScript, &running).Do(ctx); err != nil {
+				return err // a broken probe must not pass as "settled"
+			}
+			if running == 0 {
+				quiet++
+				if quiet >= 2 {
+					return nil
+				}
+			} else {
+				quiet = 0
+			}
+			if time.Now().After(deadline) {
+				// Deliberately NOT an error: a stuck transition is not worth failing a walk
+				// over, and the capture is still useful. It just may not be byte-stable.
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(40 * time.Millisecond):
+			}
+		}
+	})
 }
 
 func orDefault(s, def string) string {
