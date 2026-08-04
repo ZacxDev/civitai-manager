@@ -260,24 +260,47 @@ func TestWalkWorkDirPathRejectsUnsafeShapes(t *testing.T) {
 //
 // The fixture carries the trailing slash deliberately: without it this test passes
 // against the broken implementation.
+//
+// 🔴 It also PRE-CREATES the directory, and that is load-bearing. Against the broken
+// implementation an absent directory makes the lock creation fail with ENOENT — a red,
+// but for the wrong reason, and one that would disappear the moment the directory
+// happened to exist. Pre-creating it lets the lock be created INSIDE the work dir,
+// which is the real hazard: the wipe then deletes the lock and the second acquire is
+// admitted. Measured: with the directory absent the mutant fails on "no such file or
+// directory"; with it present the mutant reaches the assertion this test is about.
 func TestWalkWorkDirLockIsASiblingNotAChild(t *testing.T) {
 	base := t.TempDir()
-	withSlash := filepath.Join(base, "wd") + string(os.PathSeparator)
+	dirNoSlash := filepath.Join(base, "wd")
+	if err := os.MkdirAll(dirNoSlash, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 🔴 The marker is load-bearing for the same reason as pre-creating the directory.
+	// Without it, a broken (un-cleaned) implementation puts the lock inside the dir, and
+	// requireOwnedWorkDir then refuses the whole acquire — so this test goes red with a
+	// DIFFERENT guard's error and would pass with the sibling derivation still broken.
+	// Marking the directory as ours lets the acquire proceed, so the assertions below
+	// are the ones that fail.
+	if err := os.WriteFile(filepath.Join(dirNoSlash, workDirMarker), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withSlash := dirNoSlash + string(os.PathSeparator)
 	t.Setenv(WorkDirEnv, withSlash)
 
-	dir, release, err := acquireWorkDir()
+	_, release, err := acquireWorkDir()
 	if err != nil {
 		t.Fatalf("acquireWorkDir with a trailing slash: %v", err)
 	}
 	defer release()
 
-	// The lock must not live inside the work dir.
-	if _, serr := os.Stat(filepath.Join(dir, ".lock")); serr == nil {
+	// Both paths are derived from the KNOWN-clean fixture, never from acquireWorkDir's
+	// return value — a broken implementation returns the un-cleaned path, and deriving
+	// the expectation from it would make expectation and subject move together.
+	if _, serr := os.Stat(filepath.Join(dirNoSlash, ".lock")); serr == nil {
 		t.Errorf("the lock landed INSIDE the work dir (%s) — acquire's RemoveAll deletes it, so "+
-			"the lock cannot hold", filepath.Join(dir, ".lock"))
+			"the lock cannot hold", filepath.Join(dirNoSlash, ".lock"))
 	}
-	if _, serr := os.Stat(dir + ".lock"); serr != nil {
-		t.Errorf("no sibling lock at %s: %v", dir+".lock", serr)
+	if _, serr := os.Stat(dirNoSlash + ".lock"); serr != nil {
+		t.Errorf("no sibling lock at %s: %v", dirNoSlash+".lock", serr)
 	}
 
 	// 🔴 The behavioural half, and the one that actually fails on the broken version: a
