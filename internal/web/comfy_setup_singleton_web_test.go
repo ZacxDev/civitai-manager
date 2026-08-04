@@ -47,6 +47,25 @@ var (
 		NodeIDs: []string{"4"}, ClassType: "ImpactWildcardEncode", InputName: "populated_text",
 		Current: "a gone preset", Choices: []string{"another preset"},
 	}
+	// 🔴 THE DISCRIMINATOR FOR THE MODEL-FILE FILTER: routable=TRUE, modelFile=FALSE.
+	// The same detector input as routableFileBadOption, drifted to a LABEL rather than
+	// a filename — measured `IsModelFileValue=false, routable=true`.
+	//
+	// Every other fixture has the two filters agreeing, which is why deleting
+	// comfy.IsModelFileValue from blockedModelFileOptions survived TWICE: the inert
+	// fixtures are rejected by the routable filter anyway, so the row that looked like
+	// it guarded the model-file filter proved nothing about it. This one is rejected
+	// ONLY by the model-file filter.
+	//
+	// It is also the case with the worst consumer cost. badOptionGroup gates its
+	// Install control on IsModelFileValue, so this option renders NO Install button at
+	// all — counting it would promise to unblock a control that does not exist, which
+	// is a step beyond the unroutable case (where the button at least renders,
+	// disabled).
+	routableNonFileBadOption = comfy.BadOption{
+		NodeIDs: []string{"7"}, ClassType: "UltralyticsDetectorProvider", InputName: "model_name",
+		Current: "Select a detector", Choices: []string{"bbox/face_yolov8m.pt"},
+	}
 )
 
 // TestBadOptionFixturesAreDiscriminating is the PRECONDITION for every test below
@@ -72,6 +91,8 @@ func TestBadOptionFixturesAreDiscriminating(t *testing.T) {
 			"a MODEL FILE that is NOT routable — separates the two filters"},
 		{"inert", inertBadOption, false, false, "neither signal"},
 		{"inert2", inertBadOption2, false, false, "neither signal"},
+		{"routable non-file", routableNonFileBadOption, false, true,
+			"ROUTABLE but not a model file — separates the filters the other way"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := comfy.IsModelFileValue(tc.bo.Current); got != tc.wantModelFile {
@@ -86,13 +107,22 @@ func TestBadOptionFixturesAreDiscriminating(t *testing.T) {
 			}
 		})
 	}
-	// The discrimination that matters: at least one fixture on which the two filters
-	// DISAGREE. Without it, deleting either filter is undetectable.
+	// 🔴 The discrimination that matters, and it needs a fixture in EACH direction.
+	// A set where the two filters only ever agree is over-determined: deleting either
+	// one changes nothing, and a row that appears to guard it passes for the other
+	// filter's reason. That is not hypothetical — it is why the model-file filter's
+	// mutant survived two rounds.
 	_, _, unroutableRoutable := comfy.InferBadOptionInstall(
 		unroutableFileBadOption.ClassType, unroutableFileBadOption.InputName, unroutableFileBadOption.Current)
 	if !comfy.IsModelFileValue(unroutableFileBadOption.Current) || unroutableRoutable {
-		t.Fatalf("no fixture separates the model-file filter from the routable filter, so " +
-			"every test below is over-determined and would pass with either one deleted")
+		t.Fatalf("no fixture is model-file-but-NOT-routable, so deleting the routable filter " +
+			"is undetectable and every row below is over-determined")
+	}
+	_, _, nonFileRoutable := comfy.InferBadOptionInstall(
+		routableNonFileBadOption.ClassType, routableNonFileBadOption.InputName, routableNonFileBadOption.Current)
+	if comfy.IsModelFileValue(routableNonFileBadOption.Current) || !nonFileRoutable {
+		t.Fatalf("no fixture is routable-but-NOT-a-model-file, so deleting the model-file " +
+			"filter is undetectable — the exact mutant that survived twice")
 	}
 }
 
@@ -132,7 +162,22 @@ func TestBlockedModelFileOptionsCountsOnlyUnblockableFiles(t *testing.T) {
 			name: "two inert only",
 			bad:  []comfy.BadOption{inertBadOption, inertBadOption2},
 			want: 0,
-			why:  "dropping the model-file filter would say 2 — the mutant that survived",
+			why:  "nothing routable and nothing installable",
+		}, {
+			// 🔴 THE ROW THAT KILLS THE MODEL-FILE MUTANT. The "two inert" row above
+			// looks like it does, and does not: the routable filter rejects those two
+			// anyway, so it stays green with IsModelFileValue deleted. This one is
+			// rejected ONLY by IsModelFileValue.
+			name: "routable but not a model file",
+			bad:  []comfy.BadOption{routableNonFileBadOption},
+			want: 0,
+			why:  "it renders no Install control at all, so a folder unblocks nothing",
+		}, {
+			name: "one routable among every other shape",
+			bad: []comfy.BadOption{routableFileBadOption, routableNonFileBadOption,
+				unroutableFileBadOption, inertBadOption},
+			want: 1,
+			why:  "exactly one of the four is a model file this server could place",
 		}, {
 			name: "routable but already configured", bad: []comfy.BadOption{routableFileBadOption},
 			dlEligible: true, want: 0, why: "every Install button already works",
@@ -153,22 +198,34 @@ func TestBlockedModelFileOptionsCountsOnlyUnblockableFiles(t *testing.T) {
 // automatic install for 3 model files" when exactly one gets unblocked — which is the
 // harm blockedModelFileOptions' own comment exists to prevent.
 func TestSetupCTALabelCountsOnlyUnblockableFiles(t *testing.T) {
+	// One of each shape: only routableFileBadOption is unblockable by a models folder.
 	section := renderString(t, incompatibleOptionsSection(
-		[]comfy.BadOption{routableFileBadOption, inertBadOption, inertBadOption2},
+		[]comfy.BadOption{routableFileBadOption, routableNonFileBadOption,
+			unroutableFileBadOption, inertBadOption},
 		7, "tok", false, false, true))
 
-	// PRECONDITION: all three groups really rendered, so the count is being taken over
-	// a section that genuinely holds three options.
-	if n := strings.Count(section, `name="opt_input"`); n != 3 {
-		t.Fatalf("precondition: want 3 rendered groups, got %d:\n%s", n, section)
+	// PRECONDITIONS. All four groups rendered, and only TWO of them carry an Install
+	// control at all — so the count is being taken over a section that can actually
+	// tell the three wrong answers apart (4 = len(bad), 2 = Install controls,
+	// 1 = correct).
+	if n := strings.Count(section, `name="opt_input"`); n != 4 {
+		t.Fatalf("precondition: want 4 rendered groups, got %d:\n%s", n, section)
+	}
+	if n := strings.Count(section, ">Install "); n != 2 {
+		t.Fatalf("precondition: want 2 Install controls (the two model-file options), got %d:\n%s",
+			n, section)
 	}
 	if !strings.Contains(section, "Set up automatic install for 1 model file<") {
-		t.Errorf("the CTA must count only the files a models folder unblocks (1 of 3):\n%s", section)
+		t.Errorf("the CTA must count only the files a models folder unblocks (1 of 4):\n%s", section)
 	}
-	for _, wrong := range []string{"for 2 model file", "for 3 model file"} {
-		if strings.Contains(section, wrong) {
-			t.Errorf("the CTA over-promises (%q) — it must not count options the folder "+
-				"cannot unblock:\n%s", wrong, section)
+	// Each wrong count corresponds to a specific dropped filter, so name them.
+	for _, wrong := range []struct{ text, mutant string }{
+		{"for 2 model file", "the routable filter was dropped"},
+		{"for 3 model file", "the model-file filter was dropped"},
+		{"for 4 model file", "the count became len(bad)"},
+	} {
+		if strings.Contains(section, wrong.text) {
+			t.Errorf("the CTA over-promises (%q) — %s:\n%s", wrong.text, wrong.mutant, section)
 		}
 	}
 }
