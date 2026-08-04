@@ -307,7 +307,9 @@ func cloudResourceTable(rows []comfy.ResolvedResource) g.Node {
 			h.Td(h.Class("py-1 font-mono text-xs text-slate-400 break-all align-top"), urnCell),
 		))
 	}
-	return h.Div(h.Class("overflow-x-auto"),
+	// Scrollable region: every cell is text or a badge, so this table contains
+	// NOTHING focusable in any state and needs its own tab stop. See scrollTable.
+	return scrollTable("Resolved resources",
 		h.Table(h.Class("w-full text-left text-sm"),
 			h.THead(h.Tr(
 				th("Resource"), th("Status"), th("AIR URN"),
