@@ -3,6 +3,7 @@ package comfy
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -139,8 +140,125 @@ func TestExtractResourcesOrderProbeCanObserveDisorder(t *testing.T) {
 	t.Logf("positive control: probe observed %d distinct orderings for an unstable producer", got)
 }
 
+// 🔴 TestExtractResourcesIsDeterministicWithMixedNodeIDs is the case the first
+// version of this file COULD NOT REACH, and it is where the real bug lived.
+//
+// The original fixture used all-numeric ids, and the "non-numeric" test used
+// all-non-numeric ids. Both are the SAFE cases: each is internally a total order.
+// The defect only appears when numeric and non-numeric ids are MIXED, because the
+// naive "numeric if both parse, else lexical" comparator is then intransitive —
+// {"9","10","5abc"}: 9 < 10, "10" < "5abc", "5abc" < "9" — and `sort.Slice` on an
+// intransitive comparator returns an arbitrary permutation of its (randomised)
+// input. A guard can be correct, and green, and still never construct the input
+// that breaks the thing it guards.
+//
+// The mixed set is production-reachable: convert_subgraph.go mints interior node
+// ids as "<instance>:<interior>", so any UI workflow with a subgraph containing a
+// loader converts to a graph keyed like {"4","17","100:1"}.
+func TestExtractResourcesIsDeterministicWithMixedNodeIDs(t *testing.T) {
+	graph := json.RawMessage(`{
+	  "1":    {"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"aaa.safetensors"}},
+	  "4":    {"class_type":"VAELoader","inputs":{"vae_name":"bbb.safetensors"}},
+	  "9":    {"class_type":"LoraLoader","inputs":{"lora_name":"ccc.safetensors"}},
+	  "12":   {"class_type":"ControlNetLoader","inputs":{"control_net_name":"ddd.safetensors"}},
+	  "12:3": {"class_type":"CLIPVisionLoader","inputs":{"clip_name":"eee.safetensors"}},
+	  "12:8": {"class_type":"UNETLoader","inputs":{"unet_name":"fff.safetensors"}}
+	}`)
+
+	got, _ := ExtractResources(graph)
+	if len(got) != 6 {
+		t.Fatalf("precondition: want 6 resources from the mixed-id fixture, got %d (%v)",
+			len(got), got)
+	}
+	// Precondition: the fixture really does mix parseable and unparseable ids, or it
+	// is just the all-numeric case again and cannot observe the defect.
+	if _, err := strconv.Atoi("12:3"); err == nil {
+		t.Fatal("precondition: \"12:3\" must NOT parse as an int for this fixture to mix id kinds")
+	}
+
+	if n := distinctOrderings(t, 500, func() []string {
+		out, _ := ExtractResources(graph)
+		return out
+	}); n != 1 {
+		t.Errorf("MIXED node ids are NON-DETERMINISTIC: %d distinct orderings across 500 calls — "+
+			"the comparator is not a strict weak ordering, so sort.Slice returns an "+
+			"arbitrary permutation of the randomised map range", n)
+	}
+
+	// lessNodeKey puts every numeric id before every non-numeric one, then lexical.
+	want := "aaa.safetensors,bbb.safetensors,ccc.safetensors,ddd.safetensors,eee.safetensors,fff.safetensors"
+	if strings.Join(got, ",") != want {
+		t.Errorf("wrong mixed-id order\n got: %v\nwant: %s", got, want)
+	}
+}
+
+// TestExtractResourcesIsDeterministicWithLeadingZeroIDs covers the other tie the
+// naive comparator lost: "7", "07" and "007" all Atoi to 7, so a bare `na < nb`
+// returns false both ways and `sort.Slice` — which is NOT stable — resolves the tie
+// from the randomised input. lessNodeKey tie-breaks equal values by string.
+func TestExtractResourcesIsDeterministicWithLeadingZeroIDs(t *testing.T) {
+	graph := json.RawMessage(`{
+	  "7":   {"class_type":"VAELoader","inputs":{"vae_name":"ccc.safetensors"}},
+	  "07":  {"class_type":"VAELoader","inputs":{"vae_name":"bbb.safetensors"}},
+	  "007": {"class_type":"VAELoader","inputs":{"vae_name":"aaa.safetensors"}}
+	}`)
+
+	got, _ := ExtractResources(graph)
+	if len(got) != 3 {
+		t.Fatalf("precondition: want 3 resources, got %d (%v)", len(got), got)
+	}
+	if n := distinctOrderings(t, 500, func() []string {
+		out, _ := ExtractResources(graph)
+		return out
+	}); n != 1 {
+		t.Errorf("equal-value node ids are NON-DETERMINISTIC: %d distinct orderings across "+
+			"500 calls — sort.Slice is unstable, so an untie-broken equal pair is "+
+			"resolved by the randomised input", n)
+	}
+	// "007" < "07" < "7" by string, which is how lessNodeKey breaks the tie.
+	want := "aaa.safetensors,bbb.safetensors,ccc.safetensors"
+	if strings.Join(got, ",") != want {
+		t.Errorf("wrong equal-value order\n got: %v\nwant: %s", got, want)
+	}
+}
+
+// TestPrimaryCheckpointAPIIsDeterministic covers the SAME defect in the sibling
+// function. It matters more than the resource list: autoLink prepends this value to
+// its candidate list and takes the first hit, so a random answer randomises the
+// persisted model_id/version_id a re-scanned workflow acquires.
+func TestPrimaryCheckpointAPIIsDeterministic(t *testing.T) {
+	graph := json.RawMessage(`{
+	  "9":   {"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"ccc.safetensors"}},
+	  "2":   {"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"aaa.safetensors"}},
+	  "5":   {"class_type":"CheckpointLoader","inputs":{"ckpt_name":"bbb.safetensors"}},
+	  "5:1": {"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"ddd.safetensors"}}
+	}`)
+
+	first, ok := PrimaryCheckpoint(FormatAPI, graph)
+	if !ok {
+		t.Fatal("precondition: fixture must yield a checkpoint")
+	}
+	seen := map[string]bool{}
+	for i := 0; i < 500; i++ {
+		got, _ := PrimaryCheckpoint(FormatAPI, graph)
+		seen[got] = true
+	}
+	if len(seen) != 1 {
+		t.Errorf("PrimaryCheckpoint(api) is NON-DETERMINISTIC: %d distinct answers across 500 "+
+			"calls; this feeds autoLink's persisted model_id/version_id", len(seen))
+	}
+	if first != "aaa.safetensors" {
+		t.Errorf("PrimaryCheckpoint(api) = %q, want the LOWEST node id's checkpoint "+
+			"(node 2 = aaa.safetensors)", first)
+	}
+}
+
 // TestExtractResourcesHandlesNonNumericNodeIDs pins the fallback: ids that are not
 // integers sort lexically rather than panicking or silently grouping.
+//
+// ⚠ This is the SAFE case — all ids are non-numeric, so the comparison is pure
+// lexical and total. It cannot observe the intransitivity bug; see
+// TestExtractResourcesIsDeterministicWithMixedNodeIDs for that.
 func TestExtractResourcesHandlesNonNumericNodeIDs(t *testing.T) {
 	graph := json.RawMessage(fmt.Sprintf(`{
 	  %q: {"class_type":"VAELoader","inputs":{"vae_name":"bbb.safetensors"}},

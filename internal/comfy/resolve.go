@@ -67,7 +67,11 @@ type ResourceLookup interface {
 func ResolveResources(apiGraph json.RawMessage, lookup ResourceLookup, origins map[string]NodeOrigin) ([]ResolvedResource, error) {
 	var out []ResolvedResource
 
-	// 1. Model-file resources (loader inputs), in first-seen order.
+	// 1. Model-file resources (loader inputs), ordered by node id then input name.
+	// (NOT "first-seen": an api graph is a JSON object, so decoding it leaves no
+	// document order to preserve — see ExtractResources.) This order reaches the
+	// cloud panel's resolved-resource table and the submitted input.resources, so it
+	// has to be stable across runs of the same graph.
 	refs, _ := ExtractResources(apiGraph)
 	for _, ref := range refs {
 		out = append(out, resolveModelRef(ref, lookup))
