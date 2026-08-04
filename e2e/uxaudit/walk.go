@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -87,6 +88,41 @@ func RunControlFragmentPath(workflowID int64) string {
 // ImportTriggerSelector is the paste-JSON import trigger's selector.
 func ImportTriggerSelector() string {
 	return fmt.Sprintf(`button[title^=%q]`, ImportTriggerTitlePrefix)
+}
+
+// FixModelDialogIDPrefix + FixModelDialogID mirror internal/web's fixModelDialogID:
+// each missing model file gets its own native <dialog> named by its INDEX in the
+// panel. A rename there is invisible to this module until a browser hangs on
+// WaitVisible, so it is pinned browserlessly like ImportDialogID.
+const FixModelDialogIDPrefix = "fix-model-"
+
+// FixModelDialogIdx is the missing-file row the walk opens. 0 is the first row, and
+// the lab's preflight reports exactly two missing models, so it always exists.
+const FixModelDialogIdx = 0
+
+// FixModelDialogID is the id of the idx-th missing file's Fix dialog.
+func FixModelDialogID(idx int) string { return FixModelDialogIDPrefix + strconv.Itoa(idx) }
+
+// FixModelOpenerJS is the substring of the trigger's inline onclick that names THIS
+// row's dialog. internal/web's fixModelRow renders
+// `onclick="document.getElementById('fix-model-0').showModal()"` — there is no id, no
+// class and no data attribute on that button, so the onclick is the only thing tying
+// a trigger to the dialog it opens. Selecting on it is deliberate: it pins the
+// RELATIONSHIP (click the button that opens the dialog we then wait for) instead of
+// picking whichever "Choose a model…" button happens to come first in the DOM.
+func FixModelOpenerJS(idx int) string {
+	return "getElementById('" + FixModelDialogID(idx) + "')"
+}
+
+// FixModelTriggerSelector matches the trigger that opens the idx-th Fix dialog.
+//
+// ⚠ The selector matches the DECODED attribute value. The served HTML carries
+// `&#39;` where this has `'` — a browser decodes it before matching, a browserless
+// guard reading the raw body does not, which is why
+// TestFixModelDialogSelectorsMatchTheServedApp decodes each button's open tag rather
+// than comparing against this string directly.
+func FixModelTriggerSelector(idx int) string {
+	return fmt.Sprintf(`button[onclick*=%q]`, FixModelOpenerJS(idx))
 }
 
 // RunCountGroupID is the id of the batch count segment's stable container — a second
@@ -204,6 +240,22 @@ func Views(app *App) []View {
 		// or not at all.
 		{Name: "run-missing-models-setup", Path: wfPath, BaseURL: app.UnsetPathURL,
 			Prep: heroRunPrep(runSel)},
+		// The per-file Fix <dialog>, OPEN. Everything inside fixModelDialog — the
+		// "Use matched model from CivitAI" section, the primary + alternate model cards,
+		// the "Install and run" CTAs, the library-substitute section and the ✕ close
+		// control — sits behind a native showModal() that nothing in the walk ever
+		// clicked, so it was closed in every capture and axe (which excludes hidden and
+		// inert content) had never scanned a byte of it.
+		{Name: "run-fix-model", Path: wfPath, Prep: fixModelDialogPrep(runSel, FixModelDialogIdx)},
+		// The SAME dialog on the comfy_model_path-UNSET server. This is the view that
+		// closes the cardInstallBlockedText gap specifically: that copy renders only from
+		// installAndRunButton's !dlEligible branch, which the configured app can never
+		// take. Measured browserlessly on the lab at 52cb872 — each dialog carries THREE
+		// occurrences (primary card + two alternates) on the unset server and ZERO on the
+		// configured one, so this view is not a duplicate of the one above, it is the
+		// only one where that sentence exists at all.
+		{Name: "run-fix-model-blocked", Path: wfPath, BaseURL: app.UnsetPathURL,
+			Prep: fixModelDialogPrep(runSel, FixModelDialogIdx)},
 		// Discover browse (workflows), served offline from the fake CivitAI reader.
 		{Name: "discover-workflows", Path: "/workflows/discover"},
 		// Library "Scan for model files" entry (the Sources tab lists the seeded dir).
@@ -264,6 +316,34 @@ func heroRunPrep(runSel string) func(*App) []chromedp.Action {
 			waitForNewRunPanel("#run-status", HeroMarker, &preSeq, 60*time.Second),
 			chromedp.Sleep(300 * time.Millisecond),
 		}
+	}
+}
+
+// fixModelDialogPrep drives a workflow detail page into its terminal missing-models
+// panel (heroRunPrep) and then one step FURTHER: it clicks the idx-th missing file's
+// "Choose a model…" trigger and waits for that file's native <dialog> to be [open].
+//
+// 🔴 The wait is on `[open]`, not on any text inside the dialog. fixModelDialog's
+// markup is in the DOM from the moment the panel renders — closed, but present — so a
+// text wait would be satisfied instantly by content the browser is not displaying and
+// axe would not scan, and the capture would silently be of the closed state again.
+// `[open]` is the attribute showModal() sets, so it is the one signal that
+// distinguishes "rendered" from "shown".
+//
+// ⚠ Honest scope limit worth knowing before quoting this view's numbers: showModal()
+// makes the rest of the document inert, so these two views' axe results are about the
+// DIALOG, not about the run panel behind it. They ADD the dialog subtree to the audit;
+// they are not a second scan of the panel the heroes already cover.
+func fixModelDialogPrep(runSel string, idx int) func(*App) []chromedp.Action {
+	run := heroRunPrep(runSel)
+	return func(app *App) []chromedp.Action {
+		trigger := FixModelTriggerSelector(idx)
+		return append(run(app),
+			chromedp.WaitVisible(trigger, chromedp.ByQuery),
+			chromedp.Click(trigger, chromedp.ByQuery),
+			chromedp.WaitVisible("#"+FixModelDialogID(idx)+"[open]", chromedp.ByQuery),
+			chromedp.Sleep(300*time.Millisecond),
+		)
 	}
 }
 
