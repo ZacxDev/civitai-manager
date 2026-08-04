@@ -87,8 +87,15 @@ func usableAPINodes(nodes map[string]apiNode) int {
 // looks at every node whose class_type is a loader (a known loader class OR any
 // class_type containing "Loader") and collects each string input value that ends
 // in a model extension. Results are de-duplicated and returned in a DETERMINISTIC
-// order: ascending node id (numerically when both ids are numeric, which they are
-// for every graph ComfyUI emits; lexically otherwise), then ascending input name.
+// order: node id per lessNodeKey (client.go) — every NUMERIC id first, ascending by
+// value with equal values tie-broken by string ("007" < "07" < "7"), then every
+// NON-NUMERIC id lexically — and within a node, ascending input name.
+//
+// ⚠ That partition is the point, and it is NOT "numeric if both parse, else
+// lexical". This comment stated that weaker rule for one round, and it is exactly
+// the intransitive comparison the fix replaced: on {"9","10","5abc"} it compares
+// "5abc" against "9" lexically and puts 5abc first, where lessNodeKey puts both
+// numerics ahead of it. Do not restate the rule here — read lessNodeKey.
 //
 // 🔴 THE ORDER IS PART OF THE CONTRACT, because this list is PERSISTED and is read
 // back as a provenance claim. It reaches `workflows.resources` from the library scan

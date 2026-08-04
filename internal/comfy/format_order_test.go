@@ -170,10 +170,31 @@ func TestExtractResourcesIsDeterministicWithMixedNodeIDs(t *testing.T) {
 		t.Fatalf("precondition: want 6 resources from the mixed-id fixture, got %d (%v)",
 			len(got), got)
 	}
-	// Precondition: the fixture really does mix parseable and unparseable ids, or it
-	// is just the all-numeric case again and cannot observe the defect.
-	if _, err := strconv.Atoi("12:3"); err == nil {
-		t.Fatal("precondition: \"12:3\" must NOT parse as an int for this fixture to mix id kinds")
+	// 🔴 Precondition: the fixture must actually MIX parseable and unparseable ids,
+	// and this MUST be derived from the fixture's own keys.
+	//
+	// An earlier version asserted `strconv.Atoi("12:3")` errors — a property of a
+	// STRING LITERAL, not of the fixture, and so unconditionally true. Measured:
+	// with that version, swapping the "12:3"/"12:8" keys for "13"/"14" — degrading
+	// this to exactly the all-numeric SAFE case the doc above says cannot observe
+	// the defect — left the whole test GREEN, precondition and `want` assertion
+	// included. The guard silently stopped guarding.
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(graph, &keys); err != nil {
+		t.Fatalf("precondition: fixture must parse as an object: %v", err)
+	}
+	var numeric, nonNumeric int
+	for id := range keys {
+		if _, err := strconv.Atoi(id); err == nil {
+			numeric++
+		} else {
+			nonNumeric++
+		}
+	}
+	if numeric == 0 || nonNumeric == 0 {
+		t.Fatalf("precondition: fixture must MIX id kinds to observe the defect, got "+
+			"%d numeric / %d non-numeric — an all-one-kind set is internally a total "+
+			"order and cannot expose an intransitive comparator", numeric, nonNumeric)
 	}
 
 	if n := distinctOrderings(t, 500, func() []string {

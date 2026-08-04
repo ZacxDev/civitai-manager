@@ -394,9 +394,12 @@ func TestWalkAcquiresTheDeterministicWorkDir(t *testing.T) {
 // comment says widening it re-imports a known flake, and which nothing checked.
 //
 // Verified as a real hole: mutating expandedRunPrep to pass "body" instead of
-// RunStatusContainerSelector left the entire nested-module suite GREEN, while
-// re-importing the comfy.ExtractResources map-ordering nondeterminism into the
-// run-missing-models-expanded capture.
+// RunStatusContainerSelector left the entire nested-module suite GREEN, while widening
+// the capture well beyond what this view is meant to cover.
+//
+// ⚠ When that mutation was first run, widening ALSO re-imported a comfy.ExtractResources
+// map-ordering flake. That app bug is fixed, so it is no longer what this guard protects
+// against — see expandStaticDetails' comment in walk.go for the reasons that survive.
 //
 // It is structural (an AST scan of the actual argument) rather than a string search,
 // for the same reason as TestWalkAcquiresTheDeterministicWorkDir: the property is "the
@@ -446,10 +449,13 @@ func TestExpandStaticDetailsIsScopedToTheRunStatusContainer(t *testing.T) {
 	for _, got := range args {
 		if got != "RunStatusContainerSelector" {
 			t.Errorf("expandStaticDetails is called with scope %s, want RunStatusContainerSelector.\n"+
-				"The scope is what keeps run-missing-models-expanded a STABLE baseline: widening it "+
-				"reaches the workflow detail page's Referenced-resources card, whose chip order is "+
-				"randomised per process by comfy.ExtractResources ranging a map. Two walks of the "+
-				"same tree then differ by construction — measured, 316x23px.", got)
+				"This view is scoped to the run-status container on purpose: widening it reaches "+
+				"the rest of the page, including the lazy hx-get disclosure that costs a ComfyUI "+
+				"round-trip per capture.\n"+
+				"NOTE: the original measured reason — a 316x23px chip-order diff from "+
+				"comfy.ExtractResources ranging a map — is FIXED and is no longer an argument. "+
+				"If you are widening the scope deliberately, do it for a stated reason and "+
+				"re-measure two walks of the same tree, then update this guard.", got)
 		}
 	}
 }
