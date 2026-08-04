@@ -134,26 +134,6 @@ func parseWidgetOverridesAgainst(form url.Values, graph []byte) map[comfy.UIWidg
 	return out
 }
 
-// runParametersPanel renders the run "Parameters" panel for a workflow with NO
-// preset context: the IMPLICIT tab, seeded from the graph's current values.
-//
-// It is a thin wrapper over runPresetPanel — the SAME renderer production uses —
-// deliberately, so a test asserting this markup is asserting live markup. A second,
-// parallel renderer would be exactly the "green tests over a dead production path"
-// trap this repo keeps paying for.
-//
-// It returns nil when the graph exposes no editable inputs (an api-format graph, or
-// a UI graph with none of the curated nodes) so the panel is simply absent.
-//
-// Sampler/scheduler render as free-text inputs here: choices come from /object_info,
-// which the render path does not fetch (offline/no slow network in render), so they
-// degrade to text — an invalid enum is caught by preflight's existing
-// incompatible-options flow. DetectRunInputs still accepts object_info elsewhere, so
-// object_info-backed selects can be added without changing the wiring.
-func runParametersPanel(wf *store.Workflow, csrf string) g.Node {
-	return runPresetPanel(wf, csrf, implicitPresetView(wf, nil))
-}
-
 // runParamFieldValue renders one Parameters control, preceded by the hidden wp_node /
 // wp_widget fields that pair (index-aligned in DOM order) with the wp_value control —
 // the same parallel-array shape parseWidgetOverridesForModes reads. Every pre-filled
