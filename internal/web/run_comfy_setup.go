@@ -163,13 +163,21 @@ func (s *Server) comfySetupFragment(ctx context.Context, wfID int64, value, prob
 	case current == "":
 		// 🔴 IT MUST NOT REFER TO "THE BUTTON ABOVE". This sentence used to end "and the
 		// button above starts working", which was true while the blocked panel rendered a
-		// disabled CTA with this form in a disclosure BENEATH it. It is now false at the
-		// only call site that can reach this branch: the setup CTA targets #comfy-setup
-		// with innerHTML and this form REPLACES it, so at the moment the reader sees this
-		// sentence there is no button above — the nearest thing above is the failure
-		// headline. Caught live in a browser, not by any markup test.
+		// disabled CTA with this form in a disclosure BENEATH it. It is false at EVERY
+		// call site that can reach this branch: a setup CTA targets #comfy-setup with
+		// innerHTML and this form REPLACES it, so at the moment the reader sees this
+		// sentence there is no button above. Caught live in a browser, not by any markup
+		// test.
+		//
+		// ⚠ This comment used to say "the ONLY call site", and the sentence below used to
+		// say "missing model files". Both went stale when the incompatible-options
+		// section became a second entry point: that surface can render with ZERO missing
+		// model files — the files it needs are named by drifted combo values — so the old
+		// copy described a category of thing the reader could not see on their screen.
+		// The wording now names what the folder is FOR rather than what brought them
+		// here, which is true from both entry points.
 		body = append(body, h.P(h.Class("text-xs text-slate-400"),
-			g.Text("civitai-manager writes missing model files straight into ComfyUI's models folder. "+
+			g.Text("civitai-manager writes the model files it fetches straight into ComfyUI's models folder. "+
 				"Tell it where that is and it can install them for you.")))
 	case currentProblem != "":
 		body = append(body, h.P(g.Attr("role", "status"), h.Class("text-xs text-amber-400"),

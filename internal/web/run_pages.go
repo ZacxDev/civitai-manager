@@ -597,8 +597,9 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mr m
 		// form. Independent of the missing nodes/models sections above — EXCEPT for the
 		// setup slot, which is a whole-panel singleton (see failureSetupOwner).
 		if len(snap.Preflight.BadOptions) > 0 {
+			owner := failureSetupOwner(snap.MissingModels, snap.Preflight.BadOptions, batch, dlEligible)
 			detail = append(detail, incompatibleOptionsSection(snap.Preflight.BadOptions, wfID, csrf,
-				dlEligible, snap.ComfyRemote, failureSetupOwner(snap, batch, dlEligible) == setupSlotOptions))
+				dlEligible, snap.ComfyRemote, owner == setupSlotOptions))
 		}
 	}
 	if tech := failureTechnicalDetail(snap, nm, nn); tech != nil {
@@ -648,14 +649,20 @@ const (
 // panel gets two containers or none, which is exactly what
 // TestFailurePanelHasAtMostOneComfySetupContainer measures by COUNT across the whole
 // state matrix rather than by presence.
-func failureSetupOwner(snap runSnapshot, batch batchInstallPlan, dlEligible bool) failureSetupSlot {
-	if snap.Preflight == nil {
-		return setupSlotNone
-	}
-	if len(snap.MissingModels) > 0 && len(batch.Installable)+batch.Overflow > 0 {
+// ⚠ It takes the two SLICES rather than the snapshot, and that is deliberate. The
+// first version took runSnapshot and opened with `if snap.Preflight == nil { return
+// setupSlotNone }` — an UNREACHABLE branch, because the only call site is already
+// inside `if snap.Preflight != nil`. Deleting the guard while still reading
+// snap.Preflight.BadOptions would have left a nil-dereference one careless caller
+// away, so the fix is to remove the pointer from the signature entirely: the function
+// is now total, no guard is needed, and there is no dead branch to mistake for a live
+// one. (Dead code that looks defensive is this repo's documented recurring defect.)
+func failureSetupOwner(missing []comfy.MissingModel, bad []comfy.BadOption,
+	batch batchInstallPlan, dlEligible bool) failureSetupSlot {
+	if len(missing) > 0 && len(batch.Installable)+batch.Overflow > 0 {
 		return setupSlotBatch
 	}
-	if blockedModelFileOptions(snap.Preflight.BadOptions, dlEligible) > 0 {
+	if blockedModelFileOptions(bad, dlEligible) > 0 {
 		return setupSlotOptions
 	}
 	return setupSlotNone
@@ -882,14 +889,35 @@ func incompatibleOptionsSection(bad []comfy.BadOption, wfID int64, csrf string,
 	for i, bo := range bad {
 		groups = append(groups, badOptionGroup(i, bo, wfID, csrf, dlEligible, comfyRemote))
 	}
-	children := []g.Node{
-		hx("post", "/workflows/"+strconv.FormatInt(wfID, 10)+"/run-with-options"),
-		hx("target", "#"+runStatusContainerID),
-		hx("swap", "innerHTML"),
-		hx("disabled-elt", "find button[type='submit']"),
-		hx("include", runModesInclude),
+	// 🔴 THE SLOT IS A SIBLING **BEFORE** THE FORM, NEVER A CHILD OF IT, and that is a
+	// correctness requirement rather than a layout preference. comfySetupCTA swaps
+	// #comfy-setup's innerHTML, and what it loads IS A <form> (comfySetupFragment), so
+	// a slot inside this form makes the first CTA click nest one form in another.
+	// Measured in a real browser with the app's vendored htmx 2.0.4:
+	//
+	//   - before the click `document.querySelector("form form")` is null; after it, it
+	//     is not;
+	//   - this form's hx-disabled-elt is `find button[type='submit']`, and htmx's
+	//     `find` is a single querySelector, so it then resolves to the SETUP form's
+	//     "Save folder" — mid-flight during a POST /run-with-options, Save folder was
+	//     disabled while "Run with selected options" stayed LIVE. The section's own
+	//     in-flight guard disabled the wrong control, on the exact surface this slot
+	//     exists to serve.
+	//
+	// Nested forms are also invalid HTML: any innerHTML re-parse of this region drops
+	// the inner <form> tag under the parser's form-pointer rule, which would promote
+	// model_path, a second csrf_token and a type=submit "Save folder" into THIS form —
+	// at which point Save folder runs the workflow. Nothing re-parses it today (no
+	// hx-boost, no hx-push-url), so that half is latent, not live.
+	//
+	// installAllMissingAction has the same shape at its own call site: the disclosure
+	// is a sibling of the form, not a child.
+	//
+	// The heading and intro move out with it so the reader's order is unchanged —
+	// heading, intro, slot, groups. They carry no form fields, so hoisting them is
+	// inert.
+	outer := []g.Node{
 		h.Class("mt-3 space-y-3"),
-		h.Input(h.Type("hidden"), h.Name("csrf_token"), h.Value(csrf)),
 		h.Div(h.Class("text-xs font-semibold text-slate-200"), g.Text("Incompatible options")),
 		h.P(h.Class("text-xs text-slate-400"),
 			g.Text("These saved values are no longer valid choices on your installed nodes. "+
@@ -903,19 +931,26 @@ func incompatibleOptionsSection(bad []comfy.BadOption, wfID int64, csrf string,
 		// is not pointed at a ComfyUI on this machine" is the same dead end, one click
 		// further in.
 		if comfyRemote {
-			children = append(children, remoteComfyExplanation())
+			outer = append(outer, remoteComfyExplanation())
 		} else {
 			n := blockedModelFileOptions(bad, dlEligible)
-			children = append(children, comfySetupCTA(wfID,
+			outer = append(outer, comfySetupCTA(wfID,
 				fmt.Sprintf("Set up automatic install for %d model file%s", n, plural(n))))
 		}
 	}
-	children = append(children,
+	outer = append(outer, h.Form(
+		hx("post", "/workflows/"+strconv.FormatInt(wfID, 10)+"/run-with-options"),
+		hx("target", "#"+runStatusContainerID),
+		hx("swap", "innerHTML"),
+		hx("disabled-elt", "find button[type='submit']"),
+		hx("include", runModesInclude),
+		h.Class("space-y-3"),
+		h.Input(h.Type("hidden"), h.Name("csrf_token"), h.Value(csrf)),
 		g.Group(groups),
 		h.Div(h.Class("pt-1"),
 			civButton("filled", "sm", []g.Node{h.Type("submit")}, g.Text("Run with selected options"))),
-	)
-	return h.Form(children...)
+	))
+	return h.Div(outer...)
 }
 
 // badOptionGroup renders one incompatible-option group: the (escaped) node class +

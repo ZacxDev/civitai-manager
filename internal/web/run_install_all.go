@@ -291,11 +291,20 @@ func blockedInstallAction(p batchInstallPlan, total int, wfID int64) g.Node {
 // comfySetupCTA is THE setup control: the primary button that loads the
 // models-folder form, plus the sentence explaining what supplying it buys.
 //
-// 🔴 IT RENDERS THE APP'S ONLY id="comfy-setup" CONTAINER, so at most ONE call site
-// may run per rendered page. That is not a convention each caller has to remember —
-// failureSetupOwner (run_pages.go) takes the decision once for the whole failure
-// panel, and TestFailurePanelHasAtMostOneComfySetupContainer asserts the COUNT over
-// every state combination rather than mere presence.
+// 🔴 IT RENDERS AN id="comfy-setup" CONTAINER — and so does comfySetupDisclosure — so
+// at most ONE of them may run per rendered page.
+//
+// ⚠ This line used to say it renders "THE APP'S ONLY" one. That is false:
+// comfySetupDisclosure carries the same id for the working state. The panel-level
+// invariant still holds, but not for the reason that wording implied — it holds
+// because failureSetupOwner picks one section, AND because the disclosure and this
+// CTA are mutually exclusive by construction (Available ⟹ dlEligible ⟹
+// blockedModelFileOptions == 0). That second half is a real coupling, not a
+// coincidence: weaken blockedModelFileOptions' dlEligible early return and a
+// configured install with both sections renders two containers.
+//
+// None of it is left to a reader's care — TestFailurePanelHasAtMostOneComfySetupContainer
+// asserts the exact COUNT over every state combination rather than mere presence.
 //
 // It was extracted from blockedInstallAction so the incompatible-options section can
 // reach the same single instance: a run can fail with BadOptions and ZERO
