@@ -3,6 +3,7 @@ package uxaudit
 import (
 	"go/ast"
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"os"
 	"path/filepath"
@@ -386,6 +387,80 @@ func TestWalkAcquiresTheDeterministicWorkDir(t *testing.T) {
 			"made the library-sources capture differ between two runs of the same tree; use "+
 			"acquireWorkDir()", mkdirTempSites)
 	}
+}
+
+// TestExpandStaticDetailsIsScopedToTheRunStatusContainer is the SEAM guard for
+// expandStaticDetails's scope argument — the one thing in this harness whose 20-line
+// comment says widening it re-imports a known flake, and which nothing checked.
+//
+// Verified as a real hole: mutating expandedRunPrep to pass "body" instead of
+// RunStatusContainerSelector left the entire nested-module suite GREEN, while
+// re-importing the comfy.ExtractResources map-ordering nondeterminism into the
+// run-missing-models-expanded capture.
+//
+// It is structural (an AST scan of the actual argument) rather than a string search,
+// for the same reason as TestWalkAcquiresTheDeterministicWorkDir: the property is "the
+// call passes THIS identifier", not "this word appears in the file".
+func TestExpandStaticDetailsIsScopedToTheRunStatusContainer(t *testing.T) {
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", nonTestGoFile, 0)
+	if err != nil {
+		t.Fatalf("parse package source: %v", err)
+	}
+	pkg, ok := pkgs["uxaudit"]
+	if !ok {
+		t.Fatalf("no uxaudit package parsed (got %v)", keysOf(pkgs))
+	}
+	const minScannedFiles = 5
+	if n := len(pkg.Files); n < minScannedFiles {
+		t.Fatalf("scanned only %d non-test files, want >= %d — the scan is broken, so its "+
+			"verdict means nothing", n, minScannedFiles)
+	}
+
+	// Every argument every caller passes to expandStaticDetails, as source text.
+	var args []string
+	for _, f := range pkg.Files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			id, ok := call.Fun.(*ast.Ident)
+			if !ok || id.Name != "expandStaticDetails" {
+				return true
+			}
+			for _, a := range call.Args {
+				args = append(args, exprText(fset, a))
+			}
+			return true
+		})
+	}
+
+	// Scanner precondition: if the scan found no call at all it would report "no
+	// offending scope" and read as a pass.
+	if len(args) == 0 {
+		t.Fatal("no call to expandStaticDetails found in non-test source — either it was " +
+			"deleted (delete this guard too) or the scan is broken; either way its verdict " +
+			"means nothing")
+	}
+	for _, got := range args {
+		if got != "RunStatusContainerSelector" {
+			t.Errorf("expandStaticDetails is called with scope %s, want RunStatusContainerSelector.\n"+
+				"The scope is what keeps run-missing-models-expanded a STABLE baseline: widening it "+
+				"reaches the workflow detail page's Referenced-resources card, whose chip order is "+
+				"randomised per process by comfy.ExtractResources ranging a map. Two walks of the "+
+				"same tree then differ by construction — measured, 316x23px.", got)
+		}
+	}
+}
+
+// exprText renders an AST expression back to its source text.
+func exprText(fset *token.FileSet, e ast.Expr) string {
+	var sb strings.Builder
+	if err := printer.Fprint(&sb, fset, e); err != nil {
+		return "<unprintable>"
+	}
+	return sb.String()
 }
 
 // nonTestGoFile selects the package's production source: .go, not _test.go.

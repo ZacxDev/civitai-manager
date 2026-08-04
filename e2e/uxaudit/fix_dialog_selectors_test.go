@@ -135,6 +135,75 @@ func TestHasButtonWithDecodedSeesWhatTheBrowserSees(t *testing.T) {
 	}
 }
 
+// buttonTagContaining returns the `<button …>` OPEN TAG (decoded, as a browser sees the
+// attribute values) whose attributes contain want. It exists so an assertion can be made
+// about THE trigger for a given dialog rather than about "some button on the page" —
+// the difference between a guard that couples FixModelDialogIdx to the filename it
+// certifies and one that passes on a neighbouring row's button.
+func buttonTagContaining(body, want string) (string, bool) {
+	rest := html.UnescapeString(body)
+	for {
+		i := strings.Index(rest, "<button")
+		if i < 0 {
+			return "", false
+		}
+		rest = rest[i:]
+		if len(rest) > len("<button") {
+			switch rest[len("<button")] {
+			case ' ', '\t', '\n', '\r', '>', '/':
+			default:
+				rest = rest[len("<button"):]
+				continue
+			}
+		}
+		j := strings.Index(rest, ">")
+		if j < 0 {
+			return "", false
+		}
+		if tag := rest[:j+1]; strings.Contains(tag, want) {
+			return tag, true
+		}
+		rest = rest[j+1:]
+	}
+}
+
+// ariaLabelOf renders a tag's aria-label for a failure message, so the error says what
+// the trigger DOES carry rather than only what it should.
+func ariaLabelOf(tag string) string {
+	const k = `aria-label="`
+	i := strings.Index(tag, k)
+	if i < 0 {
+		return "(no aria-label)"
+	}
+	rest := tag[i+len(k):]
+	j := strings.Index(rest, `"`)
+	if j < 0 {
+		return "(unterminated aria-label)"
+	}
+	return k + rest[:j] + `"`
+}
+
+// TestButtonTagContainingExtractsOneButton is the negative control for the helper above:
+// it must return the button carrying the marker, not the first button on the page, or
+// the coupling it exists to create is fictional.
+func TestButtonTagContainingExtractsOneButton(t *testing.T) {
+	const body = `<button aria-label="wrong one" onclick="x(&#39;fix-model-1&#39;)">A</button>` +
+		`<button aria-label="right one" onclick="x(&#39;fix-model-0&#39;)">B</button>`
+	got, ok := buttonTagContaining(body, "x('fix-model-0')")
+	if !ok {
+		t.Fatal("did not find the button carrying the marker")
+	}
+	if !strings.Contains(got, `aria-label="right one"`) {
+		t.Errorf("extracted the WRONG button: %s", got)
+	}
+	if strings.Contains(got, "wrong one") {
+		t.Errorf("extraction leaked a neighbouring button: %s", got)
+	}
+	if _, ok := buttonTagContaining(body, "x('fix-model-9')"); ok {
+		t.Error("reported a match for a marker no button carries")
+	}
+}
+
 // fixModelFirstFilename is a FIXTURE fact, asserted rather than assumed: the lab's
 // preflight reports exactly two missing models and the panel renders them in that
 // order, so fix-model-0 is this file's dialog. If the fixture's ordering ever changes
@@ -183,13 +252,25 @@ func TestFixModelDialogSelectorsMatchTheServedApp(t *testing.T) {
 				t.Errorf("the panel has no <dialog id=%q> — the prep would click the trigger and then "+
 					"hang waiting for a dialog that does not exist", FixModelDialogID(FixModelDialogIdx))
 			}
-			// Fixture ordering: fix-model-0 really is the row the walk means to open.
-			// Asserted on the ACCESSIBLE NAME, which is also what a reader of the capture
-			// sees, rather than on DOM position.
+			// Fixture ordering: FixModelDialogIdx really is the row this guard describes.
+			//
+			// 🔴 The aria-label must be read off THE TRIGGER THAT OPENS THIS DIALOG, not
+			// looked for anywhere in the panel. A panel-wide search is satisfied by the OTHER
+			// missing model's trigger, so mutating FixModelDialogIdx from 0 to 1 left the
+			// whole suite green: fix-model-1 also exists, and the label check passed on a
+			// button that has nothing to do with it. Extracting the button first is what
+			// couples the two.
+			trigger, ok := buttonTagContaining(panel, opener)
+			if !ok {
+				t.Fatalf("could not extract the trigger carrying %q — the assertion below would "+
+					"otherwise silently check a different button", opener)
+			}
 			wantLabel := `aria-label="Choose a model for ` + fixModelFirstFilename + `"`
-			if !strings.Contains(panel, wantLabel) {
-				t.Errorf("no trigger carries %s — the lab's missing-model ordering changed, so the "+
-					"walk is opening a different row than this guard describes", wantLabel)
+			if !strings.Contains(trigger, wantLabel) {
+				t.Errorf("the trigger for %s carries %s, want %s — the lab's missing-model ordering "+
+					"changed, so the walk is opening a different row than this guard describes.\n"+
+					"trigger: %s",
+					FixModelDialogID(FixModelDialogIdx), ariaLabelOf(trigger), wantLabel, trigger)
 			}
 
 			// cardInstallBlockedText, the copy this whole pair of views exists to get in

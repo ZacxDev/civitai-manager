@@ -3,6 +3,8 @@ package uxaudit
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -97,7 +99,7 @@ func NewBrowser(parent context.Context, execPath string) (*Browser, error) {
 		chromedp.Flag("mute-audio", true),
 	)
 	allocCtx, allocCancel := chromedp.NewExecAllocator(parent, opts...)
-	ctx, ctxCancel := chromedp.NewContext(allocCtx)
+	ctx, ctxCancel := chromedp.NewContext(allocCtx, chromedp.WithErrorf(logCDPError))
 
 	b := &Browser{
 		allocCtx: allocCtx, allocCancel: allocCancel,
@@ -248,6 +250,30 @@ func (b *Browser) CaptureWith(pageURL string, vp Viewport, prep []chromedp.Actio
 	out.NetworkJSON, _ = json.Marshal(netEvents)
 
 	return out, nil
+}
+
+// benignCDPNoise is the ONE chromedp error line this harness suppresses.
+//
+// chromedp's target handler logs "unhandled node event %T" for any DOM event it does
+// not model, and DOM.topLayerElementsUpdated is one of them. Chromium emits it every
+// time a native <dialog> enters or leaves the top layer, so every showModal() in the
+// walk prints one — the fix-dialog views tripled the count (5 lines to 15) purely by
+// opening dialogs on purpose. It says nothing about the page and nothing about the
+// walk.
+const benignCDPNoise = "unhandled node event *dom.EventTopLayerElementsUpdated"
+
+// logCDPError forwards chromedp's internal errors to the default logger, dropping only
+// benignCDPNoise.
+//
+// 🔴 It filters ONE exact string, not a category. Silencing chromedp's error channel
+// wholesale would hide real transport and protocol failures — the kind that turn into
+// an opaque "context deadline exceeded" three layers up, which is precisely the failure
+// mode this harness has already shipped once.
+func logCDPError(format string, args ...any) {
+	if msg := fmt.Sprintf(format, args...); strings.Contains(msg, benignCDPNoise) {
+		return
+	}
+	log.Printf("ERROR: "+format, args...)
 }
 
 // freezeAnimationScript collapses every CSS transition and animation to zero duration
