@@ -136,6 +136,32 @@ func TestUXAuditWalk(t *testing.T) {
 		}
 	}
 
+	// 🔴 THE THREE NEW VIEWS MUST DIFFER FROM THE HERO, and until this existed nothing
+	// committed proved they do. The evidence for them was a one-off injected-<img>
+	// control run by hand — decisive at the time, and guaranteed to rot.
+	//
+	// Capture.BodyText is document.body.innerText, and innerText reflects RENDERED text:
+	// it excludes a closed <dialog> and the body of a closed <details>. That makes it a
+	// STATE, not a spelling — exactly the discriminator needed. If a prep silently stops
+	// opening what it opens (a stale selector, a click that lands on nothing), the copy
+	// below disappears from the view that must have it, and this fails.
+	//
+	// Each row also names copy the HERO must NOT have, so "the app started rendering this
+	// everywhere" cannot satisfy the guard.
+	assertOpenedContent(t, res, []openedContentCase{{
+		view: "run-fix-model",
+		// Section headings that exist only inside fixModelDialog.
+		want: []string{"Use matched model from CivitAI", "Replace with a model from my library"},
+	}, {
+		view: "run-fix-model-blocked",
+		want: []string{"Use matched model from CivitAI", "Replace with a model from my library"},
+	}, {
+		view: "run-missing-models-expanded",
+		// The BODY of a collapsed disclosure — never its <summary>, which renders either
+		// way and would pass with the expansion deleted.
+		want: []string{"Or install it by hand", "Preflight failed"},
+	}})
+
 	// The generated metadata must be schema-valid against the file set.
 	if err := res.Payload.Validate(setOf(res.Files)); err != nil {
 		t.Errorf("generated metadata invalid: %v", err)
@@ -163,6 +189,72 @@ func TestUXAuditWalk(t *testing.T) {
 		}
 	} else {
 		t.Logf("push skipped (AUDITLOOP_PUSH_URL / token not set) — %d artifacts in %s", len(res.Files), outDir)
+	}
+}
+
+// openedContentCase is one view that must show content the HERO does not, because its
+// prep opened something (a <dialog>, a <details>) that is closed everywhere else.
+type openedContentCase struct {
+	view string
+	want []string
+}
+
+// heroBaselineView is the view every openedContentCase is contrasted against: the same
+// terminal run panel, with nothing opened. It is what makes each `want` string a
+// DISCRIMINATOR rather than an assertion that the app renders some copy somewhere.
+const heroBaselineView = "run-missing-models"
+
+// assertOpenedContent checks, per case, that the named view's rendered text contains
+// copy the hero's does not.
+//
+// It uses Capture.BodyText (document.body.innerText), and the choice is load-bearing:
+// innerText reflects what is RENDERED, so a closed <dialog> and the body of a closed
+// <details> are both excluded. The same string read out of the HTML source would be
+// present either way and could not tell the two states apart.
+func assertOpenedContent(t *testing.T, res *WalkResult, cases []openedContentCase) {
+	t.Helper()
+
+	byView := map[string]string{}
+	for i := range res.Captures {
+		cv := &res.Captures[i]
+		if cv.Viewport.Name == "desktop" {
+			byView[cv.View.Name] = cv.Capture.BodyText
+		}
+	}
+
+	hero, ok := byView[heroBaselineView]
+	if !ok {
+		t.Fatalf("no %q desktop capture — the discriminator below has nothing to contrast "+
+			"against and would degrade into 'the app renders this somewhere'", heroBaselineView)
+	}
+	// Fixture reached the interesting case: the baseline really is the run panel.
+	if !strings.Contains(hero, HeroMarker) {
+		t.Fatalf("the %q baseline does not contain %q — it is not the panel these views open "+
+			"things on top of", heroBaselineView, HeroMarker)
+	}
+
+	for _, tc := range cases {
+		body, ok := byView[tc.view]
+		if !ok {
+			t.Errorf("no %q desktop capture — the view was not walked, so nothing proves its prep "+
+				"opens anything", tc.view)
+			continue
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s: rendered text is missing %q.\nThat copy lives inside something the "+
+					"prep is supposed to OPEN (a <dialog> or a <details>); innerText excludes both "+
+					"when closed. So the prep clicked/expanded nothing and this capture is the same "+
+					"state as %q — axe scanned no new surface.", tc.view, want, heroBaselineView)
+			}
+			// The other half: it must be ABSENT from the hero, or it is not a discriminator
+			// and would still pass with the prep's opening step deleted.
+			if strings.Contains(hero, want) {
+				t.Errorf("%s: %q is ALSO in the %q capture, so it does not discriminate — this row "+
+					"would pass with the view's opening step removed. Pick copy that only renders "+
+					"once the dialog/disclosure is open.", tc.view, want, heroBaselineView)
+			}
+		}
 	}
 }
 
