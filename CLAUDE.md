@@ -834,12 +834,69 @@ route guard `t.Fatal`s if `opaqueMark != routeHole`** — the two must stay the 
 byte, or an unresolved chunk arrives as literal text and silently makes orphans look
 reachable.
 
+🔴 **How NOT to fight these three ledgers** (`routeReachabilityAllow`,
+`cssRuleReachabilityAllow`, `.github/deadcode-allow.txt`). They are **asserted debt**, so
+appending an entry is not a way to go green — it is a recorded claim that the subject is
+*known* dead, which the next reader will act on. When one fires: **fix or delete the
+subject**. Add a line only when you have decided the debt is real and can say why, and
+delete a line the moment its subject becomes reachable or ceases to exist — a stale entry
+fails the build in its own right, by design. Note they run in two different places: the
+route and CSS ledgers are ordinary Go tests in `internal/web` (so `go test ./...` covers
+them), while `deadcode` is its own CI job across three `GOOS`.
+
 **The runtime signal that works where static analysis cannot: AN EMPTY TABLE ON A
 HEAVILY-USED INSTALL.** `nodepack_cache` and `comfy_model_cache` both held **0 rows
 across 71 workflows** on the operator's real database — that is positive evidence a
 "populated" path never populates, and no static tool can tell you it. When you ship a
 cache or a counter, go look at its row count on a dogfooded DB before believing the
 feature works.
+
+### 🔴 "Verified in isolation" is the other half — the SEAM nobody owns
+
+Reachability asks *does this code ever run*. This asks *did any test ever build the state
+where two verified things meet* — and the answer here has repeatedly been no.
+
+**Ground case, two consecutive releases.** A pre-click **readiness line** and a
+post-failure **panel** shipped separately. Each had hermetic tests, a mutation matrix, a
+live-browser check and multiple audit rounds. Clicking Generate on a workflow that cannot
+run rendered **both, 0px apart**, with the same counts and the same caveat. Nothing was
+wrong with either component; no test or audit ever constructed the combined state, because
+each was scoped to one surface.
+
+**The same shape, elsewhere in this repo** — in every case the fixture silently declined to
+load the surface under test:
+
+- the axe fixture that **never rendered the panel's custom-node half**, so "0 violations"
+  was a fact about a surface never loaded (the fixture lesson below is the same failure);
+- a lab fixture with `comfy_model_path` already set, so the **setup disclosure never
+  rendered**;
+- the `e2e/uxaudit` module CI never compiled (closed now — see the `gofmt`/nested-module
+  bullet below);
+- **`cardInstallBlockedText`** (`internal/web/run_resolve.go`), which renders only inside
+  `fixModelDialog`'s `<dialog>` — opened by `showModal()` from an inline `onclick`. The
+  walk's only `chromedp.Click` calls are the workflow-import trigger and the hero run
+  control, so **that dialog is closed in every capture** and its copy has never been
+  axe-scanned in any wording. (The closed-dialog part is read off the source; "axe skipped
+  it" follows from axe's hidden-element exclusion and is not asserted anywhere in-tree.)
+
+🔴 **A guard that closes a seam must pin a RELATIONSHIP, not a component.** Worked example:
+**`TestEveryRunStatusWriterGoesThroughRunStatusBody`**
+(`internal/web/run_status_writers_web_test.go`) AST-parses the package's non-test source and
+asserts a **two-entry ledger** (`runStatusFragmentCallers`) of everything allowed to call
+`runStatusFragment` — `runStatusBody` (THE owner) and `generateSection` (the full-page
+render, which must NOT go through `runStatusBody`). It fails when the set **GROWS** (a new
+writer bypasses the owner) *and* when it **SHRINKS** (a listed caller no longer exists), and
+it carries a scanner precondition — `t.Fatalf` if it parsed fewer than 20 files — so a
+broken parse cannot pass as "no offenders". `minRunStatusBodyCallSites` backs it up as the
+scan's negative control, and is deliberately a **literal** — never derived from what the
+scan found, or expectation and subject would move together and no mutation could separate
+them (this repo has shipped exactly that bug; see "Calibrated to its own SOURCE" below).
+
+🔴 **Pair it with a behavioural table, because the structural check is blind to a wrong
+ARGUMENT.** Handing `runStatusBody` the wrong workflow id type-checks perfectly and still
+writes the line to the wrong workflow; only
+`TestEveryRunStartingEndpointClearsTheReadinessLine` (table: `runStatusWriterCases`) can see
+that. Structure and behaviour catch different halves — **neither alone closes the seam.**
 
 ### A fixture that does not match production certifies the wrong branch
 
@@ -858,10 +915,34 @@ lab seeded **only** an API-format hero. Two consequences, both traced in source:
   that page, it was confidently wrong about it.
 
 Fixed by seeding a **second, UI-format hero beside the API one** (`e2e/uxaudit/boot.go`;
-`TestLabSeedsBothWorkflowFormats` pins that both formats stay seeded). New numbers:
-**24 pages, 8 axe violations**, up from 20/0 — **the increase IS the improvement**,
-because 0 was measuring the wrong surface. Never read a falling violation count as
-progress without checking the page count that produced it.
+`TestLabSeedsBothWorkflowFormats` pins that both formats stay seeded). The page count rose
+and **the violation count rose with it — the increase IS the improvement**, because 0 was
+measuring the wrong surface. Never read a falling violation count as progress without
+checking the page count that produced it.
+
+⚠ **Do NOT restate the capture/violation totals here — this line already went stale once**
+(it said "24 pages, 8 axe violations" after a 13th view landed), the same failure as the
+release-version and migration-number warnings above. **Derive the capture count instead:**
+`len(Views())` in `e2e/uxaudit/walk.go` × `len(Viewports)` in `capture.go` (currently 13 × 2
+= **26**), ratcheted by `minViews` in `walk_selectors_test.go` and asserted per-view by
+`walk_test.go`. The **violation** total is not derivable from the repo at all —
+`e2e/uxaudit/.gitignore` excludes `/artifacts/`, so no committed file records it. Quote it
+only from a run you just did, with the capture count beside it.
+
+🔴 **The `library-sources` capture is NOT a stable visual baseline — it embeds the
+harness's own random temp path.** `walk.go` creates the run's work dir with
+`os.MkdirTemp("", "uxaudit-walk-")`, `boot.go` derives `scanDir` as `<workDir>/models` and
+persists it via `AddScanDir`; the `library-sources` view (`/library?tab=sources`) renders
+the selected scan directories through `selectedDirsList`, which emits the raw path **four
+times** per entry — `h.Value`, `h.Title`, the visible label, and the `hx-vals` JSON — and it
+also lands in the a11y digest as the checkbox's `accessible_name`. So two runs of the **same
+tree** differ on that capture by construction. **Do not diff it, and do not chase the diff
+as a regression** until the dir is stabilised or the path masked at render time.
+⚠ **It is NOT the disk-usage figures**, which is the obvious guess and was the prior
+assumption: `/library?tab=sources` renders only `sourcesPanel` — no `humanBytes`, no
+`diskusage`; those live on the files/summary paths and in `disks_pages.go`. (The mechanism
+is read off the source. Whether two given runs *did* differ is not checkable from the repo —
+`e2e/uxaudit/.gitignore` excludes `/artifacts/`.)
 
 ⚠ **The subtle blocker, worth recording because it would have relocated the bug rather
 than fixing it:** without `input_order` on **every** entry of the fake `/object_info`,
@@ -888,6 +969,13 @@ appears. **A fixture can be wrong in a way that produces a plausible screenshot.
   ```sh
   gofmt -l ./internal/ ./e2e/ ./*.go
   ```
+  **`go test -race` is also part of CI and belongs on your gate checklist** — a checklist
+  handed to an agent this session omitted it. `.github/workflows/ci.yml`'s `test` job runs a
+  step named "go test -race (concurrency-sensitive packages)" over **five** packages:
+  `./internal/library/...`, `./internal/store/...`, `./internal/queue/...`,
+  `./internal/poller/...`, `./internal/web/...` — it is not a whole-repo `-race` run, and no
+  `Makefile` target does it (`make test` is a plain `go test ./...`), so running it locally
+  means typing that list.
   **There is NO `./cmd/` in this repo** — `main.go` is at the root. An earlier
   version of this line said `gofmt -l ./internal/ ./cmd/`, which exits 2 with
   `stat ./cmd/: no such file or directory`; an agent hit that for real and worked
@@ -936,7 +1024,13 @@ appears. **A fixture can be wrong in a way that produces a plausible screenshot.
 
   **Do not assume a partial tree is broken beyond the truncation point** — in that
   case everything else was complete and correct, and the whole feature was
-  recoverable in a few edits.
+  recoverable in a few edits. This recovery ran twice more this session and worked both
+  times; treat it as mechanical, not as a judgement call.
+  🔴 **But read the failing tests before "fixing" them — they may be asserting the OLD
+  behaviour.** A half-landed change leaves tests that correctly pinned the previous
+  invariant, so they fail *because the feature works now*. **Rewrite them to the new
+  invariant; never delete them** — deleting is how the property they were pinning gets
+  silently lost, and the deletion looks like cleanup in the diff.
 - **Stale `<new-diagnostics>` after a subagent are almost always false.** The
   classic false-alarm signature: a `go.mod` "updates needed / go mod tidy" warning
   + an `undefined: X` cascade across many files + cross-branch/worktree symbol
@@ -949,6 +1043,14 @@ appears. **A fixture can be wrong in a way that produces a plausible screenshot.
   an already-audited pattern**, gate + HTTP-level live-verify + a focused self-review
   is sufficient (precedent: v0.1.45/0.1.50/0.1.51). Always live-verify regardless.
   `/audit-pr` surfaced a real bug on nearly every high-blast PR this session.
+  🔴 **Budget for MULTIPLE rounds, and re-audit the DELTA each time — the fix round creates
+  the next finding.** Measured across five PRs in one session: **4, 3, 3, 2, 1** rounds to
+  clean, and **every delta audit found something the previous fix round had introduced.** A
+  one-round audit is not a clean bill of health, it is round one. The instructive instance
+  is already documented below: a fix for "the observability is missing" and a fix for "the
+  fetch is wasteful" landed in the *same* round, and the second silently routed the dominant
+  path **around** the first, leaving the new logging dead exactly where it mattered (see the
+  `resolveResources` tier-logging note in the converter bullet).
 - **Fake-reader unit tests can encode the WRONG assumption about the real CivitAI
   API — they pass green while the real integration is broken.** For ANY new civitai
   API integration (search params, response decode), you MUST live-verify the request
@@ -1100,6 +1202,26 @@ appears. **A fixture can be wrong in a way that produces a plausible screenshot.
     each pack's measured `ClaimedClasses`, and that the two signals actually disagree)
     *before* asserting the outcome — so a fixture that cannot express the contest fails
     loudly instead of passing quietly.
+
+  🔴 **Four more, and they share ONE mechanism worth naming: the guard was SPELLED, not
+  STRUCTURAL.** Apply the test to your own guard — **can it pass while the hazard exists in
+  a different shape?** If yes, it is pinning a spelling, and the next implementation of the
+  same bug walks straight past it.
+  - **`Contains(body, "disabled")`** — satisfied by htmx's `hx-disabled-elt` attribute on a
+    perfectly **LIVE** button, so it was green for an accidental reason. Worse, its failure
+    message *instructed* a maintainer to reintroduce the dead button it existed to forbid.
+  - **A "no dead control" guard that knew only the OLD button's exact label**, so a
+    differently-labelled disabled button passed the entire suite.
+  - **A newly-added branch with no no-POST guard at all** — a deliberately planted POSTing
+    button produced **zero** failures.
+  - **An invariant asserted at 1 of 14 writers.** Reverting the other 13 — including the one
+    response that must clear the line the user is looking at — left the suite green. (This
+    is the seam case; the fix was the AST ledger in the reachability section above.)
+
+  The remedy in each: assert a **state**, not a spelling — an `id` plus the attribute on the
+  *same* element, an ARIA role, or an **enumerated set of allowed call sites**. Any
+  assertion whose subject is a word another feature is free to use is a coincidence waiting
+  to be relied on.
 - 🔴 **Two measurement rules this repo keeps re-teaching** (the general form is in
   `RULES.md` — here is where they bite). **(a) A counting harness needs a POSITIVE
   CONTROL.** Four consecutive "0 submits" runs proved nothing about the never-submit
@@ -1112,6 +1234,32 @@ appears. **A fixture can be wrong in a way that produces a plausible screenshot.
   showing **zero** requests to the endpoint is what proves the request never left the
   page. Before concluding from an absence, name the rival mechanism and find the
   upstream signal the two disagree about.
+- 🔴 **The ux-audit artifacts are an INSTRUMENT, and this session broke it four ways while
+  reading its output as fact.** Each returned the reassuring value for a reason unrelated to
+  accessibility. (The general rule — validate a harness against a known-bad state, and give
+  a counting harness a positive control — is in `RULES.md`; these are the repo's shapes.)
+  - 🔴 **An empty violations list is FALSY.** `d.get("violations") or …` treats a clean
+    capture as *absent* and skips it, so the healthy captures vanish from the denominator
+    and the summary prints **"0 captures"** — which is this repo's *regression* signal, not
+    its success signal. Use an explicit `is None` check.
+  - 🔴 **`*.a11y.json` has NO `violations` key.** Only **`*.axe.json`** carries it
+    (`{violations: […]}`, written from `Capture.AxeJSON`). `*.a11y.json` is the DOM/a11y
+    **digest** — `interactive` / `form_controls` / `landmarks`. Summing violations over the
+    wrong glob prints a perfect **0** from files that structurally cannot contain one.
+    Read `*.axe.json`, and **assert that zero payloads lack the key** rather than trusting
+    the total.
+  - 🔴 **An a11y digest stores an accessibility TREE, never page text.** Grepping it for a
+    control's label or any user-facing copy proves nothing about whether that copy shipped —
+    an auditor used exactly that as evidence, and its own positive control would have failed.
+    Use the view's `form_controls` entries (they carry `accessible_name`) or a screenshot.
+  - **A CSS *comment* counts as a rule to a naive grep.** `app.css` deliberately carries
+    tombstone comments where deleted rules lived, so an ad-hoc grep reported four
+    already-deleted `.cm-*` rules as still present. The shipped guards strip comments first;
+    your one-off grep does not. (Same trap as the vacuous-guard list's CSS-comment entry —
+    it recurs because the tombstones are intentional and permanent.)
+- ⚠ **A `grep -oP` set-diff over `=== RUN` lines silently dropped one**, which read as a test
+  having been *removed* when it had not. Prefer `awk '/^=== RUN/{...}'` and cross-check the
+  set against the raw count — a set that is one short looks exactly like a real deletion.
 - **A REAL BROWSER IS AVAILABLE — use it for anything visual.** (This bullet used
   to claim the opposite; that claim is dead. MCP Playwright is still broken on this
   NixOS host and there is still no `chromium` on PATH, but neither of those is the
@@ -1153,8 +1301,11 @@ appears. **A fixture can be wrong in a way that produces a plausible screenshot.
     it, and say in your report that you drove their live browser.
 - **Diagnosing a VISUAL bug in the live browser — hit-test, don't guess.** The
   sequence that found v0.1.82, in order:
-  1. `browser --instance <k> open <url>` → `activate` → `screenshot` — and
+  1. `browser --instance <k> open <url>` → **`wake`** → `screenshot` — and
      **actually LOOK at the image**. An exit code of 0 is not a rendered page.
+     ⚠ This step used to say `activate`, contradicting the bullet directly above
+     it: `screenshot` works on a background tab via CDP, so nothing here needs
+     the real foreground, and `activate` would steal the operator's screen.
   2. **Hit-test rather than theorise.** Take the suspect element's
      `getBoundingClientRect()` and call `document.elementFromPoint(x, y)` at
      several points inside it, reporting for each whether the hit node is
