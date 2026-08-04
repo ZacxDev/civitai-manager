@@ -3,8 +3,6 @@ package web
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
-	"hash/crc32"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -32,30 +30,10 @@ func newWorkflowServer(t *testing.T) *Server {
 const testAPIGraph = `{"3":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"sdxl.safetensors"}}}`
 
 // buildTestPNG assembles a minimal valid PNG with the given tEXt keyword/value.
+// It is the one-chunk case of buildPNGWithTexts (workflow_import_png_format_web_test.go),
+// which generalises it to any number of chunks — a real ComfyUI PNG carries two.
 func buildTestPNG(keyword, value string) []byte {
-	chunk := func(typ string, data []byte) []byte {
-		var b bytes.Buffer
-		_ = binary.Write(&b, binary.BigEndian, uint32(len(data)))
-		b.WriteString(typ)
-		b.Write(data)
-		crc := crc32.NewIEEE()
-		crc.Write([]byte(typ))
-		crc.Write(data)
-		_ = binary.Write(&b, binary.BigEndian, crc.Sum32())
-		return b.Bytes()
-	}
-	var b bytes.Buffer
-	b.Write([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
-	ihdr := make([]byte, 13)
-	binary.BigEndian.PutUint32(ihdr[0:4], 1)
-	binary.BigEndian.PutUint32(ihdr[4:8], 1)
-	ihdr[8], ihdr[9] = 8, 6
-	b.Write(chunk("IHDR", ihdr))
-	text := append([]byte(keyword), 0)
-	text = append(text, []byte(value)...)
-	b.Write(chunk("tEXt", text))
-	b.Write(chunk("IEND", nil))
-	return b.Bytes()
+	return buildPNGWithTexts([2]string{keyword, value})
 }
 
 func postForm(srv *Server, path, body string, withCSRF bool) *httptest.ResponseRecorder {
