@@ -146,7 +146,13 @@ func TestStructuredAPINodesOrderIsDeterministicForMixedIDs(t *testing.T) {
 // gMaxNodes-1) passed the entire internal/web package before this test existed.
 //
 // The fixture is over-cap AND mixed, so it pins the surviving SET, the prefix
-// direction, and the numeric-before-non-numeric partition in one assertion.
+// direction, and the numeric-before-non-numeric partition. Mutation-measured:
+// keep-the-suffix RED, gMaxNodes-1 RED, LessNodeKey's partition inverted RED.
+//
+// ⚠ It does NOT observe comparator INTRANSITIVITY — with the naive comparator
+// reinstated it was green 20/20, because one call cannot see a randomised
+// permutation. That is the job of the 500-call test above; this one owns the
+// truncation direction only. Do not read a green here as "the ordering is sound".
 func TestStructuredAPINodesTruncatesTheDeterministicPrefix(t *testing.T) {
 	const numerics = gMaxNodes + 50 // ids "0".."649" — 50 past the cap
 	var b strings.Builder
