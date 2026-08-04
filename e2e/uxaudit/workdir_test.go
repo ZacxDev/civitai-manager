@@ -1,0 +1,210 @@
+package uxaudit
+
+import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// This file is the browserless rot-guard for the walk's DETERMINISTIC work dir —
+// the same shape, and for the same reason, as walk_selectors_test.go: `make ux-audit`
+// is double-gated out of `go test ./...`, so anything only the browser walk can
+// observe rots silently. These need no browser and no network.
+//
+// What is being protected: <workDir>/models is persisted as a scan directory and
+// rendered verbatim on /library?tab=sources, so a random work dir makes the
+// library-sources capture differ between two runs of the same tree. See workdir.go.
+
+// TestWalkWorkDirPathIsDeterministic is the guard proper. workDirPath is pure, so two
+// calls in one process MUST agree — which is precisely what os.MkdirTemp cannot do.
+//
+// It asserts the value as well as the agreement, because "two calls agree" alone is
+// satisfied by a path memoised at init from a random seed: that would be stable within
+// one process and different in the NEXT run, which is the run pair that matters.
+func TestWalkWorkDirPathIsDeterministic(t *testing.T) {
+	// Empty means "not set" to workDirPath, so this exercises the DEFAULT branch — the
+	// one the walk actually takes — without touching the ambient environment.
+	t.Setenv(WorkDirEnv, "")
+
+	first := workDirPath()
+	second := workDirPath()
+	if first != second {
+		t.Fatalf("workDirPath() returned %q then %q — the walk's work dir is not deterministic, "+
+			"so the library-sources capture embeds a different path on every run and cannot be "+
+			"diffed as a visual baseline", first, second)
+	}
+	if want := filepath.Join(os.TempDir(), workDirName); first != want {
+		t.Errorf("workDirPath() = %q, want %q — a per-process value is stable WITHIN a run and "+
+			"still different in the next one, which is the pair the baseline is diffed across",
+			first, want)
+	}
+	// Fixture reached the interesting case: a path with no directory component would
+	// make the comparison above trivially true for the wrong reason.
+	if !filepath.IsAbs(first) {
+		t.Errorf("workDirPath() = %q, want an absolute path", first)
+	}
+}
+
+func TestWalkWorkDirEnvOverrideWins(t *testing.T) {
+	custom := filepath.Join(t.TempDir(), "elsewhere")
+	t.Setenv(WorkDirEnv, custom)
+	if got := workDirPath(); got != custom {
+		t.Fatalf("workDirPath() = %q, want the %s override %q — without a working override there "+
+			"is no way to run two walks at once, and the lock below would be a hard block rather "+
+			"than a redirect", got, WorkDirEnv, custom)
+	}
+}
+
+// TestWalkWorkDirRefusesAConcurrentRun pins the hazard a FIXED path creates. Two
+// concurrent walks would boot two stores over one SQLite file, re-seed one models
+// tree, and RemoveAll it out from under each other. The lock must refuse the second
+// one loudly rather than silently falling back to a random dir (which would restore
+// the instability) or silently sharing (which would corrupt the run).
+//
+// It also asserts release() FREES the lock. A one-shot lock would make the second
+// walk on a machine fail forever, which is a worse bug than the one being fixed.
+func TestWalkWorkDirRefusesAConcurrentRun(t *testing.T) {
+	// Never the real default path: `go test ./...` must not be able to collide with a
+	// `make ux-audit` running beside it.
+	t.Setenv(WorkDirEnv, filepath.Join(t.TempDir(), "wd"))
+
+	dir, release, err := acquireWorkDir()
+	if err != nil {
+		t.Fatalf("first acquireWorkDir: %v", err)
+	}
+	// Fixture reached the interesting case: the dir really exists and really is locked,
+	// so the refusal below is about contention and not about a failed setup.
+	if st, serr := os.Stat(dir); serr != nil || !st.IsDir() {
+		t.Fatalf("acquireWorkDir returned %q which is not a directory (%v)", dir, serr)
+	}
+	if _, lerr := os.Stat(dir + ".lock"); lerr != nil {
+		t.Fatalf("acquireWorkDir left no lock file at %s: %v", dir+".lock", lerr)
+	}
+
+	if _, _, err2 := acquireWorkDir(); err2 == nil {
+		t.Error("a SECOND acquireWorkDir succeeded while the first still held the dir — two " +
+			"concurrent walks would share one SQLite file and RemoveAll each other's fixtures")
+	} else if !strings.Contains(err2.Error(), WorkDirEnv) {
+		t.Errorf("the refusal does not name %s, so the operator is told to stop rather than how "+
+			"to run two walks: %v", WorkDirEnv, err2)
+	}
+
+	release()
+	if _, serr := os.Stat(dir); !os.IsNotExist(serr) {
+		t.Errorf("release() left %q behind: %v", dir, serr)
+	}
+
+	// The lock is reusable, not one-shot.
+	_, release2, err3 := acquireWorkDir()
+	if err3 != nil {
+		t.Fatalf("acquireWorkDir after release: %v — release() did not free the lock", err3)
+	}
+	release2()
+}
+
+// TestWalkAcquiresTheDeterministicWorkDir closes the SEAM the two tests above cannot
+// see: they prove workDirPath/acquireWorkDir are deterministic, not that Walk USES
+// them. Walk is browser-only, so no ordinary test can observe its choice at runtime —
+// this reads the source instead.
+//
+// It is deliberately structural rather than spelled: the assertion is "no
+// os.MkdirTemp call exists in this package's non-test source, and Walk calls
+// acquireWorkDir", not a substring hunt for a particular line.
+func TestWalkAcquiresTheDeterministicWorkDir(t *testing.T) {
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", nonTestGoFile, 0)
+	if err != nil {
+		t.Fatalf("parse package source: %v", err)
+	}
+	pkg, ok := pkgs["uxaudit"]
+	if !ok {
+		t.Fatalf("no uxaudit package parsed (got %v)", keysOf(pkgs))
+	}
+	// Scanner precondition / negative control: a parse that silently found almost
+	// nothing would report "no offenders" and read as a pass. This package has ~10
+	// non-test files; 5 is a floor that cannot be met by a broken glob.
+	const minScannedFiles = 5
+	if n := len(pkg.Files); n < minScannedFiles {
+		t.Fatalf("scanned only %d non-test files, want >= %d — the scan is broken, so its "+
+			"'no offenders' verdict means nothing", n, minScannedFiles)
+	}
+
+	var mkdirTempSites []string
+	var walkFound, walkAcquires bool
+	for name, f := range pkg.Files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if selectorIs(call.Fun, "os", "MkdirTemp") {
+				mkdirTempSites = append(mkdirTempSites,
+					filepath.Base(name)+":"+
+						fsetLine(fset, call.Pos()))
+			}
+			return true
+		})
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil || fn.Name.Name != "Walk" {
+				continue
+			}
+			walkFound = true
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "acquireWorkDir" {
+					walkAcquires = true
+				}
+				return true
+			})
+		}
+	}
+
+	if !walkFound {
+		t.Fatal("no func Walk found in the package source — the scan cannot see what it is guarding")
+	}
+	if !walkAcquires {
+		t.Error("Walk does not call acquireWorkDir — whatever work dir it builds is not the " +
+			"deterministic one the tests above pin, so the library-sources capture can drift again")
+	}
+	if len(mkdirTempSites) > 0 {
+		t.Errorf("os.MkdirTemp is called from non-test source at %v — a random work dir is what "+
+			"made the library-sources capture differ between two runs of the same tree; use "+
+			"acquireWorkDir()", mkdirTempSites)
+	}
+}
+
+// nonTestGoFile selects the package's production source: .go, not _test.go.
+func nonTestGoFile(fi os.FileInfo) bool {
+	name := fi.Name()
+	return strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go")
+}
+
+// selectorIs reports whether expr is the selector `pkg.name` (e.g. os.MkdirTemp).
+func selectorIs(expr ast.Expr, pkg, name string) bool {
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != name {
+		return false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	return ok && id.Name == pkg
+}
+
+func fsetLine(fset *token.FileSet, pos token.Pos) string {
+	return strings.TrimPrefix(fset.Position(pos).String(), fset.Position(pos).Filename)
+}
+
+func keysOf[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}

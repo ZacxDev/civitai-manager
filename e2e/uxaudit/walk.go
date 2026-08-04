@@ -302,11 +302,11 @@ func Walk(ctx context.Context, execPath, outDir, label string) (*WalkResult, err
 		return nil, fmt.Errorf("create out dir: %w", err)
 	}
 
-	workDir, err := os.MkdirTemp("", "uxaudit-walk-")
+	workDir, releaseWorkDir, err := acquireWorkDir()
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(workDir)
+	defer releaseWorkDir()
 
 	app, err := Boot(workDir)
 	if err != nil {
