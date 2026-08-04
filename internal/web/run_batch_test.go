@@ -135,7 +135,7 @@ func TestBatchCountCappedAtStart(t *testing.T) {
 //     item i has settled and before item i+1 begins. That is EXACTLY the gap the
 //     old code would have opened by clearing `running` in the shared settle.
 //
-// A startRun that succeeds in either window means two runs would be submitting into
+// A startRunWithMessage that succeeds in either window means two runs would be submitting into
 // ComfyUI at once.
 func TestBatchSingletonHeldAcrossItems(t *testing.T) {
 	srv := newTestServer(t)
@@ -172,10 +172,10 @@ func TestBatchSingletonHeldAcrossItems(t *testing.T) {
 	snap := waitBatchDone(t, srv)
 
 	if n := atomic.LoadInt32(&duringItem); n != 0 {
-		t.Errorf("%d startRun calls succeeded WHILE an item was running", n)
+		t.Errorf("%d startRunWithMessage calls succeeded WHILE an item was running", n)
 	}
 	if n := atomic.LoadInt32(&betweenItems); n != 0 {
-		t.Errorf("%d startRun calls succeeded BETWEEN items — the singleton opened in "+
+		t.Errorf("%d startRunWithMessage calls succeeded BETWEEN items — the singleton opened in "+
 			"the settle gap, which is exactly what applyItemOutcomeLocked must prevent", n)
 	}
 	// 6 runs + 5 inter-item gaps. If the probes never fired the assertions above are
@@ -188,7 +188,7 @@ func TestBatchSingletonHeldAcrossItems(t *testing.T) {
 	}
 }
 
-// TestBatchConcurrentStartRunRace hammers startRun from 50 goroutines for the whole
+// TestBatchConcurrentStartRunRace hammers startRunWithMessage from 50 goroutines for the whole
 // life of a batch, across every inter-item boundary, while a second set of
 // goroutines polls runJobState concurrently.
 //
@@ -277,7 +277,7 @@ func TestBatchConcurrentStartRunRace(t *testing.T) {
 	snap := waitBatchDone(t, srv)
 
 	if n := atomic.LoadInt32(&sneakedIn); n != 0 {
-		t.Errorf("%d concurrent startRun calls STARTED during the batch — the singleton "+
+		t.Errorf("%d concurrent startRunWithMessage calls STARTED during the batch — the singleton "+
 			"opened between items", n)
 	}
 	if atomic.LoadInt32(&overlap) != 0 {

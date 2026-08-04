@@ -88,11 +88,11 @@ Three things this fixes about the naive design:
 
 ### The existing run singleton
 
-- `Server.runJob` / `Server.runMu` / `Server.runSeq`; `startRun` refuses when
+- `Server.runJob` / `Server.runMu` / `Server.runSeq`; `startRunWithMessage` refuses when
   `s.runJob != nil && s.runJob.running` (`internal/web/run_handlers.go:197-199`)
   and **returns nothing** — a re-click while a run is in flight is a *silent*
   no-op that re-renders the current status fragment (`run_handlers.go:593-594`).
-- `runSeq` increments once per `startRun` (`run_handlers.go:206`) and is stamped
+- `runSeq` increments once per `startRunWithMessage` (`run_handlers.go:206`) and is stamped
   as `data-run-seq` on the status fragment root (`internal/web/run_pages.go:167-177`)
   — documented as "the single DOM hook the ux-audit harness keys on".
 - `applyRunOutcomeLocked` sets `job.running = false` (`run_handlers.go:297`) and is
@@ -479,7 +479,7 @@ Only **four** terminal shapes, all rendered by the existing
 
 `settleAndCapture` → `applyRunOutcomeLocked` sets `job.running = false`
 (`run_handlers.go:297`). **Per-item settle must NOT clear `running`**, or a
-concurrent `startRun` slips in between items and the singleton is broken.
+concurrent `startRunWithMessage` slips in between items and the singleton is broken.
 
 Required split:
 
@@ -634,12 +634,12 @@ must never be able to produce one).
 
 ### Starting a batch while one is running
 
-Today this is a **silent no-op**: `startRun` returns early
+Today this is a **silent no-op**: `startRunWithMessage` returns early
 (`run_handlers.go:197-199`) and the handler re-renders the current status
 (`run_handlers.go:593-594`). For a single re-click that is tolerable; for
 "I clicked Queue ×8 and nothing happened" it is not.
 
-**Change:** `startRun` / `startBatch` return `bool` (started). The handlers render
+**Change:** `startRunWithMessage` / `startBatch` return `bool` (started). The handlers render
 a one-line refusal above the (unchanged) status fragment:
 
 > A batch is already running (**3 of 8**). Stop it before starting another.
@@ -940,7 +940,7 @@ bug it catches.
 | `TestBatchStateTransitions` | table-driven over a fake `runFn`: 8 successes ⇒ COMPLETE(8/8); failure at 3 ⇒ HALTED(index 3, done 2, 5 not started); stop at 3 ⇒ STOPPED(3 done, 5 cancelled) | every off-by-one in the "3 of 8" accounting |
 | `TestBatchHaltsOnFirstFailure` | the fake `runFn` is invoked exactly **3** times for a batch of 8 failing at 3 | skip-and-continue sneaking in and burning the GPU on a deterministic preflight failure |
 | `TestBatchStopPreventsFurtherSubmits` | after Stop during item 3, `runFn` invocation count never increases | a remainder that keeps submitting after Stop — the exact thing decision 1 exists to prevent |
-| `TestBatchSingletonHeldAcrossItems` | `startRun` returns `false` at every point between items | the `applyItemOutcomeLocked` split accidentally clearing `running` — **the riskiest edit** |
+| `TestBatchSingletonHeldAcrossItems` | `startRunWithMessage` returns `false` at every point between items | the `applyItemOutcomeLocked` split accidentally clearing `running` — **the riskiest edit** |
 | `TestBatchSeqIsOnePerBatch` | `runSeq` increments once for a batch of 8; `data-run-seq` is constant across all items | breaking the documented `data-run-seq` contract (`run_pages.go:167-171`) |
 
 ### Store — `internal/store`
@@ -1006,7 +1006,7 @@ gate, plus these specifically race-shaped tests:
 
 | test | asserts | catches |
 |---|---|---|
-| `TestBatchConcurrentStartRunRace` | 50 goroutines calling `startRun` while a batch runs; exactly **zero** start, and `runJobState()` is polled concurrently throughout | **the riskiest edit**: `applyItemOutcomeLocked` clearing `running` between items and letting a second run in |
+| `TestBatchConcurrentStartRunRace` | 50 goroutines calling `startRunWithMessage` while a batch runs; exactly **zero** start, and `runJobState()` is polled concurrently throughout | **the riskiest edit**: `applyItemOutcomeLocked` clearing `running` between items and letting a second run in |
 | `TestBatchProgressSnapshotRace` | `runJobState()` from N goroutines against a live batch never returns a torn view (`index ≤ total`, `done ≤ index`) | appending to progress and snapshotting under *different* locks — the repo's streaming invariant |
 | `TestStopDuringSubmitRace` | Stop racing the submit boundary always lands in exactly one terminal state | a batch that both halts and continues |
 | `TestOverlappingCapturesRace` | two batch-item captures overlapping `enforceOutputsCap` (already possible today, `outputs_capture.go:344-346`) | the `keepID` guard regressing under batch pressure |
@@ -1050,7 +1050,7 @@ intermediate trees (repo `CLAUDE.md`).
 | **P1** | `internal/comfy/run_presets.go` — the **pure** reconciler: `Reconcile(graph, modes, stored) Reconciliation{Kept, Dropped, Defaulted, DroppedModes}`. No store, no I/O. Plus the snapshot struct extensions + round-trip. | Yes — unreferenced pure code | 🟡 The correctness core. Heavily unit-tested; no runtime exposure until P3. |
 | **P2** | Tab strip **read-only**: `runParametersPanelForModes` renders the strip + active tab from stored presets; a workflow with none gets one implicit tab. Run once works exactly as today. | Yes | 🟡 Touches the run page's most-tested renderer. Mitigated by reusing `#run-params` so `run_modes.go` is untouched. |
 | **P3** | Fork / Save / Delete / activate endpoints + the drift banner (wires P1 into P2). | Yes | 🟡 New CSRF + gated endpoints; the cross-workflow id checks are the thing to get right. |
-| **P4** | **Seed randomization + the batch job + Queue ×N + batch cancel.** `applyItemOutcomeLocked` / `applyBatchOutcomeLocked` split, `startBatch`, `stopRun` extension, `startRun` returning `bool` + the refusal line, the no-seed confirm. | Yes | 🔴 **Riskiest — see below.** |
+| **P4** | **Seed randomization + the batch job + Queue ×N + batch cancel.** `applyItemOutcomeLocked` / `applyBatchOutcomeLocked` split, `startBatch`, `stopRun` extension, `startRunWithMessage` returning `bool` + the refusal line, the no-seed confirm. | Yes | 🔴 **Riskiest — see below.** |
 | **P5** | Capture writes the batch columns; rail collapses a batch to one tile; `/outputs` caption; `GET /outputs/batch/{id}`. | Yes (batches just look ungrouped until it lands) | 🟢 low, read-mostly. |
 | **P6** | Wire `mode_selection` into `buildRunParamsSnapshot` / `runOptionsFromParams` (hash-gated) → **closes the deferred re-run gap**; optional "Open as preset" on the generation page. | Yes | 🟡 Changes existing re-run behaviour; the 409 path must keep working. |
 
@@ -1068,7 +1068,7 @@ and load-dependent — the hardest possible thing to catch after the fact.
 
 Mitigations, all mandatory:
 - `TestBatchSingletonHeldAcrossItems` + `TestBatchConcurrentStartRunRace` under
-  `-race`, with 50 adversarial concurrent `startRun` callers.
+  `-race`, with 50 adversarial concurrent `startRunWithMessage` callers.
 - The split must **reuse the existing `switch` verbatim** for classification —
   only the `running` / `finishedAt` assignment moves. No re-derivation.
 - Live-verify P4 with a **fake `comfyClientFn`** before ever pointing it at the

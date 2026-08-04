@@ -326,7 +326,7 @@ func (s *Server) settleAndCapture(job *runJob, wf *store.Workflow, opts runOptio
 }
 
 // newRunUpdater builds the runUpdater that streams a run's phase transitions into
-// job under runMu. Shared by startRun and startDownloadAndRun.
+// job under runMu. Shared by startRunWithMessage and startDownloadAndRun.
 func (s *Server) newRunUpdater(job *runJob) runUpdater {
 	return runUpdater{
 		setPhase: func(phase, msg string, pos int) {
@@ -362,7 +362,7 @@ func (s *Server) applyRunOutcomeLocked(job *runJob, res *runResult, err error) {
 //
 // 🔴 IT DELIBERATELY DOES NOT TOUCH job.running.
 // Between the items of a batch the run singleton MUST stay held. If this cleared
-// `running`, a concurrent startRun would slip in through the gap between item i's
+// `running`, a concurrent startRunWithMessage would slip in through the gap between item i's
 // settle and item i+1's submit, and two runs would be submitting into ComfyUI at
 // once — a nondeterministic, load-dependent failure, the hardest kind to catch
 // after the fact. Clearing it is applyBatchOutcomeLocked's job and happens exactly

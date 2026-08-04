@@ -123,7 +123,7 @@ func TestRunParametersPanelAbsentForAPIGraph(t *testing.T) {
 }
 
 // TestRunWithParamsAppliesOverrides drives the endpoint end-to-end through a
-// recording runFn: the parsed overrides reach startRun, curated keys are kept, and a
+// recording runFn: the parsed overrides reach startRunWithMessage, curated keys are kept, and a
 // non-curated (link) input is dropped by the allowlist.
 func TestRunWithParamsAppliesOverrides(t *testing.T) {
 	srv := newLibraryTestServer(t, t.TempDir())

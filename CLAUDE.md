@@ -763,8 +763,18 @@ that `internal/web` "alone carries eight", and that working the list down was op
 work. That sweep is DONE** — the same staleness the release-version and
 migration-number warnings above exist to prevent, so **do not restate a count here**:
 read the file. What is durable is the *shape* of the answer that sweep found — **12 of
-the 15 were SUPERSEDED WRAPPERS** (a no-argument form of a function whose
-explicit-argument sibling is what production calls), **2 were test scaffolding sitting
+the 15 were SUPERSEDED**, i.e. something else in the tree already did the job. ⚠ That
+gloss first read "superseded WRAPPERS (a no-argument form of a function whose
+explicit-argument sibling is what production calls)", which over-narrows: read off the
+deletion diff, only about half were that shape. The rest were a **second full
+implementation** (`RegistryClient.LookupClasses`, a cache-less copy of
+`NodePackResolver.RegistryPacks`' loop), a **subsumed disjunct**
+(`isJSONObjectNonEmpty`, whose one call site was `x || HasPrefix(…,"{")`), a
+**cross-package key-builder mirror** (`store.NodePackSourceRegistryClass`, duplicating a
+prefix `internal/comfy` owns because the dependency runs comfy → store), and a
+**same-arity composing wrapper** (`LookupClass` = `LookupClassRaw` +
+`DecodeRegistryPack`). So look for a survivor doing the work, in any shape — not
+specifically for a defaulted-argument twin. **2 were test scaffolding sitting
 in a production file** (moved into a `_test.go`, where tier B — which never loads test
 files — correctly stops seeing them, with a guard pinning them against the production
 builder so the second-renderer risk cannot go quiet), and **1 is a real, deliberate

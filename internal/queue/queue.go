@@ -112,10 +112,12 @@ func (w *Worker) Run(ctx context.Context) {
 // It stays exported because it is the only way to advance the queue by EXACTLY one
 // item, which 14 call sites across internal/queue (9 in queue_test.go, 3 in
 // preview_test.go) and internal/integration (2) depend on to assert per-item state
-// (claim ordering, retry/interrupt handling, sidecar writes) between steps. Count
-// `.ProcessOne(` if you need to re-check it — an earlier revision of this comment
-// said "~22", which was a count of LINES MENTIONING the name, t.Fatalf messages
-// included, not of calls. DrainAll is not a substitute for those: it calls
+// (claim ordering, retry/interrupt handling, sidecar writes) between steps. To
+// re-check that number, count CALLS — grep the *_test.go files for the call syntax,
+// not this file, because a grep run over the whole package matches this sentence too
+// and comes back one high. (An earlier revision said "~22", which was a count of
+// LINES MENTIONING the name, t.Fatalf messages included, not of calls.) DrainAll is
+// not a substitute for those: it calls
 // RequeueInterrupted first and then drains to empty, so it destroys the very
 // intermediate states they exist to observe.
 //

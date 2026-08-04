@@ -246,7 +246,7 @@ func (ds *downloadSeam) count() int {
 }
 
 // assertNoJobStarted proves a click created NO download/run job. It is checked
-// synchronously right after the POST on purpose: startDownloadAndRun/startRun publish
+// synchronously right after the POST on purpose: startDownloadAndRun/startRunWithMessage publish
 // the job under runMu BEFORE the handler returns, so "still not running" immediately
 // after the response is a deterministic answer — waiting on the seam alone would race
 // the download goroutine and could pass vacuously.

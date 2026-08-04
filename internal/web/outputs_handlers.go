@@ -298,7 +298,7 @@ func (s *Server) handleGenerationRerun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reconstruct the applied overrides and re-run the CURRENT workflow. startRun is
+	// Reconstruct the applied overrides and re-run the CURRENT workflow. startRunWithMessage is
 	// idempotent (no-op while a run is already in flight). The positional (widget
 	// index) overrides are only reconstructed when the workflow's graph still hashes
 	// the same as when this generation was recorded — otherwise they would land on

@@ -32,7 +32,7 @@ an open question rather than silently chosen.
   is `[]comfy.ImageRef{Filename, Subfolder, Type}` (`internal/comfy/client.go`
   L324-329). `HistoryEntry.AllImages()` (L378) flattens every node output's
   `Images` — **only the `images` key**, not `gifs`/`videos`/`audio`.
-- **Settle path.** The run goroutine in `startRun` calls
+- **Settle path.** The run goroutine in `startRunWithMessage` calls
   `run(ctx, wf, up, opts)` then, **under `runMu`**, `applyRunOutcomeLocked` —
   which on success sets `job.phase = runPhaseDone`, `job.images = res.Images`,
   `job.promptID = res.PromptID`. The job is **in-memory only** (`runJob`), single
@@ -188,7 +188,7 @@ CREATE INDEX ix_generation_images_gen ON generation_images(generation_id, idx);
 
 ## 3. Capture hook
 
-**Where.** In `startRun`'s run goroutine (`run_handlers.go` ~L167-185), **after**
+**Where.** In `startRunWithMessage`'s run goroutine (`run_handlers.go` ~L167-185), **after**
 `applyRunOutcomeLocked` settles the job, **outside `runMu`**, on the success path
 only. Sketch (not final code):
 
@@ -484,7 +484,7 @@ we own the bytes now):
    Get/GetImage/Delete) with a `generations.go` + `generations_test.go`.
 2. Config: `outputs_dir` knob (+ `--outputs-dir`), default `<dir(DBPath)>/outputs`,
    validated writable; thread `OutputsDir` into `web.Config`.
-3. Capture hook in `startRun`'s goroutine + `captureGeneration` (View → atomic
+3. Capture hook in `startRunWithMessage`'s goroutine + `captureGeneration` (View → atomic
    write via `comfy.WriteModelStream` → `InsertGeneration`), best-effort, own
    bounded context, logs+swallows.
 4. Routes: `GET /outputs` (grid, pagination, `?workflow=`),
@@ -494,7 +494,7 @@ we own the bytes now):
 ### Phase 2 — detail + re-run + delete
 
 6. `GET /outputs/{id}` detail (full images + lightbox + params panel).
-7. `POST /outputs/{id}/rerun` (reconstruct `runOptions`, `startRun`), CSRF+gate,
+7. `POST /outputs/{id}/rerun` (reconstruct `runOptions`, `startRunWithMessage`), CSRF+gate,
    disabled when workflow deleted.
 8. `POST /outputs/{id}/delete` (files-then-rows).
 
@@ -579,7 +579,7 @@ Three items the v0.1.68 audit deliberately deferred, now implemented.
 
 ### 9.1 Capture on the download-and-run path
 
-v0.1.68 wired capture into `startRun` only. `startDownloadAndRun` (plain
+v0.1.68 wired capture into `startRunWithMessage` only. `startDownloadAndRun` (plain
 "Download & run" **and** "install option and run") settled its outcome under
 `s.runMu` with a `defer Unlock()` and had **no capture**, so those successes never
 reached the gallery.

@@ -378,9 +378,49 @@ func TestRegistryPacksFanOut(t *testing.T) {
 //   - The peak is read while every handler is still blocked, so it is the true
 //     simultaneous maximum and not a sample.
 //
-// The assertion is two-sided: above the cap means the semaphore is gone, below it
-// means the fan-out stopped being concurrent.
+// The two failure directions land in DIFFERENT places, which is worth knowing when
+// you read a red: "fewer than the cap were ever simultaneous" fails at the positive
+// control above, and "more than the cap were simultaneous" fails at the assertion at
+// the bottom. By the time that assertion runs the control has already proved
+// maxInflight >= want, so it is really a one-sided `peak > want` check — do not read
+// its message as covering the serial case.
+// awaitResolve waits for the RegistryPacks goroutine, BOUNDED. An unbounded <-done
+// would convert one hung fan-out into `panic: test timed out`, which kills the whole
+// internal/comfy binary and truncates every test after this one — turning a single
+// local failure into an unreadable package-wide one. Unreachable in practice (both
+// call sites are after close(release), and the client carries its own timeout), which
+// is exactly why it is cheap to bound.
+func awaitResolve(t *testing.T, done <-chan struct{}, where string) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatalf("RegistryPacks did not return within 60s (%s); failing this test alone "+
+			"rather than letting the package time out", where)
+	}
+}
+
 func TestRegistryPacksCapsConcurrentRequests(t *testing.T) {
+	// 🔴 CALIBRATION GUARD. Both `want` and `total` derive from registryConcurrency,
+	// so the expectation and the subject move together — the "calibrated to its own
+	// constant" mode. Mutating registryConcurrency to 1 left this test GREEN while
+	// making it meaningless: `want` becomes 1, the positive control degenerates to
+	// "wait for a single arrival" (which proves no simultaneity at all), and `total`
+	// drops to 2. Any value below 2 cannot express a concurrency contest, so refuse
+	// to report a verdict instead of reporting a vacuous pass.
+	//
+	// This does NOT make the test immune to the shared derivation — a cap of 3 or 4
+	// would still move both sides — but it does close the one value at which the test
+	// stops being about concurrency. The hazard the test exists for (the semaphore
+	// deleted, every class hitting the Registry at once) is caught at any cap >= 2,
+	// and the blind direction is more-civil-not-less.
+	if registryConcurrency < 2 {
+		t.Fatalf("registryConcurrency = %d: this test derives both its barrier and its "+
+			"expectation from that constant, so below 2 it cannot observe simultaneity "+
+			"and its pass would mean nothing. Re-express the fixture with a literal "+
+			"before lowering the cap.", registryConcurrency)
+	}
+
 	const want = registryConcurrency
 	const total = registryConcurrency * 2 // the surplus has to queue
 
@@ -421,7 +461,7 @@ func TestRegistryPacksCapsConcurrentRequests(t *testing.T) {
 		case <-arrived:
 		case <-time.After(30 * time.Second):
 			close(release)
-			<-done
+			awaitResolve(t, done, "after the positive control timed out")
 			t.Fatalf("only %d of %d requests were ever simultaneously in flight — the "+
 				"fan-out is not concurrent (or the cap was lowered below %d), so this "+
 				"test cannot say anything about the cap", i, want, want)
@@ -439,14 +479,15 @@ func TestRegistryPacksCapsConcurrentRequests(t *testing.T) {
 	mu.Unlock()
 
 	close(release)
-	<-done
+	awaitResolve(t, done, "after the peak was read")
 
 	if peak != want {
 		t.Errorf("peak simultaneous Registry requests = %d, want exactly %d "+
-			"(registryConcurrency). Above the cap means the semaphore in "+
-			"RegistryPacks is gone and %d classes would hit the Registry at once; "+
-			"below it means the fan-out is no longer concurrent.",
-			peak, want, total)
+			"(registryConcurrency): the semaphore in RegistryPacks is gone, so all %d "+
+			"classes would hit the Comfy Registry at once. (A peak BELOW the cap cannot "+
+			"reach this line — the positive control above has already proved at least %d "+
+			"were simultaneous — so this only ever reports the cap being exceeded.)",
+			peak, want, total, want)
 	}
 }
 
