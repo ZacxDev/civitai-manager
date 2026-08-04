@@ -172,7 +172,7 @@ func TestRunControlsIncludeModePicks(t *testing.T) {
 			&store.Workflow{ID: 5, Format: store.WorkflowFormatUI, Graph: plainUIGraph}, "tok")),
 		"Incompatible options form": renderString(t, incompatibleOptionsSection(
 			[]comfy.BadOption{{ClassType: "X", InputName: "y", Current: "z", Choices: []string{"a", "b"}}},
-			5, "tok", false)),
+			5, "tok", false, false, false)),
 	} {
 		// The selector names the stable CONTAINER, not "#run-modes select" — see
 		// runModesInclude and TestRunPanelHxIncludesAlwaysMatch (issue #28). htmx

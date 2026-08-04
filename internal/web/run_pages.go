@@ -594,9 +594,11 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mr m
 			}
 		}
 		// Incompatible combo (enum) options: a dedicated pick-a-valid-choice-and-run
-		// form. Independent of the missing nodes/models sections above.
+		// form. Independent of the missing nodes/models sections above — EXCEPT for the
+		// setup slot, which is a whole-panel singleton (see failureSetupOwner).
 		if len(snap.Preflight.BadOptions) > 0 {
-			detail = append(detail, incompatibleOptionsSection(snap.Preflight.BadOptions, wfID, csrf, dlEligible))
+			detail = append(detail, incompatibleOptionsSection(snap.Preflight.BadOptions, wfID, csrf,
+				dlEligible, snap.ComfyRemote, failureSetupOwner(snap, batch, dlEligible) == setupSlotOptions))
 		}
 	}
 	if tech := failureTechnicalDetail(snap, nm, nn); tech != nil {
@@ -604,6 +606,88 @@ func runFailure(snap runSnapshot, wfID int64, csrf string, dlEligible bool, mr m
 	}
 	// The glyph makes the failure state distinguishable by shape, not by tint alone.
 	return alertIcon("error", "⚠", failureTitle(snap, nm, nn), detail...)
+}
+
+// failureSetupSlot names WHICH section of the failure panel carries the models-folder
+// affordance — the setup CTA when a folder choice can unblock something, the
+// remote-comfy explanation when nothing on this page can.
+//
+// 🔴 It exists because that affordance is a WHOLE-PANEL SINGLETON: comfySetupCTA
+// renders the app's only id="comfy-setup", and two of them make htmx's target
+// ambiguous (a rejected save HX-Retargets #comfy-setup and would land in whichever
+// the browser matched first, nesting a second container inside the first on every
+// rejection). Deciding ownership once, here, is what makes "at most one" a property
+// of the panel rather than a rule each section is trusted to remember.
+type failureSetupSlot int
+
+const (
+	// setupSlotNone: no section needs the affordance.
+	setupSlotNone failureSetupSlot = iota
+	// setupSlotBatch: the missing-models section carries it. It gets first refusal
+	// because it is THE primary recovery action for the whole failure and leads the
+	// panel; moving the control below the incompatible-options groups would put the
+	// fix under the thing it fixes, which is the defect blockedInstallAction removed.
+	setupSlotBatch
+	// setupSlotOptions: the incompatible-options section carries it, because the
+	// missing-models section did not render.
+	setupSlotOptions
+)
+
+// failureSetupOwner decides which section owns the setup slot.
+//
+// 🔴 THE BATCH TEST IS "DID THAT SECTION RENDER", NOT "ARE THERE MISSING MODELS".
+// Those differ in two measured states, and keying on the model count is wrong in
+// both: (a) every missing reference has a degenerate basename, so installDedupeKey
+// rejects all of them, Installable is empty and installAllMissingAction returns nil;
+// (b) a remote comfy_url, where the section renders its explanation instead. Reading
+// the count alone would hand the slot to nobody in (a) — leaving the panel with no
+// affordance again — while claiming the batch had taken it.
+//
+// It is derived from the SAME expression installAllMissingAction branches on
+// (total == 0 → nil), deliberately: if this predicate and that function disagree the
+// panel gets two containers or none, which is exactly what
+// TestFailurePanelHasAtMostOneComfySetupContainer measures by COUNT across the whole
+// state matrix rather than by presence.
+func failureSetupOwner(snap runSnapshot, batch batchInstallPlan, dlEligible bool) failureSetupSlot {
+	if snap.Preflight == nil {
+		return setupSlotNone
+	}
+	if len(snap.MissingModels) > 0 && len(batch.Installable)+batch.Overflow > 0 {
+		return setupSlotBatch
+	}
+	if blockedModelFileOptions(snap.Preflight.BadOptions, dlEligible) > 0 {
+		return setupSlotOptions
+	}
+	return setupSlotNone
+}
+
+// blockedModelFileOptions counts the bad options whose "Install <file>" control is
+// blocked by a SERVER-level precondition — i.e. the ones a models-folder choice (or,
+// where comfy_url is remote, nothing at all) is standing between the user and.
+//
+// 🔴 It mirrors badOptionInstallAction's own gate, `dlEligible && routable`, so the
+// number in the CTA's label can never promise to unblock a button that would stay
+// disabled anyway. An UNROUTABLE value is excluded for that reason: civitai-manager
+// cannot work out where such a file belongs in ComfyUI, so supplying the folder
+// changes nothing for it.
+//
+// It returns 0 when dlEligible, which is what keeps the options section from claiming
+// the slot on a fully-configured install where every Install button already works.
+func blockedModelFileOptions(bad []comfy.BadOption, dlEligible bool) int {
+	if dlEligible {
+		return 0
+	}
+	n := 0
+	for _, bo := range bad {
+		if !comfy.IsModelFileValue(bo.Current) {
+			continue
+		}
+		if _, _, routable := comfy.InferBadOptionInstall(bo.ClassType, bo.InputName, bo.Current); !routable {
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 // lowerBoundNoticeText is the honesty caveat rendered when the UI→API conversion
@@ -782,12 +866,23 @@ func itThem(n int) string {
 // applies every pick and runs. It lives inside the terminal (poller-free) fragment,
 // so it is never swapped away mid-interaction. Every untrusted string (class, input,
 // current value, choice) is escaped via g.Text / attribute escaping.
-func incompatibleOptionsSection(bad []comfy.BadOption, wfID int64, csrf string, dlEligible bool) g.Node {
+//
+// ownsSetup is failureSetupOwner's verdict: this section carries the panel's single
+// setup affordance because the missing-models section did not render. 🔴 The caller
+// decides — never re-derive it here, or two sections can both conclude they own it.
+//
+// PLACEMENT: the slot renders directly under the intro paragraph and ABOVE the
+// groups, so the control that turns every disabled "Install <file>" into a live one
+// precedes those buttons. Under them it would repeat the defect blockedInstallAction
+// was written to remove — the fix rendered smaller than, and below, the dead controls
+// it fixes.
+func incompatibleOptionsSection(bad []comfy.BadOption, wfID int64, csrf string,
+	dlEligible, comfyRemote, ownsSetup bool) g.Node {
 	groups := make([]g.Node, 0, len(bad))
 	for i, bo := range bad {
-		groups = append(groups, badOptionGroup(i, bo, wfID, csrf, dlEligible))
+		groups = append(groups, badOptionGroup(i, bo, wfID, csrf, dlEligible, comfyRemote))
 	}
-	return h.Form(
+	children := []g.Node{
 		hx("post", "/workflows/"+strconv.FormatInt(wfID, 10)+"/run-with-options"),
 		hx("target", "#"+runStatusContainerID),
 		hx("swap", "innerHTML"),
@@ -799,10 +894,28 @@ func incompatibleOptionsSection(bad []comfy.BadOption, wfID int64, csrf string, 
 		h.P(h.Class("text-xs text-slate-400"),
 			g.Text("These saved values are no longer valid choices on your installed nodes. "+
 				"Pick a valid option for each, then run.")),
+	}
+	if ownsSetup {
+		// Two blocked states, same split blockedInstallAction makes one section up: a
+		// LOCAL ComfyUI missing only its models folder gets a real primary control
+		// (choosing the folder is the recovery action), and a remote comfy_url gets the
+		// explanation instead — a prominent CTA opening a panel that says "this server
+		// is not pointed at a ComfyUI on this machine" is the same dead end, one click
+		// further in.
+		if comfyRemote {
+			children = append(children, remoteComfyExplanation())
+		} else {
+			n := blockedModelFileOptions(bad, dlEligible)
+			children = append(children, comfySetupCTA(wfID,
+				fmt.Sprintf("Set up automatic install for %d model file%s", n, plural(n))))
+		}
+	}
+	children = append(children,
 		g.Group(groups),
 		h.Div(h.Class("pt-1"),
 			civButton("filled", "sm", []g.Node{h.Type("submit")}, g.Text("Run with selected options"))),
 	)
+	return h.Form(children...)
 }
 
 // badOptionGroup renders one incompatible-option group: the (escaped) node class +
@@ -819,7 +932,7 @@ func incompatibleOptionsSection(bad []comfy.BadOption, wfID int64, csrf string, 
 //   - An inert enum drift (no model extension, e.g. a wildcard-picker label) is
 //     pick-only: a single-choice group pre-selects its only valid option; a
 //     multi-choice group leads with a "Choose…" placeholder and is required.
-func badOptionGroup(idx int, bo comfy.BadOption, wfID int64, csrf string, dlEligible bool) g.Node {
+func badOptionGroup(idx int, bo comfy.BadOption, wfID int64, csrf string, dlEligible, comfyRemote bool) g.Node {
 	isModelFile := comfy.IsModelFileValue(bo.Current)
 	single := len(bo.Choices) == 1
 	opts := make([]selectOption, 0, len(bo.Choices)+1)
@@ -854,25 +967,50 @@ func badOptionGroup(idx int, bo comfy.BadOption, wfID int64, csrf string, dlElig
 		optionSelect("opt-new-"+strconv.Itoa(idx), opts, selected, required),
 	}
 	if isModelFile {
-		children = append(children, badOptionInstallAction(bo, wfID, csrf, dlEligible))
+		children = append(children, badOptionInstallAction(bo, wfID, csrf, dlEligible, comfyRemote))
 	}
 	return h.Div(children...)
 }
 
-// badOptionInstallBlockedText is the reason under a blocked bad-option "Install <file>".
+// The three reasons under a blocked bad-option "Install <file>". They replace ONE
+// string that said "civitai-manager is not set up to install model files here, so
+// fetch this one yourself" in all three states.
 //
-// 🔴 Unlike cardInstallBlockedText it must NOT point at the setup step, because an
-// incompatible-options failure is independent of missing models: a run can fail with
-// BadOptions and zero MissingModels, in which case runFailure renders no batch action
-// and no setup CTA at all, and "use the setup step above" would name a control that
-// is not on the page. So this says only what is true in every case it can render in,
-// and leans on the search link beside it, which always works.
+// ⚠ That sentence's own comment explained why it could not point at the setup step:
+// a run can fail with BadOptions and ZERO MissingModels, and in that state the panel
+// rendered no setup control at all (measured on 52cb872: 0 id="comfy-setup", 0
+// /comfy-setup links), so "use the setup step above" would have named a control that
+// was not on the page. failureSetupOwner closes exactly that gap — the options
+// section now carries the control when the batch section does not — so the pointer is
+// true wherever badOptionNeedsSetupText renders. That is an INVARIANT, not a
+// coincidence, and it is asserted by
+// TestBadOptionSetupPointerImpliesASetupControlOnThePage rather than assumed.
 //
-// Honest residue: this surface still has no in-app way to supply the models folder.
-// Giving it one means a second id="comfy-setup" on the page whenever both sections
-// render, so it needs a shared single-instance setup control rather than a second
-// copy — deliberately not attempted here.
-const badOptionInstallBlockedText = "civitai-manager is not set up to install model files here, so fetch this one yourself."
+// The old single string was also simply FALSE in two of the three states, which is
+// why splitting it was not merely a pointer upgrade:
+//   - unroutable + configured: the app IS set up; it just cannot work out where this
+//     particular file belongs, and no folder choice changes that.
+//   - remote comfy_url: the blocker is comfy_url, not the folder, and a reader told
+//     "not set up" reasonably goes looking for a folder to supply.
+//
+// All three keep the "fetch this one yourself" escape hatch, because the "Search
+// CivitAI ↗" link beside them works in every state.
+const (
+	// badOptionNeedsSetupText: a LOCAL ComfyUI with no usable models folder — the one
+	// blocker a control on this page can clear.
+	badOptionNeedsSetupText = "civitai-manager does not know where ComfyUI keeps its models yet — " +
+		"use the setup step above, or fetch this one yourself."
+	// badOptionRemoteComfyText: comfy_url points elsewhere. Deliberately SHORT: the
+	// full reason and the fix (set comfy_url, restart) render once per panel via
+	// remoteComfyExplanation, and repeating them under every group would restate a
+	// two-sentence dead end N times.
+	badOptionRemoteComfyText = "This server is not pointed at a ComfyUI on this machine, so fetch this one yourself."
+	// badOptionUnroutableText: the value's model type does not map to a ComfyUI
+	// subfolder, so there is no destination to write it to. Checked FIRST — it holds
+	// whatever comfy_url and comfy_model_path say, so pointing at either would send
+	// the reader to fix something that is not the blocker.
+	badOptionUnroutableText = "civitai-manager cannot work out where this file belongs in ComfyUI, so fetch this one yourself."
+)
 
 // badOptionInstallAction renders the "Install <basename>" control for a model-file
 // bad option. When installing is available (comfyDownloadEligible AND the value routes
@@ -882,7 +1020,7 @@ const badOptionInstallBlockedText = "civitai-manager is not set up to install mo
 // DISABLED Install + a reason + a "Search CivitAI ↗" link (never hidden — the user is
 // told the file is fetchable, just not automatically). Every untrusted string (the
 // basename, the current value) is escaped via g.Text / json.Marshal + attribute-escaping.
-func badOptionInstallAction(bo comfy.BadOption, wfID int64, csrf string, dlEligible bool) g.Node {
+func badOptionInstallAction(bo comfy.BadOption, wfID int64, csrf string, dlEligible, comfyRemote bool) g.Node {
 	base := path.Base(strings.ReplaceAll(bo.Current, "\\", "/"))
 	civitaiType, _, routable := comfy.InferBadOptionInstall(bo.ClassType, bo.InputName, bo.Current)
 	label := "Install " + base
@@ -894,7 +1032,7 @@ func badOptionInstallAction(bo comfy.BadOption, wfID int64, csrf string, dlEligi
 				}, g.Text(label)),
 				resolveFallbackLink(comfy.CleanModelQuery(bo.Current)),
 			),
-			h.P(h.Class("text-xs text-slate-500"), g.Text(badOptionInstallBlockedText)),
+			h.P(h.Class("text-xs text-slate-500"), g.Text(badOptionBlockedReason(routable, comfyRemote))),
 		)
 	}
 	// hx-include pulls the section form's csrf_token + every opt_input/opt_old/opt_new
@@ -915,6 +1053,30 @@ func badOptionInstallAction(bo comfy.BadOption, wfID int64, csrf string, dlEligi
 			hx("vals", string(b)),
 		}, g.Text(label)),
 	)
+}
+
+// badOptionBlockedReason picks which of the three sentences above a blocked
+// "Install <file>" carries.
+//
+// ORDER IS LOAD-BEARING. Unroutable is checked FIRST because it is the only blocker
+// that survives fixing the other two: with comfy_url local AND a valid models folder,
+// an unroutable value still has nowhere to go. Testing comfyRemote first would tell a
+// reader with an unroutable file to go and change comfy_url, and they would come back
+// to the same disabled button.
+//
+// It is called only from the blocked branch, so the remaining case is `!dlEligible &&
+// !comfyRemote && routable` — precisely blockedModelFileOptions' definition, which is
+// what guarantees failureSetupOwner put a setup control on the page for the pointer to
+// name.
+func badOptionBlockedReason(routable, comfyRemote bool) string {
+	switch {
+	case !routable:
+		return badOptionUnroutableText
+	case comfyRemote:
+		return badOptionRemoteComfyText
+	default:
+		return badOptionNeedsSetupText
+	}
 }
 
 // optionSelect renders the opt_new <select> for one incompatible-option group,

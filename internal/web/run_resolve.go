@@ -558,12 +558,22 @@ func civitaiMatchSection(mm comfy.MissingModel, res missingResolution, wfID int6
 // "use the per-file options below" while the per-file option said "use the setup
 // step at the top".
 //
-// The fix follows badOptionInstallBlockedText (run_pages.go), which solved exactly
-// this problem by pointing at nothing: it says only what is true in EVERY state it
-// can render in and leans on the "View on CivitAI ↗" link rendered beside it. That
-// also suits where this text actually appears — inside a native <dialog> opened
-// with showModal(), so anything "at the top of this report" is behind the modal and
-// invisible while the reader is looking at this sentence.
+// The fix is to point at nothing: this says only what is true in EVERY state it can
+// render in and leans on the "View on CivitAI ↗" link rendered beside it.
+//
+// ⚠ This paragraph used to cite badOptionInstallBlockedText (run_pages.go) as the
+// precedent that "solved exactly this problem by pointing at nothing". That symbol no
+// longer exists, and the surface it served now DOES point at a control:
+// failureSetupOwner guarantees the incompatible-options section carries the panel's
+// single setup CTA whenever the missing-models section did not, so
+// badOptionNeedsSetupText can honestly say "use the setup step above".
+//
+// 🔴 THAT DOES NOT TRANSFER HERE, and the reason is structural rather than a matter
+// of taste: this text renders inside a native <dialog> opened with showModal(), so
+// anything "above" is behind the modal and invisible while the reader is looking at
+// this sentence. Do not "bring it into line" with the bad-option copy. The remote
+// comfy_url state remains a second, independent reason — there is no control to name
+// there at all.
 //
 // Pinned by TestBlockedCardReasonHoldsInBothBlockedStates, which renders the whole
 // failure panel in both blocked states and fails if this copy points at a control

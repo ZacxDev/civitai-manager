@@ -64,7 +64,7 @@ func TestNumericComboFixPickerNeverRendersBlankOptions(t *testing.T) {
 		t.Errorf("preflight raised %d BadOption(s) on legitimate numeric-combo values — "+
 			"the run would halt here: %+v", len(rep.BadOptions), rep.BadOptions)
 	}
-	section := renderString(t, incompatibleOptionsSection(rep.BadOptions, 7, "csrf-tok", true))
+	section := renderString(t, incompatibleOptionsSection(rep.BadOptions, 7, "csrf-tok", true, false, false))
 	if n := len(blankOptionRE.FindAllString(section, -1)); n != 0 {
 		t.Errorf("fix picker rendered %d BLANK option(s):\n%s", n, section)
 	}
@@ -92,7 +92,7 @@ func TestDriftedStringComboStillRendersRealOptions(t *testing.T) {
 		t.Fatalf("want 1 BadOption for the drifted string combo, got %d: %+v",
 			len(rep.BadOptions), rep.BadOptions)
 	}
-	section := renderString(t, incompatibleOptionsSection(rep.BadOptions, 7, "csrf-tok", true))
+	section := renderString(t, incompatibleOptionsSection(rep.BadOptions, 7, "csrf-tok", true, false, false))
 	for _, want := range []string{`<option value="sdpa"`, `<option value="flash_attn_2"`} {
 		if !strings.Contains(section, want) {
 			t.Errorf("section missing %q:\n%s", want, section)
