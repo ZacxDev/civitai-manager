@@ -215,10 +215,18 @@ func TestExtractNoteLinksBoundsAHugeNote(t *testing.T) {
 // The WHOLE-GRAPH budget is a second, independent bound: many notes each under the
 // per-note cap must still stop.
 //
-// It is asserted from BOTH sides, which is what makes an off-by-multiple visible:
-// a note placed past the budget is not scanned, and a note placed just INSIDE it
-// is. With only the first half, doubling the budget survives — the extra headroom
-// is simply never used.
+// It is asserted from BOTH sides, and the two halves catch OPPOSITE directions —
+// measured, because an earlier version of this comment had them backwards:
+//
+//	budget RAISED  ×2  -> the PAST-the-budget half fails ("want nil past")
+//	budget LOWERED     -> the JUST-INSIDE half fails ("one cap of budget remains")
+//
+// ⚠ What actually closed the original hole was neither half on its own: it was
+// deriving fillerNotes from the two literals so the filler EXACTLY exhausts the
+// budget. The previous fixture over-provisioned it (32 notes for an 8-note budget),
+// which left so much slack that raising the cap changed nothing observable. If you
+// make fillerNotes comfortable again, the past-the-budget half stops binding — that,
+// not the presence of the second half, is the thing to preserve.
 func TestExtractNoteLinksBoundsTheWholeGraph(t *testing.T) {
 	if noteMaxTotalBytes != wantNoteTotalCap {
 		t.Fatalf("noteMaxTotalBytes = %d but this guard is calibrated to %d — update the "+
@@ -244,8 +252,9 @@ func TestExtractNoteLinksBoundsTheWholeGraph(t *testing.T) {
 			urlsOf(got), fillerNotes, wantNoteTotalCap)
 	}
 	// JUST INSIDE it: one fewer filler note leaves room, and the trailing note IS
-	// scanned. This is the half that fails when the budget is raised — without it,
-	// any larger budget passes because the extra room is never exercised.
+	// scanned. This is the half that fails when the budget is LOWERED — a budget
+	// smaller than the literal stops scanning a note that must still be reached.
+	// (A RAISED budget is caught by the past-the-budget half above, not by this one.)
 	if got := urlsOf(ExtractNoteLinks(FormatUI, makeGraph(fillerNotes-1))); len(got) != 1 || got[0] != url {
 		t.Fatalf("got %v with %d full-cap notes, want [%s] — one cap of budget remains, so "+
 			"the trailing note must still be scanned", got, fillerNotes-1, url)
