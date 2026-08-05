@@ -2,7 +2,6 @@ package comfy
 
 import (
 	"encoding/json"
-	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -91,7 +90,10 @@ func resolveModelRef(ref string, lookup ResourceLookup) ResolvedResource {
 	if lookup == nil {
 		return res
 	}
-	base := filepath.Base(ref)
+	// PathBase, not filepath.Base: ref is a graph reference and LocalFileByBasename is
+	// keyed by store.ResourceBasename, which folds "\" to "/" — so a Windows-authored
+	// reference has to be folded the same way or the lookup can never hit.
+	base := PathBase(ref)
 	match, err := lookup.LocalFileByBasename(base)
 	if err != nil || match == nil || match.ModelID == 0 || match.VersionID == 0 {
 		return res // not in library / ambiguous / not linked

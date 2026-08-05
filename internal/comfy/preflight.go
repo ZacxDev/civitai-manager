@@ -2,7 +2,6 @@ package comfy
 
 import (
 	"encoding/json"
-	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -240,10 +239,19 @@ func inputSpec(sch NodeSchema, name string) (InputSpec, bool) {
 // "bbox/face_yolov8m.pt" is compared consistently with the same tolerance as
 // choicesContain). For a plain label value (no path separator) basename == the
 // value, so this reduces to an exact match.
+//
+// EXACT MATCH IS TRIED FIRST and that ordering is load-bearing: measured on a live
+// ComfyUI, 232 of 513 combo values carry a separator and one basename collision
+// exists in the wild ("igbaddie-PN.safetensors" vs "seg-b/igbaddie-PN.safetensors").
+// The basename leg is the tolerance, never the primary key.
+//
+// Basenames go through PathBase, not filepath.Base: these are GRAPH values, so a
+// Windows-authored `zimage\zit_sda_v1.safetensors` must fold to its filename on
+// every host (filepath.Base leaves it untouched on Linux — see PathBase).
 func choicesContainValue(choices []string, value string) bool {
-	base := filepath.Base(value)
+	base := PathBase(value)
 	for _, c := range choices {
-		if c == value || filepath.Base(c) == base {
+		if c == value || PathBase(c) == base {
 			return true
 		}
 	}
@@ -269,7 +277,11 @@ func scalarComboValue(raw json.RawMessage) (string, bool) {
 // it appears in some loader node's object_info choices list (ComfyUI sees the
 // file), or localHave reports it present in the local library by basename.
 func modelSatisfied(ref string, nodes map[string]apiNode, info ObjectInfo, localHave func(string) bool) bool {
-	if localHave(filepath.Base(ref)) {
+	// PathBase, not filepath.Base: ref came out of the graph, so a Windows-authored
+	// "zimage\zit_sda_v1.safetensors" must be asked about as "zit_sda_v1.safetensors".
+	// The local index is keyed by basename (store.ResourceBasename normalises the same
+	// way), so handing it an un-folded reference reports a PRESENT file as missing.
+	if localHave(PathBase(ref)) {
 		return true
 	}
 	// Check every kept node's schema choices for this filename. A loader's choices
@@ -289,12 +301,16 @@ func modelSatisfied(ref string, nodes map[string]apiNode, info ObjectInfo, local
 // choicesContain reports whether any input's combo choices in a node schema include
 // filename (exact match, or by basename to tolerate a choices entry that carries a
 // subdirectory prefix like "flux/foo.safetensors").
+//
+// Exact-first, then basename — same ordering rationale as choicesContainValue — and
+// the basename is PathBase's, so a graph reference written with backslashes matches
+// a forward-slash choices entry.
 func choicesContain(sch NodeSchema, filename string) bool {
-	base := filepath.Base(filename)
+	base := PathBase(filename)
 	check := func(specs map[string]InputSpec) bool {
 		for _, spec := range specs {
 			for _, choice := range spec.Choices {
-				if choice == filename || filepath.Base(choice) == base {
+				if choice == filename || PathBase(choice) == base {
 					return true
 				}
 			}
