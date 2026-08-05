@@ -183,7 +183,21 @@ func scanSelectorCalls(t *testing.T) (calls []selectorCall, bareCalls []selector
 				if !ok {
 					return true
 				}
-				switch fn := call.Fun.(type) {
+				// Unwrap parentheses before classifying: `(filepath.Base)(p)` is a
+				// *ast.ParenExpr and matched NEITHER arm below, so it slipped the
+				// ledger entirely. gofmt does not add these parens and nobody writes
+				// them by hand — but this guard's header bills itself as an
+				// ENUMERATION of what it catches, and an enumeration that is wrong is
+				// worse than one that is short. Found by an adversarial audit.
+				fun := call.Fun
+				for {
+					p, ok := fun.(*ast.ParenExpr)
+					if !ok {
+						break
+					}
+					fun = p.X
+				}
+				switch fn := fun.(type) {
 				case *ast.SelectorExpr:
 					id, ok := fn.X.(*ast.Ident)
 					if !ok {
