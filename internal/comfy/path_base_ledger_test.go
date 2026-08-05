@@ -82,6 +82,14 @@ var basenameAllow = map[string]string{
 		"needs path.Dir alongside it, which PathBase has no counterpart for.",
 	"ModelsRootCategoryDirs": "same input and same question as ModelsRoot: a cleaned, " +
 		"slash-folded configuration directory, compared against a category name.",
+	"noteBasename": "the input is a URL's EscapedPath, not a host path and not a graph " +
+		"reference. In a URL only '/' separates segments — a backslash is an ordinary " +
+		"filename character — so PathBase's backslash folding would be WRONG here, " +
+		"splitting a legal filename in two. (noteURLRe excludes backslashes anyway, so " +
+		"the case is unreachable today; the reason it is path.Base is that the rule for " +
+		"URLs genuinely differs from the rule for graph references.) The value is handed " +
+		"to PathBase's owner afterwards: NoteLinksMatching compares it against " +
+		"PathBase(reference).",
 }
 
 // The two negative/positive controls for the scan. Both are LITERALS, never

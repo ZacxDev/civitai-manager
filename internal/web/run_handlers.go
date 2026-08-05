@@ -679,6 +679,11 @@ func (s *Server) preflightFailureResult(ctx context.Context, wf *store.Workflow,
 		// HERE at settle (bounded), so the terminal Fix popover renders inline and the
 		// ~1-2s run-status poll never triggers a CivitAI search.
 		resolved, libMeta = s.resolveMissingModels(ctx, missing)
+		// The workflow's OWN notes, as a third source. Deliberately AFTER the two
+		// network resolutions and deliberately reading wf.Graph — the UI graph — since
+		// conversion drops Note/MarkdownNote and apiGraph no longer contains them. It
+		// makes no outbound calls, so it cannot fail or slow this settle down.
+		s.attachNoteLinks(wf, missing, resolved)
 	}
 	return &runResult{
 		Preflight: report, MissingModels: missing,

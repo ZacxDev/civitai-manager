@@ -54,12 +54,30 @@ type Match struct {
 	Likes     int
 }
 
-// AutoDownloadEligible reports whether this match may be AUTO-downloaded (vs shown
-// as a link only). Auto is permitted ONLY for a curated-map hit OR a recognized-org
-// repo, AND a non-gated repo, AND a determinable ComfyUI subdir, AND a captured
-// sha256 to verify the bytes against. Everything else is link-only.
+// AutoDownloadEligible reports whether this match may be AUTO-downloaded by the
+// RESOLVER path (vs shown as a link only). Auto is permitted ONLY for a
+// curated-map hit OR a recognized-org repo, AND a non-gated repo, AND a
+// determinable ComfyUI subdir, AND a captured sha256 to verify the bytes against.
+// Everything else is link-only.
+//
+// 🔴 A SourceNote match is EXCLUDED OUTRIGHT, and the exclusion is here rather
+// than left to fall out of the conditions below. That is the whole point: a note
+// match's repo is chosen by an UNTRUSTED WORKFLOW AUTHOR, so `RecognizedOrg` says
+// only "the author named a repo owned by someone we recognise" — which a stranger
+// can arrange trivially. Measured: `stabilityai/sd-turbo` resolved through
+// ResolveInRepo yields Source="note" with RecognizedOrg=true, so before this guard
+// existed the ONLY thing holding the gate was the empty Subdir, and the note
+// install path already computes a real subdir of its own via comfy.TypeSubdir. A
+// plausible future edit — populating Subdir here — would have flipped it open.
+//
+// The note path has its own, DIFFERENT trust argument (the user is looking at a
+// specific file the author named, and approves it with a click) and its own gates
+// in internal/web/note_links.go. It must never borrow this one's authority.
 func (m *Match) AutoDownloadEligible() bool {
 	if m == nil || m.Gated {
+		return false
+	}
+	if m.Source == SourceNote {
 		return false
 	}
 	if m.Subdir == "" || m.SHA256 == "" {

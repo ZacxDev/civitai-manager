@@ -19,6 +19,12 @@ import (
 // Downloader shape). *hf.Client satisfies it; tests supply a fake.
 type hfClient interface {
 	Resolve(ctx context.Context, refName string) (*hf.Match, bool, error)
+	// ResolveInRepo answers for a repo the caller ALREADY knows — the note-links
+	// path, where the workflow author wrote the repo down. Resolve cannot serve it:
+	// HuggingFace's search indexes repo NAMES, so a file in a repo whose name shares
+	// nothing with the filename is unreachable from a filename-derived query. See
+	// note_links.go.
+	ResolveInRepo(ctx context.Context, repo, basename string) (*hf.Match, bool, error)
 	DownloadFile(ctx context.Context, fileURL string) (*http.Response, error)
 }
 
