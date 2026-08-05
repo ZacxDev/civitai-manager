@@ -335,8 +335,12 @@ func TestInstallFromNoteRefusesAURLTheWorkflowDoesNotLink(t *testing.T) {
 		"a url nobody wrote in this graph": "https://huggingface.co/evil/repo/resolve/main/" + noteFile,
 		"the same url with a query added":  noteHFURL + "?x=1",
 		"the same url with a trailing dot": noteHFURL + ".",
-		"an http downgrade":                strings.Replace(noteHFURL, "https://", "http://", 1),
-		"an empty url":                     "",
+		// A PREFIX of a real link. Without this, loosening the comparison to
+		// strings.HasPrefix passes the whole suite — measured.
+		"a truncated prefix of a real link": noteHFURL[:len(noteHFURL)-12],
+		"only the origin of a real link":    "https://huggingface.co/F16",
+		"an http downgrade":                 strings.Replace(noteHFURL, "https://", "http://", 1),
+		"an empty url":                      "",
 	}
 	for name, u := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -587,6 +591,52 @@ func TestInstallFromNoteRequiresCSRFAndAReferencedFile(t *testing.T) {
 	})
 	if fake.dlCalls != 0 {
 		t.Fatalf("a refused request still downloaded (%d calls)", fake.dlCalls)
+	}
+}
+
+// 🔴 The endpoint reaches huggingface.co AND writes into a configured filesystem
+// path, so it carries the same loopback gate as every other path-taking endpoint.
+// A valid CSRF token must not get past it — CSRF is not an auth boundary.
+//
+// Without this the gate could be deleted outright and the whole suite stayed green
+// (measured). The gate list in nonloopback_gate_web_test.go is a hardcoded case
+// table covering the model/library endpoints; it does not reach the run surface.
+func TestInstallFromNoteIsLoopbackGated(t *testing.T) {
+	srv, fake, dl, comfyModels := newNoteServer(t, []byte("W"))
+	srv.runFn = (&runRecorder{}).fn()
+	wfID := seedWorkflow(t, srv, store.WorkflowFormatUI, noteUIGraph(t))
+
+	// POSITIVE CONTROL first, on the SAME server: bound to loopback the request
+	// installs, so the refusal below is a fact about the bind address and not about
+	// a request that was going to be refused anyway.
+	if rec := postNote(t, srv, wfID, nil); rec.Code != http.StatusOK ||
+		strings.Contains(rec.Body.String(), gateMsg) {
+		t.Fatalf("positive control: loopback request was refused (%d):\n%s", rec.Code, rec.Body.String())
+	}
+	pollRunUntilDone(t, srv, wfID)
+	if fake.dlCalls != 1 {
+		t.Fatalf("positive control: hf downloads = %d, want 1", fake.dlCalls)
+	}
+	// Remove what the control installed, so the refusal below cannot be satisfied by
+	// the already-installed fast path.
+	if err := os.Remove(filepath.Join(comfyModels, "checkpoints", noteFile)); err != nil {
+		t.Fatalf("clear the installed file: %v", err)
+	}
+	before := fake.dlCalls
+
+	srv.cfg.Addr = "0.0.0.0:8787" // LAN-exposed
+	rec := postNote(t, srv, wfID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with the gated notice", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), gateMsg) {
+		t.Fatalf("no gated notice on a non-loopback bind:\n%s", rec.Body.String())
+	}
+	if fake.dlCalls != before || dl.calls != 0 {
+		t.Fatalf("a gated request still fetched (hf %d->%d, civitai %d)", before, fake.dlCalls, dl.calls)
+	}
+	if _, err := os.Stat(filepath.Join(comfyModels, "checkpoints", noteFile)); err == nil {
+		t.Fatal("a gated request wrote the model file")
 	}
 }
 
