@@ -93,6 +93,10 @@ func TestDryRunProbe(t *testing.T) {
 	t.Logf("workflow %d %q — format=%s source=%s base_model=%s graph=%d bytes",
 		wf.ID, wf.Name, wf.Format, wf.Source, wf.BaseModel, len(wf.Graph))
 
+	// Reported BEFORE the verdict, because both of these change how the verdict
+	// should be read: they say what the verdict is scoped to.
+	probeReportDormant(t, srv, wf)
+
 	// A multi-mode template has no single answer: realRun applies the mode selection
 	// BEFORE converting, so the stored graph and the graph that would actually run are
 	// different documents. Probe each mode separately rather than inventing one verdict.
@@ -175,6 +179,28 @@ func probeReportSchema(t *testing.T, st *store.Store) {
 	}
 }
 
+// probeReportDormant names the resources this workflow references that NO running
+// node would load. Preflight only ever validates the active pipeline, so these are
+// not "satisfied" — they are UNCHECKED, and un-bypassing that branch turns any the
+// library lacks into new blockers. Reported with library presence for exactly that
+// reason.
+func probeReportDormant(t *testing.T, srv *Server, wf *store.Workflow) {
+	t.Helper()
+	dormant := probeDormantResources(string(wf.Format), json.RawMessage(wf.Graph))
+	if len(dormant) == 0 {
+		t.Log("dormant resources: none — every referenced model belongs to a running node")
+		return
+	}
+	t.Logf("dormant resources: %d referenced by BYPASSED/MUTED nodes — NOT validated below", len(dormant))
+	for _, r := range dormant {
+		have := "🔴 not in the library — a blocker if you enable that branch"
+		if srv.localHaveFile(r) {
+			have = "in the library"
+		}
+		t.Logf("  dormant: %s  (%s)", r, have)
+	}
+}
+
 func probeFetchObjectInfo(base string) ([]byte, error) {
 	c := &http.Client{Timeout: 30 * time.Second}
 	resp, err := c.Get(base + "/object_info")
@@ -228,6 +254,28 @@ func probeGraph(t *testing.T, srv *Server, graph json.RawMessage, format, label 
 	t.Logf("%snodes=%d  conv.warnings=%d  conv.cut_classes=%d  missing_nodes=%d  missing_models=%d  bad_options=%d  preflight.OK=%v",
 		prefix, report.Nodes, len(conv.Warnings), len(conv.MissingNodeTypes),
 		len(report.MissingNodes), len(report.MissingModels), len(report.BadOptions), report.OK)
+
+	// Account for every node, so "N missing models" cannot be read as a claim about
+	// the whole workflow when it is a claim about the converted subset.
+	if format == string(store.WorkflowFormatUI) {
+		c := probeNodeCensus(graph, apiGraph)
+		t.Logf("%scensus: %d UI nodes = %d inactive (bypassed/muted) + %d active; %d reached the api graph",
+			prefix, c.UINodes, c.Inactive, c.Active, c.Converted)
+		classes := make([]string, 0, len(c.Unconverted))
+		for k := range c.Unconverted {
+			classes = append(classes, k)
+		}
+		sort.Strings(classes)
+		for _, class := range classes {
+			t.Logf("%s  active but NOT converted: %s ×%d (nodes %s)",
+				prefix, class, len(c.Unconverted[class]), strings.Join(c.Unconverted[class], ","))
+		}
+		if len(classes) > 0 {
+			t.Logf("%s  ↑ a CUT class is a real blocker (see the conversion warning); a UI-only "+
+				"class (rgthree Label/Fast Bypasser, Note, Reroute) is correctly dropped, and a "+
+				"Subgraph node legitimately expands into prefixed ids.", prefix)
+		}
+	}
 
 	for _, w := range conv.Warnings {
 		t.Logf("%s  BLOCKER conversion warning: %s", prefix, w)
