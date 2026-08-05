@@ -623,14 +623,29 @@ func TestInstallFromNoteIsLoopbackGated(t *testing.T) {
 		t.Fatalf("clear the installed file: %v", err)
 	}
 	before := fake.dlCalls
+	// 🔴 The run SEQUENCE, snapshotted now, is the deterministic signal that no job
+	// started. A download runs in a background goroutine, so asserting the call count
+	// right after the POST is a RACE — measured: with the gate deleted the response
+	// already said "Preparing download…" while fake.dlCalls was still 0, and this
+	// test passed. startDownloadsAndRun increments runSeq synchronously, under runMu,
+	// before it spawns anything.
+	seqBefore := srv.runJobState().Seq
 
 	srv.cfg.Addr = "0.0.0.0:8787" // LAN-exposed
 	rec := postNote(t, srv, wfID, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 with the gated notice", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), gateMsg) {
-		t.Fatalf("no gated notice on a non-loopback bind:\n%s", rec.Body.String())
+	body := rec.Body.String()
+	if !strings.Contains(body, gateMsg) {
+		t.Fatalf("no gated notice on a non-loopback bind:\n%s", body)
+	}
+	if seq := srv.runJobState().Seq; seq != seqBefore {
+		t.Fatalf("a gated request started run job %d (was %d) — the gate rendered its "+
+			"notice and then carried on", seq, seqBefore)
+	}
+	if hasRunPoller(body) {
+		t.Fatalf("a gated response carries a run poller, so a job is in flight:\n%s", body)
 	}
 	if fake.dlCalls != before || dl.calls != 0 {
 		t.Fatalf("a gated request still fetched (hf %d->%d, civitai %d)", before, fake.dlCalls, dl.calls)
