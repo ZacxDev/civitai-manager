@@ -126,6 +126,24 @@ func TestPreflightFailureResultReadsTheWorkflowsOwnNotes(t *testing.T) {
 	if got.NoteLinks[0].Host != "huggingface.co" {
 		t.Fatalf("Host = %q", got.NoteLinks[0].Host)
 	}
+
+	// The OTHER documented file in the same note is a github.com release asset: it
+	// must be offered, and it must NOT be auto-fetchable. Asserting only the
+	// HuggingFace one leaves an "auto-fetchable is true for everything" mutation
+	// completely undetected.
+	gh := srv.preflightFailureResult(context.Background(), wf,
+		json.RawMessage(`{"11":{"class_type":"UpscaleModelLoader","inputs":{"model_name":"`+noteGHFile+`"}}}`),
+		comfy.ObjectInfo{}, &comfy.PreflightReport{MissingModels: []string{noteGHFile}})
+	ghLinks := gh.MissingResolved[noteGHFile].NoteLinks
+	if len(ghLinks) != 1 || ghLinks[0].URL != noteGitHubURL {
+		t.Fatalf("github NoteLinks = %+v, want the one release-asset url", ghLinks)
+	}
+	if ghLinks[0].AutoFetchable {
+		t.Fatal("a github.com url must never be auto-fetchable — no hardened client covers it")
+	}
+	if ghLinks[0].Host != "github.com" {
+		t.Fatalf("github Host = %q", ghLinks[0].Host)
+	}
 }
 
 // 🔴 The api graph has no notes left — conversion drops Note/MarkdownNote — so a
@@ -264,6 +282,16 @@ func TestInstallFromNoteFetchesThroughTheHardenedHFClient(t *testing.T) {
 	// The repo + basename came out of the URL, and the metadata lookup happened.
 	if len(fake.inRepoArgs) != 1 || fake.inRepoArgs[0] != [2]string{"F16/z-image-turbo-sda", noteFile} {
 		t.Fatalf("ResolveInRepo args = %v, want one (repo, basename) pair from the URL", fake.inRepoArgs)
+	}
+	// 🔴 The bytes come from the COMMIT-PINNED url the lookup returned, never the
+	// note's own /main/ url — main is a moving branch, so the author's link does not
+	// identify a specific file. This is exactly the wrong-argument mutation the
+	// structural guard states it cannot see.
+	if len(fake.dlURLs) != 1 || fake.dlURLs[0] != fake.inRepo.URL {
+		t.Fatalf("fetched %v, want the pinned %q", fake.dlURLs, fake.inRepo.URL)
+	}
+	if strings.Contains(fake.dlURLs[0], "/resolve/main/") {
+		t.Fatalf("fetched the moving branch url %q", fake.dlURLs[0])
 	}
 	rr.mu.Lock()
 	defer rr.mu.Unlock()

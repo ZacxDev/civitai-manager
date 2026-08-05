@@ -40,6 +40,12 @@ type fakeHFClient struct {
 	inRepoOK   bool
 	inRepoErr  error
 	inRepoArgs [][2]string
+
+	// dlURLs records the URL of every DownloadFile call, so a test can prove WHICH
+	// url was fetched. Without it a plan built from the note's own unpinned /main/
+	// URL — instead of the commit-pinned one the lookup returned — passes every
+	// assertion, because the fake serves the same bytes whatever it is handed.
+	dlURLs []string
 }
 
 func (f *fakeHFClient) Resolve(context.Context, string) (*hf.Match, bool, error) {
@@ -52,8 +58,9 @@ func (f *fakeHFClient) ResolveInRepo(_ context.Context, repo, basename string) (
 	return f.inRepo, f.inRepoOK, f.inRepoErr
 }
 
-func (f *fakeHFClient) DownloadFile(_ context.Context, _ string) (*http.Response, error) {
+func (f *fakeHFClient) DownloadFile(_ context.Context, fileURL string) (*http.Response, error) {
 	f.dlCalls++
+	f.dlURLs = append(f.dlURLs, fileURL)
 	status := f.status
 	if status == 0 {
 		status = http.StatusOK
