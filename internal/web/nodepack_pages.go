@@ -583,13 +583,6 @@ func nodepackEvidenceDisclosure(p comfy.Pack, evidence []g.Node, comfyRoot strin
 	)
 }
 
-// packInstalledPending reports whether ComfyUI-Manager already has this pack on
-// disk, waiting for a restart.
-//
-// 🔴 It routes through matchPackInDiff — the SAME predicate the install job uses to
-// confirm a pack landed — so the panel and the installer can never disagree about
-// what "already installed" means. An empty/nil set is "not known", never "not
-// installed": it is the fail-open state and it renders as the panel always did.
 // anyPackInstalledPending reports whether ANY rendered pack is already on disk
 // waiting for a restart — i.e. whether the panel is telling the user to restart.
 func anyPackInstalledPending(ranked []rankedPack, installedPending []string) bool {
@@ -601,6 +594,13 @@ func anyPackInstalledPending(ranked []rankedPack, installedPending []string) boo
 	return false
 }
 
+// packInstalledPending reports whether ComfyUI-Manager already has this pack on
+// disk, waiting for a restart.
+//
+// 🔴 It routes through matchPackInDiff — the SAME predicate the install job uses to
+// confirm a pack landed — so the panel and the installer can never disagree about
+// what "already installed" means. An empty/nil set is "not known", never "not
+// installed": it is the fail-open state and it renders as the panel always did.
 func packInstalledPending(p comfy.Pack, installedPending []string) bool {
 	if len(installedPending) == 0 {
 		return false
