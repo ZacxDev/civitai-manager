@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -36,9 +37,29 @@ import (
 //	              path_base_behaviour_test.go's job; neither test closes the seam
 //	              alone.
 //
-// It is also blind to a THIRD spelling — strings.LastIndex, a hand-rolled loop,
-// a regexp. It pins the two the package has actually used, which is the honest
-// scope, not the complete one.
+// 🔴 KNOWN HOLES, ENUMERATED. An earlier version of this comment conceded only
+// "a third spelling", which understated it — an audit then produced THREE
+// surviving mutants that were all the SAME stdlib function. Two are now closed and
+// are listed here so nobody re-derives them as open; the rest are genuinely open.
+//
+//	CLOSED — aliased import (`fpx "path/filepath"` + `fpx.Base(p)`). The scan
+//	  resolves each selector's package through the FILE'S IMPORT BLOCK, so the
+//	  local identifier is irrelevant. This also used to slip the positive control,
+//	  because a plain import elsewhere kept the filepath.* count high.
+//	CLOSED — package-level initialiser (`var x = filepath.Base("a/b/c")`). The scan
+//	  walks GenDecl value specs as well as FuncDecls.
+//
+//	OPEN — a function VALUE: `f := filepath.Base; return f(p)`. The call expression's
+//	  Fun is a plain Ident, indistinguishable from any local call without type
+//	  resolution. Closing it needs go/types, not go/ast.
+//	OPEN — a dot-import (`. "path/filepath"`, then a bare `Base(p)`). Same shape as
+//	  the above and deliberately not modelled; the repo does not dot-import.
+//	OPEN — a genuinely different spelling: strings.LastIndex, a hand-rolled loop, a
+//	  regexp. Nothing here can see those.
+//	OPEN — SCOPE. This guard covers internal/comfy ONLY, and that gap is not
+//	  theoretical: the graph-derived site in internal/library's autoLink was missed
+//	  by exactly this boundary and had to be found by an audit. A sibling ledger for
+//	  internal/library is open follow-up.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // basenameAllow is the ASSERTED LEDGER of every non-test function in this package
@@ -89,15 +110,50 @@ const (
 )
 
 // selectorCall describes one `pkg.Fn(...)` call found in the package.
+//
+// 🔴 pkg is the RESOLVED IMPORT PATH ("path/filepath"), never the identifier text
+// in the source. Matching on the identifier is what let an aliased import —
+// `fpx "path/filepath"` then `fpx.Base(p)` — walk straight past this guard while
+// `go build` stayed green. It also slipped the positive control, because the plain
+// import elsewhere kept the filepath.* count high.
 type selectorCall struct {
 	pkg, fn string
 	inFunc  string
 	pos     string
 }
 
+// fileImports maps each import's LOCAL identifier to its import path for one file,
+// so `fpx.Base` and `filepath.Base` resolve to the same subject. A dot-import has
+// no local identifier and is deliberately not modelled — see the honest limits.
+func fileImports(f *ast.File) map[string]string {
+	out := map[string]string{}
+	for _, spec := range f.Imports {
+		p, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			continue
+		}
+		local := p
+		if i := strings.LastIndex(p, "/"); i >= 0 {
+			local = p[i+1:]
+		}
+		if spec.Name != nil {
+			if spec.Name.Name == "_" || spec.Name.Name == "." {
+				continue
+			}
+			local = spec.Name.Name
+		}
+		out[local] = p
+	}
+	return out
+}
+
 // scanSelectorCalls parses every non-test .go file in the package directory and
-// returns each `pkg.Fn(...)` call together with the name of the function that
-// encloses it, plus the count of files parsed.
+// returns each `path.Fn(...)` call (keyed by RESOLVED import path) together with
+// the name of the declaration that encloses it, plus the count of files parsed.
+//
+// 🔴 It walks BOTH FuncDecls AND GenDecls. Walking only FuncDecls meant a
+// package-level `var x = filepath.Base("a/b/c")` was never visited at all — a
+// second way to open-code the rule with the guard none the wiser.
 func scanSelectorCalls(t *testing.T) (calls []selectorCall, bareCalls []selectorCall, files int) {
 	t.Helper()
 
@@ -116,20 +172,13 @@ func scanSelectorCalls(t *testing.T) (calls []selectorCall, bareCalls []selector
 			t.Fatalf("parse %s: %v", name, err)
 		}
 		files++
+		imports := fileImports(f)
 
-		// enclosing walks declarations so every call can be attributed to the
-		// FuncDecl it sits in. A call inside a func literal is attributed to the
-		// enclosing named function, which is the unit the ledger talks about.
-		for _, decl := range f.Decls {
-			fd, ok := decl.(*ast.FuncDecl)
-			if !ok {
-				continue
-			}
-			fname := fd.Name.Name
-			if fd.Recv != nil && len(fd.Recv.List) > 0 {
-				fname = recvTypeName(fd.Recv.List[0].Type) + "." + fname
-			}
-			ast.Inspect(fd, func(n ast.Node) bool {
+		// inspect attributes every call inside node to the declaration `owner`
+		// names. A call inside a func literal is attributed to the enclosing named
+		// declaration, which is the unit the ledger talks about.
+		inspect := func(node ast.Node, owner string) {
+			ast.Inspect(node, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
 					return true
@@ -140,18 +189,46 @@ func scanSelectorCalls(t *testing.T) (calls []selectorCall, bareCalls []selector
 					if !ok {
 						return true
 					}
+					pkgPath, ok := imports[id.Name]
+					if !ok {
+						return true // a method call on a value, not a package selector
+					}
 					calls = append(calls, selectorCall{
-						pkg: id.Name, fn: fn.Sel.Name,
-						inFunc: fname, pos: fset.Position(call.Pos()).String(),
+						pkg: pkgPath, fn: fn.Sel.Name,
+						inFunc: owner, pos: fset.Position(call.Pos()).String(),
 					})
 				case *ast.Ident:
 					bareCalls = append(bareCalls, selectorCall{
-						fn: fn.Name, inFunc: fname,
+						fn: fn.Name, inFunc: owner,
 						pos: fset.Position(call.Pos()).String(),
 					})
 				}
 				return true
 			})
+		}
+
+		for _, decl := range f.Decls {
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				fname := d.Name.Name
+				if d.Recv != nil && len(d.Recv.List) > 0 {
+					fname = recvTypeName(d.Recv.List[0].Type) + "." + fname
+				}
+				inspect(d, fname)
+			case *ast.GenDecl:
+				// Package-level var/const initialisers run at init time and are just
+				// as capable of open-coding the rule as any function body.
+				for _, spec := range d.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok || len(vs.Values) == 0 {
+						continue
+					}
+					owner := d.Tok.String() + " " + vs.Names[0].Name
+					for _, v := range vs.Values {
+						inspect(v, owner)
+					}
+				}
+			}
 		}
 	}
 	return calls, bareCalls, files
@@ -184,7 +261,7 @@ func TestNoGraphDerivedRefTakesItsBasenameOutsidePathBase(t *testing.T) {
 	// POSITIVE CONTROL: the walker can see filepath.* calls at all.
 	filepathSeen := 0
 	for _, c := range calls {
-		if c.pkg == "filepath" {
+		if c.pkg == "path/filepath" {
 			filepathSeen++
 		}
 	}
@@ -214,7 +291,7 @@ func TestNoGraphDerivedRefTakesItsBasenameOutsidePathBase(t *testing.T) {
 	// The offender set: every function taking a basename by any route but PathBase.
 	offenders := map[string][]string{}
 	for _, c := range calls {
-		if (c.pkg == "filepath" || c.pkg == "path") && c.fn == "Base" {
+		if (c.pkg == "path/filepath" || c.pkg == "path") && c.fn == "Base" {
 			offenders[c.inFunc] = append(offenders[c.inFunc], c.pkg+".Base at "+c.pos)
 		}
 	}
