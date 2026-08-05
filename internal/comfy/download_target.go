@@ -8,7 +8,6 @@ import (
 	"hash"
 	"io"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 )
@@ -86,9 +85,15 @@ func SafeModelDest(root, subdir, refName string) (string, error) {
 		strings.HasPrefix(cleanSub, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("invalid model subdirectory %q", subdir)
 	}
-	// Normalize backslashes to forward slashes so a Windows-style traversal is
-	// collapsed on every platform, then take the slash-based basename.
-	base := path.Base(strings.ReplaceAll(strings.TrimSpace(refName), "\\", "/"))
+	// PathBase folds backslashes before taking the last element, so a Windows-style
+	// traversal is collapsed on every platform. It is the same rule the presence
+	// checks use, so the file this writes and the file preflight looks for are named
+	// by one definition.
+	//
+	// PathBase can never return "/" (unlike the path.Base this used to call, which
+	// answers "/" for "/"); the disjunct below is kept as defence in depth rather
+	// than pruned, because this function is a containment check.
+	base := PathBase(strings.TrimSpace(refName))
 	if base == "" || base == "." || base == ".." || base == "/" {
 		return "", fmt.Errorf("invalid model reference %q", refName)
 	}
