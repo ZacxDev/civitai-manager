@@ -172,37 +172,121 @@ func TestExtractNoteLinksMalformedGraphYieldsNothing(t *testing.T) {
 	}
 }
 
+// 🔴 EVERY CAP IS PINNED BY A LITERAL, never by the constant it measures.
+//
+// The whole point of a bound is the NUMBER, and a fixture sized as
+// `(noteMaxTextBytes/32)+64` moves with the constant so no change to it can ever
+// fail. Measured on the first version of these tests: raising noteMaxTextBytes
+// 100x left internal/comfy at 592 PASS / 0 FAIL and internal/web at 2042 PASS /
+// 0 FAIL, and at 1 GiB it was STILL green — the only visible difference being the
+// test taking 188s instead of 0.00s while reporting PASS. noteMaxTotalBytes was
+// worse: it appeared only inside t.Fatalf MESSAGES, never in an assertion, so
+// doubling it and quadrupling it both survived.
+//
+// Changing a cap is a deliberate act and must change these numbers too. The
+// preamble in each test says so by name rather than leaving the next reader to
+// infer it from a diff.
+const (
+	wantNoteTextCap  = 32 * 1024  // noteMaxTextBytes
+	wantNoteTotalCap = 256 * 1024 // noteMaxTotalBytes
+)
+
 // The cap must BITE (a url past it is not returned) and must not be vacuous (a url
 // before it IS returned) — the positive control that separates "the cap worked"
 // from "the scanner found nothing at all".
 func TestExtractNoteLinksBoundsAHugeNote(t *testing.T) {
+	if noteMaxTextBytes != wantNoteTextCap {
+		t.Fatalf("noteMaxTextBytes = %d but this guard is calibrated to %d — update the "+
+			"literal deliberately, and say why the cap moved", noteMaxTextBytes, wantNoteTextCap)
+	}
 	early := "https://example.com/early.safetensors"
 	late := "https://example.com/late.safetensors"
-	filler := strings.Repeat("padding words that are not urls ", (noteMaxTextBytes/32)+64)
+	// Sized from the LITERAL: exactly one cap's worth of filler, so `late` sits just
+	// past the boundary. Sizing it from noteMaxTextBytes is the defect above.
+	filler := strings.Repeat("padding words that are not urls ", (wantNoteTextCap/32)+64)
 	got := urlsOf(ExtractNoteLinks(FormatUI, uiNoteGraph(t,
 		[3]string{"1", "MarkdownNote", early + " " + filler + " " + late})))
 	if len(got) != 1 || got[0] != early {
-		t.Fatalf("got %v, want exactly [%s]", got, early)
+		t.Fatalf("got %v, want exactly [%s] — %q sits past the %d-byte per-note cap",
+			got, early, late, wantNoteTextCap)
 	}
 }
 
 // The WHOLE-GRAPH budget is a second, independent bound: many notes each under the
 // per-note cap must still stop.
+//
+// It is asserted from BOTH sides, which is what makes an off-by-multiple visible:
+// a note placed past the budget is not scanned, and a note placed just INSIDE it
+// is. With only the first half, doubling the budget survives — the extra headroom
+// is simply never used.
 func TestExtractNoteLinksBoundsTheWholeGraph(t *testing.T) {
-	body := strings.Repeat("x ", noteMaxTextBytes/2) // one full per-note cap each
-	var nodes [][3]string
-	for i := 0; i < 32; i++ {
-		nodes = append(nodes, [3]string{"1", "MarkdownNote", body})
+	if noteMaxTotalBytes != wantNoteTotalCap {
+		t.Fatalf("noteMaxTotalBytes = %d but this guard is calibrated to %d — update the "+
+			"literal deliberately, and say why the budget moved", noteMaxTotalBytes, wantNoteTotalCap)
 	}
-	// One more note, past the total budget, carrying the only url in the graph.
-	nodes = append(nodes, [3]string{"99", "MarkdownNote", "https://example.com/past-budget.safetensors"})
-	if got := ExtractNoteLinks(FormatUI, uiNoteGraph(t, nodes...)); got != nil {
-		t.Fatalf("got %v past the %d-byte whole-graph budget, want nil", got, noteMaxTotalBytes)
+	// Each filler note is exactly one per-note cap, so N of them consume N caps of
+	// the whole-graph budget. Both figures come from the literals.
+	const fillerNotes = wantNoteTotalCap / wantNoteTextCap // 8 notes exhaust it exactly
+	body := strings.Repeat("x ", wantNoteTextCap/2)
+	url := "https://example.com/past-budget.safetensors"
+
+	makeGraph := func(n int) json.RawMessage {
+		var nodes [][3]string
+		for i := 0; i < n; i++ {
+			nodes = append(nodes, [3]string{"1", "MarkdownNote", body})
+		}
+		return uiNoteGraph(t, append(nodes, [3]string{"99", "MarkdownNote", url})...)
 	}
-	// Positive control: the SAME final note, alone, is found.
-	got := urlsOf(ExtractNoteLinks(FormatUI, uiNoteGraph(t, nodes[len(nodes)-1])))
-	if len(got) != 1 {
-		t.Fatalf("positive control: got %v, want 1 link", got)
+
+	// PAST the budget: the trailing note is never scanned.
+	if got := ExtractNoteLinks(FormatUI, makeGraph(fillerNotes)); got != nil {
+		t.Fatalf("got %v after %d full-cap notes, want nil past the %d-byte whole-graph budget",
+			urlsOf(got), fillerNotes, wantNoteTotalCap)
+	}
+	// JUST INSIDE it: one fewer filler note leaves room, and the trailing note IS
+	// scanned. This is the half that fails when the budget is raised — without it,
+	// any larger budget passes because the extra room is never exercised.
+	if got := urlsOf(ExtractNoteLinks(FormatUI, makeGraph(fillerNotes-1))); len(got) != 1 || got[0] != url {
+		t.Fatalf("got %v with %d full-cap notes, want [%s] — one cap of budget remains, so "+
+			"the trailing note must still be scanned", got, fillerNotes-1, url)
+	}
+}
+
+// 🔴 boundedText's no-whitespace branch is the SOLE STATED MECHANISM preventing
+// truncation from inventing a URL the author never wrote — and nothing reached it.
+// The audit replaced `return "", limit` with `return clipped, limit` and the whole
+// suite stayed green; a panic() probe in that branch recorded ZERO executions
+// across every test in the repo. The code was correct and unverified, which is the
+// same thing as unwritten.
+//
+// The fixture is an over-cap note containing NO whitespace at all, so the clip
+// cannot fall back to a word boundary. The url is placed so that clipping mid-way
+// through it would leave a SHORTER, STILL-WELL-FORMED url — the exact failure the
+// branch exists to prevent, and one a naive "no links found" assertion would miss.
+func TestBoundedTextDropsAWhitespacelessOverCapNote(t *testing.T) {
+	// One unbroken token, longer than the per-note cap, whose truncation at the cap
+	// yields a valid url for a DIFFERENT file.
+	const prefix = "https://example.com/aaaa.safetensors/x"
+	note := prefix + strings.Repeat("y", wantNoteTextCap) + "/real.safetensors"
+	if strings.ContainsAny(note, " \t\r\n") {
+		t.Fatal("precondition: the fixture must contain no whitespace, or the clip falls back to a word boundary")
+	}
+	if len(note) <= noteMaxTextBytes {
+		t.Fatalf("precondition: the fixture is %d bytes, which does not exceed the %d-byte cap",
+			len(note), noteMaxTextBytes)
+	}
+	if got := ExtractNoteLinks(FormatUI, uiNoteGraph(t, [3]string{"1", "MarkdownNote", note})); got != nil {
+		t.Fatalf("got %v — a whitespaceless over-cap note must yield NOTHING rather than a "+
+			"url truncation invented", urlsOf(got))
+	}
+
+	// POSITIVE CONTROL: the same note UNDER the cap is scanned and yields its one
+	// real url, so the nil above is the truncation guard and not a scanner that
+	// cannot read a whitespaceless note at all.
+	short := prefix + strings.Repeat("y", 16) + "/real.safetensors"
+	got := urlsOf(ExtractNoteLinks(FormatUI, uiNoteGraph(t, [3]string{"1", "MarkdownNote", short})))
+	if len(got) != 1 || got[0] != short {
+		t.Fatalf("positive control: got %v, want [%s]", got, short)
 	}
 }
 
