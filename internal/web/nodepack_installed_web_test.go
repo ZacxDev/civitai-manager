@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ZacxDev/civitai-manager/internal/comfy"
@@ -230,13 +231,129 @@ func managerForInstalledDiff(diffs [][]string, diffErr error) *fakeManager {
 }
 
 // attributeWithManager runs the PRODUCTION attribution seam against mgr, with the
-// two public rungs switched off so nothing can leave the machine.
-func attributeWithManager(t *testing.T, mgr managerClient) nodeAttribution {
+// two public rungs switched off so nothing can leave the machine. classes defaults
+// to the one class the fixture Manager can place.
+func attributeWithManager(t *testing.T, mgr managerClient, classes ...string) nodeAttribution {
 	t.Helper()
+	if len(classes) == 0 {
+		classes = []string{"UltimateSDUpscale"}
+	}
 	srv := newLibraryTestServer(t, t.TempDir())
 	srv.cfg.ResolveNodePacks = false
 	srv.managerClientFn = func() managerClient { return mgr }
-	return srv.attributeMissingNodes(context.Background(), []string{"UltimateSDUpscale"})
+	return srv.attributeMissingNodes(context.Background(), classes)
+}
+
+// diffCountingManager counts ManagerInstalledDiff calls. It is a local wrapper
+// rather than a new field on the shared fakeManager so this file stays
+// self-contained — a package-level test fixture edited by two branches at once is
+// how a clean `git merge` produces a tree that does not compile.
+type diffCountingManager struct {
+	*fakeManager
+	mu    sync.Mutex
+	calls int
+}
+
+func (d *diffCountingManager) ManagerInstalledDiff(ctx context.Context) ([]string, error) {
+	d.mu.Lock()
+	d.calls++
+	d.mu.Unlock()
+	return d.fakeManager.ManagerInstalledDiff(ctx)
+}
+
+func (d *diffCountingManager) diffCalls() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.calls
+}
+
+// TestAttributionWithNoPacksMakesNoInstalledDiffCall pins the `len(out.Packs) > 0`
+// half of the guard in realAttributeMissingNodes.
+//
+// The claim it defends is "a pass that attributed nothing makes no extra Manager
+// call at all". That is a cost claim about a path a user waits on, and without this
+// test nothing asserted it — the whole suite stayed green with the condition removed.
+//
+// The second row is the POSITIVE CONTROL: a pass that DOES attribute a pack must
+// make at least one call through the same counter, so the zero above cannot be a
+// counter wired to nothing.
+func TestAttributionWithNoPacksMakesNoInstalledDiffCall(t *testing.T) {
+	cases := []struct {
+		name string
+		// class decides whether the fixture Manager can place anything.
+		class        string
+		wantPacks    int
+		wantAnyCalls bool
+	}{
+		{
+			name:         "nothing attributed — no installed-diff call is made",
+			class:        "SomeClassManagerCannotPlace",
+			wantPacks:    0,
+			wantAnyCalls: false,
+		},
+		{
+			name:         "positive control: a pack was attributed — the diff IS read",
+			class:        "UltimateSDUpscale",
+			wantPacks:    1,
+			wantAnyCalls: true,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mgr := &diffCountingManager{fakeManager: managerForInstalledDiff([][]string{{}}, nil)}
+			attr := attributeWithManager(t, mgr, c.class)
+
+			// PRECONDITIONS: Manager really answered (so the call was POSSIBLE and its
+			// absence means the guard declined it, not that the rung never ran), and the
+			// pass really did/didn't attribute a pack.
+			if !attr.ManagerPresent {
+				t.Fatal("precondition: the Manager rung did not run, so a zero call count means nothing")
+			}
+			if len(attr.Packs) != c.wantPacks {
+				t.Fatalf("precondition: attributed %d packs, want %d", len(attr.Packs), c.wantPacks)
+			}
+
+			if got := mgr.diffCalls(); (got > 0) != c.wantAnyCalls {
+				t.Errorf("ManagerInstalledDiff calls = %d, want %s", got,
+					map[bool]string{true: "at least one", false: "exactly zero"}[c.wantAnyCalls])
+			}
+		})
+	}
+}
+
+// TestRestartControlSurvivesAnInconsistentSnapshot covers the `|| anyPackInstalledPending`
+// disjunct in missingNodesPanel.
+//
+// 🔴 It is a RENDER-LAYER invariant, deliberately not dependent on its caller: a card
+// that tells the user to restart ComfyUI must never be the one state with no restart
+// control. Production cannot currently build this snapshot — InstalledPending is
+// populated only under `info.Present`, the same condition that sets ManagerPresent —
+// so `deadcode` structurally cannot see the branch (the function IS reachable) and the
+// rest of the suite left it green when deleted.
+//
+// It is NOT hypothetical: `Server.attributeFn` is a live test seam and
+// seedNodeAttrRun builds nodeAttribution values by hand, so this pair is constructible
+// today by anything that does not go through realAttributeMissingNodes.
+func TestRestartControlSurvivesAnInconsistentSnapshot(t *testing.T) {
+	attr := nodeAttribution{
+		// The inconsistency under test: no Manager reported present, yet the installed
+		// set says a pack is on disk waiting for a restart.
+		ManagerPresent:   false,
+		Packs:            []comfy.Pack{installedUpscalePack()},
+		InstalledPending: []string{upscaleDirName},
+	}
+	body := renderMissingNodesPanel(t, attr)
+
+	// PRECONDITION: the card really did take the installed branch. Without it, "one
+	// restart control" could be satisfied by a panel that acknowledged nothing.
+	if n := countMarkers(body, installedPendingMarker); n != 1 {
+		t.Fatalf("precondition: installed-pending states = %d, want 1\n%s", n, body)
+	}
+	if n := countMarkers(body, restartActionMarker); n != 1 {
+		t.Errorf("restart controls = %d, want exactly 1 — a card that says 'restart ComfyUI "+
+			"to use it' must never render without one\n%s", n, body)
+	}
 }
 
 // TestInstalledDiffFailureRendersExactlyTodaysPanel is the FAIL-OPEN guard, and the
