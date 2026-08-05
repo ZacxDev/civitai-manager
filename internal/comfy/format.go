@@ -431,7 +431,7 @@ func ReferencesModelFile(format string, graph json.RawMessage, filename string) 
 	if want == "" {
 		return false
 	}
-	wantBase := strings.ToLower(pathBase(want))
+	wantBase := strings.ToLower(PathBase(want))
 	var any interface{}
 	if err := json.Unmarshal(graph, &any); err != nil {
 		return false
@@ -447,7 +447,7 @@ func jsonHasString(v interface{}, want, wantBase string, depth int) bool {
 	switch t := v.(type) {
 	case string:
 		low := strings.ToLower(strings.TrimSpace(t))
-		return low == want || (wantBase != "" && strings.ToLower(pathBase(low)) == wantBase)
+		return low == want || (wantBase != "" && strings.ToLower(PathBase(low)) == wantBase)
 	case []interface{}:
 		for _, e := range t {
 			if jsonHasString(e, want, wantBase, depth+1) {
@@ -464,9 +464,30 @@ func jsonHasString(v interface{}, want, wantBase string, depth int) bool {
 	return false
 }
 
-// pathBase is filepath.Base over a forward/back-slash path, without importing
-// path/filepath semantics that differ per OS for a graph written on another machine.
-func pathBase(s string) string {
+// PathBase is the basename of a GRAPH-DERIVED path — a value that came out of a
+// workflow JSON, authored on an unknown OS. In that data the separator is DATA,
+// not a host path convention, so both "/" and "\" delimit and the answer must not
+// depend on the machine reading the graph.
+//
+// 🔴 This is deliberately NOT filepath.Base. filepath.Base is OS-aware, so on
+// Linux a backslash is an ORDINARY FILENAME CHARACTER and filepath.Base is a
+// NO-OP over a Windows-authored reference:
+//
+//	filepath.Base(`zimage\zit_sda_v1.safetensors`) == `zimage\zit_sda_v1.safetensors`
+//	PathBase(`zimage\zit_sda_v1.safetensors`)      == `zit_sda_v1.safetensors`
+//
+// Every "is this model file present" comparison in this package used to open-code
+// filepath.Base and therefore reported a PRESENT Windows-authored reference as
+// MISSING. Route any comparison over a graph value through here.
+//
+// Use filepath.Base — not this — for a REAL path on the host filesystem; that one
+// is OS-aware on purpose.
+//
+// It differs from path.Base on two inputs, in the fail-closed direction: an empty
+// string and a bare separator both yield "" (path.Base answers "." and "/"), and a
+// trailing separator is not stripped ("a/b/" → ""). A caller wanting a filename
+// gets a value it will reject rather than a directory component promoted to one.
+func PathBase(s string) string {
 	s = strings.ReplaceAll(s, "\\", "/")
 	if i := strings.LastIndex(s, "/"); i >= 0 {
 		return s[i+1:]
