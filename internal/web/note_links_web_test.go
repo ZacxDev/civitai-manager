@@ -226,6 +226,46 @@ func TestFixDialogRendersNoteLinksByFetchability(t *testing.T) {
 	})
 }
 
+// 🔴 noteOpenLink's https re-assertion is DEFENCE IN DEPTH, and its whole purpose
+// is to survive a future loosening of the extractor's pattern — precisely the
+// change nothing else in the tree would catch. It is therefore unreachable through
+// the extractor today, so it has to be pinned by calling it DIRECTLY with input the
+// extractor would never produce. (Measured: making the condition always-true left
+// the whole suite green.)
+//
+// This is the same shape as TestParseNoteURLAssertsTheSchemeItself in
+// internal/comfy — a redundant layer is only redundant while BOTH halves are
+// verified; one unverified half is just an unverified layer.
+func TestNoteOpenLinkRefusesANonHTTPSHref(t *testing.T) {
+	for _, raw := range []string{
+		"http://example.com/a.safetensors",
+		"javascript:alert(1)",
+		"data:text/html,<script>alert(1)</script>",
+		"file:///etc/passwd",
+		"//example.com/a.safetensors",
+		"HTTPS://example.com/a.safetensors", // the check is deliberately case-SENSITIVE
+		"",
+	} {
+		out := renderString(t, noteOpenLink(raw, "a.safetensors", "example.com"))
+		if strings.Contains(out, "href=") {
+			t.Fatalf("noteOpenLink(%q) emitted an href:\n%s", raw, out)
+		}
+		if strings.Contains(out, raw) && raw != "" {
+			t.Fatalf("noteOpenLink(%q) emitted the url at all:\n%s", raw, out)
+		}
+	}
+	// POSITIVE CONTROL: a real https url DOES get an href, so the refusals above are
+	// a fact about the scheme check and not about a renderer that emits no links.
+	const ok = "https://example.com/a.safetensors"
+	out := renderString(t, noteOpenLink(ok, "a.safetensors", "example.com"))
+	if !strings.Contains(out, `href="`+ok+`"`) {
+		t.Fatalf("positive control: no href for a valid https url:\n%s", out)
+	}
+	if !strings.Contains(out, `rel="noopener noreferrer"`) || !strings.Contains(out, `target="_blank"`) {
+		t.Fatalf("positive control: the external link is missing its safety attributes:\n%s", out)
+	}
+}
+
 // Note text is untrusted: a URL is escaped where it is rendered, and a hostile
 // note cannot break out of an attribute or inject markup.
 func TestNoteLinkRenderingEscapesUntrustedText(t *testing.T) {
