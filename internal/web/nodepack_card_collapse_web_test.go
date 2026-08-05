@@ -70,7 +70,7 @@ func scopedPack() comfy.Pack {
 // decision); the evidence for the ranking goes one click away.
 func TestWinningPackCardCollapsesItsProvenance(t *testing.T) {
 	p := scopedPack()
-	card := renderString(t, nodepackCard(rankedPack{Pack: p}, true /* managerPresent */, 7, "tok", "/opt/ComfyUI"))
+	card := renderString(t, nodepackCard(rankedPack{Pack: p}, true /* managerPresent */, nil /* installedPending */, 7, "tok", "/opt/ComfyUI"))
 
 	// PRECONDITIONS. Without these the assertions below pass on a card that rendered
 	// no button, or no scope line, or no disclosure at all — three different ways to
@@ -148,7 +148,7 @@ func TestPackCardWithNoInstallButtonKeepsItsCommandVisible(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			card := renderString(t, nodepackCard(rankedPack{Pack: c.pack}, c.managerPresent, 7, "tok", "/opt/ComfyUI"))
+			card := renderString(t, nodepackCard(rankedPack{Pack: c.pack}, c.managerPresent, nil /* installedPending */, 7, "tok", "/opt/ComfyUI"))
 
 			// PRECONDITION: this really is a no-button card. Otherwise the assertion
 			// below is about the collapsed branch and proves nothing.
@@ -188,7 +188,7 @@ func TestCollapsingDoesNotReopenTheNeededPredicate(t *testing.T) {
 	if !rp.needed() {
 		t.Fatal("precondition: a sole claimant that lost another contest is still needed")
 	}
-	card := renderString(t, nodepackCard(rp, true, 7, "tok", "/opt/ComfyUI"))
+	card := renderString(t, nodepackCard(rp, true, nil /* installedPending */, 7, "tok", "/opt/ComfyUI"))
 
 	if !strings.Contains(card, `data-variant="filled"`) {
 		t.Errorf("a required pack keeps the loud button — an outline one reads as "+

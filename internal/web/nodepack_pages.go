@@ -87,14 +87,14 @@ func missingNodesPanel(attr nodeAttribution, missing []string, wfID int64, csrf,
 		body = append(body, nodepackGroup(
 			"Provided by",
 			"",
-			confident, attr.ManagerPresent, wfID, csrf, comfyRoot))
+			confident, attr.ManagerPresent, attr.InstalledPending, wfID, csrf, comfyRoot))
 	}
 	if len(likely) > 0 {
 		body = append(body, nodepackGroup(
 			"Likely provided by",
 			"Matched by a name pattern rather than an exact node list — treat this as a "+
 				"strong hint, not a certainty. Check the repository before installing.",
-			likely, attr.ManagerPresent, wfID, csrf, comfyRoot))
+			likely, attr.ManagerPresent, attr.InstalledPending, wfID, csrf, comfyRoot))
 	}
 	if len(unattributed) > 0 {
 		body = append(body, unattributedNodesSection(unattributed))
@@ -112,7 +112,21 @@ func missingNodesPanel(attr nodeAttribution, missing []string, wfID int64, csrf,
 	// Stable container for the install confirmation / progress / result and the
 	// restart control. Empty until the user acts.
 	body = append(body, h.Div(h.ID(nodepackStatusContainerID)))
-	if attr.ManagerPresent {
+	// 🔴 THE PANEL KEEPS EXACTLY ONE RESTART CONTROL, and a card that says "restart
+	// ComfyUI to use it" must never be the one place it is missing.
+	//
+	// The cards deliberately do NOT carry their own button: two packs pending a
+	// restart would then render two identical controls a few lines apart, and a
+	// pending pack that lost a contest is rendered inside the collapsed alternatives
+	// disclosure — so a card-owned button would be the ONLY restart affordance and it
+	// would be hidden behind a triangle.
+	//
+	// The `|| anyPending` disjunct is a fail-safe against the render layer and the
+	// attribution disagreeing: in production InstalledPending is populated only when
+	// a probe already reported Manager present, so the second test can only fire on
+	// an inconsistent snapshot — where dropping the control would strand the user
+	// with an instruction and no way to follow it.
+	if attr.ManagerPresent || anyPackInstalledPending(ranked, attr.InstalledPending) {
 		body = append(body, h.Div(h.Class("pt-1"), restartComfyButton(csrf)))
 	}
 	return h.Div(h.Class("mt-2 space-y-2"), g.Group(body))
@@ -373,7 +387,7 @@ func managerStateNote(attr nodeAttribution) g.Node {
 // They are COLLAPSED, never dropped: the ranking is a heuristic over a third-party
 // index, so the user must be able to reach and install the alternative. The summary
 // states how many there are so the disclosure is not a mystery.
-func nodepackGroup(title, caveat string, packs []rankedPack, managerPresent bool, wfID int64, csrf, comfyRoot string) g.Node {
+func nodepackGroup(title, caveat string, packs []rankedPack, managerPresent bool, installedPending []string, wfID int64, csrf, comfyRoot string) g.Node {
 	body := []g.Node{
 		h.Div(h.Class("text-xs font-semibold text-slate-300"), g.Text(title)),
 	}
@@ -383,12 +397,12 @@ func nodepackGroup(title, caveat string, packs []rankedPack, managerPresent bool
 
 	needed, alternatives := splitNeededFromAlternatives(packs)
 	for _, p := range needed {
-		body = append(body, nodepackCard(p, managerPresent, wfID, csrf, comfyRoot))
+		body = append(body, nodepackCard(p, managerPresent, installedPending, wfID, csrf, comfyRoot))
 	}
 	if len(alternatives) > 0 {
 		alts := make([]g.Node, 0, len(alternatives))
 		for _, p := range alternatives {
-			alts = append(alts, nodepackCard(p, managerPresent, wfID, csrf, comfyRoot))
+			alts = append(alts, nodepackCard(p, managerPresent, installedPending, wfID, csrf, comfyRoot))
 		}
 		body = append(body, h.Details(h.Class("mt-1"),
 			h.Summary(h.Class("cursor-pointer text-xs text-slate-400"),
@@ -460,7 +474,18 @@ func alternativesSummary(alts []rankedPack) string {
 // In both, collapsing the command would leave a card whose entire content is a name
 // and a disclosure triangle. The BLOCKED REASON is never collapsed either: it exists
 // to explain an absent button, so it must be readable without opening anything.
-func nodepackCard(rp rankedPack, managerPresent bool, wfID int64, csrf, comfyRoot string) g.Node {
+//
+// 🔴 THE INSTALLED-PENDING BRANCH IS CHECKED FIRST AND OVERRIDES BOTH. A pack
+// ComfyUI-Manager already has on disk, waiting for a restart, must NOT be offered for
+// installation again: that is what made a successful install present as a failure —
+// Manager said "installed, restart pending", the user clicked the "Run again" the
+// panel itself invites, and this card came back offering the same Install button with
+// no acknowledgement, while the run's fragment blanked the one place the restart
+// instruction had been shown. It overrides the BLOCKED branch too: a policy refusal
+// explains an absent button, and once the pack is on disk that explanation is simply
+// wrong. installedPending is nil whenever the signal is unavailable, so every card
+// falls through to exactly the pre-existing behaviour.
+func nodepackCard(rp rankedPack, managerPresent bool, installedPending []string, wfID int64, csrf, comfyRoot string) g.Node {
 	p := rp.Pack
 	head := []g.Node{h.Span(h.Class("font-semibold"), g.Text(packDisplayTitle(p)))}
 	if p.Version != "" {
@@ -491,6 +516,23 @@ func nodepackCard(rp rankedPack, managerPresent bool, wfID int64, csrf, comfyRoo
 		evidence = append(evidence, h.Div(h.Class("text-xs text-slate-500"), g.Text(line)))
 	}
 
+	// Already on disk, waiting for a restart: say so, and collapse the evidence like
+	// the installable card does. The manual `git clone` in particular is now WRONG
+	// advice — the directory exists — so it must not stay in the open where it reads
+	// as the next step; it stays reachable behind the disclosure as evidence.
+	if packInstalledPending(p, installedPending) {
+		body = append(body,
+			h.P(
+				g.Attr("role", "status"),
+				dataAttr("nodepack-state", "installed-pending"),
+				h.Class("text-xs text-emerald-400"),
+				g.Text("Installed — restart ComfyUI to use it."),
+			),
+			nodepackEvidenceDisclosure(p, evidence, comfyRoot),
+		)
+		return h.Div(body...)
+	}
+
 	installable := managerPresent && p.Installable
 	if installable {
 		// 🔴 A lower-ranked claimant of a contested class keeps a WORKING Install
@@ -507,14 +549,7 @@ func nodepackCard(rp rankedPack, managerPresent bool, wfID int64, csrf, comfyRoo
 		}
 		body = append(body,
 			h.Div(h.Class("pt-1"), nodepackInstallButton(p, wfID, csrf, variant)),
-			h.Details(h.Class("mt-1"),
-				h.Summary(h.Class("cursor-pointer text-xs text-slate-400"),
-					g.Text(packDetailsSummary)),
-				h.Div(h.Class("mt-1 space-y-1"),
-					g.Group(evidence),
-					manualInstallBlock(p, comfyRoot),
-				),
-			),
+			nodepackEvidenceDisclosure(p, evidence, comfyRoot),
 		)
 		return h.Div(body...)
 	}
@@ -528,6 +563,50 @@ func nodepackCard(rp rankedPack, managerPresent bool, wfID int64, csrf, comfyRoo
 	}
 	body = append(body, manualInstallBlock(p, comfyRoot))
 	return h.Div(body...)
+}
+
+// nodepackEvidenceDisclosure is the collapsed provenance half of a pack card:
+// repository, provides-list, scope line and the manual install command.
+//
+// It is ONE helper because two branches now collapse it — the card with an Install
+// button and the card that is already installed — and the rule for what belongs
+// behind the triangle has to hold at both. See nodepackCard's header for when a card
+// may collapse at all.
+func nodepackEvidenceDisclosure(p comfy.Pack, evidence []g.Node, comfyRoot string) g.Node {
+	return h.Details(h.Class("mt-1"),
+		h.Summary(h.Class("cursor-pointer text-xs text-slate-400"),
+			g.Text(packDetailsSummary)),
+		h.Div(h.Class("mt-1 space-y-1"),
+			g.Group(evidence),
+			manualInstallBlock(p, comfyRoot),
+		),
+	)
+}
+
+// anyPackInstalledPending reports whether ANY rendered pack is already on disk
+// waiting for a restart — i.e. whether the panel is telling the user to restart.
+func anyPackInstalledPending(ranked []rankedPack, installedPending []string) bool {
+	for _, rp := range ranked {
+		if packInstalledPending(rp.Pack, installedPending) {
+			return true
+		}
+	}
+	return false
+}
+
+// packInstalledPending reports whether ComfyUI-Manager already has this pack on
+// disk, waiting for a restart.
+//
+// 🔴 It routes through matchPackInDiff — the SAME predicate the install job uses to
+// confirm a pack landed — so the panel and the installer can never disagree about
+// what "already installed" means. An empty/nil set is "not known", never "not
+// installed": it is the fail-open state and it renders as the panel always did.
+func packInstalledPending(p comfy.Pack, installedPending []string) bool {
+	if len(installedPending) == 0 {
+		return false
+	}
+	_, ok := matchPackInDiff(p, installedPending)
+	return ok
 }
 
 // packDetailsSummary names what is behind a pack card's disclosure. It lists the
@@ -723,9 +802,16 @@ func isShellSafeArg(v string) bool {
 // the server re-derives the pack from its own attribution snapshot and never
 // takes a repository URL from the request, so a forged POST cannot drive
 // ComfyUI-Manager at an arbitrary repository.
+//
+// 🔴 It carries data-nodepack-action="install" so a guard can assert the ABSENCE of
+// an install affordance structurally. "No Install button" must never be checked by
+// looking for a label or for the word "disabled": this repo has shipped both — a
+// `Contains(body,"disabled")` satisfied by htmx's own hx-disabled-elt on a live
+// button, and a dead-control guard that knew only the previous label.
 func nodepackInstallButton(p comfy.Pack, wfID int64, csrf, variant string) g.Node {
 	return civButton(variant, "sm", []g.Node{
 		h.Type("button"),
+		dataAttr("nodepack-action", "install"),
 		hx("post", "/workflows/"+strconv.FormatInt(wfID, 10)+"/nodepacks/install"),
 		hx("target", "#"+nodepackStatusContainerID),
 		hx("swap", "innerHTML"),
@@ -764,6 +850,7 @@ func nodepackConfirmFragment(p comfy.Pack, wfID int64, csrf string) g.Node {
 		h.Div(h.Class("pt-1"),
 			civButton("filled", "sm", []g.Node{
 				h.Type("button"),
+				dataAttr("nodepack-action", "install-confirm"),
 				hx("post", "/workflows/"+strconv.FormatInt(wfID, 10)+"/nodepacks/install"),
 				hx("target", "#"+nodepackStatusContainerID),
 				hx("swap", "innerHTML"),
@@ -843,9 +930,13 @@ func nodepackTerminal(snap nodepackSnapshot, csrf string) g.Node {
 // refuses it while ComfyUI's queue is busy (Manager's own reboot does os.execv
 // with no queue inspection and would destroy a running generation), and that
 // refusal surfaces as its own plain message.
+//
+// data-nodepack-action="restart" is what makes "the restart affordance is present"
+// (and countable) assertable as a STATE rather than as its label.
 func restartComfyButton(csrf string) g.Node {
 	return civButton("outline", "sm", []g.Node{
 		h.Type("button"),
+		dataAttr("nodepack-action", "restart"),
 		hx("post", "/workflows/nodepacks/restart"),
 		hx("target", "#"+nodepackStatusContainerID),
 		hx("swap", "innerHTML"),
