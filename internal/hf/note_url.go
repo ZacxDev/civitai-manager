@@ -10,12 +10,18 @@ import (
 // SourceNote identifies a Match resolved from a URL a WORKFLOW AUTHOR wrote in a
 // Note / MarkdownNote node, rather than from the curated table or a repo search.
 //
-// 🔴 It deliberately satisfies NEITHER arm of AutoDownloadEligible (which admits
-// only SourceCurated or a recognized org). That is fail-closed on purpose: the
-// note path has its own, DIFFERENT trust argument — the user is looking at a
-// specific file the author named, and approves it by clicking — and it must never
-// be able to launder a stranger's URL into the curated set's authority by leaking
-// into a caller that asks AutoDownloadEligible.
+// 🔴 AutoDownloadEligible REFUSES a SourceNote match outright — see the explicit
+// guard there, and read that comment before changing either. Fail-closed on
+// purpose: the note path has its own, DIFFERENT trust argument (the user is
+// looking at a specific file the author named, and approves it by clicking), and
+// it must never launder a stranger's URL into the curated set's authority by
+// leaking into a caller that asks AutoDownloadEligible.
+//
+// ⚠ THIS COMMENT USED TO CLAIM the exclusion fell out of the predicate's existing
+// conditions — "satisfies NEITHER arm". That was FALSE: ResolveInRepo sets
+// RecognizedOrg from the repo owner, so a note pointing at `stabilityai/sd-turbo`
+// satisfied the second arm, and only the empty Subdir was holding the gate. The
+// guard is now structural, which is why this comment can be trusted.
 const SourceNote = "note"
 
 // ParseResolveURL parses a HuggingFace download URL of the canonical form

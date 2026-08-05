@@ -126,6 +126,58 @@ func TestResolveInRepoPinsTheRevisionAndTheHash(t *testing.T) {
 	}
 }
 
+// 🔴 The exclusion must hold in the WORST case, not the incidental one. The audit
+// found the shipped comment false: `RecognizedOrg` is set from the repo OWNER, and
+// an untrusted author can name `stabilityai/...` as easily as anyone, so the second
+// arm of AutoDownloadEligible was satisfied and only the empty Subdir was holding
+// the gate. This builds exactly the state that used to slip through — a RECOGNIZED
+// org, a populated Subdir, a real SHA256, un-gated — and asserts it is still
+// ineligible.
+func TestNoteMatchIsNeverAutoDownloadEligible(t *testing.T) {
+	const oid = "1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff"
+	c := newFakeHub(t, map[string]fakeRepo{
+		// A RECOGNIZED org — the case that used to slip through.
+		"stabilityai/sd-turbo": {
+			gated: false, sha: "abc123", downloads: 999,
+			files: map[string]string{"sd_turbo.safetensors": oid},
+		},
+	})
+	m, ok, err := c.ResolveInRepo(context.Background(), "stabilityai/sd-turbo", "sd_turbo.safetensors")
+	if err != nil || !ok {
+		t.Fatalf("ResolveInRepo = ok:%v err:%v", ok, err)
+	}
+	// PRECONDITIONS: the fixture really does reach the dangerous state. Without
+	// these, an ineligible verdict below could come from a missing hash or an
+	// unrecognised owner and would prove nothing about the note exclusion.
+	if !m.RecognizedOrg {
+		t.Fatal("precondition: stabilityai must be a recognized org, or this test cannot reach the case")
+	}
+	if m.SHA256 == "" || m.Gated {
+		t.Fatalf("precondition: want a hashed, un-gated match, got sha=%q gated=%v", m.SHA256, m.Gated)
+	}
+	if m.Source != SourceNote {
+		t.Fatalf("precondition: Source = %q, want %q", m.Source, SourceNote)
+	}
+
+	// The subdir is the one thing the note install path computes for itself
+	// (comfy.TypeSubdir), so populating it here is not hypothetical — it is what a
+	// plausible edit to this package would do.
+	m.Subdir = "checkpoints"
+	if m.AutoDownloadEligible() {
+		t.Fatal("a SourceNote match in a recognized org, with a subdir and a sha, reported " +
+			"AutoDownloadEligible — the note path must never inherit the resolver's authority")
+	}
+
+	// POSITIVE CONTROL: the SAME match with the source flipped to curated IS
+	// eligible, so the refusal above is a fact about SourceNote and not about some
+	// other field this fixture happens to leave unsatisfied.
+	m.Source = SourceCurated
+	if !m.AutoDownloadEligible() {
+		t.Fatal("positive control: an otherwise identical curated match must be eligible — " +
+			"the refusal above is not attributable to the source")
+	}
+}
+
 func TestResolveInRepoMissesAndGates(t *testing.T) {
 	const oid = "1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff"
 	c := newFakeHub(t, map[string]fakeRepo{
