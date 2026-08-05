@@ -245,6 +245,13 @@ func TestNoteOpenLinkRefusesANonHTTPSHref(t *testing.T) {
 		"//example.com/a.safetensors",
 		"HTTPS://example.com/a.safetensors", // the check is deliberately case-SENSITIVE
 		"",
+		// 🔴 The check must be a PREFIX test, not "contains somewhere". These two
+		// carry the literal "https://" inside a hostile url, so a substring-anywhere
+		// form admits them — measured: loosening HasPrefix to Contains survived the
+		// suite until these were added, and the first of them is a javascript: href.
+		"javascript:void('https://example.com/a.safetensors')",
+		"http://evil.example/?next=https://example.com/a.safetensors",
+		"data:text/html,https://example.com",
 	} {
 		out := renderString(t, noteOpenLink(raw, "a.safetensors", "example.com"))
 		if strings.Contains(out, "href=") {
