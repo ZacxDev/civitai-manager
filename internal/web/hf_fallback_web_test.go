@@ -30,11 +30,26 @@ type fakeHFClient struct {
 	resolveHits int
 	dlCalls     int
 	status      int
+
+	// inRepo is the canned answer for ResolveInRepo (the note-links path). It is a
+	// SEPARATE field from match on purpose: the whole premise of that path is that
+	// the search-driven Resolve cannot find the file, so a fake where the two share
+	// an answer could not express the case under test. inRepoCalls / inRepoArgs
+	// record the calls so a test can prove egress did or did not happen.
+	inRepo     *hf.Match
+	inRepoOK   bool
+	inRepoErr  error
+	inRepoArgs [][2]string
 }
 
 func (f *fakeHFClient) Resolve(context.Context, string) (*hf.Match, bool, error) {
 	f.resolveHits++
 	return f.match, f.ok, nil
+}
+
+func (f *fakeHFClient) ResolveInRepo(_ context.Context, repo, basename string) (*hf.Match, bool, error) {
+	f.inRepoArgs = append(f.inRepoArgs, [2]string{repo, basename})
+	return f.inRepo, f.inRepoOK, f.inRepoErr
 }
 
 func (f *fakeHFClient) DownloadFile(_ context.Context, _ string) (*http.Response, error) {

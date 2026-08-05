@@ -346,6 +346,12 @@ type missingResolution struct {
 	// computed once at run settle — never per poll.
 	HF                *hf.Match
 	HFInstallEligible bool
+	// NoteLinks are the download URLs THIS WORKFLOW'S OWN Note/MarkdownNote nodes
+	// give for this exact filename (exact-basename match). Unlike the two fields
+	// above they cost NO network work — extraction and matching are pure — and
+	// unlike them they are computed from the UI graph, because conversion drops
+	// note nodes. See note_links.go. Nil when the notes name no such file.
+	NoteLinks []noteLinkOffer
 }
 
 // missingResolveBudget bounds the WHOLE at-settle resolution pass so N missing
@@ -474,6 +480,12 @@ func fixModelDialog(dlgID string, mm comfy.MissingModel, res missingResolution, 
 						g.Attr("aria-label", "Close")}, g.Text("✕"))),
 			),
 			civitaiMatchSection(mm, res, wfID, csrf, dlEligible, mr),
+			// The workflow's own notes sit BETWEEN the two existing sources on
+			// purpose: they are more specific than a CivitAI title search (the author
+			// named this exact file) and less immediately usable than a model already
+			// on disk. noteLinkSection renders nothing at all when the notes name no
+			// matching file, so an ordinary dialog is byte-identical to before.
+			noteLinkSection(dlgID, mm, res.NoteLinks, wfID, csrf, dlEligible),
 			h.Div(h.Class("mt-6"), librarySubstituteSection(mm, libMeta, wfID, csrf, mr)),
 		),
 	)

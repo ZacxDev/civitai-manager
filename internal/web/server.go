@@ -728,6 +728,12 @@ func (s *Server) Handler() http.Handler {
 	// civitai.com + the local filesystem). Disabled/degrades to link-only unless
 	// comfy_model_path is a writable dir and the ComfyUI is local.
 	mux.HandleFunc("POST /workflows/{id}/download-and-run", s.handleWorkflowDownloadAndRun)
+	// Install a missing model from a download URL the WORKFLOW ITSELF documents in a
+	// Note/MarkdownNote node, then run (CSRF + loopback gated; reaches
+	// huggingface.co + the local filesystem). The url is re-derived from the stored
+	// graph on every request and only a HuggingFace /resolve/ URL is ever fetched —
+	// see note_links.go for why there is no third egress client.
+	mux.HandleFunc("POST /workflows/{id}/install-from-note", s.handleWorkflowInstallFromNote)
 	// The failure panel's ONE primary recovery action: install every missing model
 	// file, then run (all-or-nothing on resolution — see run_install_all.go).
 	mux.HandleFunc("POST /workflows/{id}/install-missing-and-run", s.handleWorkflowInstallMissingAndRun)
