@@ -206,17 +206,56 @@ func TestExtractNoteLinksBoundsTheWholeGraph(t *testing.T) {
 	}
 }
 
+// wantNoteLinkCap is a LITERAL, never noteMaxLinks. Deriving it from the constant
+// under test is what let "noteMaxLinks = 640" pass the first mutation round: both
+// sides moved together and no mutation could separate them. Changing the cap is a
+// deliberate act and must change this number too.
+const wantNoteLinkCap = 64
+
+// generatedNoteLinks is a literal well above the cap, for the same reason.
+const generatedNoteLinks = 200
+
 func TestExtractNoteLinksCapsTheLinkCount(t *testing.T) {
+	if noteMaxLinks != wantNoteLinkCap {
+		t.Fatalf("noteMaxLinks = %d but this guard is calibrated to %d — update the literal "+
+			"deliberately, and say why the cap moved", noteMaxLinks, wantNoteLinkCap)
+	}
 	var b strings.Builder
-	for i := 0; i < noteMaxLinks+20; i++ {
+	for i := 0; i < generatedNoteLinks; i++ {
 		b.WriteString("https://example.com/f")
 		b.WriteString(strings.Repeat("a", i%5))
 		b.WriteString(strconv.Itoa(i))
 		b.WriteString(".safetensors\n")
 	}
 	got := ExtractNoteLinks(FormatUI, uiNoteGraph(t, [3]string{"1", "MarkdownNote", b.String()}))
-	if len(got) != noteMaxLinks {
-		t.Fatalf("got %d links, want the cap %d", len(got), noteMaxLinks)
+	if len(got) != wantNoteLinkCap {
+		t.Fatalf("got %d links from %d distinct urls, want the cap %d",
+			len(got), generatedNoteLinks, wantNoteLinkCap)
+	}
+}
+
+// The https rule is enforced TWICE — the pattern only matches https, and
+// parseNoteURL asserts the scheme again — so mutating either layer alone leaves
+// behaviour unchanged (measured: loosening the pattern to `https?` survived the
+// whole suite). That redundancy is deliberate, and this pins the SECOND layer
+// directly, by calling it with input the pattern would never have produced.
+func TestParseNoteURLAssertsTheSchemeItself(t *testing.T) {
+	for _, raw := range []string{
+		"http://example.com/a.safetensors",
+		"ftp://example.com/a.safetensors",
+		"file:///etc/passwd",
+		"javascript:alert(1)",
+		"//example.com/a.safetensors",
+		"https://",
+	} {
+		if u, base, ok := parseNoteURL(raw); ok {
+			t.Fatalf("parseNoteURL(%q) accepted it as (%q, %q)", raw, u, base)
+		}
+	}
+	// Positive control: the layer does accept a real https url, so the refusals
+	// above are not a fact about a parser that refuses everything.
+	if _, base, ok := parseNoteURL("https://example.com/a.safetensors"); !ok || base != "a.safetensors" {
+		t.Fatalf("positive control: ok=%v base=%q", ok, base)
 	}
 }
 
@@ -282,6 +321,29 @@ func TestNoteLinksMatchingIsExactBasename(t *testing.T) {
 	t.Run("a different name never matches", func(t *testing.T) {
 		if got := NoteLinksMatching(links, "zit_sda_v9.safetensors"); got != nil {
 			t.Fatalf("got %v, want nil", urlsOf(got))
+		}
+	})
+	// 🔴 EXACT, not "contains", in BOTH directions. Without a fixture where one name
+	// is a proper substring of the other, loosening == to strings.Contains passes the
+	// whole suite — measured: that mutant survived the first round.
+	t.Run("a substring relationship is not a match", func(t *testing.T) {
+		sub := []NoteLink{
+			{URL: "https://h/x/my_model.safetensors", Basename: "my_model.safetensors"},
+			{URL: "https://h/x/a.safetensors", Basename: "a.safetensors"},
+		}
+		// The reference is a proper substring of a link's basename.
+		if got := NoteLinksMatching(sub, "model.safetensors"); got != nil {
+			t.Fatalf("model.safetensors matched %v — a note link that merely CONTAINS the "+
+				"reference is a different file", urlsOf(got))
+		}
+		// A link's basename is a proper substring of the reference.
+		if got := NoteLinksMatching(sub, "prefix_a.safetensors"); got != nil {
+			t.Fatalf("prefix_a.safetensors matched %v", urlsOf(got))
+		}
+		// Positive control: the exact name still matches, so the two nils above are
+		// not a fact about a matcher that matches nothing.
+		if got := NoteLinksMatching(sub, "a.safetensors"); len(got) != 1 {
+			t.Fatalf("positive control: exact match got %v, want 1", urlsOf(got))
 		}
 	})
 	t.Run("an empty basename can never match", func(t *testing.T) {
