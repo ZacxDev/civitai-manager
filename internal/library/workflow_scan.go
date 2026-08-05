@@ -250,7 +250,17 @@ func (ws *WorkflowScanner) autoLink(ctx context.Context, format string, graph js
 
 	tried := map[string]bool{}
 	for _, c := range candidates {
-		base := filepath.Base(strings.TrimSpace(c))
+		// comfy.PathBase, not filepath.Base: every candidate is GRAPH-DERIVED (the
+		// primary checkpoint and the extracted resources above), so a Windows-authored
+		// `zimage\zit_sda_v1.safetensors` must fold to its filename here. filepath.Base
+		// is a no-op for backslashes on Linux, and FindVersionByFileName gates on
+		// strings.ToLower(filepath.Base(local_files.path)) — a HOST basename that never
+		// contains a backslash — so an un-folded candidate can never match and the
+		// workflow silently fails to auto-link to its CivitAI model/version.
+		//
+		// The store side's filepath.Base stays filepath.Base: that one IS a real path
+		// on this host.
+		base := comfy.PathBase(strings.TrimSpace(c))
 		if base == "" || base == "." || tried[strings.ToLower(base)] {
 			continue
 		}
