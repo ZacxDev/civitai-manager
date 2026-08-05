@@ -53,6 +53,16 @@ type managerClient interface {
 // host degrades to "unattributed" instead of stalling the terminal render.
 const nodeAttributeBudget = 25 * time.Second
 
+// nodepackInstalledProbeBudget bounds the ONE extra ComfyUI-Manager call this pass
+// makes for display purposes: the installed-but-not-yet-imported diff.
+//
+// It is deliberately far tighter than nodeAttributeBudget, and it is carved OUT of
+// that budget (it derives from the same context), so a wedged Manager can cost the
+// panel at most this long and can never push the whole pass past its backstop. The
+// discipline is nodepack_handlers.go's: a short synchronous Manager call made on a
+// path a user is waiting on gets its own small bound.
+const nodepackInstalledProbeBudget = 5 * time.Second
+
 // maxRegistryClasses caps how many still-unplaced classes are looked up against
 // api.comfy.org in one pass. The Registry has NO batch endpoint, so this is one
 // request per class; a pathological graph must not turn one failed run into
@@ -73,6 +83,20 @@ type nodeAttribution struct {
 	// human explanation of an absent/degraded state. Both are rendered escaped.
 	ManagerVersion string
 	ManagerNote    string
+	// InstalledPending is ComfyUI-Manager's installed-but-not-yet-imported set at
+	// settle time — the packs that are ON DISK and waiting for a ComfyUI restart.
+	//
+	// 🔴 It is a DISPLAY signal and it FAILS OPEN: nil means "we do not know", which
+	// renders exactly as this panel did before the field existed (an Install button).
+	// It must never be the reason an install the user needs cannot be started —
+	// ComfyUI-Manager being absent, slow or broken is the common case this panel is
+	// built around, not an error state.
+	//
+	// It holds Manager's own entry names (custom_nodes directory names / pack ids),
+	// NOT our pack ids, so matching goes through matchPackInDiff — the same predicate
+	// the install job confirms against, so the panel and the installer can never
+	// disagree about what "already installed" means.
+	InstalledPending []string
 	// ComfyRoot is the configured ComfyUI install root, captured at settle so the
 	// panel can render a real manual-install command instead of a placeholder
 	// path. It travels here rather than as yet another render parameter threaded
@@ -154,6 +178,10 @@ func (s *Server) realAttributeMissingNodes(parent context.Context, classes []str
 
 	remaining := classes
 	var sets [][]comfy.Pack
+	// live is the Manager client ONLY once a probe has shown Manager answering. It
+	// is held so the installed-set diff can be read after attribution settles,
+	// without a second probe.
+	var live managerClient
 
 	// Rung 1+3: ComfyUI-Manager's own indexes (exact class match, then the
 	// nodename_pattern regexes). No egress at all — Manager is on loopback.
@@ -168,6 +196,7 @@ func (s *Server) realAttributeMissingNodes(parent context.Context, classes []str
 			out.ManagerNote = info.Note
 		}
 		if info != nil && info.Present {
+			live = mc
 			mappings, mErr := mc.ManagerMappings(ctx)
 			if mErr != nil {
 				s.log.Warn("fetch ComfyUI-Manager mappings failed", "err", mErr)
@@ -208,7 +237,32 @@ func (s *Server) realAttributeMissingNodes(parent context.Context, classes []str
 
 	out.Packs = comfy.MergePacks(sets...)
 	out.Unattributed = remaining
+
+	// Which of the attributed packs are ALREADY on disk waiting for a restart. This
+	// runs last, and only when there is a pack to mark, so a pass that attributed
+	// nothing makes no extra Manager call at all. Its failure is silent by design —
+	// see nodeAttribution.InstalledPending.
+	if live != nil && len(out.Packs) > 0 {
+		out.InstalledPending = s.installedPendingPacks(ctx, live)
+	}
 	return out
+}
+
+// installedPendingPacks reads ComfyUI-Manager's installed-but-not-yet-imported set.
+//
+// 🔴 Every failure returns nil, which the panel renders as "not known" — i.e. as it
+// rendered before this signal existed. That is the whole contract: the diff can only
+// ever ADD an acknowledgement that a pack already landed; it can never withhold an
+// Install button because Manager was slow, absent or broken.
+func (s *Server) installedPendingPacks(parent context.Context, mc managerClient) []string {
+	ctx, cancel := context.WithTimeout(parent, nodepackInstalledProbeBudget)
+	defer cancel()
+	pending, err := mc.ManagerInstalledDiff(ctx)
+	if err != nil {
+		s.log.Warn("read ComfyUI-Manager installed set failed", "err", err)
+		return nil
+	}
+	return pending
 }
 
 // attributeRemote runs the two OUTBOUND rungs (static extension-node-map, then
