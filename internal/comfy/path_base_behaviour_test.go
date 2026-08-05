@@ -166,12 +166,18 @@ func TestPreflightFindsAWindowsAuthoredRefViaTheLocalHaveLeg(t *testing.T) {
 	}
 }
 
-// TestChoicesKeepExactMatchBeforeBasename pins the tolerance's ordering against
-// the one basename collision measured on a live ComfyUI: 232 of 513 combo values
-// carry a separator, and "igbaddie-PN.safetensors" exists both bare and under
-// "seg-b/". Both spellings must resolve; neither may shadow the other into a
-// false MISSING.
-func TestChoicesKeepExactMatchBeforeBasename(t *testing.T) {
+// TestChoicesToleranceSpansSeparatorSpellings pins the tolerance against the one
+// basename collision measured on a live ComfyUI: 232 of 513 combo values carry a
+// separator, and "igbaddie-PN.safetensors" exists both bare and under "seg-b/".
+// Every spelling must resolve; none may shadow another into a false MISSING.
+//
+// ⚠ This test was called TestChoicesKeepExactMatchBeforeBasename, which claimed
+// something it does not check and CANNOT check: the exact and basename compares are
+// ORed per element and both operands are pure, so their written order is a
+// short-circuit, not behaviour (swapping them keeps the suite green — measured:
+// 545 tests, 0 failures). What is asserted here is the tolerance's EXTENT — which
+// spellings are accepted and, just as importantly, which are not.
+func TestChoicesToleranceSpansSeparatorSpellings(t *testing.T) {
 	choices := []string{"igbaddie-PN.safetensors", "seg-b/igbaddie-PN.safetensors"}
 
 	for _, value := range []string{

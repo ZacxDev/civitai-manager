@@ -240,10 +240,19 @@ func inputSpec(sch NodeSchema, name string) (InputSpec, bool) {
 // choicesContain). For a plain label value (no path separator) basename == the
 // value, so this reduces to an exact match.
 //
-// EXACT MATCH IS TRIED FIRST and that ordering is load-bearing: measured on a live
-// ComfyUI, 232 of 513 combo values carry a separator and one basename collision
-// exists in the wild ("igbaddie-PN.safetensors" vs "seg-b/igbaddie-PN.safetensors").
-// The basename leg is the tolerance, never the primary key.
+// ⚠ This comment used to say "EXACT MATCH IS TRIED FIRST and that ordering is
+// load-bearing". That was FALSE. Both operands of the `||` are pure and the result
+// is a bool, so which one is written first is a SHORT-CIRCUIT, not a precedence
+// rule — swapping them leaves the whole package suite green (measured: 545 tests,
+// 0 failures, clean build). No test can pin it, and none pretends to.
+//
+// What IS real is the cost of the second leg: the basename compare is a deliberate
+// TOLERANCE, and it is not free. Measured on a live ComfyUI, 232 of 513 combo
+// values carry a separator and one genuine basename collision exists
+// ("igbaddie-PN.safetensors" alongside "seg-b/igbaddie-PN.safetensors"), so the
+// tolerance can answer true for a DIFFERENT file that merely shares a name. It only
+// ever WIDENS the answer — an exact match is accepted either way — which is the
+// right direction here: this decides whether to warn a user that a file is missing.
 //
 // Basenames go through PathBase, not filepath.Base: these are GRAPH values, so a
 // Windows-authored `zimage\zit_sda_v1.safetensors` must fold to its filename on
@@ -302,9 +311,10 @@ func modelSatisfied(ref string, nodes map[string]apiNode, info ObjectInfo, local
 // filename (exact match, or by basename to tolerate a choices entry that carries a
 // subdirectory prefix like "flux/foo.safetensors").
 //
-// Exact-first, then basename — same ordering rationale as choicesContainValue — and
-// the basename is PathBase's, so a graph reference written with backslashes matches
-// a forward-slash choices entry.
+// The exact compare and the basename compare are ORed per choice; the order they
+// are written in is a short-circuit only, not an observable rule (see
+// choicesContainValue). The basename is PathBase's, so a graph reference written
+// with backslashes matches a forward-slash choices entry.
 func choicesContain(sch NodeSchema, filename string) bool {
 	base := PathBase(filename)
 	check := func(specs map[string]InputSpec) bool {
