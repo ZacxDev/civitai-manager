@@ -69,13 +69,17 @@ func HasModelFile(idx map[string]struct{}, ref string) bool {
 	return ok
 }
 
-// choiceBasename mirrors store.ResourceBasename: normalise Windows separators,
-// then take the last path element. Kept here rather than imported because
-// internal/comfy must not depend on internal/store.
+// choiceBasename is PathBase over a trimmed value. It exists only to name the
+// TrimSpace — the separator rule itself is PathBase's, so this file and the
+// preflight presence checks can never disagree about what a reference is called.
+// (It mirrors store.ResourceBasename, which is store's own copy of the same rule;
+// the two packages are siblings, so neither can import the other's.)
+//
+// It used to open-code path.Base over a backslash-folded string. Against PathBase
+// that differs on one input: a value ending in a separator ("a/b.safetensors/")
+// used to yield "b.safetensors" and now yields "". That is the fail-CLOSED
+// direction this file's header already argues for — a directory-shaped value stops
+// being promoted to a filename.
 func choiceBasename(s string) string {
-	s = strings.TrimSpace(strings.ReplaceAll(s, `\`, "/"))
-	if s == "" {
-		return ""
-	}
-	return path.Base(s)
+	return PathBase(strings.TrimSpace(s))
 }

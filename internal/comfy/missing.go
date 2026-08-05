@@ -2,7 +2,6 @@ package comfy
 
 import (
 	"encoding/json"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -56,7 +55,11 @@ var versionSuffixRe = regexp.MustCompile(`(?i)[_-]v?\d[\d.]*$`)
 //	seg-a/fabricatedXL_v70.safetensors → "fabricated XL"
 //	sd_xl_base_1.0.safetensors         → "sd xl base"
 func CleanModelQuery(filename string) string {
-	s := filepath.Base(strings.TrimSpace(filename))
+	// PathBase, not filepath.Base: filename is a GRAPH reference. With filepath.Base
+	// a Windows-authored "ComfyUI\moody-v12.6_00001_.safetensors" kept its directory
+	// prefix AND its backslash, and the backslash was emitted verbatim into the
+	// CivitAI search query (which answers 200 with unrelated results).
+	s := PathBase(strings.TrimSpace(filename))
 	// Strip a known model extension (case-insensitive).
 	low := strings.ToLower(s)
 	for _, ext := range modelExtensions {
