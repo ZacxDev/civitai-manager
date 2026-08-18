@@ -1277,6 +1277,28 @@ appears. **A fixture can be wrong in a way that produces a plausible screenshot.
     control's label or any user-facing copy proves nothing about whether that copy shipped —
     an auditor used exactly that as evidence, and its own positive control would have failed.
     Use the view's `form_controls` entries (they carry `accessible_name`) or a screenshot.
+- 🔴 **Pushing an a11y digest grants auditloop the power to DELETE findings, not just to
+  refute them.** As of auditloop main **@ `d19b8a3` (PR #47)** the deterministic gate runs
+  two stages: `groundSelectors` drops any MECHANICAL a11y finding (missing label /
+  accessible name / not keyboard operable) whose selector is not in that page's digest
+  vocabulary — after one attempt to re-anchor it via an accessible name the finding quoted —
+  and only then does `dropContradicted` drop what the DOM positively refutes. So a digest
+  that is non-empty but UNDER-DESCRIBES its page silently deletes true findings. The
+  producer rule: **emit a digest of the same DOM the screenshot and axe describe, or emit
+  none for that page.** `e2e/uxaudit` satisfies this structurally (auditloop's own script,
+  byte-identical, evaluated in the same task-list position); the guard that matters on our
+  side is still `nonEmptyA11yDigest` — an ALL-EMPTY digest is a **400 that rejects the whole
+  multi-page push**, and that is the normal output of `a11y-digest.js` on a bare page and of
+  its exception catch-all. **MERGED ≠ DEPLOYED:** #47 is on auditloop `main`; the instance
+  we push to may still run a pre-#47 build, where only stage 2 is live.
+- **auditloop finds few objective a11y anchors in this app because our controls lack `id`s.**
+  Measured by auditloop on a real push of this harness (run `9d322473`): 4 of 4 objective
+  a11y claims cited invented anchors (a `placeholder=`, a class, `h3:contains('SDXL
+  Portrait')`). The digest's selector falls back to `tag.class1.class2` when an element has
+  no `id` and no `name`, and only `#id` / `[name=…]` are concrete enough to anchor anything.
+  Under #47 those claims are now DROPPED rather than surfaced — the noise is gone, but so is
+  the signal. Adding stable `id`s to the real interactive controls is what would make them
+  anchor properly.
   - **A CSS *comment* counts as a rule to a naive grep.** `app.css` deliberately carries
     tombstone comments where deleted rules lived, so an ad-hoc grep reported four
     already-deleted `.cm-*` rules as still present. The shipped guards strip comments first;

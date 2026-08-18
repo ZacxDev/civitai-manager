@@ -602,6 +602,13 @@ func BuildPayload(label string, caps []CapturedView) (PushPayload, map[string][]
 		files[shot] = cv.Capture.ScreenshotPNG
 
 		pg := PushPage{
+			// VIEWPORT-QUALIFIED stable page identity. It diffs correctly (auditloop's
+			// P2 matches on this string run to run) but is NOT what a native crawl
+			// emits, where both viewport rows of a view share one url. Consequence,
+			// documented rather than silently changed: auditloop's persona evaluator
+			// groups pages BY URL, so each (view,viewport) becomes its own
+			// single-screenshot eval unit — no mobile-vs-desktop comparison of the same
+			// view, and 2x the units per pass. See the PAGE IDENTITY note in push.go.
 			URL:               cv.View.Name + "@" + cv.Viewport.Name,
 			Viewport:          cv.Viewport.Name,
 			Screenshot:        shot,

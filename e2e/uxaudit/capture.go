@@ -55,8 +55,12 @@ type ViewCapture struct {
 	// A11yDigestJSON is the bounded DOM/accessibility digest (a11y-digest.js output,
 	// see a11y.go) captured in the SAME pass as axe, off the settled post-prep DOM.
 	// auditloop feeds it to a deterministic gate that drops persona findings the DOM
-	// refutes. It is BEST-EFFORT: empty when the script failed or the page is bare,
-	// and BuildPayload attaches it only when non-empty (an empty digest 400s the push).
+	// refutes AND (auditloop main @ d19b8a3, #47) mechanical a11y findings whose
+	// selector this digest does not list — so the "SAME pass as axe" above is a
+	// CORRECTNESS requirement, not tidiness: a digest read off a different DOM state
+	// than the one being audited would delete true findings. It is BEST-EFFORT: empty
+	// when the script failed or the page is bare, and BuildPayload attaches it only
+	// when non-empty (an empty digest 400s the whole push).
 	A11yDigestJSON []byte
 
 	AxeViolations     int
@@ -167,7 +171,11 @@ func (b *Browser) CaptureWith(pageURL string, vp Viewport, prep []chromedp.Actio
 
 	// Bounded DOM/accessibility digest for auditloop's persona-evaluator grounding.
 	// Captured on the SAME settled, post-prep DOM axe just scanned, so the digest and
-	// the axe result describe the same tree. NON-FATAL by design (mirrors auditloop's
+	// the axe result describe the same tree — and in the SAME position in the task list
+	// auditloop's own crawler uses (axe → digest → freeze → screenshot,
+	// internal/crawler/crawler.go). That ordering is deliberate: the digest is what
+	// licenses auditloop to DELETE mechanical a11y findings it does not list (#47), so
+	// it must not be read off a DOM state the audit never saw. NON-FATAL by design (mirrors auditloop's
 	// own crawler): a digest failure must never fail the capture — the page simply
 	// carries no digest and auditloop degrades to screenshot-only for it.
 	tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {

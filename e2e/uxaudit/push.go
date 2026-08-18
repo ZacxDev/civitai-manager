@@ -27,6 +27,22 @@ import (
 // screenshots sniff as PNG/JPEG, 16 MiB/file, 64 MiB total. The page-count/viewport/
 // finding-type/ref constraints are self-checked by Validate; the 16 MiB/file +
 // 64 MiB total size caps are self-checked by ValidateFiles (both before POSTing).
+//
+// Server-side statuses this harness cannot pre-empt: 401 (unknown/rotated token, or a
+// target whose auth_mode is not 'plugin'), 413 (body over the 64 MiB MaxBytesReader),
+// and 429 (a per-TARGET rate limit of ~one push every 2s). A 429 is a retry, not a
+// payload bug — MaybePush treats a push failure as non-fatal to the walk either way.
+//
+// PAGE IDENTITY: `url` is the STABLE identity auditloop's P2 diff matches on across
+// pushes. BuildPayload emits `<view>@<viewport>` (e.g. "dashboard@desktop"), which is
+// stable and diffs correctly — but note it is VIEWPORT-QUALIFIED, unlike a native
+// crawl where both viewport rows share one url. auditloop's persona evaluator groups
+// pages BY URL and hands the model every screenshot in the group, so this scheme gives
+// it one single-viewport unit per (view,viewport) instead of one two-viewport unit per
+// view: the evaluator never compares this app's mobile and desktop rendering of the
+// same view, and an evaluation pass costs 2x the units. Changing it is a deliberate,
+// separate decision — it would re-key every page and churn one P2 diff as a full
+// add/remove of the target's page set.
 
 // PushEndpoint is the ingestion path (mirrors plugin.PushEndpoint).
 const PushEndpoint = "/api/plugins/runs"
@@ -62,6 +78,11 @@ type PushPage struct {
 	// decodes to all-empty lists — so it is set only when nonEmptyA11yDigest passes.
 	// Omitting it is always safe: auditloop then evaluates that page screenshot-only,
 	// exactly as before this field existed.
+	//
+	// Sending it is NOT merely additive. Since auditloop main @ d19b8a3 (#47) the
+	// digest is also the evaluator's permitted selector vocabulary: a mechanical a11y
+	// finding whose selector this digest does not list is dropped. Attaching a digest
+	// that under-describes its page therefore deletes true findings — see a11y.go.
 	A11yDigest        string        `json:"a11y_digest,omitempty"`
 	AxeViolations     int           `json:"axe_violations"`
 	ConsoleFirstParty int           `json:"console_first_party"`
