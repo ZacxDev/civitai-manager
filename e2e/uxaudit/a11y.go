@@ -12,10 +12,38 @@ import (
 // AUTHORITATIVE facts a screenshot cannot reveal (an sr-only <label for>, an <a>
 // styled as a card).
 //
-// auditloop feeds this to a DETERMINISTIC, no-LLM gate that drops persona-evaluator
-// findings the DOM positively refutes. Measured on a real push of this harness, the
-// screenshot-only evaluator invented objective a11y false positives that axe on the
-// same tree refutes outright — this digest is what closes that.
+// auditloop feeds this to a DETERMINISTIC, no-LLM gate over the persona evaluator's
+// findings. Measured on a real push of this harness, the screenshot-only evaluator
+// invented objective a11y false positives that axe on the same tree refutes outright —
+// this digest is what closes that.
+//
+// 🔴 THE GATE HAS TWO STAGES, AND THE SECOND ONE DELETES. Sending a digest is not
+// merely granting auditloop the power to REFUTE a wrong claim; as of auditloop main
+// @ d19b8a3 (PR #47, "constrain the evaluator to cite only digest-listed selectors")
+// it also grants the power to DISCARD a claim this digest simply fails to mention:
+//
+//	stage 1  groundSelectors  — a MECHANICAL a11y finding (missing label / missing
+//	                            accessible name / not keyboard operable) whose selector
+//	                            is not in this digest's selector vocabulary is first
+//	                            re-anchored via any accessible name it quoted, and
+//	                            DROPPED AS UNGROUNDED if that fails.
+//	stage 2  dropContradicted — a finding the digest positively REFUTES is dropped.
+//
+// So a digest that is non-empty but INCOMPLETE for its page deletes TRUE findings. The
+// producer rule that follows is: emit a digest that describes the same DOM the
+// screenshot and the axe scan describe, or emit none for that page. This harness
+// satisfies that structurally — the script below is auditloop's own, byte-identical,
+// evaluated on the SAME settled post-prep DOM axe just scanned (capture.go), so its
+// element set is exactly as complete as the crawl path's on the same page.
+//
+// auditloop keeps two safety valves that mean partial-by-CAP is not partial-by-BUG:
+// when any list is at its cap, or when the digest carries landmarks but no selectors,
+// absence stops being informative and stage 1 does not drop. Neither is something this
+// harness may rely on for a digest that is short for any OTHER reason.
+//
+// MERGED ≠ DEPLOYED: #47 is on auditloop main with CI green; the instance at
+// auditloop.zacx.dev may still be running a pre-#47 build, in which case only stage 2
+// is live. The producer obligation is the same either way.
 //
 // It is vendored rather than hand-rolled ON PURPOSE: auditloop's push validator
 // rejects the WHOLE multi-page push on any schema violation, and the script already
@@ -58,8 +86,13 @@ type a11yDigestShape struct {
 //
 // Unparseable input is likewise treated as empty (omit) rather than forwarded: sending
 // bytes auditloop cannot decode would 400 the push for the same all-or-nothing reason.
-// Every ambiguous case here errs toward NOT attaching — a missing digest costs only
-// grounding precision on one page, while a rejected push costs the whole run.
+//
+// Every ambiguous case here errs toward NOT attaching, and since auditloop main
+// @ d19b8a3 (#47) that direction is doubly right: a missing digest costs only grounding
+// precision on one page (auditloop evaluates it screenshot-only, and neither gate stage
+// fires), whereas a WRONG or SHORT digest now silently deletes true mechanical a11y
+// findings, and a REJECTED digest costs the whole multi-page run. Cheapest failure
+// first: omit > partial > malformed.
 func nonEmptyA11yDigest(raw []byte) bool {
 	if len(raw) == 0 || len(raw) > MaxA11yDigestBytes {
 		return false
